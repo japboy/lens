@@ -5,6 +5,7 @@ import {
   lensTranslationText,
   selectedAgent,
   showsLensProgress,
+  shouldApplySnapshot,
   STAGE_LABEL,
   supportedAuthMethods,
 } from "./view-model";
@@ -70,6 +71,7 @@ describe("PersonalLens view model", () => {
     const lens = {
       stage: "authentication_required",
       agent: {
+        run_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
         kind: "claude",
         adapter_name: "@agentclientprotocol/claude-agent-acp",
         adapter_version: "0.70.0",
@@ -100,5 +102,14 @@ describe("PersonalLens view model", () => {
       "cancelled",
       "failed",
     ].every((stage) => !showsLensProgress(stage as LensStage))).toBe(true);
+  });
+
+  it("accepts only a strictly newer finite application snapshot", () => {
+    expect(shouldApplySnapshot(-1, 0)).toBe(true);
+    expect(shouldApplySnapshot(7, 8)).toBe(true);
+    expect(shouldApplySnapshot(7, 7)).toBe(false);
+    expect(shouldApplySnapshot(7, 6)).toBe(false);
+    expect(shouldApplySnapshot(7, Number.NaN)).toBe(false);
+    expect(shouldApplySnapshot(7, 7.5)).toBe(false);
   });
 });

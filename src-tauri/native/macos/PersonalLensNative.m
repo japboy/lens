@@ -265,25 +265,36 @@ static NSDictionary *PLFrameDictionary(CGRect frame) {
 static NSArray *PLAXElementsForArrayAttribute(
     AXUIElementRef element,
     CFStringRef attribute,
+    NSUInteger maxValues,
+    NSUInteger *reportedCount,
+    BOOL *truncated,
     NSUInteger *readErrorCount
 ) {
     CFIndex count = 0;
     AXError countError = AXUIElementGetAttributeValueCount(element, attribute, &count);
     if (countError == kAXErrorAttributeUnsupported || countError == kAXErrorNoValue) {
+        if (reportedCount != NULL) *reportedCount = 0;
+        if (truncated != NULL) *truncated = NO;
         return @[];
     }
     if (countError != kAXErrorSuccess) {
+        if (reportedCount != NULL) *reportedCount = 0;
+        if (truncated != NULL) *truncated = NO;
         if (readErrorCount != NULL) {
             (*readErrorCount)++;
         }
         return @[];
     }
 
-    NSMutableArray *result = [NSMutableArray arrayWithCapacity:(NSUInteger)MAX(count, 0)];
+    NSUInteger availableCount = count > 0 ? (NSUInteger)count : 0;
+    if (reportedCount != NULL) *reportedCount = availableCount;
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:MIN(availableCount, maxValues)];
     const CFIndex batchSize = 256;
-    for (CFIndex offset = 0; offset < count; offset += batchSize) {
+    for (CFIndex offset = 0; offset < count && result.count < maxValues;) {
         CFArrayRef batch = NULL;
+        NSUInteger remainingBudget = maxValues - result.count;
         CFIndex requested = MIN(batchSize, count - offset);
+        requested = MIN(requested, (CFIndex)remainingBudget);
         AXError batchError = AXUIElementCopyAttributeValues(
             element,
             attribute,
@@ -300,8 +311,14 @@ static NSArray *PLAXElementsForArrayAttribute(
             }
             break;
         }
-        [result addObjectsFromArray:CFBridgingRelease(batch)];
+        NSArray *values = CFBridgingRelease(batch);
+        if (values.count == 0) {
+            break;
+        }
+        [result addObjectsFromArray:values];
+        offset += (CFIndex)values.count;
     }
+    if (truncated != NULL) *truncated = result.count < availableCount;
     return result;
 }
 
@@ -797,25 +814,59 @@ char *pl_extract_window_json(
                 offscreenTextNodes++;
             }
 
+            NSUInteger pendingNodes = queue.count - cursor;
+            NSUInteger remainingNodeBudget = 0;
+            if (nodes.count < maxNodes && pendingNodes < maxNodes - nodes.count) {
+                remainingNodeBudget = maxNodes - nodes.count - pendingNodes;
+            }
+            BOOL childrenTruncated = NO;
             NSArray *children = PLAXElementsForArrayAttribute(
                 element,
                 kAXChildrenAttribute,
+                remainingNodeBudget,
+                NULL,
+                &childrenTruncated,
                 &childrenReadErrors
             );
+            if (childrenTruncated) {
+                truncatedNodes = YES;
+            }
             NSNumber *rowCount = PLAXNumber(element, kAXRowCountAttribute);
             if (rowCount != nil) {
-                NSArray *rows = PLAXElementsForArrayAttribute(element, kAXRowsAttribute, &childrenReadErrors);
-                if (rowCount.unsignedIntegerValue > rows.count) {
+                NSUInteger reportedRows = 0;
+                BOOL rowsTruncated = NO;
+                NSArray *rows = PLAXElementsForArrayAttribute(
+                    element,
+                    kAXRowsAttribute,
+                    children.count == 0 ? remainingNodeBudget : 0,
+                    &reportedRows,
+                    &rowsTruncated,
+                    &childrenReadErrors
+                );
+                if (rowCount.unsignedIntegerValue > reportedRows) {
                     virtualizationSignals++;
                 }
-                if (children.count == 0 && rows.count > 0) {
-                    children = rows;
+                if (children.count == 0) {
+                    if (rowsTruncated) {
+                        truncatedNodes = YES;
+                    }
+                    if (rows.count > 0) {
+                        children = rows;
+                    }
                 }
             }
 
             for (id child in children) {
                 CFTypeRef childType = (__bridge CFTypeRef)child;
                 if (CFGetTypeID(childType) == AXUIElementGetTypeID()) {
+                    NSUInteger scheduledNodes = queue.count - cursor;
+                    NSUInteger availableSlots = nodes.count < maxNodes
+                        ? maxNodes - nodes.count
+                        : 0;
+                    if (scheduledNodes >= availableSlots) {
+                        truncatedNodes = YES;
+                        break;
+                    }
                     [queue addObject:@{ @"element": child, @"depth": @(depth + 1) }];
                 }
             }

@@ -59,8 +59,7 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let preferred_agent = handle
                     .state::<app_state::AppState>()
-                    .config
-                    .read()
+                    .config()
                     .map(|config| config.agent)
                     .unwrap_or(model::AgentKind::Claude);
                 tauri::async_runtime::spawn(async move {
@@ -75,13 +74,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_config,
-            commands::get_agent_selection,
+            commands::get_app_snapshot,
             commands::set_agent,
             commands::set_working_directory,
             commands::accessibility_permission,
             commands::request_accessibility_permission,
-            commands::get_lens_state,
             commands::select_lens_target,
             commands::transform_lens,
             commands::authenticate_agent,
@@ -101,12 +98,14 @@ pub fn run() {
                 let cancel_after = validation_cancel_after;
                 tauri::async_runtime::spawn(async move {
                     if let Some(agent) = agent {
-                        if let Ok(mut config) = handle
+                        if let Ok(mut snapshot) = handle
                             .state::<app_state::AppState>()
-                            .config
+                            .runtime
                             .write()
                         {
-                            config.agent = agent;
+                            if app_state::advance_revision(&mut snapshot).is_ok() {
+                                snapshot.config.agent = agent;
+                            }
                         }
                     }
                     let extraction_result = match target {
@@ -115,14 +114,31 @@ pub fn run() {
                     };
                     let result = match extraction_result {
                         Ok(state) if validate_acp && state.stage == model::LensStage::Ready => {
+                            let operation_id = state
+                                .operation_id
+                                .expect("ready validation operation must have an identity");
                             if let Some(delay) = cancel_after {
                                 let cancellation_handle = handle.clone();
                                 tauri::async_runtime::spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                                    let _ = agent::cancel_current(&cancellation_handle);
+                                    let run_id = cancellation_handle
+                                        .state::<app_state::AppState>()
+                                        .lens()
+                                        .ok()
+                                        .filter(|lens| lens.operation_id == Some(operation_id))
+                                        .and_then(|lens| lens.agent.map(|run| run.run_id));
+                                    if let Some(run_id) = run_id {
+                                        let _ = agent::cancel_current(
+                                            &cancellation_handle,
+                                            app_state::AgentRunKey {
+                                                operation_id,
+                                                run_id,
+                                            },
+                                        );
+                                    }
                                 });
                             }
-                            agent::transform_current(handle.clone()).await
+                            agent::transform_current(handle.clone(), operation_id).await
                         }
                         other => other,
                     };

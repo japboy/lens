@@ -1,5 +1,9 @@
 use crate::{
-    app_state::{publish_agent_selection, update_agent_selection, update_lens_state, AppState},
+    app_state::{
+        begin_agent_run, emit_app_snapshot, next_revision, publish_agent_selection,
+        update_agent_selection, update_lens_state, update_lens_state_for_run, AgentRunKey,
+        AppState,
+    },
     model::{
         AgentAuthMethod, AgentAuthMethodKind, AgentKind, AgentRunState, AgentSelectionStage,
         AgentSelectionState, AppConfig, LensInput, LensStage, LensState,
@@ -11,7 +15,8 @@ use agent_client_protocol::{
             AuthCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest,
             CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, Implementation,
             InitializeRequest, LogoutRequest, RequestPermissionOutcome, RequestPermissionRequest,
-            RequestPermissionResponse, SessionNotification, SessionUpdate, StopReason,
+            RequestPermissionResponse, SessionModeId, SessionModeState, SessionNotification,
+            SessionUpdate, SetSessionModeRequest, StopReason,
         },
         ProtocolVersion,
     },
@@ -27,7 +32,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -44,6 +49,7 @@ struct AgentDescriptor {
     kind: AgentKind,
     adapter_name: &'static str,
     adapter_version: &'static str,
+    safe_mode_id: &'static str,
     command: PathBuf,
     args: Vec<String>,
 }
@@ -72,10 +78,11 @@ impl AgentDescriptor {
         let command = resource_dir
             .join("sidecars/runtime")
             .join(NODE_RUNTIME_NAME);
-        let (adapter_name, adapter_version, script) = match kind {
+        let (adapter_name, adapter_version, safe_mode_id, script) = match kind {
             AgentKind::Claude => (
                 CLAUDE_ADAPTER_NAME,
                 CLAUDE_ADAPTER_VERSION,
+                "plan",
                 resource_dir.join(
                     "sidecars/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
                 ),
@@ -83,6 +90,7 @@ impl AgentDescriptor {
             AgentKind::Codex => (
                 CODEX_ADAPTER_NAME,
                 CODEX_ADAPTER_VERSION,
+                "read-only",
                 resource_dir
                     .join("sidecars/node_modules/@agentclientprotocol/codex-acp/dist/index.js"),
             ),
@@ -94,6 +102,7 @@ impl AgentDescriptor {
             kind,
             adapter_name,
             adapter_version,
+            safe_mode_id,
             command,
             args: vec![script.to_string_lossy().into_owned()],
         })
@@ -103,12 +112,14 @@ impl AgentDescriptor {
         AcpAgent::new(AcpAgentConfig::new(self.command.clone()).args(self.args.iter().cloned()))
     }
 
-    fn run_state(&self) -> AgentRunState {
+    fn run_state(&self, run_id: Uuid) -> AgentRunState {
         AgentRunState {
+            run_id,
             kind: self.kind,
             adapter_name: self.adapter_name.into(),
             adapter_version: self.adapter_version.into(),
             session_id: None,
+            session_mode_id: None,
             auth_methods: Vec::new(),
             received_updates: 0,
             stop_reason: None,
@@ -168,13 +179,7 @@ pub async fn select_agent(
             return current_agent_selection(&app);
         }
     };
-    let working_directory = app
-        .state::<AppState>()
-        .config
-        .read()
-        .map_err(|_| "config state lock is poisoned".to_string())?
-        .working_directory
-        .clone();
+    let working_directory = app.state::<AppState>().config()?.working_directory;
 
     match probe_agent_authentication(app.clone(), operation_id, descriptor, working_directory).await
     {
@@ -487,55 +492,49 @@ fn complete_agent_selection(
     candidate: AgentKind,
 ) -> Result<bool, String> {
     let state = app.state::<AppState>();
-    let (selection, config) = {
-        let mut selection = state
-            .agent_selection
+    let (snapshot, persistence_error) = {
+        let mut snapshot = state
+            .runtime
             .write()
-            .map_err(|_| "agent selection state lock is poisoned".to_string())?;
-        if selection.operation_id != Some(operation_id) || selection.candidate != Some(candidate) {
+            .map_err(|_| "application state lock is poisoned".to_string())?;
+        if snapshot.agent_selection.operation_id != Some(operation_id)
+            || snapshot.agent_selection.candidate != Some(candidate)
+        {
             return Ok(false);
         }
-        let mut config = state
-            .config
-            .write()
-            .map_err(|_| "config state lock is poisoned".to_string())?;
-        let previous_agent = config.agent;
-        config.agent = candidate;
-        if let Err(error) = state.store.save(&config) {
-            config.agent = previous_agent;
-            selection.stage = AgentSelectionStage::Failed;
-            selection.message = None;
-            selection.error = Some(format!("unable to persist Agent selection: {error}"));
-            let failed = selection.clone();
-            drop(config);
-            drop(selection);
-            crate::ui::sync_tray_menu(app)?;
-            app.emit("agent-selection-changed", failed)
-                .map_err(|emit_error| emit_error.to_string())?;
-            return Err(format!("unable to persist Agent selection: {error}"));
+        let mut next_config = snapshot.config.clone();
+        next_config.agent = candidate;
+        let revision = next_revision(&snapshot)?;
+        let persistence_error = state
+            .store
+            .save(&next_config)
+            .err()
+            .map(|error| format!("unable to persist Agent selection: {error}"));
+        if let Some(error) = persistence_error.as_ref() {
+            snapshot.agent_selection.stage = AgentSelectionStage::Failed;
+            snapshot.agent_selection.message = None;
+            snapshot.agent_selection.error = Some(error.clone());
+        } else {
+            snapshot.config = next_config;
+            snapshot.agent_selection.stage = AgentSelectionStage::Selected;
+            snapshot.agent_selection.message = Some(format!(
+                "{} is authenticated and selected.",
+                agent_display_name(candidate)
+            ));
+            snapshot.agent_selection.error = None;
         }
-        selection.stage = AgentSelectionStage::Selected;
-        selection.message = Some(format!(
-            "{} is authenticated and selected.",
-            agent_display_name(candidate)
-        ));
-        selection.error = None;
-        (selection.clone(), config.clone())
+        snapshot.revision = revision;
+        (snapshot.clone(), persistence_error)
     };
-    crate::ui::sync_tray_menu(app)?;
-    app.emit("config-changed", config)
-        .map_err(|error| error.to_string())?;
-    app.emit("agent-selection-changed", selection)
-        .map_err(|error| error.to_string())?;
+    emit_app_snapshot(app, snapshot, true)?;
+    if let Some(error) = persistence_error {
+        return Err(error);
+    }
     Ok(true)
 }
 
 fn current_agent_selection(app: &AppHandle) -> Result<AgentSelectionState, String> {
-    app.state::<AppState>()
-        .agent_selection
-        .read()
-        .map(|selection| selection.clone())
-        .map_err(|_| "agent selection state lock is poisoned".to_string())
+    app.state::<AppState>().agent_selection()
 }
 
 fn confirm_agent_selection_after_session(app: &AppHandle, agent: AgentKind) -> Result<(), String> {
@@ -585,8 +584,11 @@ fn agent_display_name(agent: AgentKind) -> &'static str {
     }
 }
 
-pub async fn transform_current(app: AppHandle) -> Result<LensState, String> {
-    let (operation_id, input, config) = current_transform_input(&app)?;
+pub async fn transform_current(
+    app: AppHandle,
+    expected_operation_id: Uuid,
+) -> Result<LensState, String> {
+    let (operation_id, input, config) = current_transform_input(&app, expected_operation_id)?;
     let agent_kind = config.agent;
     let descriptor = match AgentDescriptor::resolve(&app, config.agent) {
         Ok(descriptor) => descriptor,
@@ -599,34 +601,37 @@ pub async fn transform_current(app: AppHandle) -> Result<LensState, String> {
             return current_lens(&app);
         }
     };
-    let mut cancellation = app.state::<AppState>().agent_control.begin(operation_id)?;
-
-    update_lens_state(&app, operation_id, |lens| {
+    let mut run = begin_agent_run(&app, operation_id, |run_id, lens| {
         lens.stage = LensStage::Connecting;
         lens.transformed_text = None;
-        lens.agent = Some(descriptor.run_state());
+        lens.agent = Some(descriptor.run_state(run_id));
         lens.error = None;
     })?;
 
     let result = run_transform(
         app.clone(),
-        operation_id,
+        run.key,
         descriptor,
         input,
         config,
-        &mut cancellation,
+        &mut run.cancellation,
     )
     .await;
 
-    app.state::<AppState>().agent_control.finish(operation_id)?;
+    let cancelled_by_client = *run.cancellation.borrow();
+    app.state::<AppState>().agent_control.finish(run.key)?;
 
     if let Err(error) = result {
-        let stage = match error.code {
-            ErrorCode::AuthRequired => LensStage::AuthenticationRequired,
-            ErrorCode::RequestCancelled => LensStage::Cancelled,
-            _ => LensStage::Failed,
+        let stage = if cancelled_by_client {
+            LensStage::Cancelled
+        } else {
+            match error.code {
+                ErrorCode::AuthRequired => LensStage::AuthenticationRequired,
+                ErrorCode::RequestCancelled => LensStage::Cancelled,
+                _ => LensStage::Failed,
+            }
         };
-        update_lens_state(&app, operation_id, |lens| {
+        let applied = update_lens_state_for_run(&app, run.key, |lens| {
             lens.stage = stage;
             lens.error = match stage {
                 LensStage::AuthenticationRequired | LensStage::Cancelled => None,
@@ -641,7 +646,7 @@ pub async fn transform_current(app: AppHandle) -> Result<LensState, String> {
                 }
             }
         })?;
-        if stage == LensStage::AuthenticationRequired {
+        if applied && stage == LensStage::AuthenticationRequired {
             mark_selected_agent_authentication_required(&app, agent_kind)?;
         }
     }
@@ -649,20 +654,22 @@ pub async fn transform_current(app: AppHandle) -> Result<LensState, String> {
     current_lens(&app)
 }
 
-pub async fn authenticate_current(app: AppHandle, method_id: String) -> Result<LensState, String> {
+pub async fn authenticate_current(
+    app: AppHandle,
+    expected_operation_id: Uuid,
+    method_id: String,
+) -> Result<LensState, String> {
     let snapshot = current_lens(&app)?;
     let operation_id = snapshot
         .operation_id
         .ok_or_else(|| "there is no active Lens operation".to_string())?;
+    if operation_id != expected_operation_id {
+        return Err("Lens operation was superseded before authentication started".into());
+    }
     if snapshot.stage != LensStage::AuthenticationRequired {
         return Err("the current Lens operation is not awaiting authentication".into());
     }
-    let config = app
-        .state::<AppState>()
-        .config
-        .read()
-        .map_err(|_| "config state lock is poisoned".to_string())?
-        .clone();
+    let config = app.state::<AppState>().config()?;
     let descriptor = match AgentDescriptor::resolve(&app, config.agent) {
         Ok(descriptor) => descriptor,
         Err(error) => {
@@ -674,24 +681,28 @@ pub async fn authenticate_current(app: AppHandle, method_id: String) -> Result<L
         }
     };
     let agent_kind = descriptor.kind;
-    let mut cancellation = app.state::<AppState>().agent_control.begin(operation_id)?;
-
-    update_lens_state(&app, operation_id, |lens| {
+    let mut run = begin_agent_run(&app, operation_id, |run_id, lens| {
         lens.stage = LensStage::Connecting;
+        if let Some(agent) = lens.agent.as_mut() {
+            agent.run_id = run_id;
+        }
         lens.error = None;
     })?;
 
-    let result = run_authentication(app.clone(), descriptor, method_id, &mut cancellation).await;
-    app.state::<AppState>().agent_control.finish(operation_id)?;
+    let result =
+        run_authentication(app.clone(), descriptor, method_id, &mut run.cancellation).await;
+    app.state::<AppState>().agent_control.finish(run.key)?;
 
     match result {
         Ok(AuthenticationAction::Completed) => {
-            update_lens_state(&app, operation_id, complete_agent_authentication)?;
+            if !update_lens_state_for_run(&app, run.key, complete_agent_authentication)? {
+                return current_lens(&app);
+            }
             let selection = select_agent(app.clone(), agent_kind).await?;
             if selection.selected_agent() == Some(agent_kind) {
-                transform_current(app).await
+                transform_current(app, operation_id).await
             } else {
-                update_lens_state(&app, operation_id, |lens| {
+                update_lens_state_for_run(&app, run.key, |lens| {
                     lens.stage = LensStage::AuthenticationRequired;
                     if let Some(agent) = lens.agent.as_mut() {
                         agent.authentication_message = selection.message.clone();
@@ -702,7 +713,7 @@ pub async fn authenticate_current(app: AppHandle, method_id: String) -> Result<L
             }
         }
         Ok(AuthenticationAction::TerminalLaunched) => {
-            update_lens_state(&app, operation_id, |lens| {
+            update_lens_state_for_run(&app, run.key, |lens| {
                 lens.stage = LensStage::AuthenticationRequired;
                 lens.error = None;
                 if let Some(agent) = lens.agent.as_mut() {
@@ -720,7 +731,7 @@ pub async fn authenticate_current(app: AppHandle, method_id: String) -> Result<L
             } else {
                 LensStage::AuthenticationRequired
             };
-            update_lens_state(&app, operation_id, |lens| {
+            update_lens_state_for_run(&app, run.key, |lens| {
                 lens.stage = stage;
                 lens.error = if stage == LensStage::Cancelled {
                     None
@@ -733,53 +744,51 @@ pub async fn authenticate_current(app: AppHandle, method_id: String) -> Result<L
     }
 }
 
-pub fn cancel_current(app: &AppHandle) -> Result<LensState, String> {
-    let operation_id = app
-        .state::<AppState>()
-        .agent_control
-        .cancel()?
-        .ok_or_else(|| "there is no active Agent operation".to_string())?;
-    update_lens_state(app, operation_id, |lens| {
+pub fn cancel_current(app: &AppHandle, key: AgentRunKey) -> Result<LensState, String> {
+    if !app.state::<AppState>().agent_control.cancel(key)? {
+        return Err("Agent run was superseded before cancellation".into());
+    }
+    if !update_lens_state_for_run(app, key, |lens| {
         lens.stage = LensStage::Cancelled;
         lens.error = None;
-    })?;
+    })? {
+        return Err("Agent run was superseded before cancellation".into());
+    }
     current_lens(app)
 }
 
-fn current_transform_input(app: &AppHandle) -> Result<(Uuid, LensInput, AppConfig), String> {
-    let snapshot = current_lens(app)?;
+fn current_transform_input(
+    app: &AppHandle,
+    expected_operation_id: Uuid,
+) -> Result<(Uuid, LensInput, AppConfig), String> {
+    let snapshot = app.state::<AppState>().snapshot()?;
     let operation_id = snapshot
+        .lens
         .operation_id
         .ok_or_else(|| "there is no active Lens operation".to_string())?;
+    if operation_id != expected_operation_id {
+        return Err("Lens operation was superseded before transformation started".into());
+    }
     if !matches!(
-        snapshot.stage,
+        snapshot.lens.stage,
         LensStage::Ready | LensStage::AuthenticationRequired | LensStage::Failed
     ) {
         return Err("the current Lens operation is not ready for transformation".into());
     }
     let input = snapshot
+        .lens
         .input
         .ok_or_else(|| "the current Lens operation has no usable LensInput".to_string())?;
-    let config = app
-        .state::<AppState>()
-        .config
-        .read()
-        .map_err(|_| "config state lock is poisoned".to_string())?
-        .clone();
-    Ok((operation_id, input, config))
+    Ok((operation_id, input, snapshot.config))
 }
 
 fn current_lens(app: &AppHandle) -> Result<LensState, String> {
-    app.state::<AppState>()
-        .lens
-        .read()
-        .map(|lens| lens.clone())
-        .map_err(|_| "lens state lock is poisoned".to_string())
+    app.state::<AppState>().lens()
 }
 
 async fn run_transform(
     app: AppHandle,
-    operation_id: Uuid,
+    key: AgentRunKey,
     descriptor: AgentDescriptor,
     input: LensInput,
     config: AppConfig,
@@ -807,7 +816,7 @@ async fn run_transform(
                 .iter()
                 .map(auth_method_model)
                 .collect::<Vec<_>>();
-            update_lens_state(&app, operation_id, |lens| {
+            if !update_lens_state_for_run(&app, key, |lens| {
                 if let Some(agent) = lens.agent.as_mut() {
                     agent.auth_methods = auth_methods;
                     if let Some(info) = initialize.agent_info.as_ref() {
@@ -816,7 +825,9 @@ async fn run_transform(
                     }
                 }
             })
-            .map_err(state_error)?;
+            .map_err(state_error)? {
+                return Err(Error::request_cancelled());
+            }
 
             if *cancellation.borrow() {
                 return Err(Error::request_cancelled());
@@ -827,17 +838,34 @@ async fn run_transform(
                 .block_task()
                 .start_session()
                 .await?;
-            confirm_agent_selection_after_session(&app, config.agent).map_err(state_error)?;
             let session_id = session.session_id().clone();
+            let safe_mode_id = required_safe_mode(
+                descriptor.adapter_name,
+                descriptor.safe_mode_id,
+                session.modes(),
+            )?;
+            connection
+                .send_request(SetSessionModeRequest::new(
+                    session_id.clone(),
+                    safe_mode_id.clone(),
+                ))
+                .block_task()
+                .await?;
+            confirm_agent_selection_after_session(&app, config.agent).map_err(state_error)?;
             let session_id_text = session_id.to_string();
-            update_lens_state(&app, operation_id, |lens| {
+            let safe_mode_id_text = safe_mode_id.to_string();
+            if !update_lens_state_for_run(&app, key, |lens| {
                 lens.stage = LensStage::Transforming;
                 lens.transformed_text = Some(String::new());
                 if let Some(agent) = lens.agent.as_mut() {
                     agent.session_id = Some(session_id_text);
+                    agent.session_mode_id = Some(safe_mode_id_text);
                 }
             })
-            .map_err(state_error)?;
+            .map_err(state_error)? {
+                connection.send_notification(CancelNotification::new(session_id))?;
+                return Err(Error::request_cancelled());
+            }
 
             if *cancellation.borrow() {
                 connection.send_notification(CancelNotification::new(session_id))?;
@@ -859,20 +887,31 @@ async fn run_transform(
                     message = session.read_update() => {
                         match message? {
                             SessionMessage::SessionMessage(dispatch) => {
-                                let text = agent_text(dispatch).await?;
-                                update_lens_state(&app, operation_id, |lens| {
+                                let text = match agent_text(dispatch, descriptor.safe_mode_id).await {
+                                    Ok(text) => text,
+                                    Err(error) => {
+                                        session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
+                                        return Err(error);
+                                    }
+                                };
+                                if !update_lens_state_for_run(&app, key, |lens| {
                                     if let Some(agent) = lens.agent.as_mut() {
                                         agent.received_updates += 1;
                                     }
                                     if let Some(text) = text {
                                         lens.transformed_text.get_or_insert_with(String::new).push_str(&text);
                                     }
-                                }).map_err(state_error)?;
+                                }).map_err(state_error)? {
+                                    session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
+                                    return Err(Error::request_cancelled());
+                                }
                             }
                             SessionMessage::StopReason(stop_reason) => {
                                 let stop_reason_text = stop_reason_text(stop_reason);
-                                let cancelled = stop_reason == StopReason::Cancelled || cancellation_sent;
-                                update_lens_state(&app, operation_id, |lens| {
+                                let cancelled = stop_reason == StopReason::Cancelled
+                                    || cancellation_sent
+                                    || *cancellation.borrow();
+                                update_lens_state_for_run(&app, key, |lens| {
                                     let has_output = lens.transformed_text.as_ref().is_some_and(|text| !text.trim().is_empty());
                                     lens.stage = if cancelled {
                                         LensStage::Cancelled
@@ -985,16 +1024,45 @@ fn auth_method_model(method: &AuthMethod) -> AgentAuthMethod {
     }
 }
 
-async fn agent_text(dispatch: Dispatch) -> Result<Option<String>, Error> {
+fn required_safe_mode(
+    adapter_name: &str,
+    safe_mode_id: &str,
+    modes: Option<&SessionModeState>,
+) -> Result<SessionModeId, Error> {
+    let modes = modes.ok_or_else(|| {
+        Error::invalid_params().data(format!(
+            "{adapter_name} did not advertise ACP session modes; refusing to send a prompt"
+        ))
+    })?;
+    modes
+        .available_modes
+        .iter()
+        .find(|mode| mode.id.to_string() == safe_mode_id)
+        .map(|mode| mode.id.clone())
+        .ok_or_else(|| {
+            Error::invalid_params().data(format!(
+                "{adapter_name} did not advertise required safe mode {safe_mode_id}; refusing to send a prompt"
+            ))
+        })
+}
+
+async fn agent_text(dispatch: Dispatch, safe_mode_id: &str) -> Result<Option<String>, Error> {
     let mut text = None;
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
-            if let SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(content),
-                ..
-            }) = notification.update
-            {
-                text = Some(content.text);
+            match notification.update {
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(content),
+                    ..
+                }) => text = Some(content.text),
+                SessionUpdate::CurrentModeUpdate(update)
+                    if update.current_mode_id.to_string() != safe_mode_id =>
+                {
+                    return Err(Error::invalid_params().data(format!(
+                        "ACP session left required safe mode {safe_mode_id}; refusing to continue"
+                    )));
+                }
+                _ => {}
             }
             Ok(())
         })
@@ -1121,6 +1189,7 @@ fn extraction_quality_text(quality: crate::model::ExtractionQuality) -> &'static
 mod tests {
     use super::*;
     use crate::model::{ExtractionQuality, LensSource};
+    use agent_client_protocol::schema::v1::SessionMode;
 
     #[test]
     fn prompt_preserves_agent_native_personalization_boundary() {
@@ -1161,5 +1230,25 @@ mod tests {
 
         assert_eq!(lens.stage, LensStage::Ready);
         assert_eq!(lens.error, None);
+    }
+
+    #[test]
+    fn required_safe_mode_is_selected_only_when_explicitly_advertised() {
+        let modes = SessionModeState::new(
+            "agent",
+            vec![
+                SessionMode::new("agent", "Agent"),
+                SessionMode::new("read-only", "Read-only"),
+            ],
+        );
+
+        assert_eq!(
+            required_safe_mode(CODEX_ADAPTER_NAME, "read-only", Some(&modes))
+                .expect("advertised safe mode")
+                .to_string(),
+            "read-only"
+        );
+        assert!(required_safe_mode(CODEX_ADAPTER_NAME, "plan", Some(&modes)).is_err());
+        assert!(required_safe_mode(CODEX_ADAPTER_NAME, "read-only", None).is_err());
     }
 }

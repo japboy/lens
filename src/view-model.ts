@@ -42,6 +42,10 @@ export function supportedAuthMethods(lens: LensState): AgentAuthMethod[] {
   return lens.agent?.auth_methods.filter((method) => method.supported) ?? [];
 }
 
+export function shouldApplySnapshot(currentRevision: number, nextRevision: number): boolean {
+  return Number.isSafeInteger(nextRevision) && nextRevision >= 0 && nextRevision > currentRevision;
+}
+
 export function showsLensProgress(stage: LensStage): boolean {
   switch (stage) {
     case "selecting":

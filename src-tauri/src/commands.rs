@@ -1,33 +1,24 @@
 use crate::{
     agent,
-    app_state::{publish_lens_state, update_lens_state, AppState},
+    app_state::{
+        emit_app_snapshot, next_revision, publish_lens_state, update_lens_state, AgentRunKey,
+        AppState,
+    },
     model::{
-        AgentKind, AgentSelectionState, AppConfig, LensInput, LensStage, LensState, SelectedWindow,
+        AgentKind, AgentSelectionState, AppConfig, AppSnapshot, LensInput, LensStage, LensState,
+        SelectedWindow,
     },
     platform, ui,
 };
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
 
 #[tauri::command]
-pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    state
-        .config
-        .read()
-        .map(|config| config.clone())
-        .map_err(|_| "config state lock is poisoned".to_string())
-}
-
-#[tauri::command]
-pub fn get_agent_selection(state: State<'_, AppState>) -> Result<AgentSelectionState, String> {
-    state
-        .agent_selection
-        .read()
-        .map(|selection| selection.clone())
-        .map_err(|_| "agent selection state lock is poisoned".to_string())
+pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    state.snapshot()
 }
 
 pub async fn select_agent(
@@ -52,22 +43,22 @@ pub fn update_working_directory(app: &AppHandle, directory: PathBuf) -> Result<A
         return Err("working directory must be an existing absolute directory".into());
     }
     let state = app.state::<AppState>();
-    let next = {
-        let mut config = state
-            .config
+    let snapshot = {
+        let mut snapshot = state
+            .runtime
             .write()
-            .map_err(|_| "config state lock is poisoned".to_string())?;
-        config.working_directory = directory;
-        state
-            .store
-            .save(&config)
-            .map_err(|error| error.to_string())?;
-        config.clone()
+            .map_err(|_| "application state lock is poisoned".to_string())?;
+        let mut next = snapshot.config.clone();
+        next.working_directory = directory;
+        let revision = next_revision(&snapshot)?;
+        state.store.save(&next).map_err(|error| error.to_string())?;
+        snapshot.config = next;
+        snapshot.revision = revision;
+        snapshot.clone()
     };
-    ui::sync_tray_menu(app)?;
-    app.emit("config-changed", next.clone())
-        .map_err(|error| error.to_string())?;
-    Ok(next)
+    let config = snapshot.config.clone();
+    emit_app_snapshot(app, snapshot, true)?;
+    Ok(config)
 }
 
 #[tauri::command]
@@ -80,18 +71,10 @@ pub fn request_accessibility_permission() -> bool {
     platform::request_accessibility_trust()
 }
 
-#[tauri::command]
-pub fn get_lens_state(state: State<'_, AppState>) -> Result<LensState, String> {
-    state
-        .lens
-        .read()
-        .map(|lens| lens.clone())
-        .map_err(|_| "lens state lock is poisoned".to_string())
-}
-
 pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
     let state = app.state::<AppState>();
-    let _ = state.agent_control.cancel()?;
+    let picker_lease = state.picker_control.try_begin()?;
+    let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
     publish_lens_state(
         &app,
@@ -143,13 +126,14 @@ pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
     if !replace_operation_state(&app, operation_id, extracting)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
+    drop(picker_lease);
 
     extract_target_for_operation(app, operation_id, target).await
 }
 
 pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<LensState, String> {
     let state = app.state::<AppState>();
-    let _ = state.agent_control.cancel()?;
+    let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
     publish_lens_state(
         &app,
@@ -235,31 +219,36 @@ async fn extract_target_for_operation(
 
 #[tauri::command]
 pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
-    let agent_selection = app
-        .state::<AppState>()
-        .agent_selection
-        .read()
-        .map_err(|_| "agent selection state lock is poisoned".to_string())?
-        .clone();
+    let agent_selection = app.state::<AppState>().agent_selection()?;
     if !agent_selection.can_select_lens_target() {
         return Err("select and authenticate an AI Agent before selecting a Lens Target".into());
     }
     let ready = select_and_extract(app.clone()).await?;
     if ready.stage == LensStage::Ready {
-        agent::transform_current(app).await
+        agent::transform_current(
+            app,
+            ready
+                .operation_id
+                .ok_or_else(|| "ready Lens operation has no identity".to_string())?,
+        )
+        .await
     } else {
         Ok(ready)
     }
 }
 
 #[tauri::command]
-pub async fn transform_lens(app: AppHandle) -> Result<LensState, String> {
-    agent::transform_current(app).await
+pub async fn transform_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+    agent::transform_current(app, operation_id).await
 }
 
 #[tauri::command]
-pub async fn authenticate_agent(app: AppHandle, method_id: String) -> Result<LensState, String> {
-    agent::authenticate_current(app, method_id).await
+pub async fn authenticate_agent(
+    app: AppHandle,
+    operation_id: Uuid,
+    method_id: String,
+) -> Result<LensState, String> {
+    agent::authenticate_current(app, operation_id, method_id).await
 }
 
 #[tauri::command]
@@ -281,8 +270,14 @@ pub async fn sign_out_agent_selection(app: AppHandle) -> Result<AgentSelectionSt
 }
 
 #[tauri::command]
-pub fn cancel_agent(app: AppHandle) -> Result<LensState, String> {
-    agent::cancel_current(&app)
+pub fn cancel_agent(app: AppHandle, operation_id: Uuid, run_id: Uuid) -> Result<LensState, String> {
+    agent::cancel_current(
+        &app,
+        AgentRunKey {
+            operation_id,
+            run_id,
+        },
+    )
 }
 
 #[tauri::command]

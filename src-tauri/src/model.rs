@@ -231,11 +231,14 @@ impl Default for AgentSelectionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunState {
+    pub run_id: Uuid,
     pub kind: AgentKind,
     pub adapter_name: String,
     pub adapter_version: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub session_mode_id: Option<String>,
     #[serde(default)]
     pub auth_methods: Vec<AgentAuthMethod>,
     pub received_updates: usize,
@@ -305,6 +308,25 @@ impl Default for LensState {
             transformed_text: None,
             agent: None,
             error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppSnapshot {
+    pub revision: u32,
+    pub config: AppConfig,
+    pub agent_selection: AgentSelectionState,
+    pub lens: LensState,
+}
+
+impl AppSnapshot {
+    pub fn new(config: AppConfig) -> Self {
+        Self {
+            revision: 0,
+            config,
+            agent_selection: AgentSelectionState::default(),
+            lens: LensState::default(),
         }
     }
 }

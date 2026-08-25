@@ -1,6 +1,8 @@
 use crate::{
     commands,
-    model::{AgentKind, AgentSelectionState, AppConfig, Bounds, SelectedWindow},
+    model::{
+        AgentKind, AgentSelectionState, AppConfig, Bounds, LensStage, LensState, SelectedWindow,
+    },
     platform,
 };
 use tauri::{
@@ -77,6 +79,7 @@ impl OverlayGeometry {
 #[derive(Debug, PartialEq, Eq)]
 struct TrayMenuPresentation {
     select_target_enabled: bool,
+    target_selection_active: bool,
     agent_selection_enabled: bool,
     claude_checked: bool,
     codex_checked: bool,
@@ -84,10 +87,13 @@ struct TrayMenuPresentation {
 }
 
 impl TrayMenuPresentation {
-    fn derive(agent_selection: &AgentSelectionState, config: &AppConfig) -> Self {
+    fn derive(agent_selection: &AgentSelectionState, config: &AppConfig, lens: &LensState) -> Self {
         let selected = agent_selection.selected_agent();
+        let target_selection_active = lens.stage == LensStage::Selecting;
         Self {
-            select_target_enabled: agent_selection.can_select_lens_target(),
+            select_target_enabled: agent_selection.can_select_lens_target()
+                && !target_selection_active,
+            target_selection_active,
             agent_selection_enabled: agent_selection.stage
                 != crate::model::AgentSelectionStage::SigningOut,
             claude_checked: selected == Some(AgentKind::Claude),
@@ -180,17 +186,9 @@ pub fn install_menu_bar(app: &mut App) -> tauri::Result<()> {
 
 pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<crate::app_state::AppState>();
-    let agent_selection = state
-        .agent_selection
-        .read()
-        .map_err(|_| "agent selection state lock is poisoned".to_string())?
-        .clone();
-    let config = state
-        .config
-        .read()
-        .map_err(|_| "config state lock is poisoned".to_string())?
-        .clone();
-    let presentation = TrayMenuPresentation::derive(&agent_selection, &config);
+    let snapshot = state.snapshot()?;
+    let presentation =
+        TrayMenuPresentation::derive(&snapshot.agent_selection, &snapshot.config, &snapshot.lens);
     let items = app.state::<TrayMenuItems>();
     items
         .select_target
@@ -224,7 +222,9 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
         true,
     )
     .map_err(|error| error.to_string())?;
-    let tooltip = if presentation.select_target_enabled {
+    let tooltip = if presentation.target_selection_active {
+        "PersonalLens — Lens Target selection is already active"
+    } else if presentation.select_target_enabled {
         "PersonalLens — left-click to select a Lens Target"
     } else {
         "PersonalLens — select and authenticate an AI Agent to enable target selection"
@@ -236,9 +236,11 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
 fn select_lens_target_from_tray(app: &AppHandle) {
     let enabled = app
         .state::<crate::app_state::AppState>()
-        .agent_selection
-        .read()
-        .map(|selection| selection.can_select_lens_target())
+        .snapshot()
+        .map(|snapshot| {
+            snapshot.agent_selection.can_select_lens_target()
+                && snapshot.lens.stage != LensStage::Selecting
+        })
         .unwrap_or(false);
     if !enabled {
         return;
@@ -275,9 +277,8 @@ fn select_agent_from_menu(app: &AppHandle, agent: AgentKind) {
 fn choose_working_directory(app: &AppHandle) {
     let current = match app
         .state::<crate::app_state::AppState>()
-        .config
-        .read()
-        .map(|config| config.working_directory.clone())
+        .config()
+        .map(|config| config.working_directory)
     {
         Ok(current) => current,
         Err(_) => {
@@ -407,8 +408,7 @@ fn track_parent_window(
         loop {
             let is_current_operation = app
                 .state::<crate::app_state::AppState>()
-                .lens
-                .read()
+                .lens()
                 .map(|lens| lens.operation_id == Some(operation_id))
                 .unwrap_or(false);
             if !is_current_operation {
@@ -541,9 +541,10 @@ mod tests {
         };
 
         assert_eq!(
-            TrayMenuPresentation::derive(&selected, &config),
+            TrayMenuPresentation::derive(&selected, &config, &LensState::default()),
             TrayMenuPresentation {
                 select_target_enabled: true,
+                target_selection_active: false,
                 agent_selection_enabled: true,
                 claude_checked: false,
                 codex_checked: true,
@@ -564,7 +565,8 @@ mod tests {
                 candidate: Some(AgentKind::Codex),
                 ..AgentSelectionState::default()
             };
-            let presentation = TrayMenuPresentation::derive(&unauthenticated, &config);
+            let presentation =
+                TrayMenuPresentation::derive(&unauthenticated, &config, &LensState::default());
             assert!(!presentation.select_target_enabled);
             assert!(!presentation.claude_checked);
             assert!(!presentation.codex_checked);
@@ -573,6 +575,14 @@ mod tests {
                 stage != AgentSelectionStage::SigningOut
             );
         }
+
+        let selecting = LensState {
+            stage: LensStage::Selecting,
+            ..LensState::default()
+        };
+        let presentation = TrayMenuPresentation::derive(&selected, &config, &selecting);
+        assert!(!presentation.select_target_enabled);
+        assert!(presentation.target_selection_active);
     }
 
     #[test]

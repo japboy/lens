@@ -85,10 +85,12 @@ export interface AgentSelectionState {
 }
 
 export interface AgentRunState {
+  run_id: string;
   kind: AgentKind;
   adapter_name: string;
   adapter_version: string;
   session_id?: string;
+  session_mode_id?: string;
   auth_methods: AgentAuthMethod[];
   received_updates: number;
   stop_reason?: string;
@@ -104,4 +106,11 @@ export interface LensState {
   transformed_text?: string;
   agent?: AgentRunState;
   error?: string;
+}
+
+export interface AppSnapshot {
+  revision: number;
+  config: AppConfig;
+  agent_selection: AgentSelectionState;
+  lens: LensState;
 }

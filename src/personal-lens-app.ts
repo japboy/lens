@@ -10,12 +10,19 @@ import componentStyles from "./styles.css?inline";
 import { externalMarkdownUrl } from "./markdown";
 import "./streaming-markdown";
 import type { StreamingMarkdownState } from "./streaming-markdown";
-import type { AgentKind, AgentSelectionState, AppConfig, LensState } from "./types";
+import type {
+  AgentKind,
+  AgentSelectionState,
+  AppConfig,
+  AppSnapshot,
+  LensState,
+} from "./types";
 import {
   AGENT_SELECTION_LABEL,
   lensTranslationText,
   selectedAgent,
   showsLensProgress,
+  shouldApplySnapshot,
   STAGE_LABEL,
   supportedAuthMethods,
 } from "./view-model";
@@ -54,6 +61,8 @@ export class PersonalLensApp extends LitElement {
   declare private activeLensTab: LensTab;
   private unlisten: UnlistenFn[];
   private permissionTimer?: number;
+  private revision: number;
+  private loadGeneration: number;
 
   constructor() {
     super();
@@ -65,17 +74,21 @@ export class PersonalLensApp extends LitElement {
     this.message = "";
     this.activeLensTab = "translation";
     this.unlisten = [];
+    this.revision = -1;
+    this.loadGeneration = 0;
   }
 
   connectedCallback(): void {
     super.connectedCallback();
-    void this.load();
+    const generation = ++this.loadGeneration;
+    void this.load(generation);
     if (this.view === "settings") {
       this.permissionTimer = window.setInterval(() => void this.refreshPermission(), 2_000);
     }
   }
 
   disconnectedCallback(): void {
+    this.loadGeneration += 1;
     for (const unlisten of this.unlisten) unlisten();
     this.unlisten = [];
     if (this.permissionTimer !== undefined) window.clearInterval(this.permissionTimer);
@@ -89,32 +102,36 @@ export class PersonalLensApp extends LitElement {
       : "settings";
   }
 
-  private async load(): Promise<void> {
+  private async load(generation: number): Promise<void> {
     try {
-      this.message = "Loading settings…";
-      this.config = await invoke<AppConfig>("get_config");
-      this.message = "Loading Agent selection…";
-      this.agentSelection = await invoke<AgentSelectionState>("get_agent_selection");
-      this.message = "Loading Lens state…";
-      this.applyLensState(await invoke<LensState>("get_lens_state"));
+      this.message = "Subscribing to application state…";
+      const unlisten = await listen<AppSnapshot>("app-state-changed", ({ payload }) => {
+        this.applySnapshot(payload);
+      });
+      if (generation !== this.loadGeneration || !this.isConnected) {
+        unlisten();
+        return;
+      }
+      this.unlisten.push(unlisten);
+
+      this.message = "Loading application state…";
+      this.applySnapshot(await invoke<AppSnapshot>("get_app_snapshot"));
+      if (generation !== this.loadGeneration || !this.isConnected) return;
+
       this.message = "Checking Accessibility permission…";
       this.trusted = await invoke<boolean>("accessibility_permission");
-      this.message = "Subscribing to state updates…";
-      this.unlisten.push(
-        await listen<LensState>("lens-state-changed", ({ payload }) => {
-          this.applyLensState(payload);
-        }),
-        await listen<AgentSelectionState>("agent-selection-changed", ({ payload }) => {
-          this.agentSelection = payload;
-        }),
-        await listen<AppConfig>("config-changed", ({ payload }) => {
-          this.config = payload;
-        }),
-      );
-      this.message = "";
+      if (generation === this.loadGeneration && this.isConnected) this.message = "";
     } catch (error) {
-      this.message = String(error);
+      if (generation === this.loadGeneration && this.isConnected) this.message = String(error);
     }
+  }
+
+  private applySnapshot(next: AppSnapshot): void {
+    if (!shouldApplySnapshot(this.revision, next.revision)) return;
+    this.revision = next.revision;
+    this.config = next.config;
+    this.agentSelection = next.agent_selection;
+    this.applyLensState(next.lens);
   }
 
   protected render() {
@@ -479,8 +496,8 @@ export class PersonalLensApp extends LitElement {
   private async setAgent(agent: AgentKind): Promise<void> {
     this.busy = true;
     try {
-      this.agentSelection = await invoke<AgentSelectionState>("set_agent", { agent });
-      this.message = this.agentSelection.message ?? this.agentSelection.error ?? "";
+      await invoke<AgentSelectionState>("set_agent", { agent });
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     } finally {
@@ -492,11 +509,11 @@ export class PersonalLensApp extends LitElement {
     this.busy = true;
     this.message = "Starting Agent authentication.";
     try {
-      this.agentSelection = await invoke<AgentSelectionState>(
+      await invoke<AgentSelectionState>(
         "authenticate_agent_selection",
         { methodId },
       );
-      this.message = this.agentSelection.message ?? this.agentSelection.error ?? "";
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     } finally {
@@ -517,10 +534,8 @@ export class PersonalLensApp extends LitElement {
     this.busy = true;
     this.message = `Preparing to reauthenticate ${label}.`;
     try {
-      this.agentSelection = await invoke<AgentSelectionState>(
-        "reauthenticate_agent_selection",
-      );
-      this.message = this.agentSelection.message ?? this.agentSelection.error ?? "";
+      await invoke<AgentSelectionState>("reauthenticate_agent_selection");
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     } finally {
@@ -541,8 +556,8 @@ export class PersonalLensApp extends LitElement {
     this.busy = true;
     this.message = `Signing out of ${label}.`;
     try {
-      this.agentSelection = await invoke<AgentSelectionState>("sign_out_agent_selection");
-      this.message = this.agentSelection.message ?? this.agentSelection.error ?? "";
+      await invoke<AgentSelectionState>("sign_out_agent_selection");
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     } finally {
@@ -559,7 +574,7 @@ export class PersonalLensApp extends LitElement {
     });
     if (typeof selected !== "string") return;
     try {
-      this.config = await invoke<AppConfig>("set_working_directory", { path: selected });
+      await invoke<AppConfig>("set_working_directory", { path: selected });
       this.message = "Working directory updated.";
     } catch (error) {
       this.message = String(error);
@@ -583,29 +598,36 @@ export class PersonalLensApp extends LitElement {
   }
 
   private transform = async (): Promise<void> => {
+    const operationId = this.lens.operation_id;
+    if (!operationId) return;
     this.message = "Connecting to the agent.";
     try {
-      this.lens = await invoke<LensState>("transform_lens");
-      this.message = STAGE_LABEL[this.lens.stage];
+      await invoke<LensState>("transform_lens", { operationId });
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     }
   };
 
   private async authenticate(methodId: string): Promise<void> {
+    const operationId = this.lens.operation_id;
+    if (!operationId) return;
     this.message = "Starting agent authentication.";
     try {
-      this.lens = await invoke<LensState>("authenticate_agent", { methodId });
-      this.message = STAGE_LABEL[this.lens.stage];
+      await invoke<LensState>("authenticate_agent", { operationId, methodId });
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     }
   }
 
   private cancelAgent = async (): Promise<void> => {
+    const operationId = this.lens.operation_id;
+    const runId = this.lens.agent?.run_id;
+    if (!operationId || !runId) return;
     try {
-      this.lens = await invoke<LensState>("cancel_agent");
-      this.message = STAGE_LABEL[this.lens.stage];
+      await invoke<LensState>("cancel_agent", { operationId, runId });
+      this.message = "";
     } catch (error) {
       this.message = String(error);
     }
