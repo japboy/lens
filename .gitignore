@@ -1,0 +1,20 @@
+# AI agent specific directories/files ignored for now
+ARCHITECTURE.md
+/.agents/
+/.serena/
+/AGENTS.md
+/docs/
+
+# Common ignores
+/.DS_Store
+*.log
+
+# Tauri project ignores
+/node_modules/
+/dist/
+/src-tauri/target/
+/src-tauri/binaries/*-aarch64-apple-darwin
+/src-tauri/binaries/*-x86_64-apple-darwin
+/src-tauri/sidecars/.downloads/
+/src-tauri/sidecars/node_modules/
+/src-tauri/sidecars/runtime/

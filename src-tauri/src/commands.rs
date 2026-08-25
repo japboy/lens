@@ -1,0 +1,339 @@
+use crate::{
+    agent,
+    app_state::{publish_lens_state, update_lens_state, AppState},
+    model::{
+        AgentKind, AgentSelectionState, AppConfig, LensInput, LensStage, LensState, SelectedWindow,
+    },
+    platform, ui,
+};
+use std::path::PathBuf;
+use tauri::{AppHandle, Emitter, Manager, State};
+use uuid::Uuid;
+
+const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
+
+#[tauri::command]
+pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
+    state
+        .config
+        .read()
+        .map(|config| config.clone())
+        .map_err(|_| "config state lock is poisoned".to_string())
+}
+
+#[tauri::command]
+pub fn get_agent_selection(state: State<'_, AppState>) -> Result<AgentSelectionState, String> {
+    state
+        .agent_selection
+        .read()
+        .map(|selection| selection.clone())
+        .map_err(|_| "agent selection state lock is poisoned".to_string())
+}
+
+pub async fn select_agent(
+    app: AppHandle,
+    candidate: AgentKind,
+) -> Result<AgentSelectionState, String> {
+    agent::select_agent(app, candidate).await
+}
+
+#[tauri::command]
+pub async fn set_agent(app: AppHandle, agent: AgentKind) -> Result<AgentSelectionState, String> {
+    select_agent(app, agent).await
+}
+
+#[tauri::command]
+pub fn set_working_directory(path: String, app: AppHandle) -> Result<AppConfig, String> {
+    update_working_directory(&app, PathBuf::from(path))
+}
+
+pub fn update_working_directory(app: &AppHandle, directory: PathBuf) -> Result<AppConfig, String> {
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err("working directory must be an existing absolute directory".into());
+    }
+    let state = app.state::<AppState>();
+    let next = {
+        let mut config = state
+            .config
+            .write()
+            .map_err(|_| "config state lock is poisoned".to_string())?;
+        config.working_directory = directory;
+        state
+            .store
+            .save(&config)
+            .map_err(|error| error.to_string())?;
+        config.clone()
+    };
+    ui::sync_tray_menu(app)?;
+    app.emit("config-changed", next.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(next)
+}
+
+#[tauri::command]
+pub fn accessibility_permission() -> bool {
+    platform::accessibility_is_trusted()
+}
+
+#[tauri::command]
+pub fn request_accessibility_permission() -> bool {
+    platform::request_accessibility_trust()
+}
+
+#[tauri::command]
+pub fn get_lens_state(state: State<'_, AppState>) -> Result<LensState, String> {
+    state
+        .lens
+        .read()
+        .map(|lens| lens.clone())
+        .map_err(|_| "lens state lock is poisoned".to_string())
+}
+
+pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
+    let state = app.state::<AppState>();
+    let _ = state.agent_control.cancel()?;
+    let operation_id = Uuid::new_v4();
+    publish_lens_state(
+        &app,
+        LensState {
+            operation_id: Some(operation_id),
+            stage: LensStage::Selecting,
+            ..LensState::default()
+        },
+    )?;
+
+    let picker_reply = match platform::present_window_picker().await {
+        Ok(reply) => reply,
+        Err(error) => {
+            let message = error.to_string();
+            replace_operation_state(
+                &app,
+                operation_id,
+                failed_state(operation_id, None, message.clone()),
+            )?;
+            return Err(message);
+        }
+    };
+    let selected = match picker_reply.into_selected() {
+        Ok(selected) => selected,
+        Err(error) => {
+            let failed = failed_state(operation_id, None, error.clone());
+            replace_operation_state(&app, operation_id, failed)?;
+            return Err(error);
+        }
+    };
+    let Some(target) = selected else {
+        let cancelled = LensState {
+            operation_id: Some(operation_id),
+            stage: LensStage::Cancelled,
+            ..LensState::default()
+        };
+        if replace_operation_state(&app, operation_id, cancelled.clone())? {
+            return Ok(cancelled);
+        }
+        return Err(OPERATION_SUPERSEDED.into());
+    };
+
+    let extracting = LensState {
+        operation_id: Some(operation_id),
+        stage: LensStage::Extracting,
+        target: Some(target.clone()),
+        ..LensState::default()
+    };
+    if !replace_operation_state(&app, operation_id, extracting)? {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+
+    extract_target_for_operation(app, operation_id, target).await
+}
+
+pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<LensState, String> {
+    let state = app.state::<AppState>();
+    let _ = state.agent_control.cancel()?;
+    let operation_id = Uuid::new_v4();
+    publish_lens_state(
+        &app,
+        LensState {
+            operation_id: Some(operation_id),
+            stage: LensStage::Extracting,
+            target: Some(target.clone()),
+            ..LensState::default()
+        },
+    )?;
+    extract_target_for_operation(app, operation_id, target).await
+}
+
+async fn extract_target_for_operation(
+    app: AppHandle,
+    operation_id: Uuid,
+    target: SelectedWindow,
+) -> Result<LensState, String> {
+    let extraction_target = target.clone();
+    let extraction = match tauri::async_runtime::spawn_blocking(move || {
+        platform::extract_window(&extraction_target)
+    })
+    .await
+    {
+        Ok(Ok(extraction)) => extraction,
+        Ok(Err(error)) => {
+            let message = error.to_string();
+            let failed = failed_state(operation_id, Some(target.clone()), message.clone());
+            if !replace_operation_state(&app, operation_id, failed)? {
+                return Err(OPERATION_SUPERSEDED.into());
+            }
+            ui::show_overlay(&app, &target, operation_id).map_err(|overlay_error| {
+                format!("{message}; unable to show Lens overlay: {overlay_error}")
+            })?;
+            return Err(message);
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let failed = failed_state(operation_id, Some(target.clone()), message.clone());
+            if !replace_operation_state(&app, operation_id, failed)? {
+                return Err(OPERATION_SUPERSEDED.into());
+            }
+            ui::show_overlay(&app, &target, operation_id).map_err(|overlay_error| {
+                format!("{message}; unable to show Lens overlay: {overlay_error}")
+            })?;
+            return Err(message);
+        }
+    };
+    let input = LensInput::from_extraction(&target, &extraction);
+    let next = LensState {
+        operation_id: Some(operation_id),
+        stage: if input.is_some() {
+            LensStage::Ready
+        } else {
+            LensStage::Failed
+        },
+        target: Some(target.clone()),
+        extraction: Some(extraction.clone()),
+        input,
+        transformed_text: None,
+        agent: None,
+        error: if extraction.quality == crate::model::ExtractionQuality::Unavailable {
+            Some("Accessibility extraction did not yield usable text.".into())
+        } else {
+            None
+        },
+    };
+    if !replace_operation_state(&app, operation_id, next.clone())? {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    if let Err(error) = ui::show_overlay(&app, &target, operation_id) {
+        let message = format!("unable to show Lens overlay: {error}");
+        if !update_lens_state(&app, operation_id, |lens| {
+            lens.stage = LensStage::Failed;
+            lens.error = Some(message.clone());
+        })? {
+            return Err(OPERATION_SUPERSEDED.into());
+        }
+        return Err(message);
+    }
+    Ok(next)
+}
+
+#[tauri::command]
+pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
+    let agent_selection = app
+        .state::<AppState>()
+        .agent_selection
+        .read()
+        .map_err(|_| "agent selection state lock is poisoned".to_string())?
+        .clone();
+    if !agent_selection.can_select_lens_target() {
+        return Err("select and authenticate an AI Agent before selecting a Lens Target".into());
+    }
+    let ready = select_and_extract(app.clone()).await?;
+    if ready.stage == LensStage::Ready {
+        agent::transform_current(app).await
+    } else {
+        Ok(ready)
+    }
+}
+
+#[tauri::command]
+pub async fn transform_lens(app: AppHandle) -> Result<LensState, String> {
+    agent::transform_current(app).await
+}
+
+#[tauri::command]
+pub async fn authenticate_agent(app: AppHandle, method_id: String) -> Result<LensState, String> {
+    agent::authenticate_current(app, method_id).await
+}
+
+#[tauri::command]
+pub async fn authenticate_agent_selection(
+    app: AppHandle,
+    method_id: String,
+) -> Result<AgentSelectionState, String> {
+    agent::authenticate_selection(app, method_id).await
+}
+
+#[tauri::command]
+pub async fn reauthenticate_agent_selection(app: AppHandle) -> Result<AgentSelectionState, String> {
+    agent::reauthenticate_selection(app).await
+}
+
+#[tauri::command]
+pub async fn sign_out_agent_selection(app: AppHandle) -> Result<AgentSelectionState, String> {
+    agent::sign_out_selection(app).await
+}
+
+#[tauri::command]
+pub fn cancel_agent(app: AppHandle) -> Result<LensState, String> {
+    agent::cancel_current(&app)
+}
+
+#[tauri::command]
+pub fn show_settings(app: AppHandle) -> Result<(), String> {
+    ui::show_settings(&app).map_err(|error| error.to_string())
+}
+
+fn failed_state(operation_id: Uuid, target: Option<SelectedWindow>, error: String) -> LensState {
+    LensState {
+        operation_id: Some(operation_id),
+        stage: LensStage::Failed,
+        target,
+        error: Some(error),
+        ..LensState::default()
+    }
+}
+
+fn replace_operation_state(
+    app: &AppHandle,
+    operation_id: Uuid,
+    next: LensState,
+) -> Result<bool, String> {
+    update_lens_state(app, operation_id, |state| *state = next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_operation_preserves_identity_and_target() {
+        let operation_id = Uuid::new_v4();
+        let target = SelectedWindow {
+            window_id: 42,
+            title: "Document".into(),
+            application_name: "Browser".into(),
+            bundle_id: "example.browser".into(),
+            pid: 100,
+            frame: crate::model::Bounds {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            },
+        };
+
+        let state = failed_state(operation_id, Some(target.clone()), "failure".into());
+
+        assert_eq!(state.operation_id, Some(operation_id));
+        assert_eq!(state.stage, LensStage::Failed);
+        assert_eq!(state.target, Some(target));
+        assert_eq!(state.error.as_deref(), Some("failure"));
+    }
+}

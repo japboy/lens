@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PersonalLens",
+  "version": "0.1.0",
+  "identifier": "com.github.japboy.personallens",
+  "build": {
+    "beforeDevCommand": "npm run sidecars:build && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run sidecars:build && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Productivity",
+    "copyright": "Copyright © 2026 PersonalLens contributors",
+    "resources": {
+      "sidecars/node_modules": "sidecars/node_modules",
+      "sidecars/runtime/node-aarch64-apple-darwin": "sidecars/runtime/node-aarch64-apple-darwin"
+    },
+    "targets": ["app"],
+    "macOS": {
+      "minimumSystemVersion": "15.2",
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

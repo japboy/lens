@@ -1,0 +1,104 @@
+import { describe, expect, it } from "vitest";
+import type { AgentSelectionStage, LensStage, LensState } from "./types";
+import {
+  AGENT_SELECTION_LABEL,
+  lensTranslationText,
+  selectedAgent,
+  showsLensProgress,
+  STAGE_LABEL,
+  supportedAuthMethods,
+} from "./view-model";
+
+describe("PersonalLens view model", () => {
+  it("defines every Agent selection stage and enables Lens selection only when selected", () => {
+    const stages: AgentSelectionStage[] = [
+      "unselected",
+      "checking",
+      "authentication_required",
+      "authenticating",
+      "signing_out",
+      "selected",
+      "failed",
+    ];
+
+    expect(Object.keys(AGENT_SELECTION_LABEL)).toEqual(stages);
+    for (const stage of stages) {
+      const selection = { stage, candidate: "codex" as const, auth_methods: [] };
+      expect(selectedAgent(selection)).toBe(stage === "selected" ? "codex" : undefined);
+    }
+  });
+
+  it("defines a user-facing label for every finite Lens stage", () => {
+    const stages: LensStage[] = [
+      "idle",
+      "selecting",
+      "extracting",
+      "ready",
+      "connecting",
+      "authentication_required",
+      "transforming",
+      "completed",
+      "cancelled",
+      "failed",
+    ];
+
+    expect(Object.keys(STAGE_LABEL).sort()).toEqual([...stages].sort());
+    expect(stages.every((stage) => STAGE_LABEL[stage].length > 0)).toBe(true);
+  });
+
+  it("never exposes extraction text as the translation fallback", () => {
+    const lens = {
+      stage: "transforming",
+      transformed_text: "Agent output",
+      input: {
+        source: {
+          application: "Safari",
+          window_title: "Fixture",
+          bundle_id: "com.apple.Safari",
+          window_id: 417,
+        },
+        text: "Accessibility input",
+        extraction_quality: "full",
+      },
+    } satisfies LensState;
+
+    expect(lensTranslationText(lens)).toBe("Agent output");
+    expect(lensTranslationText({ ...lens, transformed_text: undefined })).toBe("");
+  });
+
+  it("offers only authentication methods the client supports", () => {
+    const lens = {
+      stage: "authentication_required",
+      agent: {
+        kind: "claude",
+        adapter_name: "@agentclientprotocol/claude-agent-acp",
+        adapter_version: "0.70.0",
+        auth_methods: [
+          { id: "terminal", name: "Terminal", kind: "terminal", supported: true },
+          {
+            id: "environment",
+            name: "Environment",
+            kind: "environment_variable",
+            supported: false,
+          },
+        ],
+        received_updates: 0,
+      },
+    } satisfies LensState;
+
+    expect(supportedAuthMethods(lens).map((method) => method.id)).toEqual(["terminal"]);
+  });
+
+  it("shows progress only while an operation can still advance without user input", () => {
+    expect(["selecting", "extracting", "ready", "connecting", "transforming"].every((stage) =>
+      showsLensProgress(stage as LensStage),
+    )).toBe(true);
+    expect([
+      "idle",
+      "authentication_required",
+      "completed",
+      "cancelled",
+      "failed",
+    ].every((stage) => !showsLensProgress(stage as LensStage))).toBe(true);
+  });
+});
