@@ -12,13 +12,16 @@ import "./streaming-markdown";
 import type { StreamingMarkdownState } from "./streaming-markdown";
 import type {
   AgentKind,
+  AgentRuntimeState,
   AgentSelectionState,
   AppConfig,
   AppSnapshot,
   LensState,
 } from "./types";
 import {
+  AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
+  isAgentRuntimeActive,
   lensTranslationText,
   selectedAgent,
   showsLensProgress,
@@ -33,6 +36,7 @@ export class PersonalLensApp extends LitElement {
   static properties = {
     config: { state: true },
     agentSelection: { state: true },
+    agentRuntime: { state: true },
     lens: { state: true },
     trusted: { state: true },
     busy: { state: true },
@@ -54,6 +58,7 @@ export class PersonalLensApp extends LitElement {
 
   declare private config: AppConfig | undefined;
   declare private agentSelection: AgentSelectionState;
+  declare private agentRuntime: AgentRuntimeState;
   declare private lens: LensState;
   declare private trusted: boolean;
   declare private busy: boolean;
@@ -68,6 +73,10 @@ export class PersonalLensApp extends LitElement {
     super();
     this.config = undefined;
     this.agentSelection = { stage: "unselected", auth_methods: [] };
+    this.agentRuntime = {
+      stage: "not_installed",
+      downloaded_bytes: 0,
+    };
     this.lens = { stage: "idle" };
     this.trusted = false;
     this.busy = false;
@@ -131,6 +140,7 @@ export class PersonalLensApp extends LitElement {
     this.revision = next.revision;
     this.config = next.config;
     this.agentSelection = next.agent_selection;
+    this.agentRuntime = next.agent_runtime;
     this.applyLensState(next.lens);
   }
 
@@ -149,16 +159,20 @@ export class PersonalLensApp extends LitElement {
         <section aria-labelledby="agent-heading">
           <h2 id="agent-heading">AI Agent</h2>
           <fieldset
-            ?disabled=${this.busy || !this.config || this.agentSelection.stage === "signing_out"}
+            ?disabled=${this.busy ||
+            !this.config ||
+            isAgentRuntimeActive(this.agentRuntime.stage) ||
+            ["checking", "authenticating", "signing_out"].includes(this.agentSelection.stage)}
           >
             <legend class="visually-hidden">AI agent to use</legend>
             ${this.agentOption("claude", "Claude")}
             ${this.agentOption("codex", "Codex")}
           </fieldset>
           <p class="help">The ACP agent, not PersonalLens, manages authentication credentials.</p>
+          ${this.renderAgentRuntimeStatus()}
           <output class=${this.agentSelection.stage === "selected" ? "status-ok" : "status-warning"}>
-            ${this.agentSelection.message ??
-            this.agentSelection.error ??
+            ${this.agentSelection.error ??
+            this.agentSelection.message ??
             AGENT_SELECTION_LABEL[this.agentSelection.stage]}
           </output>
           ${this.renderAgentSelectionAuthentication()}
@@ -194,6 +208,28 @@ export class PersonalLensApp extends LitElement {
           <span role="status">${this.message || STAGE_LABEL[this.lens.stage]}</span>
         </footer>
       </main>
+    `;
+  }
+
+  private renderAgentRuntimeStatus() {
+    const runtime = this.agentRuntime;
+    const total = runtime.total_bytes;
+    const showProgress = runtime.stage === "downloading";
+    return html`
+      <div class="runtime-status" aria-live="polite">
+        <output class=${runtime.stage === "failed" ? "status-warning" : "runtime-message"}>
+          ${runtime.error ?? runtime.message ?? AGENT_RUNTIME_LABEL[runtime.stage]}
+        </output>
+        ${showProgress
+          ? total === undefined
+            ? html`<progress aria-label="Agent runtime download progress"></progress>`
+            : html`<progress
+                aria-label="Agent runtime download progress"
+                .value=${runtime.downloaded_bytes}
+                max=${total}
+              ></progress>`
+          : nothing}
+      </div>
     `;
   }
 

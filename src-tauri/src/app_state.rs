@@ -1,5 +1,5 @@
 use crate::{
-    model::{AgentSelectionState, AppConfig, AppSnapshot, LensStage, LensState},
+    model::{AgentRuntimeState, AgentSelectionState, AppConfig, AppSnapshot, LensStage, LensState},
     store::ConfigStore,
 };
 use std::sync::{
@@ -7,7 +7,7 @@ use std::sync::{
     Arc, Mutex, RwLock,
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +117,7 @@ impl Drop for PickerLease {
 
 pub struct AppState {
     pub(crate) runtime: RwLock<AppSnapshot>,
+    pub agent_runtime_install: AsyncMutex<()>,
     pub agent_control: AgentControl,
     pub picker_control: PickerControl,
     pub store: ConfigStore,
@@ -128,6 +129,7 @@ impl AppState {
         let config = store.load();
         Self {
             runtime: RwLock::new(AppSnapshot::new(config)),
+            agent_runtime_install: AsyncMutex::new(()),
             agent_control: AgentControl::default(),
             picker_control: PickerControl::default(),
             store,
@@ -152,6 +154,42 @@ impl AppState {
     pub fn lens(&self) -> Result<LensState, String> {
         self.snapshot().map(|snapshot| snapshot.lens)
     }
+}
+
+pub fn publish_agent_runtime(app: &AppHandle, next: AgentRuntimeState) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "application state lock is poisoned".to_string())?;
+        advance_revision(&mut snapshot)?;
+        snapshot.agent_runtime = next;
+        snapshot.clone()
+    };
+    emit_app_snapshot(app, snapshot, false)
+}
+
+pub fn update_agent_runtime(
+    app: &AppHandle,
+    operation_id: Uuid,
+    update: impl FnOnce(&mut AgentRuntimeState),
+) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "application state lock is poisoned".to_string())?;
+        if snapshot.agent_runtime.operation_id != Some(operation_id) {
+            return Ok(false);
+        }
+        advance_revision(&mut snapshot)?;
+        update(&mut snapshot.agent_runtime);
+        snapshot.clone()
+    };
+    emit_app_snapshot(app, snapshot, false)?;
+    Ok(true)
 }
 
 pub(crate) fn advance_revision(snapshot: &mut AppSnapshot) -> Result<(), String> {

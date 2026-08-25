@@ -7,6 +7,14 @@ export type AgentSelectionStage =
   | "signing_out"
   | "selected"
   | "failed";
+export type AgentRuntimeStage =
+  | "not_installed"
+  | "resolving"
+  | "downloading"
+  | "verifying"
+  | "installing"
+  | "ready"
+  | "failed";
 export type ExtractionQuality = "full" | "partial" | "unavailable";
 export type LensStage =
   | "idle"
@@ -84,6 +92,17 @@ export interface AgentSelectionState {
   error?: string;
 }
 
+export interface AgentRuntimeState {
+  operation_id?: string;
+  stage: AgentRuntimeStage;
+  agent?: AgentKind;
+  version?: string;
+  downloaded_bytes: number;
+  total_bytes?: number;
+  message?: string;
+  error?: string;
+}
+
 export interface AgentRunState {
   run_id: string;
   kind: AgentKind;
@@ -112,5 +131,6 @@ export interface AppSnapshot {
   revision: number;
   config: AppConfig;
   agent_selection: AgentSelectionState;
+  agent_runtime: AgentRuntimeState;
   lens: LensState;
 }

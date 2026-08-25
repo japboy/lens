@@ -1,4 +1,5 @@
 mod agent;
+mod agent_runtime;
 mod app_state;
 mod commands;
 mod model;
@@ -12,6 +13,13 @@ use tauri::Manager;
 pub fn run() {
     let validate_a11y = std::env::var_os("PERSONAL_LENS_VALIDATE_A11Y").is_some();
     let validate_acp = std::env::var_os("PERSONAL_LENS_VALIDATE_ACP").is_some();
+    let validation_runtime = std::env::var("PERSONAL_LENS_VALIDATE_RUNTIME")
+        .ok()
+        .map(|value| match value.as_str() {
+            "claude" => model::AgentKind::Claude,
+            "codex" => model::AgentKind::Codex,
+            _ => panic!("PERSONAL_LENS_VALIDATE_RUNTIME must be claude or codex"),
+        });
     let validation_agent = std::env::var("PERSONAL_LENS_VALIDATE_AGENT")
         .ok()
         .and_then(|value| match value.as_str() {
@@ -55,6 +63,7 @@ pub fn run() {
             }
             if std::env::var_os("PERSONAL_LENS_VALIDATE_A11Y").is_none()
                 && std::env::var_os("PERSONAL_LENS_VALIDATE_ACP").is_none()
+                && std::env::var_os("PERSONAL_LENS_VALIDATE_RUNTIME").is_none()
             {
                 let handle = app.handle().clone();
                 let preferred_agent = handle
@@ -63,7 +72,9 @@ pub fn run() {
                     .map(|config| config.agent)
                     .unwrap_or(model::AgentKind::Claude);
                 tauri::async_runtime::spawn(async move {
-                    if let Err(error) = agent::select_agent(handle, preferred_agent).await {
+                    if let Err(error) =
+                        agent::restore_agent_selection(handle, preferred_agent).await
+                    {
                         eprintln!("Unable to restore Agent selection: {error}");
                     }
                 });
@@ -91,6 +102,34 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build PersonalLens")
         .run(move |app, event| match event {
+            tauri::RunEvent::Ready if validation_runtime.is_some() => {
+                let handle = app.clone();
+                let agent = validation_runtime.expect("validated above");
+                tauri::async_runtime::spawn(async move {
+                    let (summary, exit_code) = match agent_runtime::resolve(&handle, agent).await {
+                        Ok(runtime) => (
+                            serde_json::json!({
+                                "status": "ready",
+                                "agent": runtime.kind,
+                                "adapter_name": runtime.adapter_name,
+                                "adapter_version": runtime.adapter_version,
+                                "safe_mode_id": runtime.safe_mode_id,
+                            }),
+                            0,
+                        ),
+                        Err(error) => (
+                            serde_json::json!({
+                                "status": "failed",
+                                "agent": agent,
+                                "error": error,
+                            }),
+                            1,
+                        ),
+                    };
+                    println!("PERSONAL_LENS_RUNTIME_RESULT={summary}");
+                    handle.exit(exit_code);
+                });
+            }
             tauri::RunEvent::Ready if validate_a11y || validate_acp => {
                 let handle = app.clone();
                 let target = validation_target.clone();

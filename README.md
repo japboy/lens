@@ -18,12 +18,11 @@ macOS 15.2 is the minimum because it is the first version that provides the publ
 
 ```sh
 npm install
-npm run sidecars:build
 npm run verify
 npm run tauri -- dev
 ```
 
-`sidecars:build` downloads pinned official npm packages and the Node.js `24.19.0` arm64 runtime, then verifies the SHA-256 digest of the Node archive. The same build runs before `tauri dev/build`, and its outputs are bundled under `.app/Contents/Resources/sidecars`. Runtime resolution never uses `PATH`, globally installed npm packages, or `npx @latest`.
+The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. PersonalLens validates the official ACP Registry package identity, installs from an embedded exact npm lock, verifies the pinned Node.js `24.19.0` archive SHA-256 digest, and verifies the Developer ID team and signing identifier of Node and the provider executable before launch. Runtime resolution never uses `PATH`, globally installed npm packages, or `npx @latest`.
 
 To produce a debug application bundle:
 
@@ -39,7 +38,7 @@ The application creates no ordinary WebView window at startup. Left-clicking the
 - `Settings…`
 - `Quit PersonalLens`
 
-An Agent receives a check mark only after PersonalLens verifies its existing authentication. Codex is verified by ACP session creation; Claude is first verified by the bundled adapter's official CLI authentication-status command because Claude Agent ACP does not reject unauthenticated session creation. Clicking an unauthenticated Agent opens the adapter-owned authentication flow in Settings. `Select Lens Target…` remains disabled until an authenticated Agent is selected. Clicking the Working Directory item opens the native macOS folder picker and updates the path shown in the menu.
+An Agent receives a check mark only after PersonalLens installs and verifies its managed runtime and then verifies its existing authentication. Codex is verified by ACP session creation; Claude is first verified by the adapter's official CLI authentication-status command because Claude Agent ACP does not reject unauthenticated session creation. Clicking an unauthenticated Agent opens the adapter-owned authentication flow in Settings. `Select Lens Target…` remains disabled until an authenticated Agent is selected. Clicking the Working Directory item opens the native macOS folder picker and updates the path shown in the menu.
 
 Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, Working Directory, and Accessibility permission controls. Reauthentication and sign-out first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Variable authentication content remains contained in a scrollable, responsive Settings layout.
 
@@ -48,6 +47,7 @@ The Lens overlay opens centered at 80% of the selected window's width and height
 ## Security Boundary
 
 - PersonalLens stores only the last successfully selected agent and working directory. Authentication status is verified at runtime and is not persisted.
+- Managed Agent runtimes are provider-specific, versioned application data. Interrupted installs remain in staging and are never selected; an invalid existing install is quarantined before replacement.
 - It does not read or write OAuth tokens, API keys, or Claude/Codex credential files.
 - Accessibility extraction is limited to a snapshot of the target explicitly selected by the user.
 - PersonalLens exposes no coding client capabilities to the ACP agent.
@@ -55,6 +55,15 @@ The Lens overlay opens centered at 80% of the selected window's width and height
 
 ## Validation
 
-`npm run verify` runs publication-boundary and repository-language policies, Lit frontend type checking/build/Vitest, the sidecar lock and version smoke test, and Rust check/format/Clippy/unit tests.
+`npm run verify` runs publication-boundary and repository-language policies, Lit frontend type checking/build/Vitest, and Rust check/format/Clippy/unit tests.
 
-On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, bundled Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
+An on-device managed-runtime install and verification can be run independently for each Agent:
+
+```sh
+PERSONAL_LENS_VALIDATE_RUNTIME=claude npm run tauri -- dev
+PERSONAL_LENS_VALIDATE_RUNTIME=codex npm run tauri -- dev
+```
+
+On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, managed Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
+
+Official runtime references: [ACP Registry](https://agentclientprotocol.com/get-started/registry), [npm `ci`](https://docs.npmjs.com/cli/commands/npm-ci/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).

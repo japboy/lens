@@ -1,11 +1,36 @@
 import type {
   AgentAuthMethod,
   AgentKind,
+  AgentRuntimeStage,
   AgentSelectionStage,
   AgentSelectionState,
   LensStage,
   LensState,
 } from "./types";
+
+export const AGENT_RUNTIME_LABEL: Record<AgentRuntimeStage, string> = {
+  not_installed: "Agent runtime is not installed",
+  resolving: "Resolving approved Agent runtime…",
+  downloading: "Downloading approved runtime…",
+  verifying: "Verifying runtime integrity…",
+  installing: "Installing Agent runtime…",
+  ready: "Agent runtime installed and verified",
+  failed: "Agent runtime installation failed",
+};
+
+export function isAgentRuntimeActive(stage: AgentRuntimeStage): boolean {
+  switch (stage) {
+    case "resolving":
+    case "downloading":
+    case "verifying":
+    case "installing":
+      return true;
+    case "not_installed":
+    case "ready":
+    case "failed":
+      return false;
+  }
+}
 
 export const AGENT_SELECTION_LABEL: Record<AgentSelectionStage, string> = {
   unselected: "Select an Agent to verify authentication.",

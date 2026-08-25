@@ -1,4 +1,5 @@
 use crate::{
+    agent_runtime::{self, ResolvedAgentRuntime},
     app_state::{
         begin_agent_run, emit_app_snapshot, next_revision, publish_agent_selection,
         update_agent_selection, update_lens_state, update_lens_state_for_run, AgentRunKey,
@@ -28,7 +29,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -36,11 +37,6 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-const CLAUDE_ADAPTER_NAME: &str = "@agentclientprotocol/claude-agent-acp";
-const CLAUDE_ADAPTER_VERSION: &str = "0.70.0";
-const CODEX_ADAPTER_NAME: &str = "@agentclientprotocol/codex-acp";
-const CODEX_ADAPTER_VERSION: &str = "1.6.2";
-const NODE_RUNTIME_NAME: &str = "node-aarch64-apple-darwin";
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -61,55 +57,36 @@ struct ClaudeAuthenticationStatus {
 }
 
 impl AgentDescriptor {
-    fn resolve(app: &AppHandle, kind: AgentKind) -> Result<Self, String> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(
-                "the PoC sidecar bundle currently supports aarch64-apple-darwin only".into(),
-            );
+    async fn resolve(app: &AppHandle, kind: AgentKind) -> Result<Self, String> {
+        agent_runtime::resolve(app, kind)
+            .await
+            .map(Self::from_runtime)
+    }
+
+    async fn resolve_installed(app: &AppHandle, kind: AgentKind) -> Result<Option<Self>, String> {
+        agent_runtime::resolve_installed(app, kind)
+            .await
+            .map(|runtime| runtime.map(Self::from_runtime))
+    }
+
+    fn from_runtime(runtime: ResolvedAgentRuntime) -> Self {
+        Self {
+            kind: runtime.kind,
+            adapter_name: runtime.adapter_name,
+            adapter_version: runtime.adapter_version,
+            safe_mode_id: runtime.safe_mode_id,
+            command: runtime.command,
+            args: runtime.args,
         }
-
-        let resource_dir = app
-            .path()
-            .resource_dir()
-            .map_err(|error| error.to_string())?;
-        let resource_dir = resource_dir
-            .canonicalize()
-            .map_err(|error| format!("unable to resolve app resource directory: {error}"))?;
-        let command = resource_dir
-            .join("sidecars/runtime")
-            .join(NODE_RUNTIME_NAME);
-        let (adapter_name, adapter_version, safe_mode_id, script) = match kind {
-            AgentKind::Claude => (
-                CLAUDE_ADAPTER_NAME,
-                CLAUDE_ADAPTER_VERSION,
-                "plan",
-                resource_dir.join(
-                    "sidecars/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
-                ),
-            ),
-            AgentKind::Codex => (
-                CODEX_ADAPTER_NAME,
-                CODEX_ADAPTER_VERSION,
-                "read-only",
-                resource_dir
-                    .join("sidecars/node_modules/@agentclientprotocol/codex-acp/dist/index.js"),
-            ),
-        };
-        let command = canonical_bundled_file(&resource_dir, &command, "Node runtime")?;
-        let script = canonical_bundled_file(&resource_dir, &script, "ACP adapter")?;
-
-        Ok(Self {
-            kind,
-            adapter_name,
-            adapter_version,
-            safe_mode_id,
-            command,
-            args: vec![script.to_string_lossy().into_owned()],
-        })
     }
 
     fn process(&self) -> AcpAgent {
-        AcpAgent::new(AcpAgentConfig::new(self.command.clone()).args(self.args.iter().cloned()))
+        AcpAgent::new(
+            AcpAgentConfig::new(self.command.clone())
+                .args(self.args.iter().cloned())
+                .env("NODE_OPTIONS", "")
+                .env("NODE_PATH", ""),
+        )
     }
 
     fn run_state(&self, run_id: Uuid) -> AgentRunState {
@@ -126,18 +103,6 @@ impl AgentDescriptor {
             authentication_message: None,
         }
     }
-}
-
-fn canonical_bundled_file(root: &Path, path: &Path, label: &str) -> Result<PathBuf, String> {
-    let path = path
-        .canonicalize()
-        .map_err(|error| format!("{label} is missing at {}: {error}", path.display()))?;
-    if !path.starts_with(root) || !path.is_file() {
-        return Err(format!(
-            "{label} must be a regular file inside the app resource directory"
-        ));
-    }
-    Ok(path)
 }
 
 pub async fn select_agent(
@@ -168,7 +133,7 @@ pub async fn select_agent(
         },
     )?;
 
-    let descriptor = match AgentDescriptor::resolve(&app, candidate) {
+    let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
             update_agent_selection(&app, operation_id, |selection| {
@@ -179,8 +144,63 @@ pub async fn select_agent(
             return current_agent_selection(&app);
         }
     };
-    let working_directory = app.state::<AppState>().config()?.working_directory;
+    finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
+}
 
+pub async fn restore_agent_selection(
+    app: AppHandle,
+    candidate: AgentKind,
+) -> Result<AgentSelectionState, String> {
+    let operation_id = Uuid::new_v4();
+    publish_agent_selection(
+        &app,
+        AgentSelectionState {
+            operation_id: Some(operation_id),
+            stage: AgentSelectionStage::Checking,
+            candidate: Some(candidate),
+            message: Some(format!("Restoring {}…", agent_display_name(candidate))),
+            ..AgentSelectionState::default()
+        },
+    )?;
+
+    let descriptor = match AgentDescriptor::resolve_installed(&app, candidate).await {
+        Ok(Some(descriptor)) => descriptor,
+        Ok(None) => {
+            update_agent_selection(&app, operation_id, |selection| {
+                selection.stage = AgentSelectionStage::Unselected;
+                selection.message = Some(format!(
+                    "{} will be downloaded when selected.",
+                    agent_display_name(candidate)
+                ));
+                selection.error = None;
+            })?;
+            return current_agent_selection(&app);
+        }
+        Err(error) => {
+            update_agent_selection(&app, operation_id, |selection| {
+                selection.stage = AgentSelectionStage::Failed;
+                selection.message = None;
+                selection.error = Some(error);
+            })?;
+            return current_agent_selection(&app);
+        }
+    };
+    update_agent_selection(&app, operation_id, |selection| {
+        selection.message = Some(format!(
+            "Checking {} authentication…",
+            agent_display_name(candidate)
+        ));
+    })?;
+    finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
+}
+
+async fn finish_agent_selection_probe(
+    app: AppHandle,
+    operation_id: Uuid,
+    candidate: AgentKind,
+    descriptor: AgentDescriptor,
+) -> Result<AgentSelectionState, String> {
+    let working_directory = app.state::<AppState>().config()?.working_directory;
     match probe_agent_authentication(app.clone(), operation_id, descriptor, working_directory).await
     {
         Ok(()) => {
@@ -234,7 +254,7 @@ pub async fn authenticate_selection(
         },
     )?;
 
-    let descriptor = match AgentDescriptor::resolve(&app, candidate) {
+    let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
             update_agent_selection(&app, operation_id, |selection| {
@@ -312,7 +332,7 @@ async fn logout_selection(
         },
     )?;
 
-    let descriptor = match AgentDescriptor::resolve(&app, candidate) {
+    let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
             update_agent_selection(&app, operation_id, |selection| {
@@ -450,6 +470,8 @@ fn claude_cli_authentication_status(descriptor: &AgentDescriptor) -> Result<bool
     let mut child = Command::new(&descriptor.command)
         .args(&descriptor.args)
         .args(["--cli", "auth", "status", "--json"])
+        .env("NODE_OPTIONS", "")
+        .env("NODE_PATH", "")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -590,7 +612,7 @@ pub async fn transform_current(
 ) -> Result<LensState, String> {
     let (operation_id, input, config) = current_transform_input(&app, expected_operation_id)?;
     let agent_kind = config.agent;
-    let descriptor = match AgentDescriptor::resolve(&app, config.agent) {
+    let descriptor = match AgentDescriptor::resolve(&app, config.agent).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
             update_lens_state(&app, operation_id, |lens| {
@@ -670,7 +692,7 @@ pub async fn authenticate_current(
         return Err("the current Lens operation is not awaiting authentication".into());
     }
     let config = app.state::<AppState>().config()?;
-    let descriptor = match AgentDescriptor::resolve(&app, config.agent) {
+    let descriptor = match AgentDescriptor::resolve(&app, config.agent).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
             update_lens_state(&app, operation_id, |lens| {
@@ -1243,12 +1265,30 @@ mod tests {
         );
 
         assert_eq!(
-            required_safe_mode(CODEX_ADAPTER_NAME, "read-only", Some(&modes))
+            required_safe_mode("@agentclientprotocol/codex-acp", "read-only", Some(&modes))
                 .expect("advertised safe mode")
                 .to_string(),
             "read-only"
         );
-        assert!(required_safe_mode(CODEX_ADAPTER_NAME, "plan", Some(&modes)).is_err());
-        assert!(required_safe_mode(CODEX_ADAPTER_NAME, "read-only", None).is_err());
+        assert!(
+            required_safe_mode("@agentclientprotocol/codex-acp", "plan", Some(&modes)).is_err()
+        );
+        assert!(required_safe_mode("@agentclientprotocol/codex-acp", "read-only", None).is_err());
+    }
+
+    #[test]
+    fn managed_node_launch_overrides_inherited_module_injection() {
+        let descriptor = AgentDescriptor {
+            kind: AgentKind::Codex,
+            adapter_name: "@agentclientprotocol/codex-acp",
+            adapter_version: "1.6.2",
+            safe_mode_id: "read-only",
+            command: PathBuf::from("/managed/node"),
+            args: vec!["/managed/codex-acp.js".into()],
+        };
+        let config = serde_json::to_value(descriptor.process().config()).unwrap();
+
+        assert_eq!(config["env"]["NODE_OPTIONS"], "");
+        assert_eq!(config["env"]["NODE_PATH"], "");
     }
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSelectionStage, LensStage, LensState } from "./types";
+import type { AgentRuntimeStage, AgentSelectionStage, LensStage, LensState } from "./types";
 import {
+  AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
+  isAgentRuntimeActive,
   lensTranslationText,
   selectedAgent,
   showsLensProgress,
@@ -11,6 +13,26 @@ import {
 } from "./view-model";
 
 describe("PersonalLens view model", () => {
+  it("defines every managed Agent runtime stage and its active states", () => {
+    const stages: AgentRuntimeStage[] = [
+      "not_installed",
+      "resolving",
+      "downloading",
+      "verifying",
+      "installing",
+      "ready",
+      "failed",
+    ];
+
+    expect(Object.keys(AGENT_RUNTIME_LABEL)).toEqual(stages);
+    expect(stages.filter(isAgentRuntimeActive)).toEqual([
+      "resolving",
+      "downloading",
+      "verifying",
+      "installing",
+    ]);
+  });
+
   it("defines every Agent selection stage and enables Lens selection only when selected", () => {
     const stages: AgentSelectionStage[] = [
       "unselected",

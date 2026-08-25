@@ -161,6 +161,52 @@ pub enum AgentKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeStage {
+    NotInstalled,
+    Resolving,
+    Downloading,
+    Verifying,
+    Installing,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRuntimeState {
+    #[serde(default)]
+    pub operation_id: Option<Uuid>,
+    pub stage: AgentRuntimeStage,
+    #[serde(default)]
+    pub agent: Option<AgentKind>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl Default for AgentRuntimeState {
+    fn default() -> Self {
+        Self {
+            operation_id: None,
+            stage: AgentRuntimeStage::NotInstalled,
+            agent: None,
+            version: None,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            message: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentAuthMethodKind {
     Agent,
     Terminal,
@@ -316,6 +362,7 @@ impl Default for LensState {
 pub struct AppSnapshot {
     pub revision: u32,
     pub config: AppConfig,
+    pub agent_runtime: AgentRuntimeState,
     pub agent_selection: AgentSelectionState,
     pub lens: LensState,
 }
@@ -325,6 +372,7 @@ impl AppSnapshot {
         Self {
             revision: 0,
             config,
+            agent_runtime: AgentRuntimeState::default(),
             agent_selection: AgentSelectionState::default(),
             lens: LensState::default(),
         }

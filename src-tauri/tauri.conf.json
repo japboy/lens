@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.github.japboy.personallens",
   "build": {
-    "beforeDevCommand": "npm run sidecars:build && npm run dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run sidecars:build && npm run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -20,10 +20,6 @@
     "active": true,
     "category": "Productivity",
     "copyright": "Copyright © 2026 PersonalLens contributors",
-    "resources": {
-      "sidecars/node_modules": "sidecars/node_modules",
-      "sidecars/runtime/node-aarch64-apple-darwin": "sidecars/runtime/node-aarch64-apple-darwin"
-    },
     "targets": ["app"],
     "macOS": {
       "minimumSystemVersion": "15.2",

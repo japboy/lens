@@ -84,6 +84,15 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
 .status-ok { color: LinkText; }
 .status-warning, .error { color: MarkText; background: Mark; }
 
+.runtime-status {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.runtime-status progress { width: min(100%, 360px); }
+.runtime-message { color: GrayText; }
+
 .settings-shell footer {
   align-self: end;
   display: flex;

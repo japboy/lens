@@ -94,8 +94,13 @@ impl TrayMenuPresentation {
             select_target_enabled: agent_selection.can_select_lens_target()
                 && !target_selection_active,
             target_selection_active,
-            agent_selection_enabled: agent_selection.stage
-                != crate::model::AgentSelectionStage::SigningOut,
+            agent_selection_enabled: matches!(
+                agent_selection.stage,
+                crate::model::AgentSelectionStage::Unselected
+                    | crate::model::AgentSelectionStage::AuthenticationRequired
+                    | crate::model::AgentSelectionStage::Selected
+                    | crate::model::AgentSelectionStage::Failed
+            ),
             claude_checked: selected == Some(AgentKind::Claude),
             codex_checked: selected == Some(AgentKind::Codex),
             working_directory_text: format!(
@@ -572,7 +577,12 @@ mod tests {
             assert!(!presentation.codex_checked);
             assert_eq!(
                 presentation.agent_selection_enabled,
-                stage != AgentSelectionStage::SigningOut
+                matches!(
+                    stage,
+                    AgentSelectionStage::Unselected
+                        | AgentSelectionStage::AuthenticationRequired
+                        | AgentSelectionStage::Failed
+                )
             );
         }
 

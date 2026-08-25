@@ -15,6 +15,3 @@ ARCHITECTURE.md
 /src-tauri/target/
 /src-tauri/binaries/*-aarch64-apple-darwin
 /src-tauri/binaries/*-x86_64-apple-darwin
-/src-tauri/sidecars/.downloads/
-/src-tauri/sidecars/node_modules/
-/src-tauri/sidecars/runtime/

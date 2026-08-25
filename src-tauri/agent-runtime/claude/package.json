@@ -1,0 +1,9 @@
+{
+  "name": "personal-lens-claude-agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Locked managed runtime inputs for Claude Agent ACP",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.70.0"
+  }
+}
