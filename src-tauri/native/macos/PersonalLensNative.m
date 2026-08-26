@@ -649,14 +649,14 @@ static NSString *PLTrimmedText(NSString *text) {
 
 static void PLAppendTextFragment(
     NSMutableArray<NSString *> *fragments,
-    NSMutableSet<NSString *> *seen,
+    NSMutableSet<NSString *> *seenInNode,
     NSString *candidate,
     NSUInteger maxBytes,
     NSUInteger *textBytes,
     BOOL *truncated
 ) {
     NSString *text = PLTrimmedText(candidate);
-    if (text == nil || [seen containsObject:text] || *truncated) {
+    if (text == nil || [seenInNode containsObject:text] || *truncated) {
         return;
     }
 
@@ -678,7 +678,7 @@ static void PLAppendTextFragment(
         return;
     }
 
-    [seen addObject:text];
+    [seenInNode addObject:text];
     [fragments addObject:text];
     *textBytes += candidateBytes;
 }
@@ -747,7 +747,6 @@ char *pl_extract_window_json(
 
         NSMutableArray *nodes = [NSMutableArray array];
         NSMutableArray<NSString *> *fragments = [NSMutableArray array];
-        NSMutableSet<NSString *> *seenText = [NSMutableSet set];
         NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
         NSMutableArray<NSDictionary *> *queue = [NSMutableArray arrayWithObject:@{
             @"element": (__bridge id)resolvedWindow,
@@ -799,14 +798,18 @@ char *pl_extract_window_json(
             // model helps resolver diagnostics, while excluding root attributes and repeated title
             // descendants ensures a WebView exposing only its chrome is classified as unavailable.
             if (depth > 0) {
+                // AX commonly repeats one semantic value across a node's title, value, and
+                // description attributes. Deduplicate only within this node so equal text on
+                // distinct rows, cells, or list items retains its structural meaning.
+                NSMutableSet<NSString *> *seenInNode = [NSMutableSet set];
                 if (!PLIsWindowChromeText(title, selectedTitle)) {
-                    PLAppendTextFragment(fragments, seenText, title, maxTextBytes, &textBytes, &truncatedText);
+                    PLAppendTextFragment(fragments, seenInNode, title, maxTextBytes, &textBytes, &truncatedText);
                 }
                 if (!PLIsWindowChromeText(value, selectedTitle)) {
-                    PLAppendTextFragment(fragments, seenText, value, maxTextBytes, &textBytes, &truncatedText);
+                    PLAppendTextFragment(fragments, seenInNode, value, maxTextBytes, &textBytes, &truncatedText);
                 }
                 if (!PLIsWindowChromeText(description, selectedTitle)) {
-                    PLAppendTextFragment(fragments, seenText, description, maxTextBytes, &textBytes, &truncatedText);
+                    PLAppendTextFragment(fragments, seenInNode, description, maxTextBytes, &textBytes, &truncatedText);
                 }
             }
             BOOL addedText = fragments.count > fragmentsBefore;
