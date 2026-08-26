@@ -211,10 +211,10 @@ pub fn run() {
                     }
                 });
             }
-            tauri::RunEvent::ExitRequested { api, code, .. } => {
-                if code.is_none() {
-                    api.prevent_exit();
-                }
+            tauri::RunEvent::ExitRequested {
+                api, code: None, ..
+            } => {
+                api.prevent_exit();
             }
             _ => {}
         });

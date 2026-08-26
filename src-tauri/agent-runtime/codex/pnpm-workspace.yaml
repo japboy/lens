@@ -1,0 +1,15 @@
+packages:
+  - "."
+
+minimumReleaseAge: 4320
+minimumReleaseAgeIgnoreMissingTime: false
+minimumReleaseAgeStrict: true
+trustPolicy: no-downgrade
+trustLockfile: false
+blockExoticSubdeps: true
+strictDepBuilds: true
+allowBuilds: {}
+nodeVersion: 24.19.0
+engineStrict: true
+strictPeerDependencies: true
+saveExact: true

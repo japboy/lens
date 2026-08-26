@@ -5,7 +5,7 @@ use crate::{
 use flate2::read::GzDecoder;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use std::{
     fs::{self, File},
     path::{Component, Path, PathBuf},
@@ -26,17 +26,30 @@ const NODE_ARCHIVE_URL: &str = "https://nodejs.org/dist/v24.19.0/node-v24.19.0-d
 const NODE_ARCHIVE_SHA256: &str =
     "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d";
 const NODE_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const PNPM_VERSION: &str = "11.22.0";
+const PNPM_ARCHIVE_NAME: &str = "pnpm-11.22.0.tgz";
+const PNPM_ARCHIVE_ROOT: &str = "package";
+const PNPM_ARCHIVE_URL: &str = "https://npm.flatt.tech/pnpm/-/pnpm-11.22.0.tgz";
+const PNPM_ARCHIVE_SHA512: &str = "1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621";
+const PNPM_CLI_SHA256: &str = "ff3224d46b47fbb24a7e9fe15fededef7e00892d07d4e376b6762d4899906bfd";
+const PNPM_DIST_SHA256: &str = "a8533087155540515892e6f022ba5c673bb2e62fcbcc124b36ba2e8938ccc3da";
+const PNPM_ARCHIVE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const TAKUMI_GUARD_REGISTRY: &str = "https://npm.flatt.tech/";
 const REGISTRY_MAX_BYTES: usize = 2 * 1024 * 1024;
-const INSTALL_RECORD_VERSION: u32 = 2;
+const AGENT_INSTALL_RECORD_VERSION: u32 = 3;
+const NODE_INSTALL_RECORD_VERSION: u32 = 2;
+const PNPM_INSTALL_RECORD_VERSION: u32 = 1;
 const NODE_TEAM_ID: &str = "HX7739G8FX";
 const NODE_SIGNING_IDENTIFIER: &str = "node";
 const CLAUDE_TEAM_ID: &str = "Q6L2SF6YDW";
 const OPENAI_TEAM_ID: &str = "2DC432GLL2";
 
 const CLAUDE_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/claude/package.json");
-const CLAUDE_PACKAGE_LOCK: &[u8] = include_bytes!("../agent-runtime/claude/package-lock.json");
+const CLAUDE_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/claude/pnpm-lock.yaml");
+const CLAUDE_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/claude/pnpm-workspace.yaml");
 const CODEX_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/codex/package.json");
-const CODEX_PACKAGE_LOCK: &[u8] = include_bytes!("../agent-runtime/codex/package-lock.json");
+const CODEX_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-lock.yaml");
+const CODEX_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-workspace.yaml");
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAgentRuntime {
@@ -65,13 +78,14 @@ struct AgentRuntimePolicy {
     adapter_version_output: &'static str,
     safe_mode_id: &'static str,
     package_json: &'static [u8],
-    package_lock: &'static [u8],
+    pnpm_lock: &'static [u8],
+    pnpm_workspace: &'static [u8],
     entrypoint: &'static str,
     signed_executables: &'static [SignedExecutablePolicy],
 }
 
 const CLAUDE_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[SignedExecutablePolicy {
-    relative_path: "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
+    relative_path: "node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-darwin-arm64@0.3.232/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
     team_id: CLAUDE_TEAM_ID,
     signing_identifier: "com.anthropic.claude-code",
     label: "Claude runtime",
@@ -79,14 +93,13 @@ const CLAUDE_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[SignedExecutableP
 
 const CODEX_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[
     SignedExecutablePolicy {
-        relative_path:
-            "node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+        relative_path: "node_modules/.pnpm/@openai+codex@0.148.0-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex",
         team_id: OPENAI_TEAM_ID,
         signing_identifier: "codex",
         label: "Codex runtime",
     },
     SignedExecutablePolicy {
-        relative_path: "node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
+        relative_path: "node_modules/.pnpm/@openai+codex@0.148.0-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
         team_id: OPENAI_TEAM_ID,
         signing_identifier: "codex-code-mode-host",
         label: "Codex code-mode host",
@@ -103,7 +116,8 @@ fn policy(kind: AgentKind) -> AgentRuntimePolicy {
             adapter_version_output: "0.70.0",
             safe_mode_id: "plan",
             package_json: CLAUDE_PACKAGE_JSON,
-            package_lock: CLAUDE_PACKAGE_LOCK,
+            pnpm_lock: CLAUDE_PNPM_LOCK,
+            pnpm_workspace: CLAUDE_PNPM_WORKSPACE,
             entrypoint: "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
             signed_executables: CLAUDE_SIGNED_EXECUTABLES,
         },
@@ -115,7 +129,8 @@ fn policy(kind: AgentKind) -> AgentRuntimePolicy {
             adapter_version_output: "@agentclientprotocol/codex-acp 1.6.2",
             safe_mode_id: "read-only",
             package_json: CODEX_PACKAGE_JSON,
-            package_lock: CODEX_PACKAGE_LOCK,
+            pnpm_lock: CODEX_PNPM_LOCK,
+            pnpm_workspace: CODEX_PNPM_WORKSPACE,
             entrypoint: "node_modules/@agentclientprotocol/codex-acp/dist/index.js",
             signed_executables: CODEX_SIGNED_EXECUTABLES,
         },
@@ -154,7 +169,10 @@ struct InstallRecord {
     adapter_version: String,
     node_version: String,
     node_archive_sha256: String,
-    package_lock_sha256: String,
+    pnpm_version: String,
+    pnpm_archive_sha512: String,
+    pnpm_lock_sha256: String,
+    pnpm_workspace_sha256: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +181,16 @@ struct NodeInstallRecord {
     node_version: String,
     node_target: String,
     archive_sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct PnpmInstallRecord {
+    schema_version: u32,
+    pnpm_version: String,
+    registry: String,
+    archive_sha512: String,
+    cli_sha256: String,
+    dist_sha256: String,
 }
 
 pub async fn resolve(app: &AppHandle, kind: AgentKind) -> Result<ResolvedAgentRuntime, String> {
@@ -264,7 +292,9 @@ async fn resolve_inner(
     fs::create_dir_all(&root)
         .map_err(|error| format!("unable to create managed runtime directory: {error}"))?;
     let node_root = ensure_node_runtime(app, &root, operation_id).await?;
-    let agent_root = ensure_agent_runtime(app, &root, &node_root, approved, operation_id).await?;
+    let pnpm_root = ensure_pnpm_runtime(app, &root, &node_root, operation_id).await?;
+    let agent_root =
+        ensure_agent_runtime(app, &root, &node_root, &pnpm_root, approved, operation_id).await?;
     verify_install_record(&agent_root, approved)?;
     let runtime = verify_runtime_paths(&node_root, &agent_root, approved).await?;
     publish_ready(app, operation_id, approved)?;
@@ -321,6 +351,10 @@ fn node_install_root(root: &Path) -> PathBuf {
         .join(format!("v{NODE_VERSION}-{NODE_TARGET}"))
 }
 
+fn pnpm_install_root(root: &Path) -> PathBuf {
+    root.join("pnpm").join(format!("v{PNPM_VERSION}"))
+}
+
 fn agent_install_root(root: &Path, approved: AgentRuntimePolicy) -> PathBuf {
     root.join("agents")
         .join(approved.registry_id)
@@ -353,21 +387,25 @@ fn verify_install_record(agent_root: &Path, approved: AgentRuntimePolicy) -> Res
         .map_err(|error| format!("managed Agent install record is unavailable: {error}"))?;
     let record = serde_json::from_slice::<InstallRecord>(&record_bytes)
         .map_err(|error| format!("managed Agent install record is invalid: {error}"))?;
-    if record.schema_version != INSTALL_RECORD_VERSION
+    if record.schema_version != AGENT_INSTALL_RECORD_VERSION
         || record.registry_id != approved.registry_id
         || record.adapter_name != approved.adapter_name
         || record.adapter_version != approved.adapter_version
         || record.node_version != NODE_VERSION
         || record.node_archive_sha256 != NODE_ARCHIVE_SHA256
-        || record.package_lock_sha256 != sha256_bytes(approved.package_lock)
+        || record.pnpm_version != PNPM_VERSION
+        || record.pnpm_archive_sha512 != PNPM_ARCHIVE_SHA512
+        || record.pnpm_lock_sha256 != sha256_bytes(approved.pnpm_lock)
+        || record.pnpm_workspace_sha256 != sha256_bytes(approved.pnpm_workspace)
     {
         return Err("managed Agent install record does not match the approved policy".into());
     }
     if fs::read(agent_root.join("package.json")).ok().as_deref() != Some(approved.package_json)
-        || fs::read(agent_root.join("package-lock.json"))
+        || fs::read(agent_root.join("pnpm-lock.yaml")).ok().as_deref() != Some(approved.pnpm_lock)
+        || fs::read(agent_root.join("pnpm-workspace.yaml"))
             .ok()
             .as_deref()
-            != Some(approved.package_lock)
+            != Some(approved.pnpm_workspace)
     {
         return Err("managed Agent package policy files were modified".into());
     }
@@ -524,11 +562,17 @@ async fn ensure_node_runtime(
             runtime.message = Some("Verifying and extracting Node.js…".into());
         })?;
         let extraction_root = staging_root.join("extracted");
-        extract_node_archive(&archive_path, &extraction_root).await?;
+        extract_approved_archive(
+            &archive_path,
+            &extraction_root,
+            NODE_ARCHIVE_ROOT,
+            "Node.js",
+        )
+        .await?;
         let extracted_node = extraction_root.join(NODE_ARCHIVE_ROOT);
         verify_node_runtime_payload(&extracted_node).await?;
         let node_record = NodeInstallRecord {
-            schema_version: INSTALL_RECORD_VERSION,
+            schema_version: NODE_INSTALL_RECORD_VERSION,
             node_version: NODE_VERSION.into(),
             node_target: NODE_TARGET.into(),
             archive_sha256: NODE_ARCHIVE_SHA256.into(),
@@ -566,7 +610,7 @@ async fn verify_node_runtime(node_root: &Path) -> Result<(), String> {
         .map_err(|error| format!("managed Node install record is unavailable: {error}"))?;
     let record = serde_json::from_slice::<NodeInstallRecord>(&record_bytes)
         .map_err(|error| format!("managed Node install record is invalid: {error}"))?;
-    if record.schema_version != INSTALL_RECORD_VERSION
+    if record.schema_version != NODE_INSTALL_RECORD_VERSION
         || record.node_version != NODE_VERSION
         || record.node_target != NODE_TARGET
         || record.archive_sha256 != NODE_ARCHIVE_SHA256
@@ -578,11 +622,6 @@ async fn verify_node_runtime(node_root: &Path) -> Result<(), String> {
 
 async fn verify_node_runtime_payload(node_root: &Path) -> Result<(), String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
-    canonical_managed_file(
-        node_root,
-        &node_root.join("lib/node_modules/npm/bin/npm-cli.js"),
-        "npm runtime",
-    )?;
     verify_code_signature(&node, NODE_TEAM_ID, NODE_SIGNING_IDENTIFIER, "Node runtime").await?;
     verify_version_command(&node, &["--version"], &format!("v{NODE_VERSION}"), "Node").await
 }
@@ -640,7 +679,8 @@ async fn download_node_archive(
     update_agent_runtime(app, operation_id, |runtime| {
         runtime.downloaded_bytes = downloaded
     })?;
-    let actual = hex_digest(hasher.finalize().as_slice());
+    let digest = hasher.finalize();
+    let actual = hex_digest(&digest);
     if actual != NODE_ARCHIVE_SHA256 {
         return Err(format!(
             "Node.js archive checksum mismatch: expected {NODE_ARCHIVE_SHA256}, got {actual}"
@@ -649,56 +689,246 @@ async fn download_node_archive(
     Ok(())
 }
 
-async fn extract_node_archive(archive: &Path, destination: &Path) -> Result<(), String> {
+async fn extract_approved_archive(
+    archive: &Path,
+    destination: &Path,
+    expected_root: &'static str,
+    label: &'static str,
+) -> Result<(), String> {
     let archive = archive.to_path_buf();
     let destination = destination.to_path_buf();
-    tokio::task::spawn_blocking(move || extract_node_archive_blocking(&archive, &destination))
-        .await
-        .map_err(|error| format!("Node.js extraction task failed: {error}"))?
+    tokio::task::spawn_blocking(move || {
+        extract_approved_archive_blocking(&archive, &destination, expected_root, label)
+    })
+    .await
+    .map_err(|error| format!("{label} extraction task failed: {error}"))?
 }
 
-fn extract_node_archive_blocking(archive: &Path, destination: &Path) -> Result<(), String> {
+fn extract_approved_archive_blocking(
+    archive: &Path,
+    destination: &Path,
+    expected_root: &str,
+    label: &str,
+) -> Result<(), String> {
     fs::create_dir_all(destination)
-        .map_err(|error| format!("unable to create Node.js extraction directory: {error}"))?;
+        .map_err(|error| format!("unable to create {label} extraction directory: {error}"))?;
     let file =
-        File::open(archive).map_err(|error| format!("unable to open Node.js archive: {error}"))?;
+        File::open(archive).map_err(|error| format!("unable to open {label} archive: {error}"))?;
     let decoder = GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive
         .entries()
-        .map_err(|error| format!("unable to read Node.js archive: {error}"))?;
+        .map_err(|error| format!("unable to read {label} archive: {error}"))?;
     for entry in entries {
-        let mut entry = entry.map_err(|error| format!("invalid Node.js archive entry: {error}"))?;
+        let mut entry = entry.map_err(|error| format!("invalid {label} archive entry: {error}"))?;
         let path = entry
             .path()
-            .map_err(|error| format!("invalid Node.js archive path: {error}"))?
+            .map_err(|error| format!("invalid {label} archive path: {error}"))?
             .into_owned();
-        validate_archive_path(&path, NODE_ARCHIVE_ROOT)?;
+        validate_archive_path(&path, expected_root)?;
         let entry_type = entry.header().entry_type();
         if !entry_type.is_file() && !entry_type.is_dir() && !entry_type.is_symlink() {
             return Err(format!(
-                "Node.js archive contains an unsupported entry type: {}",
+                "{label} archive contains an unsupported entry type: {}",
                 path.display()
             ));
         }
         if let Some(link) = entry
             .link_name()
-            .map_err(|error| format!("invalid Node.js archive link: {error}"))?
+            .map_err(|error| format!("invalid {label} archive link: {error}"))?
         {
             if !entry_type.is_symlink() {
                 return Err(format!(
-                    "Node.js archive contains an unsupported link type: {}",
+                    "{label} archive contains an unsupported link type: {}",
                     path.display()
                 ));
             }
-            validate_archive_link(&path, &link, NODE_ARCHIVE_ROOT)?;
+            validate_archive_link(&path, &link, expected_root)?;
         }
         if !entry
             .unpack_in(destination)
-            .map_err(|error| format!("unable to extract Node.js archive entry: {error}"))?
+            .map_err(|error| format!("unable to extract {label} archive entry: {error}"))?
         {
-            return Err("Node.js archive entry escapes the extraction directory".into());
+            return Err(format!(
+                "{label} archive entry escapes the extraction directory"
+            ));
         }
+    }
+    Ok(())
+}
+
+async fn ensure_pnpm_runtime(
+    app: &AppHandle,
+    root: &Path,
+    node_root: &Path,
+    operation_id: Uuid,
+) -> Result<PathBuf, String> {
+    let final_root = pnpm_install_root(root);
+    if final_root.is_dir() {
+        match verify_pnpm_runtime(node_root, &final_root).await {
+            Ok(()) => return Ok(final_root),
+            Err(_) => quarantine_existing(root, &final_root, "pnpm")?,
+        }
+    }
+
+    update_agent_runtime(app, operation_id, |runtime| {
+        runtime.stage = AgentRuntimeStage::Downloading;
+        runtime.message = Some(format!(
+            "Downloading pnpm {PNPM_VERSION} from Takumi Guard…"
+        ));
+        runtime.downloaded_bytes = 0;
+        runtime.total_bytes = None;
+    })?;
+
+    let staging_root = root.join(".staging").join(Uuid::new_v4().to_string());
+    let archive_path = staging_root.join(PNPM_ARCHIVE_NAME);
+    fs::create_dir_all(&staging_root)
+        .map_err(|error| format!("unable to create pnpm staging directory: {error}"))?;
+    let result = async {
+        download_pnpm_archive(app, operation_id, &archive_path).await?;
+        update_agent_runtime(app, operation_id, |runtime| {
+            runtime.stage = AgentRuntimeStage::Verifying;
+            runtime.message = Some("Verifying and extracting pnpm…".into());
+        })?;
+        let extraction_root = staging_root.join("extracted");
+        extract_approved_archive(&archive_path, &extraction_root, PNPM_ARCHIVE_ROOT, "pnpm")
+            .await?;
+        let extracted_pnpm = extraction_root.join(PNPM_ARCHIVE_ROOT);
+        verify_pnpm_runtime_payload(node_root, &extracted_pnpm).await?;
+        let pnpm_record = PnpmInstallRecord {
+            schema_version: PNPM_INSTALL_RECORD_VERSION,
+            pnpm_version: PNPM_VERSION.into(),
+            registry: TAKUMI_GUARD_REGISTRY.into(),
+            archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+            cli_sha256: PNPM_CLI_SHA256.into(),
+            dist_sha256: PNPM_DIST_SHA256.into(),
+        };
+        let pnpm_record = serde_json::to_vec_pretty(&pnpm_record)
+            .map_err(|error| format!("unable to serialize pnpm install record: {error}"))?;
+        fs::write(
+            extracted_pnpm.join("personal-lens-pnpm-runtime.json"),
+            pnpm_record,
+        )
+        .map_err(|error| format!("unable to write pnpm install record: {error}"))?;
+        verify_pnpm_runtime(node_root, &extracted_pnpm).await?;
+        let parent = final_root
+            .parent()
+            .ok_or_else(|| "managed pnpm path has no parent".to_string())?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("unable to create managed pnpm directory: {error}"))?;
+        match fs::rename(&extracted_pnpm, &final_root) {
+            Ok(()) => Ok(final_root.clone()),
+            Err(_error) if final_root.is_dir() => {
+                verify_pnpm_runtime(node_root, &final_root).await?;
+                Ok(final_root.clone())
+            }
+            Err(error) => Err(format!("unable to activate managed pnpm runtime: {error}")),
+        }
+    }
+    .await;
+    cleanup_staging(root, &staging_root);
+    result
+}
+
+async fn verify_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
+    let record_path = pnpm_root.join("personal-lens-pnpm-runtime.json");
+    let record_bytes = fs::read(&record_path)
+        .map_err(|error| format!("managed pnpm install record is unavailable: {error}"))?;
+    let record = serde_json::from_slice::<PnpmInstallRecord>(&record_bytes)
+        .map_err(|error| format!("managed pnpm install record is invalid: {error}"))?;
+    if record.schema_version != PNPM_INSTALL_RECORD_VERSION
+        || record.pnpm_version != PNPM_VERSION
+        || record.registry != TAKUMI_GUARD_REGISTRY
+        || record.archive_sha512 != PNPM_ARCHIVE_SHA512
+        || record.cli_sha256 != PNPM_CLI_SHA256
+        || record.dist_sha256 != PNPM_DIST_SHA256
+    {
+        return Err("managed pnpm runtime does not match the approved install record".into());
+    }
+    verify_pnpm_runtime_payload(node_root, pnpm_root).await
+}
+
+async fn verify_pnpm_runtime_payload(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
+    let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
+    let pnpm_cli = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
+    let pnpm_dist = canonical_managed_file(
+        pnpm_root,
+        &pnpm_root.join("dist/pnpm.mjs"),
+        "pnpm distribution",
+    )?;
+    if sha256_file(&pnpm_cli, "pnpm CLI")? != PNPM_CLI_SHA256
+        || sha256_file(&pnpm_dist, "pnpm distribution")? != PNPM_DIST_SHA256
+    {
+        return Err("managed pnpm executable files were modified".into());
+    }
+    verify_version_command(
+        &node,
+        &[pnpm_cli.to_string_lossy().as_ref(), "--version"],
+        PNPM_VERSION,
+        "pnpm",
+    )
+    .await
+}
+
+async fn download_pnpm_archive(
+    app: &AppHandle,
+    operation_id: Uuid,
+    destination: &Path,
+) -> Result<(), String> {
+    let client = http_client()?;
+    let mut response = client
+        .get(PNPM_ARCHIVE_URL)
+        .send()
+        .await
+        .map_err(|error| format!("unable to download pnpm from Takumi Guard: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Takumi Guard pnpm download returned an error: {error}"))?;
+    let total = response.content_length();
+    if total.is_some_and(|size| size > PNPM_ARCHIVE_MAX_BYTES) {
+        return Err("pnpm archive exceeds the approved size limit".into());
+    }
+    update_agent_runtime(app, operation_id, |runtime| runtime.total_bytes = total)?;
+
+    let mut file = tokio::fs::File::create(destination)
+        .await
+        .map_err(|error| format!("unable to create pnpm download: {error}"))?;
+    let mut hasher = Sha512::new();
+    let mut downloaded = 0_u64;
+    let mut last_published = 0_u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("unable to read pnpm download: {error}"))?
+    {
+        downloaded = downloaded
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| "pnpm download size overflow".to_string())?;
+        if downloaded > PNPM_ARCHIVE_MAX_BYTES {
+            return Err("pnpm archive exceeds the approved size limit".into());
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("unable to write pnpm download: {error}"))?;
+        hasher.update(&chunk);
+        if downloaded.saturating_sub(last_published) >= 1024 * 1024 {
+            update_agent_runtime(app, operation_id, |runtime| {
+                runtime.downloaded_bytes = downloaded
+            })?;
+            last_published = downloaded;
+        }
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("unable to flush pnpm download: {error}"))?;
+    update_agent_runtime(app, operation_id, |runtime| {
+        runtime.downloaded_bytes = downloaded
+    })?;
+    let digest = hasher.finalize();
+    let actual = hex_digest(&digest);
+    if actual != PNPM_ARCHIVE_SHA512 {
+        return Err(format!(
+            "pnpm archive checksum mismatch: expected {PNPM_ARCHIVE_SHA512}, got {actual}"
+        ));
     }
     Ok(())
 }
@@ -707,6 +937,7 @@ async fn ensure_agent_runtime(
     app: &AppHandle,
     root: &Path,
     node_root: &Path,
+    pnpm_root: &Path,
     approved: AgentRuntimePolicy,
     operation_id: Uuid,
 ) -> Result<PathBuf, String> {
@@ -727,7 +958,7 @@ async fn ensure_agent_runtime(
     update_agent_runtime(app, operation_id, |runtime| {
         runtime.stage = AgentRuntimeStage::Installing;
         runtime.message = Some(format!(
-            "Installing {} {} from its approved npm dependency lock…",
+            "Installing {} {} from its approved pnpm dependency lock through Takumi Guard…",
             display_name(approved.kind),
             approved.adapter_version
         ));
@@ -737,23 +968,32 @@ async fn ensure_agent_runtime(
 
     let staging_root = root.join(".staging").join(Uuid::new_v4().to_string());
     let staged_agent = staging_root.join("agent");
-    let npm_cache = staging_root.join("npm-cache");
+    let pnpm_store = staging_root.join("pnpm-store");
     fs::create_dir_all(&staged_agent)
         .map_err(|error| format!("unable to create Agent staging directory: {error}"))?;
     fs::write(staged_agent.join("package.json"), approved.package_json)
         .map_err(|error| format!("unable to write Agent package policy: {error}"))?;
+    fs::write(staged_agent.join("pnpm-lock.yaml"), approved.pnpm_lock)
+        .map_err(|error| format!("unable to write Agent dependency lock: {error}"))?;
     fs::write(
-        staged_agent.join("package-lock.json"),
-        approved.package_lock,
+        staged_agent.join("pnpm-workspace.yaml"),
+        approved.pnpm_workspace,
     )
-    .map_err(|error| format!("unable to write Agent dependency lock: {error}"))?;
+    .map_err(|error| format!("unable to write Agent pnpm policy: {error}"))?;
     fs::write(staging_root.join("blank-user-npmrc"), [])
-        .map_err(|error| format!("unable to create npm policy file: {error}"))?;
+        .map_err(|error| format!("unable to create pnpm policy file: {error}"))?;
     fs::write(staging_root.join("blank-global-npmrc"), [])
-        .map_err(|error| format!("unable to create npm policy file: {error}"))?;
+        .map_err(|error| format!("unable to create pnpm policy file: {error}"))?;
 
     let result = async {
-        run_npm_ci(node_root, &staged_agent, &npm_cache, &staging_root).await?;
+        run_pnpm_install(
+            node_root,
+            pnpm_root,
+            &staged_agent,
+            &pnpm_store,
+            &staging_root,
+        )
+        .await?;
         verify_runtime_paths(node_root, &staged_agent, approved).await?;
         let record = serde_json::to_vec_pretty(&install_record(approved))
             .map_err(|error| format!("unable to serialize Agent install record: {error}"))?;
@@ -778,49 +1018,46 @@ async fn ensure_agent_runtime(
     result
 }
 
-async fn run_npm_ci(
+async fn run_pnpm_install(
     node_root: &Path,
+    pnpm_root: &Path,
     agent_root: &Path,
-    npm_cache: &Path,
+    pnpm_store: &Path,
     staging_root: &Path,
 ) -> Result<(), String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
-    let npm_cli = canonical_managed_file(
-        node_root,
-        &node_root.join("lib/node_modules/npm/bin/npm-cli.js"),
-        "npm runtime",
-    )?;
+    let pnpm_cli = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
     let user_config = staging_root.join("blank-user-npmrc");
     let global_config = staging_root.join("blank-global-npmrc");
     let future = Command::new(&node)
-        .arg(&npm_cli)
+        .arg(&pnpm_cli)
         .args([
-            "ci",
-            "--omit=dev",
-            "--ignore-scripts",
-            "--no-audit",
-            "--no-fund",
-            "--registry=https://registry.npmjs.org/",
+            "install",
+            "--prod",
+            "--frozen-lockfile",
+            "--registry=https://npm.flatt.tech/",
         ])
-        .arg(format!("--cache={}", npm_cache.display()))
-        .arg(format!("--userconfig={}", user_config.display()))
-        .arg(format!("--globalconfig={}", global_config.display()))
+        .arg(format!("--store-dir={}", pnpm_store.display()))
         .current_dir(agent_root)
         .env("NODE_OPTIONS", "")
         .env("NODE_PATH", "")
         .env("NODE_TLS_REJECT_UNAUTHORIZED", "1")
+        .env("PNPM_HOME", "")
+        .env("COREPACK_HOME", "")
+        .env("NPM_CONFIG_USERCONFIG", &user_config)
+        .env("NPM_CONFIG_GLOBALCONFIG", &global_config)
         .env("npm_config_node_options", "")
         .env("npm_config_update_notifier", "false")
-        .env("npm_config_ignore_scripts", "true")
+        .env("npm_config_registry", TAKUMI_GUARD_REGISTRY)
         .stdin(Stdio::null())
         .output();
     let output = tokio::time::timeout(Duration::from_secs(600), future)
         .await
-        .map_err(|_| "managed Agent npm installation timed out".to_string())?
-        .map_err(|error| format!("unable to start managed Agent npm installation: {error}"))?;
+        .map_err(|_| "managed Agent pnpm installation timed out".to_string())?
+        .map_err(|error| format!("unable to start managed Agent pnpm installation: {error}"))?;
     if !output.status.success() {
         return Err(format!(
-            "managed Agent npm installation failed: {}",
+            "managed Agent pnpm installation failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
@@ -829,13 +1066,16 @@ async fn run_npm_ci(
 
 fn install_record(approved: AgentRuntimePolicy) -> InstallRecord {
     InstallRecord {
-        schema_version: INSTALL_RECORD_VERSION,
+        schema_version: AGENT_INSTALL_RECORD_VERSION,
         registry_id: approved.registry_id.into(),
         adapter_name: approved.adapter_name.into(),
         adapter_version: approved.adapter_version.into(),
         node_version: NODE_VERSION.into(),
         node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
-        package_lock_sha256: sha256_bytes(approved.package_lock),
+        pnpm_version: PNPM_VERSION.into(),
+        pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+        pnpm_lock_sha256: sha256_bytes(approved.pnpm_lock),
+        pnpm_workspace_sha256: sha256_bytes(approved.pnpm_workspace),
     }
 }
 
@@ -875,6 +1115,8 @@ async fn verify_version_command(
         .args(args)
         .env("NODE_OPTIONS", "")
         .env("NODE_PATH", "")
+        .env("PNPM_HOME", "")
+        .env("COREPACK_HOME", "")
         .stdin(Stdio::null())
         .output();
     let output = tokio::time::timeout(Duration::from_secs(30), future)
@@ -910,13 +1152,13 @@ fn canonical_managed_file(root: &Path, path: &Path, label: &str) -> Result<PathB
 fn validate_archive_path(path: &Path, expected_root: &str) -> Result<(), String> {
     let normalized = normalize_relative(path).ok_or_else(|| {
         format!(
-            "Node.js archive contains an unsafe path: {}",
+            "managed runtime archive contains an unsafe path: {}",
             path.display()
         )
     })?;
     if normalized.components().next() != Some(Component::Normal(expected_root.as_ref())) {
         return Err(format!(
-            "Node.js archive entry is outside the approved root: {}",
+            "managed runtime archive entry is outside the approved root: {}",
             path.display()
         ));
     }
@@ -926,20 +1168,20 @@ fn validate_archive_path(path: &Path, expected_root: &str) -> Result<(), String>
 fn validate_archive_link(path: &Path, link: &Path, expected_root: &str) -> Result<(), String> {
     if link.is_absolute() {
         return Err(format!(
-            "Node.js archive contains an absolute link: {}",
+            "managed runtime archive contains an absolute link: {}",
             path.display()
         ));
     }
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let resolved = normalize_relative(&parent.join(link)).ok_or_else(|| {
         format!(
-            "Node.js archive link escapes the approved root: {}",
+            "managed runtime archive link escapes the approved root: {}",
             path.display()
         )
     })?;
     if resolved.components().next() != Some(Component::Normal(expected_root.as_ref())) {
         return Err(format!(
-            "Node.js archive link escapes the approved root: {}",
+            "managed runtime archive link escapes the approved root: {}",
             path.display()
         ));
     }
@@ -994,7 +1236,13 @@ fn http_client() -> Result<Client, String> {
 fn sha256_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    hex_digest(hasher.finalize().as_slice())
+    let digest = hasher.finalize();
+    hex_digest(&digest)
+}
+
+fn sha256_file(path: &Path, label: &str) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| format!("unable to read {label}: {error}"))?;
+    Ok(sha256_bytes(&bytes))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -1087,11 +1335,13 @@ mod tests {
     fn install_record_is_derived_from_the_embedded_dependency_lock() {
         let approved = policy(AgentKind::Claude);
         let record = install_record(approved);
-        assert_eq!(record.schema_version, 2);
+        assert_eq!(record.schema_version, AGENT_INSTALL_RECORD_VERSION);
         assert_eq!(record.adapter_version, "0.70.0");
+        assert_eq!(record.pnpm_lock_sha256, sha256_bytes(CLAUDE_PNPM_LOCK));
+        assert_eq!(record.pnpm_version, "11.22.0");
         assert_eq!(
-            record.package_lock_sha256,
-            sha256_bytes(CLAUDE_PACKAGE_LOCK)
+            record.pnpm_workspace_sha256,
+            sha256_bytes(CLAUDE_PNPM_WORKSPACE)
         );
     }
 }

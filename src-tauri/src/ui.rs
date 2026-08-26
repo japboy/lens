@@ -33,7 +33,9 @@ fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
     }
 
     let mut rgba = icon.rgba().to_vec();
-    for pixel in rgba.chunks_exact_mut(4) {
+    let (pixels, remainder) = rgba.as_chunks_mut::<4>();
+    debug_assert!(remainder.is_empty());
+    for pixel in pixels {
         pixel[3] /= 2;
     }
     Ok(Image::new_owned(rgba, icon.width(), icon.height()))
@@ -607,16 +609,26 @@ mod tests {
         assert_eq!((icon.width(), icon.height()), (36, 36));
         assert!(
             icon.rgba()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .all(|pixel| pixel[0..3] == [0, 0, 0]),
             "template image RGB channels must be black"
         );
         assert!(
-            icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0),
+            icon.rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[3] == 0),
             "template image must preserve a transparent background"
         );
         assert!(
-            icon.rgba().chunks_exact(4).any(|pixel| pixel[3] > 0),
+            icon.rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[3] > 0),
             "template image must contain visible artwork"
         );
     }
@@ -629,8 +641,10 @@ mod tests {
         assert_eq!((disabled.width(), disabled.height()), (36, 36));
         assert!(enabled
             .rgba()
-            .chunks_exact(4)
-            .zip(disabled.rgba().chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(disabled.rgba().as_chunks::<4>().0.iter())
             .all(|(enabled, disabled)| {
                 enabled[0..3] == disabled[0..3] && disabled[3] == enabled[3] / 2
             }));

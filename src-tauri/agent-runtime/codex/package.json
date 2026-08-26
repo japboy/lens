@@ -3,8 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "description": "Locked managed runtime inputs for Codex ACP",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": "24.19.0",
+    "pnpm": "11.22.0"
+  },
   "dependencies": {
-    "@agentclientprotocol/sdk": "1.3.0",
+    "@agentclientprotocol/sdk": "1.4.0",
     "@agentclientprotocol/codex-acp": "1.6.2"
   }
 }
