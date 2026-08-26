@@ -9,7 +9,12 @@ const LETTER = /\p{Letter}/gu;
 const LATIN_LETTER = /\p{Script=Latin}/u;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
-function repositoryFiles() {
+type ScanResult = {
+  scanned: boolean;
+  violations: string[];
+};
+
+function repositoryFiles(): string[] {
   const output = execFileSync(
     "git",
     ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
@@ -24,19 +29,19 @@ function repositoryFiles() {
     .sort();
 }
 
-function nonLatinLetters(text) {
+function nonLatinLetters(text: string): string[] {
   return [...text.matchAll(LETTER)]
     .map((match) => match[0])
     .filter((letter) => !LATIN_LETTER.test(letter));
 }
 
-function scanFile(relativePath) {
+function scanFile(relativePath: string): ScanResult {
   if (BINARY_EXTENSIONS.has(extname(relativePath).toLowerCase())) {
     return { scanned: false, violations: [] };
   }
 
   const content = readFileSync(resolve(REPOSITORY_ROOT, relativePath));
-  let text;
+  let text: string;
   try {
     text = UTF8_DECODER.decode(content);
   } catch {

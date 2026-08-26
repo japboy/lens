@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "check:language": "node scripts/check-repository-language.mjs",
-    "check:publication": "node scripts/check-publication-boundary.mjs",
+    "build": "pnpm run check:types && vite build",
+    "check:language": "node scripts/check-repository-language.ts",
+    "check:publication": "node scripts/check-publication-boundary.ts",
     "check:quality": "mise exec -- hk check --all",
     "check:rust": "mise exec -- cargo check --manifest-path src-tauri/Cargo.toml --locked",
+    "check:types": "tsc --project tsconfig.json && tsc --project tsconfig.node.json",
     "check:dependencies": "mise exec -- cargo deny --manifest-path src-tauri/Cargo.toml check",
     "check": "pnpm run build && pnpm run check:rust",
     "fix": "mise exec -- hk fix --all",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
+    "@types/node": "24.13.3",
     "jsdom": "30.0.1",
     "oxfmt": "0.64.0",
     "oxlint": "1.79.0",

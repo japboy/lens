@@ -15,7 +15,7 @@ export default defineConfig({
   },
   overrides: [
     {
-      files: ["*.config.ts", "scripts/**/*.mjs"],
+      files: ["*.config.ts", "scripts/**/*.ts"],
       env: {
         browser: false,
         node: true,

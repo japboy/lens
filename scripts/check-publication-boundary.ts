@@ -4,7 +4,7 @@ import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const POLICY_FILE = "scripts/check-publication-boundary.mjs";
+const POLICY_FILE = "scripts/check-publication-boundary.ts";
 const DEFINITION_FILE = ".gitignore";
 const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const IGNORED_RESOURCE_REFERENCES = [
@@ -17,7 +17,7 @@ const IGNORED_RESOURCE_REFERENCES = [
 ];
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
-function repositoryFiles() {
+function repositoryFiles(): string[] {
   const output = execFileSync(
     "git",
     ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
@@ -32,12 +32,12 @@ function repositoryFiles() {
     .sort();
 }
 
-function scanFile(relativePath) {
+function scanFile(relativePath: string): string[] {
   if (relativePath === DEFINITION_FILE || relativePath === POLICY_FILE) return [];
   if (BINARY_EXTENSIONS.has(extname(relativePath).toLowerCase())) return [];
 
   const content = readFileSync(resolve(REPOSITORY_ROOT, relativePath));
-  let text;
+  let text: string;
   try {
     text = UTF8_DECODER.decode(content);
   } catch {

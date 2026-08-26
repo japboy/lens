@@ -64,9 +64,17 @@
       groupName: "ACP dependencies",
     },
     {
-      description: "Frontend build, test, lint, and format tooling updates are grouped.",
-      matchPackageNames: ["typescript", "vite", "vitest", "jsdom", "oxfmt", "oxlint"],
-      groupName: "frontend tooling",
+      description: "JavaScript and TypeScript build, test, lint, format, and type updates are grouped.",
+      matchPackageNames: [
+        "@types/node",
+        "typescript",
+        "vite",
+        "vitest",
+        "jsdom",
+        "oxfmt",
+        "oxlint",
+      ],
+      groupName: "JavaScript and TypeScript tooling",
     },
     {
       description: "hk runtime and configuration updates are grouped.",
