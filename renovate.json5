@@ -10,7 +10,7 @@
 
   // The Renovate host must globally allow unsafe execution for "mise" so it
   // can refresh mise.lock; repository configuration cannot grant that authority.
-  enabledManagers: ["npm", "cargo", "mise", "github-actions"],
+  enabledManagers: ["npm", "cargo", "mise", "github-actions", "custom.regex"],
   timezone: "Asia/Tokyo",
   schedule: ["* 0-5 * * 1"],
   prCreation: "not-pending",
@@ -31,6 +31,22 @@
     schedule: ["* 0-5 * * 1"],
   },
 
+  customManagers: [
+    {
+      customType: "regex",
+      description: "hk Pkl package imports use the mise-managed hk release.",
+      managerFilePatterns: ["/^hk\\.pkl$/"],
+      matchStrings: [
+        "download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/hk@",
+        "hk@(?<currentValue>\\d+\\.\\d+\\.\\d+)#/",
+      ],
+      depNameTemplate: "jdx/hk",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$",
+      versioningTemplate: "semver",
+    },
+  ],
+
   packageRules: [
     {
       description: "npm manifest versions are pinned.",
@@ -48,9 +64,15 @@
       groupName: "ACP dependencies",
     },
     {
-      description: "Frontend build and test tooling updates are grouped.",
-      matchPackageNames: ["typescript", "vite", "vitest", "jsdom"],
+      description: "Frontend build, test, lint, and format tooling updates are grouped.",
+      matchPackageNames: ["typescript", "vite", "vitest", "jsdom", "oxfmt", "oxlint"],
       groupName: "frontend tooling",
+    },
+    {
+      description: "hk runtime and configuration updates are grouped.",
+      matchPackageNames: ["hk", "jdx/hk"],
+      groupName: "hk",
+      automerge: false,
     },
     {
       description: "npm and Cargo patch or pin updates are automatically merged after required checks pass.",

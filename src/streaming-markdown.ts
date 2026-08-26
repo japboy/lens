@@ -78,10 +78,7 @@ export class StreamingMarkdownElement extends HTMLElement {
     }
 
     if (next.phase === "settled") {
-      if (
-        this.appliedState?.phase !== "settled" ||
-        this.appliedState.markdown !== next.markdown
-      ) {
+      if (this.appliedState?.phase !== "settled" || this.appliedState.markdown !== next.markdown) {
         this.renderSettled(next.markdown);
       }
       this.appliedState = { ...next };
@@ -90,9 +87,7 @@ export class StreamingMarkdownElement extends HTMLElement {
       return;
     }
 
-    const appliedText = this.appliedState?.phase === "streaming"
-      ? this.appliedState.markdown
-      : "";
+    const appliedText = this.appliedState?.phase === "streaming" ? this.appliedState.markdown : "";
     const appendOnly = next.markdown.startsWith(appliedText);
     if (!appendOnly || this.appliedState?.phase !== "streaming") {
       this.disposeRenderer();
@@ -102,9 +97,8 @@ export class StreamingMarkdownElement extends HTMLElement {
       this.createRenderer();
     }
 
-    const baseLength = appendOnly && this.appliedState?.phase === "streaming"
-      ? appliedText.length
-      : 0;
+    const baseLength =
+      appendOnly && this.appliedState?.phase === "streaming" ? appliedText.length : 0;
     const delta = next.markdown.slice(baseLength);
     if (delta) this.renderer?.push(delta);
     this.streamCursor?.show();
@@ -154,11 +148,13 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   private reportRenderError(error: GenerativeDomError): void {
-    this.dispatchEvent(new CustomEvent("markdown-render-error", {
-      bubbles: true,
-      composed: true,
-      detail: `${error.phase}:${error.plugin}: ${error.error.message}`,
-    }));
+    this.dispatchEvent(
+      new CustomEvent("markdown-render-error", {
+        bubbles: true,
+        composed: true,
+        detail: `${error.phase}:${error.plugin}: ${error.error.message}`,
+      }),
+    );
   }
 }
 

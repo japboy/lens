@@ -6,7 +6,7 @@ The PoC focuses on accessibility-based text extraction and ACP-based transformat
 
 ## Requirements
 
-- macOS 15.2 or later
+- Apple silicon Mac with macOS 15.2 or later
 - Xcode Command Line Tools
 - [mise](https://mise.jdx.dev/) 2026.8.10 or later
 - Accessibility permission
@@ -19,11 +19,14 @@ macOS 15.2 is the minimum because it is the first version that provides the publ
 mise trust
 mise install --locked
 pnpm install --frozen-lockfile
+mise exec -- hk install --mise
 pnpm run verify
 pnpm run tauri dev
 ```
 
-mise installs the checksummed development toolchain from `mise.lock`: Node.js `24.19.0` (the current LTS major), pnpm `11.22.0`, Rust `1.98.0`, and cargo-deny `0.20.2`. JavaScript packages resolve through [Takumi Guard](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/) and pnpm enforces a three-day release quarantine, no-downgrade trust policy, blocked exotic transitive sources, frozen integrity locks, and an explicit package-name build allowlist. Renovate proposes weekly updates using the same quarantine. Patch, pin, GitHub Action digest, and npm lock-file maintenance updates merge automatically only after the required Code Quality check passes; minor, major, toolchain, and managed-runtime updates require manual review.
+mise installs the checksummed development toolchain from `mise.lock`: Node.js `24.19.0` (the current LTS major), pnpm `11.22.0`, Rust `1.98.0`, cargo-deny `0.20.2`, and hk `1.56.1`. JavaScript packages resolve through [Takumi Guard](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/) and pnpm enforces a three-day release quarantine, no-downgrade trust policy, blocked exotic transitive sources, frozen integrity locks, and an explicit package-name build allowlist. Renovate proposes weekly updates using the same quarantine. Patch, pin, GitHub Action digest, and npm lock-file maintenance updates merge automatically only after the required Code Quality check passes; minor, major, toolchain, and managed-runtime updates require manual review.
+
+hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. The pre-commit hook checks staged frontend and configuration files with Oxfmt and Oxlint and activates Cargo formatting checks for staged Rust changes. It is check-only: it neither stashes, rewrites, nor stages files. The commit-message hook enforces Conventional Commits. Run `pnpm run fix` explicitly to apply available Oxfmt, Oxlint, and rustfmt fixes. Full tests and dependency checks remain authoritative in the required Code Quality workflow rather than a state-dependent pre-push hook.
 
 The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. PersonalLens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
 
@@ -58,7 +61,7 @@ The Lens overlay opens centered at 80% of the selected window's width and height
 
 ## Validation
 
-`pnpm run verify` runs publication-boundary and repository-language policies, Lit frontend type checking/build/Vitest, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks.
+`pnpm run verify` runs publication-boundary and repository-language policies, Oxfmt and Oxlint checks, Lit frontend and TypeScript configuration type checking/build/Vitest, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
 
 An on-device managed-runtime install and verification can be run independently for each Agent:
 

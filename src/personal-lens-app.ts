@@ -159,24 +159,28 @@ export class PersonalLensApp extends LitElement {
         <section aria-labelledby="agent-heading">
           <h2 id="agent-heading">AI Agent</h2>
           <fieldset
-            ?disabled=${this.busy ||
-            !this.config ||
-            isAgentRuntimeActive(this.agentRuntime.stage) ||
-            ["checking", "authenticating", "signing_out"].includes(this.agentSelection.stage)}
+            ?disabled=${
+              this.busy ||
+              !this.config ||
+              isAgentRuntimeActive(this.agentRuntime.stage) ||
+              ["checking", "authenticating", "signing_out"].includes(this.agentSelection.stage)
+            }
           >
             <legend class="visually-hidden">AI agent to use</legend>
-            ${this.agentOption("claude", "Claude")}
-            ${this.agentOption("codex", "Codex")}
+            ${this.agentOption("claude", "Claude")} ${this.agentOption("codex", "Codex")}
           </fieldset>
           <p class="help">The ACP agent, not PersonalLens, manages authentication credentials.</p>
           ${this.renderAgentRuntimeStatus()}
-          <output class=${this.agentSelection.stage === "selected" ? "status-ok" : "status-warning"}>
-            ${this.agentSelection.error ??
-            this.agentSelection.message ??
-            AGENT_SELECTION_LABEL[this.agentSelection.stage]}
+          <output
+            class=${this.agentSelection.stage === "selected" ? "status-ok" : "status-warning"}
+          >
+            ${
+              this.agentSelection.error ??
+              this.agentSelection.message ??
+              AGENT_SELECTION_LABEL[this.agentSelection.stage]
+            }
           </output>
-          ${this.renderAgentSelectionAuthentication()}
-          ${this.renderSelectedAgentActions()}
+          ${this.renderAgentSelectionAuthentication()} ${this.renderSelectedAgentActions()}
         </section>
 
         <section aria-labelledby="cwd-heading">
@@ -189,7 +193,10 @@ export class PersonalLensApp extends LitElement {
             />
             <button @click=${this.chooseDirectory} ?disabled=${this.busy}>Choose…</button>
           </div>
-          <p class="help">The default is your home directory. The agent uses this directory as the cwd for resolving its own project instructions and memory.</p>
+          <p class="help">
+            The default is your home directory. The agent uses this directory as the cwd for
+            resolving its own project instructions and memory.
+          </p>
         </section>
 
         <section aria-labelledby="permission-heading">
@@ -198,9 +205,11 @@ export class PersonalLensApp extends LitElement {
             <output class=${this.trusted ? "status-ok" : "status-warning"}>
               ${this.trusted ? "Allowed" : "Permission required"}
             </output>
-            ${this.trusted
-              ? nothing
-              : html`<button @click=${this.requestPermission}>Open System Settings</button>`}
+            ${
+              this.trusted
+                ? nothing
+                : html`<button @click=${this.requestPermission}>Open System Settings</button>`
+            }
           </div>
         </section>
 
@@ -220,15 +229,17 @@ export class PersonalLensApp extends LitElement {
         <output class=${runtime.stage === "failed" ? "status-warning" : "runtime-message"}>
           ${runtime.error ?? runtime.message ?? AGENT_RUNTIME_LABEL[runtime.stage]}
         </output>
-        ${showProgress
-          ? total === undefined
-            ? html`<progress aria-label="Agent runtime download progress"></progress>`
-            : html`<progress
-                aria-label="Agent runtime download progress"
-                .value=${runtime.downloaded_bytes}
-                max=${total}
-              ></progress>`
-          : nothing}
+        ${
+          showProgress
+            ? total === undefined
+              ? html`<progress aria-label="Agent runtime download progress"></progress>`
+              : html`<progress
+                  aria-label="Agent runtime download progress"
+                  .value=${runtime.downloaded_bytes}
+                  max=${total}
+                ></progress>`
+            : nothing
+        }
       </div>
     `;
   }
@@ -253,15 +264,17 @@ export class PersonalLensApp extends LitElement {
     const methods = this.agentSelection.auth_methods.filter((method) => method.supported);
     return html`
       <div class="agent-actions" aria-label="Agent authentication">
-        ${methods.length
-          ? methods.map(
-              (method) => html`
-                <button @click=${() => this.authenticateAgentSelection(method.id)}>
-                  Authenticate with ${method.name}…
-                </button>
-              `,
-            )
-          : html`<p>Authenticate with this Agent's existing CLI, then select it again.</p>`}
+        ${
+          methods.length
+            ? methods.map(
+                (method) => html`
+                  <button @click=${() => this.authenticateAgentSelection(method.id)}>
+                    Authenticate with ${method.name}…
+                  </button>
+                `,
+              )
+            : html`<p>Authenticate with this Agent's existing CLI, then select it again.</p>`
+        }
       </div>
     `;
   }
@@ -299,101 +312,113 @@ export class PersonalLensApp extends LitElement {
 
         <div class="overlay-status" role="status">
           <span>${STAGE_LABEL[this.lens.stage]}</span>
-          ${extraction
-            ? html`<span class="quality quality-${extraction.quality}">${extraction.quality}</span>`
-            : nothing}
+          ${
+            extraction
+              ? html`<span class="quality quality-${extraction.quality}"
+                  >${extraction.quality}</span
+                >`
+              : nothing
+          }
         </div>
 
-        ${this.message
-          ? html`<p class="error" role="alert">${this.message}</p>`
-          : nothing}
-
-        ${this.lens.error
-          ? html`<p class="error" role="alert">${this.lens.error}</p>`
-          : nothing}
-
-        ${activeAgent?.authentication_message
-          ? html`<p class="notice" role="status">${activeAgent.authentication_message}</p>`
-          : nothing}
-
-        ${this.lens.stage === "authentication_required"
-          ? html`
-              <section class="overlay-actions" aria-label="Agent authentication">
-                ${authenticationMethods.length
-                  ? authenticationMethods.map(
-                      (method) => html`
-                        <button @click=${() => this.authenticate(method.id)}>
-                          Authenticate with ${method.name}…
-                        </button>
-                      `,
-                    )
-                  : html`<p>Authenticate with this agent's existing CLI, then try again.</p>`}
-                <button @click=${this.transform}>Try Again</button>
-              </section>
-            `
-          : nothing}
-
-        ${this.lens.stage === "ready" ||
-        (this.lens.stage === "failed" && Boolean(this.lens.input))
-          ? html`
-              <div class="overlay-actions">
-                <button class="primary" @click=${this.transform}>Transform with Agent</button>
-              </div>
-            `
-          : nothing}
-
-        ${this.lens.stage === "connecting" || this.lens.stage === "transforming"
-          ? html`
-              <div class="overlay-actions">
-                <button @click=${this.cancelAgent}>Cancel</button>
-              </div>
-            `
-          : nothing}
+        ${this.message ? html`<p class="error" role="alert">${this.message}</p>` : nothing}
+        ${this.lens.error ? html`<p class="error" role="alert">${this.lens.error}</p>` : nothing}
+        ${
+          activeAgent?.authentication_message
+            ? html`<p class="notice" role="status">${activeAgent.authentication_message}</p>`
+            : nothing
+        }
+        ${
+          this.lens.stage === "authentication_required"
+            ? html`
+                <section class="overlay-actions" aria-label="Agent authentication">
+                  ${
+                    authenticationMethods.length
+                      ? authenticationMethods.map(
+                          (method) => html`
+                            <button @click=${() => this.authenticate(method.id)}>
+                              Authenticate with ${method.name}…
+                            </button>
+                          `,
+                        )
+                      : html`<p>Authenticate with this agent's existing CLI, then try again.</p>`
+                  }
+                  <button @click=${this.transform}>Try Again</button>
+                </section>
+              `
+            : nothing
+        }
+        ${
+          this.lens.stage === "ready" || (this.lens.stage === "failed" && Boolean(this.lens.input))
+            ? html`
+                <div class="overlay-actions">
+                  <button class="primary" @click=${this.transform}>Transform with Agent</button>
+                </div>
+              `
+            : nothing
+        }
+        ${
+          this.lens.stage === "connecting" || this.lens.stage === "transforming"
+            ? html`
+                <div class="overlay-actions">
+                  <button @click=${this.cancelAgent}>Cancel</button>
+                </div>
+              `
+            : nothing
+        }
 
         <div class="lens-tabs" role="tablist" aria-label="Lens content">
           ${this.renderLensTab("translation", "Translation")}
           ${this.renderLensTab("source", "Source")}
         </div>
 
-        ${this.activeLensTab === "translation"
-          ? html`
-              <section
-                id="translation-panel"
-                class="lens-panel"
-                role="tabpanel"
-                aria-labelledby="translation-tab"
-              >
-                ${translationText
-                  ? html`<personal-lens-markdown
-                      class="lens-content markdown-body"
-                      role="document"
-                      aria-live="polite"
-                      .state=${{
-                        operationId: this.lens.operation_id,
-                        markdown: translationText,
-                        phase: this.lens.stage === "transforming" ? "streaming" : "settled",
-                      } satisfies StreamingMarkdownState}
-                      @click=${this.openMarkdownLink}
-                      @markdown-render-error=${this.handleMarkdownRenderError}
-                    ></personal-lens-markdown>`
-                  : showsLensProgress(this.lens.stage)
-                    ? this.renderLoadingState()
-                    : this.renderTranslationEmptyState()}
-              </section>
-            `
-          : html`
-              <section
-                id="source-panel"
-                class="lens-panel"
-                role="tabpanel"
-                aria-labelledby="source-tab"
-              >
-                ${sourceText
-                  ? html`<article class="lens-content source-content">${sourceText}</article>`
-                  : html`<p class="empty-state">No source text is available.</p>`}
-                ${extraction ? this.renderDiagnostics(extraction) : nothing}
-              </section>
-            `}
+        ${
+          this.activeLensTab === "translation"
+            ? html`
+                <section
+                  id="translation-panel"
+                  class="lens-panel"
+                  role="tabpanel"
+                  aria-labelledby="translation-tab"
+                >
+                  ${
+                    translationText
+                      ? html`<personal-lens-markdown
+                          class="lens-content markdown-body"
+                          role="document"
+                          aria-live="polite"
+                          .state=${
+                            {
+                              operationId: this.lens.operation_id,
+                              markdown: translationText,
+                              phase: this.lens.stage === "transforming" ? "streaming" : "settled",
+                            } satisfies StreamingMarkdownState
+                          }
+                          @click=${this.openMarkdownLink}
+                          @markdown-render-error=${this.handleMarkdownRenderError}
+                        ></personal-lens-markdown>`
+                      : showsLensProgress(this.lens.stage)
+                        ? this.renderLoadingState()
+                        : this.renderTranslationEmptyState()
+                  }
+                </section>
+              `
+            : html`
+                <section
+                  id="source-panel"
+                  class="lens-panel"
+                  role="tabpanel"
+                  aria-labelledby="source-tab"
+                >
+                  ${
+                    sourceText
+                      ? html`<article class="lens-content source-content">${sourceText}</article>`
+                      : html`<p class="empty-state">No source text is available.</p>`
+                  }
+                  ${extraction ? this.renderDiagnostics(extraction) : nothing}
+                </section>
+              `
+        }
       </main>
     `;
   }
@@ -509,22 +534,34 @@ export class PersonalLensApp extends LitElement {
       <details class="extraction-diagnostics">
         <summary>Extraction diagnostics</summary>
         <dl class="metrics">
-          <dt>Nodes</dt><dd>${extraction.metrics.visited_nodes}</dd>
-          <dt>UTF-8 bytes</dt><dd>${extraction.metrics.text_bytes}</dd>
-          <dt>Off-window text nodes</dt><dd>${extraction.metrics.offscreen_text_nodes}</dd>
-          <dt>Virtualization signals</dt><dd>${extraction.metrics.virtualization_signals}</dd>
-          ${this.lens.agent
-            ? html`
-                <dt>ACP Agent</dt>
-                <dd>${this.lens.agent.adapter_name} ${this.lens.agent.adapter_version}</dd>
-                <dt>Session updates</dt><dd>${this.lens.agent.received_updates}</dd>
-                <dt>Stop reason</dt><dd>${this.lens.agent.stop_reason ?? "—"}</dd>
-              `
-            : nothing}
+          <dt>Nodes</dt>
+          <dd>${extraction.metrics.visited_nodes}</dd>
+          <dt>UTF-8 bytes</dt>
+          <dd>${extraction.metrics.text_bytes}</dd>
+          <dt>Off-window text nodes</dt>
+          <dd>${extraction.metrics.offscreen_text_nodes}</dd>
+          <dt>Virtualization signals</dt>
+          <dd>${extraction.metrics.virtualization_signals}</dd>
+          ${
+            this.lens.agent
+              ? html`
+                  <dt>ACP Agent</dt>
+                  <dd>${this.lens.agent.adapter_name} ${this.lens.agent.adapter_version}</dd>
+                  <dt>Session updates</dt>
+                  <dd>${this.lens.agent.received_updates}</dd>
+                  <dt>Stop reason</dt>
+                  <dd>${this.lens.agent.stop_reason ?? "—"}</dd>
+                `
+              : nothing
+          }
         </dl>
-        ${extraction.diagnostics.length
-          ? html`<ul>${extraction.diagnostics.map((item) => html`<li>${item}</li>`)}</ul>`
-          : html`<p>No diagnostics.</p>`}
+        ${
+          extraction.diagnostics.length
+            ? html`<ul>
+                ${extraction.diagnostics.map((item) => html`<li>${item}</li>`)}
+              </ul>`
+            : html`<p>No diagnostics.</p>`
+        }
       </details>
     `;
   }
@@ -545,10 +582,7 @@ export class PersonalLensApp extends LitElement {
     this.busy = true;
     this.message = "Starting Agent authentication.";
     try {
-      await invoke<AgentSelectionState>(
-        "authenticate_agent_selection",
-        { methodId },
-      );
+      await invoke<AgentSelectionState>("authenticate_agent_selection", { methodId });
       this.message = "";
     } catch (error) {
       this.message = String(error);
@@ -561,10 +595,10 @@ export class PersonalLensApp extends LitElement {
     const agent = selectedAgent(this.agentSelection);
     if (!agent) return;
     const label = agent === "claude" ? "Claude" : "Codex";
-    const approved = await confirm(
-      `Reauthentication signs out of ${label} first. Continue?`,
-      { title: `Reauthenticate ${label}`, kind: "warning" },
-    );
+    const approved = await confirm(`Reauthentication signs out of ${label} first. Continue?`, {
+      title: `Reauthenticate ${label}`,
+      kind: "warning",
+    });
     if (!approved) return;
 
     this.busy = true;

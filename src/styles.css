@@ -8,16 +8,31 @@
   font-synthesis: none;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
 
-body { background: Canvas; }
+body {
+  background: Canvas;
+}
 
 html[data-view="overlay"],
-body[data-view="overlay"] { background: transparent; }
+body[data-view="overlay"] {
+  background: transparent;
+}
 
-button, input { font: inherit; }
+button,
+input {
+  font: inherit;
+}
 
 button {
   appearance: auto;
@@ -26,15 +41,26 @@ button {
   white-space: normal;
 }
 
-input[type="text"], input:not([type]) {
+input[type="text"],
+input:not([type]) {
   appearance: auto;
   color: FieldText;
   background: Field;
 }
 
-h1 { margin: 0; font-size: 20px; font-weight: 650; }
-h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; }
-p { line-height: 1.45; }
+h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+}
+h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 650;
+}
+p {
+  line-height: 1.45;
+}
 
 .settings-shell {
   width: 100%;
@@ -50,25 +76,51 @@ p { line-height: 1.45; }
   background: Canvas;
 }
 
-.settings-shell > *, .settings-shell section { min-width: 0; }
+.settings-shell > *,
+.settings-shell section {
+  min-width: 0;
+}
 
-.settings-shell header p { margin: 6px 0 0; color: GrayText; }
+.settings-shell header p {
+  margin: 6px 0 0;
+  color: GrayText;
+}
 
-fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: 10px 24px; }
+fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+}
 
-.radio-row { display: inline-flex; align-items: center; gap: 6px; }
+.radio-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 
-.directory-row, .permission-row {
+.directory-row,
+.permission-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.directory-row input { min-width: 0; flex: 1; }
+.directory-row input {
+  min-width: 0;
+  flex: 1;
+}
 
-.help { margin: 7px 0 0; color: GrayText; font-size: 12px; }
+.help {
+  margin: 7px 0 0;
+  color: GrayText;
+  font-size: 12px;
+}
 
-.settings-shell output, .settings-shell .help {
+.settings-shell output,
+.settings-shell .help {
   display: block;
   overflow-wrap: anywhere;
 }
@@ -81,8 +133,14 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   margin-top: 10px;
 }
 
-.status-ok { color: LinkText; }
-.status-warning, .error { color: MarkText; background: Mark; }
+.status-ok {
+  color: LinkText;
+}
+.status-warning,
+.error {
+  color: MarkText;
+  background: Mark;
+}
 
 .runtime-status {
   display: grid;
@@ -90,8 +148,12 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   margin: 8px 0;
 }
 
-.runtime-status progress { width: min(100%, 360px); }
-.runtime-message { color: GrayText; }
+.runtime-status progress {
+  width: min(100%, 360px);
+}
+.runtime-message {
+  color: GrayText;
+}
 
 .settings-shell footer {
   align-self: end;
@@ -103,9 +165,14 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   padding-top: 16px;
 }
 
-.settings-shell footer span { color: GrayText; min-width: 0; }
+.settings-shell footer span {
+  color: GrayText;
+  min-width: 0;
+}
 
-.primary { font-weight: 600; }
+.primary {
+  font-weight: 600;
+}
 
 .overlay-shell {
   height: 100dvh;
@@ -130,8 +197,14 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   border-bottom: 1px solid Separator;
 }
 
-.overlay-titlebar > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.overlay-titlebar span { color: GrayText; }
+.overlay-titlebar > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overlay-titlebar span {
+  color: GrayText;
+}
 
 .close-button {
   -webkit-app-region: no-drag;
@@ -147,7 +220,10 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   font-size: 18px;
 }
 
-.close-button:hover { background: SelectedItem; color: SelectedItemText; }
+.close-button:hover {
+  background: SelectedItem;
+  color: SelectedItemText;
+}
 
 .overlay-status {
   display: flex;
@@ -166,9 +242,16 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   font-variant-caps: all-small-caps;
 }
 
-.quality-full { color: LinkText; }
-.quality-partial { color: MarkText; background: Mark; }
-.quality-unavailable { color: GrayText; }
+.quality-full {
+  color: LinkText;
+}
+.quality-partial {
+  color: MarkText;
+  background: Mark;
+}
+.quality-unavailable {
+  color: GrayText;
+}
 
 .lens-tabs {
   display: flex;
@@ -231,8 +314,12 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   overflow-wrap: anywhere;
 }
 
-.markdown-body > :first-child { margin-top: 0; }
-.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
 
 .markdown-body h1,
 .markdown-body h2,
@@ -245,24 +332,44 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   font-weight: 650;
 }
 
-.markdown-body h1 { padding-bottom: 0.3em; border-bottom: 1px solid Separator; font-size: 1.7em; }
-.markdown-body h2 { padding-bottom: 0.3em; border-bottom: 1px solid Separator; font-size: 1.4em; }
-.markdown-body h3 { font-size: 1.2em; }
+.markdown-body h1 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid Separator;
+  font-size: 1.7em;
+}
+.markdown-body h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid Separator;
+  font-size: 1.4em;
+}
+.markdown-body h3 {
+  font-size: 1.2em;
+}
 .markdown-body h4,
 .markdown-body h5,
-.markdown-body h6 { font-size: 1em; }
+.markdown-body h6 {
+  font-size: 1em;
+}
 
 .markdown-body p,
 .markdown-body blockquote,
 .markdown-body ul,
 .markdown-body ol,
 .markdown-body pre,
-.markdown-body table { margin: 0 0 1em; }
+.markdown-body table {
+  margin: 0 0 1em;
+}
 
 .markdown-body ul,
-.markdown-body ol { padding-left: 2em; }
-.markdown-body li + li { margin-top: 0.25em; }
-.markdown-body li > p { margin: 0.25em 0; }
+.markdown-body ol {
+  padding-left: 2em;
+}
+.markdown-body li + li {
+  margin-top: 0.25em;
+}
+.markdown-body li > p {
+  margin: 0.25em 0;
+}
 
 .markdown-body blockquote {
   padding: 0 1em;
@@ -294,7 +401,10 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   white-space: pre;
 }
 
-.markdown-body pre code { padding: 0; background: transparent; }
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+}
 
 .markdown-body table {
   display: block;
@@ -304,13 +414,35 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
 }
 
 .markdown-body th,
-.markdown-body td { padding: 6px 10px; border: 1px solid Separator; }
-.markdown-body th { font-weight: 650; background: color-mix(in srgb, CanvasText 5%, transparent); }
-.markdown-body tr:nth-child(even) { background: color-mix(in srgb, CanvasText 3%, transparent); }
-.markdown-body hr { height: 1px; margin: 1.5em 0; border: 0; background: Separator; }
-.markdown-body a { color: LinkText; text-decoration-thickness: from-font; }
-.markdown-body img { max-width: 100%; height: auto; }
-.markdown-body input[type="checkbox"] { margin: 0 0.45em 0.25em; accent-color: AccentColor; }
+.markdown-body td {
+  padding: 6px 10px;
+  border: 1px solid Separator;
+}
+.markdown-body th {
+  font-weight: 650;
+  background: color-mix(in srgb, CanvasText 5%, transparent);
+}
+.markdown-body tr:nth-child(even) {
+  background: color-mix(in srgb, CanvasText 3%, transparent);
+}
+.markdown-body hr {
+  height: 1px;
+  margin: 1.5em 0;
+  border: 0;
+  background: Separator;
+}
+.markdown-body a {
+  color: LinkText;
+  text-decoration-thickness: from-font;
+}
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-body input[type="checkbox"] {
+  margin: 0 0.45em 0.25em;
+  accent-color: AccentColor;
+}
 
 .markdown-body .streaming-cursor {
   display: inline-block;
@@ -324,8 +456,14 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
 }
 
 @keyframes streaming-cursor-blink {
-  0%, 52% { opacity: 1; }
-  53%, 100% { opacity: 0; }
+  0%,
+  52% {
+    opacity: 1;
+  }
+  53%,
+  100% {
+    opacity: 0;
+  }
 }
 
 .loading-state,
@@ -354,14 +492,29 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   font-size: 32px;
 }
 
-.loading-state strong { color: CanvasText; font-size: 14px; }
-.loading-state p { max-width: 34em; margin: 0; }
-.empty-state { color: GrayText; }
+.loading-state strong {
+  color: CanvasText;
+  font-size: 14px;
+}
+.loading-state p {
+  max-width: 34em;
+  margin: 0;
+}
+.empty-state {
+  color: GrayText;
+}
 
 .overlay-shell > .error,
-.overlay-shell > .notice { margin: 8px 14px; padding: 8px; border-radius: 5px; }
+.overlay-shell > .notice {
+  margin: 8px 14px;
+  padding: 8px;
+  border-radius: 5px;
+}
 
-.notice { color: CanvasText; background: SelectedItem; }
+.notice {
+  color: CanvasText;
+  background: SelectedItem;
+}
 
 .overlay-actions {
   display: flex;
@@ -373,7 +526,10 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   border-block: 1px solid Separator;
 }
 
-.overlay-actions p { margin: 0 auto 0 0; color: GrayText; }
+.overlay-actions p {
+  margin: 0 auto 0 0;
+  color: GrayText;
+}
 
 .extraction-diagnostics {
   max-height: 180px;
@@ -384,7 +540,9 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   font-size: 11px;
 }
 
-.extraction-diagnostics summary { cursor: default; }
+.extraction-diagnostics summary {
+  cursor: default;
+}
 
 .metrics {
   display: grid;
@@ -392,8 +550,13 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
   gap: 2px 12px;
 }
 
-.metrics dt, .metrics dd { margin: 0; }
-.metrics dd { color: CanvasText; }
+.metrics dt,
+.metrics dd {
+  margin: 0;
+}
+.metrics dd {
+  color: CanvasText;
+}
 
 .visually-hidden {
   position: absolute;
@@ -408,20 +571,42 @@ fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 @media (max-width: 480px), (max-height: 520px) {
-  .settings-shell { padding: 16px; gap: 16px; }
+  .settings-shell {
+    padding: 16px;
+    gap: 16px;
+  }
 }
 
 @media (max-width: 420px) {
-  .directory-row, .permission-row { align-items: stretch; flex-direction: column; }
-  .directory-row input { width: 100%; }
-  .agent-actions { justify-content: stretch; }
-  .agent-actions button { flex: 1 1 12rem; }
+  .directory-row,
+  .permission-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .directory-row input {
+    width: 100%;
+  }
+  .agent-actions {
+    justify-content: stretch;
+  }
+  .agent-actions button {
+    flex: 1 1 12rem;
+  }
 }
 
 @media (prefers-contrast: more) {
-  .overlay-shell { border-width: 2px; backdrop-filter: none; background: Canvas; }
+  .overlay-shell {
+    border-width: 2px;
+    backdrop-filter: none;
+    background: Canvas;
+  }
 }

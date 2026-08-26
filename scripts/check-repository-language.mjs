@@ -12,22 +12,14 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 function repositoryFiles() {
   const output = execFileSync(
     "git",
-    [
-      "-C",
-      REPOSITORY_ROOT,
-      "ls-files",
-      "--cached",
-      "--others",
-      "--exclude-standard",
-      "-z",
-    ],
+    ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
     { encoding: "utf8" },
   );
 
   return output
     .split("\0")
-    .filter((relativePath) =>
-      Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
+    .filter(
+      (relativePath) => Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
     )
     .sort();
 }
@@ -72,9 +64,7 @@ const scanResults = files.map(scanFile);
 const violations = scanResults.flatMap((result) => result.violations);
 
 if (violations.length > 0) {
-  process.stderr.write(
-    ["Repository language policy failed:", ...violations].join("\n") + "\n",
-  );
+  process.stderr.write(["Repository language policy failed:", ...violations].join("\n") + "\n");
   process.exitCode = 1;
 } else {
   const scanned = scanResults.filter((result) => result.scanned).length;

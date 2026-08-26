@@ -114,16 +114,16 @@ describe("PersonalLens view model", () => {
   });
 
   it("shows progress only while an operation can still advance without user input", () => {
-    expect(["selecting", "extracting", "ready", "connecting", "transforming"].every((stage) =>
-      showsLensProgress(stage as LensStage),
-    )).toBe(true);
-    expect([
-      "idle",
-      "authentication_required",
-      "completed",
-      "cancelled",
-      "failed",
-    ].every((stage) => !showsLensProgress(stage as LensStage))).toBe(true);
+    expect(
+      ["selecting", "extracting", "ready", "connecting", "transforming"].every((stage) =>
+        showsLensProgress(stage as LensStage),
+      ),
+    ).toBe(true);
+    expect(
+      ["idle", "authentication_required", "completed", "cancelled", "failed"].every(
+        (stage) => !showsLensProgress(stage as LensStage),
+      ),
+    ).toBe(true);
   });
 
   it("accepts only a strictly newer finite application snapshot", () => {

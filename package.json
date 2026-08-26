@@ -1,22 +1,19 @@
 {
   "name": "personal-lens",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.22.0",
-  "engines": {
-    "node": "24.19.0",
-    "pnpm": "11.22.0"
-  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check:language": "node scripts/check-repository-language.mjs",
     "check:publication": "node scripts/check-publication-boundary.mjs",
-    "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml --locked",
-    "check:dependencies": "cargo deny --manifest-path src-tauri/Cargo.toml check",
+    "check:quality": "mise exec -- hk check --all",
+    "check:rust": "mise exec -- cargo check --manifest-path src-tauri/Cargo.toml --locked",
+    "check:dependencies": "mise exec -- cargo deny --manifest-path src-tauri/Cargo.toml check",
     "check": "pnpm run build && pnpm run check:rust",
-    "verify": "pnpm run check:publication && pnpm run check:language && pnpm run check && pnpm test && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
+    "fix": "mise exec -- hk fix --all",
+    "verify": "pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run check && pnpm test && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
     "tauri": "tauri",
     "test": "vitest run"
   },
@@ -42,8 +39,15 @@
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
     "jsdom": "30.0.1",
+    "oxfmt": "0.64.0",
+    "oxlint": "1.79.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
     "vitest": "4.1.11"
-  }
+  },
+  "engines": {
+    "node": "24.19.0",
+    "pnpm": "11.22.0"
+  },
+  "packageManager": "pnpm@11.22.0"
 }

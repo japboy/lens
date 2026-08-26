@@ -1,15 +1,15 @@
 {
   "name": "personal-lens-codex-agent-runtime",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "description": "Locked managed runtime inputs for Codex ACP",
-  "packageManager": "pnpm@11.22.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.6.2",
+    "@agentclientprotocol/sdk": "1.4.0"
+  },
   "engines": {
     "node": "24.19.0",
     "pnpm": "11.22.0"
   },
-  "dependencies": {
-    "@agentclientprotocol/sdk": "1.4.0",
-    "@agentclientprotocol/codex-acp": "1.6.2"
-  }
+  "packageManager": "pnpm@11.22.0"
 }

@@ -9,11 +9,7 @@
     "core:window:allow-close",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [
-        { "url": "http://*" },
-        { "url": "https://*" },
-        { "url": "mailto:*" }
-      ]
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }, { "url": "mailto:*" }]
     }
   ]
 }

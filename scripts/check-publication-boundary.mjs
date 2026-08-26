@@ -20,22 +20,14 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 function repositoryFiles() {
   const output = execFileSync(
     "git",
-    [
-      "-C",
-      REPOSITORY_ROOT,
-      "ls-files",
-      "--cached",
-      "--others",
-      "--exclude-standard",
-      "-z",
-    ],
+    ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
     { encoding: "utf8" },
   );
 
   return output
     .split("\0")
-    .filter((relativePath) =>
-      Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
+    .filter(
+      (relativePath) => Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
     )
     .sort();
 }
@@ -69,9 +61,7 @@ const files = repositoryFiles();
 const violations = files.flatMap(scanFile);
 
 if (violations.length > 0) {
-  process.stderr.write(
-    ["Publication boundary policy failed:", ...violations].join("\n") + "\n",
-  );
+  process.stderr.write(["Publication boundary policy failed:", ...violations].join("\n") + "\n");
   process.exitCode = 1;
 } else {
   process.stdout.write(

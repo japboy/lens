@@ -1,0 +1,38 @@
+amends "package://github.com/jdx/hk/releases/download/v1.56.1/hk@1.56.1#/Config.pkl"
+
+import "package://github.com/jdx/hk/releases/download/v1.56.1/hk@1.56.1#/Builtins.pkl"
+
+min_hk_version = "1.56.1"
+
+local qualityChecks = new Mapping<String, Step> {
+  ["oxfmt"] = (Builtins.oxfmt) {
+    prefix = List("pnpm", "exec")
+  }
+  ["oxlint"] = (Builtins.ox_lint) {
+    prefix = List("pnpm", "exec")
+  }
+  ["cargo-fmt"] = Builtins.cargo_fmt
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = false
+    stage = false
+    stash = "none"
+    steps = qualityChecks
+  }
+  ["commit-msg"] {
+    steps {
+      ["conventional-commit"] = Builtins.check_conventional_commit
+    }
+  }
+  ["check"] {
+    steps = qualityChecks
+  }
+  ["fix"] {
+    fix = true
+    stage = false
+    stash = "none"
+    steps = qualityChecks
+  }
+}
