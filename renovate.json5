@@ -1,0 +1,113 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    ":enableVulnerabilityAlerts",
+    "helpers:pinGitHubActionDigests",
+    "security:minimumReleaseAgeNpm",
+  ],
+
+  // The Renovate host must globally allow unsafe execution for "mise" so it
+  // can refresh mise.lock; repository configuration cannot grant that authority.
+  enabledManagers: ["npm", "cargo", "mise", "github-actions"],
+  timezone: "Asia/Tokyo",
+  schedule: ["* 0-5 * * 1"],
+  prCreation: "not-pending",
+  minimumReleaseAge: "3 days",
+  internalChecksFilter: "strict",
+  platformAutomerge: true,
+  automergeType: "pr",
+  automergeStrategy: "squash",
+  automerge: false,
+  ignoreTests: false,
+  separateMinorPatch: true,
+  labels: ["dependencies"],
+  dependencyDashboard: true,
+  osvVulnerabilityAlerts: true,
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["* 0-5 * * 1"],
+  },
+
+  packageRules: [
+    {
+      description: "npm manifest versions are pinned.",
+      matchManagers: ["npm"],
+      rangeStrategy: "pin",
+    },
+    {
+      description: "Tauri framework updates are grouped.",
+      matchPackageNames: ["@tauri-apps/**", "tauri", "tauri-build", "tauri-plugin-**"],
+      groupName: "Tauri dependencies",
+    },
+    {
+      description: "ACP protocol and adapter updates are grouped.",
+      matchPackageNames: ["@agentclientprotocol/**", "agent-client-protocol"],
+      groupName: "ACP dependencies",
+    },
+    {
+      description: "Frontend build and test tooling updates are grouped.",
+      matchPackageNames: ["typescript", "vite", "vitest", "jsdom"],
+      groupName: "frontend tooling",
+    },
+    {
+      description: "npm and Cargo patch or pin updates are automatically merged after required checks pass.",
+      matchManagers: ["npm", "cargo"],
+      matchUpdateTypes: ["patch", "pin", "pinDigest"],
+      automerge: true,
+    },
+    {
+      description: "GitHub Action digest updates are automatically merged after required checks pass.",
+      matchManagers: ["github-actions"],
+      matchUpdateTypes: ["digest", "pinDigest"],
+      automerge: true,
+    },
+    {
+      description: "npm lock-file maintenance is automatically merged after required checks pass.",
+      matchManagers: ["npm"],
+      matchUpdateTypes: ["lockFileMaintenance"],
+      automerge: true,
+    },
+    {
+      description: "Minor updates require manual review.",
+      matchUpdateTypes: ["minor"],
+      automerge: false,
+    },
+    {
+      description: "Major updates require manual approval.",
+      matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true,
+      automerge: false,
+    },
+    {
+      description: "ACP protocol and managed runtime updates require manual review.",
+      matchPackageNames: ["@agentclientprotocol/**", "agent-client-protocol"],
+      automerge: false,
+    },
+    {
+      description: "Managed runtime dependency updates require manual review.",
+      matchManagers: ["npm"],
+      matchFileNames: ["src-tauri/agent-runtime/**"],
+      automerge: false,
+    },
+    {
+      description: "mise-managed tool updates require manual review.",
+      matchManagers: ["mise"],
+      automerge: false,
+    },
+    {
+      description: "Cargo-only lock maintenance is disabled without release-age validation.",
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["lockFileMaintenance"],
+      enabled: false,
+    },
+    {
+      description: "Standalone mise.lock maintenance is disabled; lock changes accompany explicit tool updates.",
+      matchManagers: ["mise"],
+      matchUpdateTypes: ["lockFileMaintenance"],
+      enabled: false,
+    },
+  ],
+}
