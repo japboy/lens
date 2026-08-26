@@ -28,7 +28,7 @@ mise installs the checksummed development toolchain from `mise.lock`: Node.js `2
 
 hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. The pre-commit hook checks staged frontend and configuration files with Oxfmt and Oxlint and activates Cargo formatting checks for staged Rust changes. It is check-only: it neither stashes, rewrites, nor stages files. The commit-message hook enforces Conventional Commits. Run `pnpm run fix` explicitly to apply available Oxfmt, Oxlint, and rustfmt fixes. Full tests and dependency checks remain authoritative in the required Code Quality workflow rather than a state-dependent pre-push hook.
 
-Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping. A separate Node.js TypeScript configuration admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
+The root TypeScript solution declares shared strict, no-emit checks and explicitly references separate application and Node.js tooling projects. Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping; the Node.js project admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
 
 The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. PersonalLens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
 
@@ -63,7 +63,7 @@ The Lens overlay opens centered at 80% of the selected window's width and height
 
 ## Validation
 
-`pnpm run verify` runs publication-boundary and repository-language policies, Oxfmt and Oxlint checks, separate browser and Node.js tooling TypeScript checks, the Lit frontend build and Vitest suite, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
+`pnpm run verify` runs publication-boundary and repository-language policies, Oxfmt and Oxlint checks, the root TypeScript solution across its separate browser and Node.js tooling projects, the Lit frontend build and Vitest suite, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
 
 An on-device managed-runtime install and verification can be run independently for each Agent:
 

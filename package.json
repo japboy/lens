@@ -10,7 +10,7 @@
     "check:publication": "node scripts/check-publication-boundary.ts",
     "check:quality": "mise exec -- hk check --all",
     "check:rust": "mise exec -- cargo check --manifest-path src-tauri/Cargo.toml --locked",
-    "check:types": "tsc --project tsconfig.json && tsc --project tsconfig.node.json",
+    "check:types": "tsc --build",
     "check:dependencies": "mise exec -- cargo deny --manifest-path src-tauri/Cargo.toml check",
     "check": "pnpm run build && pnpm run check:rust",
     "fix": "mise exec -- hk fix --all",
