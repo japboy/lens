@@ -1,0 +1,17 @@
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{astro,cjs,cts,css,gql,graphql,handlebars,hbs,html,htm,js,json,json5,jsonc,jsx,less,md,markdown,mdx,mjs,mts,pkl,scss,svelte,toml,ts,tsx,vue,yaml,yml}]
+indent_size = 2
+
+[*.{h,m,rs}]
+indent_size = 4
+
+[*.{md,markdown}]
+trim_trailing_whitespace = false

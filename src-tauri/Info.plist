@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>PersonalLens reads accessibility content from the selected window and displays a transformed result.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>PersonalLens uses ScreenCaptureKit to display the macOS system window picker. It does not save video.</string>
+</dict>
+</plist>
