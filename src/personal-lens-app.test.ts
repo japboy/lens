@@ -83,6 +83,9 @@ describe("PersonalLens rich Agent output", () => {
     expect(
       element.shadowRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
     ).toBe("deep");
+    expect(
+      element.shadowRoot?.querySelector(".close-button")?.getAttribute("data-tauri-drag-region"),
+    ).toBe("false");
   });
 
   it("renders ACP image data inline and preserves surrounding block order", async () => {

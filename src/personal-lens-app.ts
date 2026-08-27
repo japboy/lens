@@ -361,6 +361,7 @@ export class PersonalLensApp extends LitElement {
           <button
             type="button"
             class="close-button"
+            data-tauri-drag-region="false"
             aria-label="Close Lens"
             @click=${this.closeWindow}
           >
