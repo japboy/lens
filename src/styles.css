@@ -12,8 +12,9 @@
 }
 
 html[data-view="settings"][data-platform="macos"] {
-  --settings-backdrop: -apple-system-grouped-background;
-  --settings-group-background: -apple-system-secondary-grouped-background;
+  /* WebKit maps Window to AppKit's dynamic NSColor.windowBackgroundColor on macOS. */
+  --settings-backdrop: Window;
+  --settings-group-background: Canvas;
   --settings-group-border: -apple-system-separator;
 }
 
