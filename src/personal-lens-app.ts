@@ -25,6 +25,7 @@ import {
   imageDataUrl,
   isAgentRuntimeActive,
   lensOutputBlocks,
+  lensSourceJson,
   selectedAgent,
   showsLensProgress,
   shouldApplySnapshot,
@@ -343,125 +344,144 @@ export class PersonalLensApp extends LitElement {
     const extraction = this.lens.extraction;
     const target = this.lens.target;
     const outputBlocks = lensOutputBlocks(this.lens);
-    const sourceText = this.lens.input?.text ?? extraction?.text ?? "";
+    const sourceJson = lensSourceJson(this.lens);
     const activeAgent = this.lens.agent;
     const authenticationMethods = supportedAuthMethods(this.lens);
+    const applicationName = target?.application_name ?? "PersonalLens";
+    const windowContext = target?.title ? `${applicationName} — ${target.title}` : applicationName;
     return html`
-      <main class="overlay-shell">
-        <header class="overlay-titlebar">
-          <div>
-            <strong>${target?.application_name ?? "PersonalLens"}</strong>
+      <div class="overlay-shell">
+        <header class="overlay-header">
+          <h1 class="overlay-title" title=${windowContext}>
+            <strong>${applicationName}</strong>
             ${target?.title ? html`<span> — ${target.title}</span>` : nothing}
-          </div>
-          <button class="close-button" aria-label="Close Lens" @click=${this.closeWindow}>×</button>
+          </h1>
+          <button
+            type="button"
+            class="close-button"
+            aria-label="Close Lens"
+            @click=${this.closeWindow}
+          >
+            <span class="close-icon" aria-hidden="true"></span>
+          </button>
         </header>
 
-        <div class="overlay-status" role="status">
-          <span>${STAGE_LABEL[this.lens.stage]}</span>
+        <main class="overlay-main">
+          ${this.message ? html`<p class="error" role="alert">${this.message}</p>` : nothing}
+          ${this.lens.error ? html`<p class="error" role="alert">${this.lens.error}</p>` : nothing}
           ${
-            extraction
-              ? html`<span class="quality quality-${extraction.quality}"
-                  >${extraction.quality}</span
-                >`
+            activeAgent?.authentication_message
+              ? html`<p class="notice" role="status">${activeAgent.authentication_message}</p>`
               : nothing
           }
-        </div>
+          ${
+            this.lens.stage === "authentication_required"
+              ? html`
+                  <section class="overlay-actions" aria-label="Agent authentication">
+                    ${
+                      authenticationMethods.length
+                        ? authenticationMethods.map(
+                            (method) => html`
+                              <button @click=${() => this.authenticate(method.id)}>
+                                Authenticate with ${method.name}…
+                              </button>
+                            `,
+                          )
+                        : html`<p>Authenticate with this agent's existing CLI, then try again.</p>`
+                    }
+                    <button @click=${this.transform}>Try Again</button>
+                  </section>
+                `
+              : nothing
+          }
+          ${
+            this.lens.stage === "ready" ||
+            (this.lens.stage === "failed" && Boolean(this.lens.input))
+              ? html`
+                  <div class="overlay-actions">
+                    <button class="primary" @click=${this.transform}>Transform with Agent</button>
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.lens.stage === "connecting" || this.lens.stage === "transforming"
+              ? html`
+                  <div class="overlay-actions">
+                    <button @click=${this.cancelAgent}>Cancel</button>
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.activeLensTab === "translation"
+              ? html`
+                  <section
+                    id="translation-panel"
+                    class="lens-panel"
+                    role="tabpanel"
+                    aria-labelledby="translation-tab"
+                    tabindex="0"
+                  >
+                    ${
+                      outputBlocks.length
+                        ? html`<div
+                            class="lens-content lens-output"
+                            data-auto-scroll-container
+                            role="document"
+                            aria-live="polite"
+                          >
+                            ${outputBlocks.map((block, index) =>
+                              this.renderOutputBlock(block, index === outputBlocks.length - 1),
+                            )}
+                          </div>`
+                        : showsLensProgress(this.lens.stage)
+                          ? this.renderLoadingState()
+                          : this.renderTranslationEmptyState()
+                    }
+                  </section>
+                `
+              : html`
+                  <section
+                    id="source-panel"
+                    class="lens-panel"
+                    role="tabpanel"
+                    aria-labelledby="source-tab"
+                    tabindex="0"
+                  >
+                    ${
+                      sourceJson
+                        ? html`<pre
+                            class="lens-content source-content"
+                            aria-label="Normalized Lens source JSON"
+                          ><code>${sourceJson}</code></pre>`
+                        : html`<p class="empty-state">No normalized source data is available.</p>`
+                    }
+                    ${extraction ? this.renderDiagnostics(extraction) : nothing}
+                  </section>
+                `
+          }
+        </main>
 
-        ${this.message ? html`<p class="error" role="alert">${this.message}</p>` : nothing}
-        ${this.lens.error ? html`<p class="error" role="alert">${this.lens.error}</p>` : nothing}
-        ${
-          activeAgent?.authentication_message
-            ? html`<p class="notice" role="status">${activeAgent.authentication_message}</p>`
-            : nothing
-        }
-        ${
-          this.lens.stage === "authentication_required"
-            ? html`
-                <section class="overlay-actions" aria-label="Agent authentication">
-                  ${
-                    authenticationMethods.length
-                      ? authenticationMethods.map(
-                          (method) => html`
-                            <button @click=${() => this.authenticate(method.id)}>
-                              Authenticate with ${method.name}…
-                            </button>
-                          `,
-                        )
-                      : html`<p>Authenticate with this agent's existing CLI, then try again.</p>`
-                  }
-                  <button @click=${this.transform}>Try Again</button>
-                </section>
-              `
-            : nothing
-        }
-        ${
-          this.lens.stage === "ready" || (this.lens.stage === "failed" && Boolean(this.lens.input))
-            ? html`
-                <div class="overlay-actions">
-                  <button class="primary" @click=${this.transform}>Transform with Agent</button>
-                </div>
-              `
-            : nothing
-        }
-        ${
-          this.lens.stage === "connecting" || this.lens.stage === "transforming"
-            ? html`
-                <div class="overlay-actions">
-                  <button @click=${this.cancelAgent}>Cancel</button>
-                </div>
-              `
-            : nothing
-        }
-
-        <div class="lens-tabs" role="tablist" aria-label="Lens content">
-          ${this.renderLensTab("translation", "Translation")}
-          ${this.renderLensTab("source", "Source")}
-        </div>
-
-        ${
-          this.activeLensTab === "translation"
-            ? html`
-                <section
-                  id="translation-panel"
-                  class="lens-panel"
-                  role="tabpanel"
-                  aria-labelledby="translation-tab"
-                >
-                  ${
-                    outputBlocks.length
-                      ? html`<div
-                          class="lens-content lens-output"
-                          data-auto-scroll-container
-                          role="document"
-                          aria-live="polite"
-                        >
-                          ${outputBlocks.map((block, index) =>
-                            this.renderOutputBlock(block, index === outputBlocks.length - 1),
-                          )}
-                        </div>`
-                      : showsLensProgress(this.lens.stage)
-                        ? this.renderLoadingState()
-                        : this.renderTranslationEmptyState()
-                  }
-                </section>
-              `
-            : html`
-                <section
-                  id="source-panel"
-                  class="lens-panel"
-                  role="tabpanel"
-                  aria-labelledby="source-tab"
-                >
-                  ${
-                    sourceText
-                      ? html`<article class="lens-content source-content">${sourceText}</article>`
-                      : html`<p class="empty-state">No source text is available.</p>`
-                  }
-                  ${extraction ? this.renderDiagnostics(extraction) : nothing}
-                </section>
-              `
-        }
-      </main>
+        <footer class="overlay-footer">
+          <div class="overlay-footer-meta">
+            <div class="overlay-footer-status" role="status" title=${STAGE_LABEL[this.lens.stage]}>
+              <span class="overlay-stage">${STAGE_LABEL[this.lens.stage]}</span>
+              ${
+                extraction
+                  ? html`<span class="quality quality-${extraction.quality}"
+                      >${extraction.quality}</span
+                    >`
+                  : nothing
+              }
+            </div>
+          </div>
+          <div class="lens-tabs" role="tablist" aria-label="Lens content">
+            ${this.renderLensTab("translation", "Translation")}
+            ${this.renderLensTab("source", "Source")}
+          </div>
+        </footer>
+      </div>
     `;
   }
 
@@ -503,6 +523,7 @@ export class PersonalLensApp extends LitElement {
     const selected = this.activeLensTab === tab;
     return html`
       <button
+        type="button"
         id="${tab}-tab"
         class="lens-tab"
         role="tab"
@@ -606,38 +627,83 @@ export class PersonalLensApp extends LitElement {
   };
 
   private renderDiagnostics(extraction: NonNullable<LensState["extraction"]>) {
+    const extractionMetrics = [
+      ["Visited nodes", extraction.metrics.visited_nodes],
+      ["UTF-8 bytes", extraction.metrics.text_bytes],
+      ["Off-window text nodes", extraction.metrics.offscreen_text_nodes],
+      ["Virtualization signals", extraction.metrics.virtualization_signals],
+      ["Child read errors", extraction.metrics.children_read_errors],
+      ["Nodes truncated", extraction.metrics.truncated_nodes ? "Yes" : "No"],
+      ["Text truncated", extraction.metrics.truncated_text ? "Yes" : "No"],
+    ] as const;
+    const agentMetrics = this.lens.agent
+      ? ([
+          ["ACP Agent", `${this.lens.agent.adapter_name} ${this.lens.agent.adapter_version}`],
+          ["Session updates", this.lens.agent.received_updates],
+          ["Stop reason", this.lens.agent.stop_reason ?? "—"],
+        ] as const)
+      : [];
+    const diagnosticCount = extraction.diagnostics.length;
+
     return html`
       <details class="extraction-diagnostics">
-        <summary>Extraction diagnostics</summary>
-        <dl class="metrics">
-          <dt>Nodes</dt>
-          <dd>${extraction.metrics.visited_nodes}</dd>
-          <dt>UTF-8 bytes</dt>
-          <dd>${extraction.metrics.text_bytes}</dd>
-          <dt>Off-window text nodes</dt>
-          <dd>${extraction.metrics.offscreen_text_nodes}</dd>
-          <dt>Virtualization signals</dt>
-          <dd>${extraction.metrics.virtualization_signals}</dd>
+        <summary>
+          Diagnostics
+          <span class="diagnostic-count"
+            >${
+              diagnosticCount === 0
+                ? "No messages"
+                : `${diagnosticCount} ${diagnosticCount === 1 ? "message" : "messages"}`
+            }</span
+          >
+        </summary>
+        <div class="diagnostics-layout">
+          <section class="diagnostic-group" aria-labelledby="extraction-metrics-heading">
+            <h2 id="extraction-metrics-heading">Extraction</h2>
+            <dl class="metrics">
+              ${extractionMetrics.map(
+                ([label, value]) => html`
+                  <div>
+                    <dt>${label}</dt>
+                    <dd>${value}</dd>
+                  </div>
+                `,
+              )}
+            </dl>
+          </section>
           ${
-            this.lens.agent
+            agentMetrics.length
               ? html`
-                  <dt>ACP Agent</dt>
-                  <dd>${this.lens.agent.adapter_name} ${this.lens.agent.adapter_version}</dd>
-                  <dt>Session updates</dt>
-                  <dd>${this.lens.agent.received_updates}</dd>
-                  <dt>Stop reason</dt>
-                  <dd>${this.lens.agent.stop_reason ?? "—"}</dd>
+                  <section class="diagnostic-group" aria-labelledby="agent-metrics-heading">
+                    <h2 id="agent-metrics-heading">Agent session</h2>
+                    <dl class="metrics">
+                      ${agentMetrics.map(
+                        ([label, value]) => html`
+                          <div>
+                            <dt>${label}</dt>
+                            <dd>${value}</dd>
+                          </div>
+                        `,
+                      )}
+                    </dl>
+                  </section>
                 `
               : nothing
           }
-        </dl>
-        ${
-          extraction.diagnostics.length
-            ? html`<ul>
-                ${extraction.diagnostics.map((item) => html`<li>${item}</li>`)}
-              </ul>`
-            : html`<p>No diagnostics.</p>`
-        }
+          <section
+            class="diagnostic-group diagnostic-messages"
+            aria-labelledby="diagnostic-messages-heading"
+          >
+            <h2 id="diagnostic-messages-heading">Messages</h2>
+            ${
+              diagnosticCount
+                ? html`<ul>
+                    ${extraction.diagnostics.map((item) => html`<li>${item}</li>`)}
+                  </ul>`
+                : html`<p>No extraction warnings or errors.</p>`
+            }
+          </section>
+        </div>
       </details>
     `;
   }
