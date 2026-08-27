@@ -2,13 +2,14 @@
 ARCHITECTURE.md
 /.agents/
 /.serena/
+/.worktreeinclude
 /AGENTS.md
 /docs/
 
 # Common ignores
-/.DS_Store
 *.log
 /*.tsbuildinfo
+/.DS_Store
 
 # Tauri project ignores
 node_modules/
