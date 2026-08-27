@@ -72,6 +72,19 @@ afterEach(() => {
 });
 
 describe("PersonalLens rich Agent output", () => {
+  it("declares the titlebar as the Lens window drag region", async () => {
+    await import("./personal-lens-app");
+    const element = document.createElement("personal-lens-app") as HTMLElement & {
+      updateComplete: Promise<boolean>;
+    };
+    document.body.append(element);
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
+    ).toBe("deep");
+  });
+
   it("renders ACP image data inline and preserves surrounding block order", async () => {
     await import("./personal-lens-app");
     const element = document.createElement("personal-lens-app") as HTMLElement & {

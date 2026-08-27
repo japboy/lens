@@ -3,33 +3,21 @@ use crate::{
     model::{
         AgentKind, AgentSelectionState, AppConfig, Bounds, LensStage, LensState, SelectedWindow,
     },
-    platform,
 };
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     utils::{config::WindowEffectsConfig, WindowEffect, WindowEffectState},
-    App, AppHandle, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder,
+    App, AppHandle, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_dialog::DialogExt;
-use uuid::Uuid;
 
 const SETTINGS_LABEL: &str = "settings";
-const SETTINGS_PREFERRED_WIDTH: f64 = 720.0;
-const SETTINGS_PREFERRED_HEIGHT: f64 = 800.0;
-const SETTINGS_MINIMUM_WIDTH: f64 = 420.0;
-const SETTINGS_MINIMUM_HEIGHT: f64 = 360.0;
-const SETTINGS_WORK_AREA_HORIZONTAL_INSET: f64 = 32.0;
-const SETTINGS_WORK_AREA_VERTICAL_INSET: f64 = 48.0;
-const OVERLAY_LABEL: &str = "lens-overlay";
-const OVERLAY_PARENT_RATIO: f64 = 0.8;
-const OVERLAY_OBSERVER_RECONCILIATION_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(2);
-const OVERLAY_POLLING_FALLBACK_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(250);
-const OVERLAY_TRACKING_MAX_MISSES: u8 = 8;
+const LENS_WINDOW_LABEL: &str = "lens-overlay";
+const LENS_WINDOW_PARENT_RATIO: f64 = 0.8;
+const LENS_WINDOW_CORNER_RADIUS: f64 = 12.0;
+const LENS_WINDOW_EFFECT: WindowEffect = WindowEffect::HudWindow;
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-icon-template@2x.png");
 const DESKTOP_PLATFORM: &str = if cfg!(target_os = "macos") {
     "macos"
@@ -66,6 +54,12 @@ fn webview_url(view: WebviewView) -> WebviewUrl {
     )
 }
 
+const SETTINGS_WINDOW_SIZE_POLICY: WindowSizePolicy = WindowSizePolicy {
+    preferred: WindowSize::new(720.0, 800.0),
+    minimum: WindowSize::new(420.0, 360.0),
+    work_area_inset: WindowSize::new(32.0, 48.0),
+};
+
 fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
     let icon = Image::from_bytes(TRAY_ICON_PNG)?;
     if enabled {
@@ -89,45 +83,53 @@ struct TrayMenuItems {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct OverlayGeometry {
+struct WindowSize {
+    width: f64,
+    height: f64,
+}
+
+impl WindowSize {
+    const fn new(width: f64, height: f64) -> Self {
+        Self { width, height }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WindowSizePolicy {
+    preferred: WindowSize,
+    minimum: WindowSize,
+    work_area_inset: WindowSize,
+}
+
+impl WindowSizePolicy {
+    fn initial_size(self, work_area: LogicalSize<f64>) -> WindowSize {
+        let width = if work_area.width.is_finite() {
+            (work_area.width - self.work_area_inset.width).max(self.minimum.width)
+        } else {
+            self.preferred.width
+        };
+        let height = if work_area.height.is_finite() {
+            (work_area.height - self.work_area_inset.height).max(self.minimum.height)
+        } else {
+            self.preferred.height
+        };
+        WindowSize {
+            width: width.min(self.preferred.width),
+            height: height.min(self.preferred.height),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LensWindowGeometry {
     x: f64,
     y: f64,
     width: f64,
     height: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SettingsWindowSize {
-    width: f64,
-    height: f64,
-}
-
-impl SettingsWindowSize {
-    const PREFERRED: Self = Self {
-        width: SETTINGS_PREFERRED_WIDTH,
-        height: SETTINGS_PREFERRED_HEIGHT,
-    };
-
-    fn from_work_area(work_area: LogicalSize<f64>) -> Self {
-        let width = if work_area.width.is_finite() {
-            (work_area.width - SETTINGS_WORK_AREA_HORIZONTAL_INSET).max(SETTINGS_MINIMUM_WIDTH)
-        } else {
-            SETTINGS_PREFERRED_WIDTH
-        };
-        let height = if work_area.height.is_finite() {
-            (work_area.height - SETTINGS_WORK_AREA_VERTICAL_INSET).max(SETTINGS_MINIMUM_HEIGHT)
-        } else {
-            SETTINGS_PREFERRED_HEIGHT
-        };
-        Self {
-            width: width.min(SETTINGS_PREFERRED_WIDTH),
-            height: height.min(SETTINGS_PREFERRED_HEIGHT),
-        }
-    }
-}
-
-impl OverlayGeometry {
-    fn from_parent(frame: Bounds) -> Option<Self> {
+impl LensWindowGeometry {
+    fn from_target(frame: Bounds) -> Option<Self> {
         if !frame.x.is_finite()
             || !frame.y.is_finite()
             || !frame.width.is_finite()
@@ -137,8 +139,9 @@ impl OverlayGeometry {
         {
             return None;
         }
-        let width = frame.width * OVERLAY_PARENT_RATIO;
-        let height = frame.height * OVERLAY_PARENT_RATIO;
+
+        let width = frame.width * LENS_WINDOW_PARENT_RATIO;
+        let height = frame.height * LENS_WINDOW_PARENT_RATIO;
         Some(Self {
             x: frame.x + (frame.width - width) / 2.0,
             y: frame.y + (frame.height - height) / 2.0,
@@ -399,166 +402,55 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     let size = app
         .primary_monitor()?
         .map(|monitor| {
-            SettingsWindowSize::from_work_area(
-                monitor.work_area().size.to_logical(monitor.scale_factor()),
-            )
+            SETTINGS_WINDOW_SIZE_POLICY
+                .initial_size(monitor.work_area().size.to_logical(monitor.scale_factor()))
         })
-        .unwrap_or(SettingsWindowSize::PREFERRED);
+        .unwrap_or(SETTINGS_WINDOW_SIZE_POLICY.preferred);
 
     WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
         .title("PersonalLens Settings")
         .inner_size(size.width, size.height)
-        .min_inner_size(SETTINGS_MINIMUM_WIDTH, SETTINGS_MINIMUM_HEIGHT)
+        .min_inner_size(
+            SETTINGS_WINDOW_SIZE_POLICY.minimum.width,
+            SETTINGS_WINDOW_SIZE_POLICY.minimum.height,
+        )
         .resizable(true)
         .center()
         .build()?;
     Ok(())
 }
 
-pub fn show_overlay(
-    app: &AppHandle,
-    target: &SelectedWindow,
-    operation_id: Uuid,
-) -> tauri::Result<()> {
-    let geometry = OverlayGeometry::from_parent(target.frame).ok_or_else(|| {
+pub fn show_lens_window(app: &AppHandle, target: &SelectedWindow) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(LENS_WINDOW_LABEL) {
+        window.show()?;
+        window.set_focus()?;
+        return Ok(());
+    }
+
+    let geometry = LensWindowGeometry::from_target(target.frame).ok_or_else(|| {
         tauri::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "selected window has invalid bounds",
         ))
     })?;
 
-    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        apply_overlay_geometry(&window, geometry)?;
-        window.show()?;
-        window.set_focus()?;
-        track_parent_window(app.clone(), target.clone(), operation_id, geometry);
-        return Ok(());
-    }
-
-    WebviewWindowBuilder::new(app, OVERLAY_LABEL, webview_url(WebviewView::Overlay))
+    WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
         .title("PersonalLens")
         .inner_size(geometry.width, geometry.height)
         .position(geometry.x, geometry.y)
         .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
+        .always_on_top(false)
         .transparent(true)
         .shadow(true)
-        .resizable(false)
+        .resizable(true)
         .effects(WindowEffectsConfig {
-            effects: vec![WindowEffect::UnderWindowBackground],
+            effects: vec![LENS_WINDOW_EFFECT],
             state: Some(WindowEffectState::Active),
-            radius: Some(12.0),
+            radius: Some(LENS_WINDOW_CORNER_RADIUS),
             color: None,
         })
         .build()?;
-    track_parent_window(app.clone(), target.clone(), operation_id, geometry);
     Ok(())
-}
-
-fn apply_overlay_geometry(window: &WebviewWindow, geometry: OverlayGeometry) -> tauri::Result<()> {
-    window.set_size(Size::Logical(LogicalSize::new(
-        geometry.width,
-        geometry.height,
-    )))?;
-    window.set_position(Position::Logical(LogicalPosition::new(
-        geometry.x, geometry.y,
-    )))
-}
-
-fn track_parent_window(
-    app: AppHandle,
-    target: SelectedWindow,
-    operation_id: Uuid,
-    initial_geometry: OverlayGeometry,
-) {
-    tauri::async_runtime::spawn(async move {
-        let mut observer = platform::observe_window(&target).ok();
-        let mut interval = tokio::time::interval(if observer.is_some() {
-            OVERLAY_OBSERVER_RECONCILIATION_INTERVAL
-        } else {
-            OVERLAY_POLLING_FALLBACK_INTERVAL
-        });
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_geometry = initial_geometry;
-        let mut consecutive_misses = 0_u8;
-
-        loop {
-            let is_current_operation = app
-                .state::<crate::app_state::AppState>()
-                .lens()
-                .map(|lens| lens.operation_id == Some(operation_id))
-                .unwrap_or(false);
-            if !is_current_operation {
-                break;
-            }
-            let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
-                break;
-            };
-
-            enum TrackingSignal {
-                Frame(Option<Bounds>),
-                ObserverClosed,
-                TargetDestroyed,
-            }
-
-            let signal = if let Some(active_observer) = observer.as_mut() {
-                tokio::select! {
-                    event = active_observer.recv() => match event {
-                        Some(platform::WindowObserverEvent::FrameChanged { frame }) => {
-                            TrackingSignal::Frame(Some(frame))
-                        }
-                        Some(platform::WindowObserverEvent::Destroyed) => {
-                            TrackingSignal::TargetDestroyed
-                        }
-                        None => TrackingSignal::ObserverClosed,
-                    },
-                    _ = interval.tick() => {
-                        TrackingSignal::Frame(read_current_parent_frame(target.window_id).await)
-                    }
-                }
-            } else {
-                interval.tick().await;
-                TrackingSignal::Frame(read_current_parent_frame(target.window_id).await)
-            };
-
-            let frame = match signal {
-                TrackingSignal::Frame(frame) => frame,
-                TrackingSignal::TargetDestroyed => break,
-                TrackingSignal::ObserverClosed => {
-                    observer = None;
-                    interval = tokio::time::interval(OVERLAY_POLLING_FALLBACK_INTERVAL);
-                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    continue;
-                }
-            };
-            let next_geometry = frame.and_then(OverlayGeometry::from_parent);
-            let Some(next_geometry) = next_geometry else {
-                consecutive_misses = consecutive_misses.saturating_add(1);
-                if consecutive_misses >= OVERLAY_TRACKING_MAX_MISSES {
-                    break;
-                }
-                continue;
-            };
-
-            consecutive_misses = 0;
-            if next_geometry != last_geometry {
-                if apply_overlay_geometry(&window, next_geometry).is_err() {
-                    break;
-                }
-                last_geometry = next_geometry;
-            }
-        }
-    });
-}
-
-async fn read_current_parent_frame(window_id: u32) -> Option<Bounds> {
-    match tauri::async_runtime::spawn_blocking(move || platform::current_window_frame(window_id))
-        .await
-    {
-        Ok(Ok(frame)) => frame,
-        Ok(Err(_)) | Err(_) => None,
-    }
 }
 
 #[cfg(test)]
@@ -570,26 +462,20 @@ mod tests {
     #[test]
     fn settings_size_prefers_content_height_and_is_capped_by_hd_work_area() {
         assert_eq!(
-            SettingsWindowSize::from_work_area(LogicalSize::new(1920.0, 1050.0)),
-            SettingsWindowSize::PREFERRED
+            SETTINGS_WINDOW_SIZE_POLICY.initial_size(LogicalSize::new(1920.0, 1050.0)),
+            SETTINGS_WINDOW_SIZE_POLICY.preferred
         );
         assert_eq!(
-            SettingsWindowSize::from_work_area(LogicalSize::new(1280.0, 696.0)),
-            SettingsWindowSize {
-                width: 720.0,
-                height: 648.0,
-            }
+            SETTINGS_WINDOW_SIZE_POLICY.initial_size(LogicalSize::new(1280.0, 696.0)),
+            WindowSize::new(720.0, 648.0)
         );
     }
 
     #[test]
     fn settings_size_preserves_its_explicit_minimum_on_a_smaller_work_area() {
         assert_eq!(
-            SettingsWindowSize::from_work_area(LogicalSize::new(400.0, 300.0)),
-            SettingsWindowSize {
-                width: SETTINGS_MINIMUM_WIDTH,
-                height: SETTINGS_MINIMUM_HEIGHT,
-            }
+            SETTINGS_WINDOW_SIZE_POLICY.initial_size(LogicalSize::new(400.0, 300.0)),
+            SETTINGS_WINDOW_SIZE_POLICY.minimum
         );
     }
 
@@ -618,42 +504,48 @@ mod tests {
     }
 
     #[test]
-    fn overlay_geometry_is_eighty_percent_and_centered_in_parent_coordinates() {
-        let geometry = OverlayGeometry::from_parent(Bounds {
-            x: -1440.0,
-            y: 120.0,
-            width: 1000.0,
-            height: 700.0,
-        })
-        .expect("valid parent geometry");
-
+    fn lens_window_geometry_is_eighty_percent_and_centered_in_target_coordinates() {
         assert_eq!(
-            geometry,
-            OverlayGeometry {
+            LensWindowGeometry::from_target(Bounds {
+                x: -1440.0,
+                y: 120.0,
+                width: 1000.0,
+                height: 700.0,
+            }),
+            Some(LensWindowGeometry {
                 x: -1340.0,
                 y: 190.0,
                 width: 800.0,
                 height: 560.0,
-            }
+            })
         );
     }
 
     #[test]
-    fn overlay_geometry_rejects_non_finite_or_empty_parent_bounds() {
-        assert!(OverlayGeometry::from_parent(Bounds {
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 700.0,
-        })
-        .is_none());
-        assert!(OverlayGeometry::from_parent(Bounds {
-            x: f64::NAN,
-            y: 0.0,
-            width: 1000.0,
-            height: 700.0,
-        })
-        .is_none());
+    fn lens_window_uses_the_semantic_hud_material() {
+        assert_eq!(LENS_WINDOW_EFFECT, WindowEffect::HudWindow);
+    }
+
+    #[test]
+    fn lens_window_geometry_rejects_non_finite_or_empty_target_bounds() {
+        assert_eq!(
+            LensWindowGeometry::from_target(Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 700.0,
+            }),
+            None
+        );
+        assert_eq!(
+            LensWindowGeometry::from_target(Bounds {
+                x: f64::NAN,
+                y: 0.0,
+                width: 1000.0,
+                height: 700.0,
+            }),
+            None
+        );
     }
 
     #[test]
