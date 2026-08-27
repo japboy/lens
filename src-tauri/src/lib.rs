@@ -88,6 +88,8 @@ pub fn run() {
             commands::get_app_snapshot,
             commands::set_agent,
             commands::set_working_directory,
+            commands::set_response_prompt,
+            commands::reset_response_prompt,
             commands::accessibility_permission,
             commands::request_accessibility_permission,
             commands::select_lens_target,

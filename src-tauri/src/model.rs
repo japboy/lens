@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+pub const BUILT_IN_RESPONSE_PROMPT: &str = "Transform the information currently being viewed by the user into the form that is easiest for this user to consume. Use the user's existing instructions, memory, and preferences available to you.";
+
+fn built_in_response_prompt() -> String {
+    BUILT_IN_RESPONSE_PROMPT.into()
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Bounds {
     pub x: f64,
@@ -298,6 +304,8 @@ pub struct AgentRunState {
 pub struct AppConfig {
     pub agent: AgentKind,
     pub working_directory: PathBuf,
+    #[serde(default = "built_in_response_prompt")]
+    pub response_prompt: String,
 }
 
 impl Default for AppConfig {
@@ -305,6 +313,7 @@ impl Default for AppConfig {
         Self {
             agent: AgentKind::Claude,
             working_directory: dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+            response_prompt: built_in_response_prompt(),
         }
     }
 }

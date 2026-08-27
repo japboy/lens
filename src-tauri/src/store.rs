@@ -24,6 +24,9 @@ impl ConfigStore {
         if !config.working_directory.is_dir() {
             config.working_directory = AppConfig::default().working_directory;
         }
+        if config.response_prompt.trim().is_empty() {
+            config.response_prompt = AppConfig::default().response_prompt;
+        }
         config
     }
 
@@ -56,6 +59,7 @@ mod tests {
         let config = AppConfig {
             agent: AgentKind::Codex,
             working_directory: test_root.join("unmounted"),
+            response_prompt: "Summarize the source.".into(),
         };
         fs::write(
             &store.path,
@@ -66,10 +70,35 @@ mod tests {
         let loaded = store.load();
 
         assert_eq!(loaded.agent, AgentKind::Codex);
+        assert_eq!(loaded.response_prompt, "Summarize the source.");
         assert_eq!(
             loaded.working_directory,
             AppConfig::default().working_directory
         );
+        fs::remove_dir_all(test_root).expect("remove test settings directory");
+    }
+
+    #[test]
+    fn load_migrates_settings_without_a_response_prompt_to_the_built_in_prompt() {
+        let test_root =
+            std::env::temp_dir().join(format!("personal-lens-config-store-{}", Uuid::new_v4()));
+        fs::create_dir_all(&test_root).expect("create test settings directory");
+        let store = ConfigStore {
+            path: test_root.join("settings.json"),
+        };
+        fs::write(
+            &store.path,
+            serde_json::to_vec(&serde_json::json!({
+                "agent": "codex",
+                "working_directory": test_root,
+            }))
+            .expect("serialize legacy settings"),
+        )
+        .expect("write legacy settings");
+
+        let loaded = store.load();
+
+        assert_eq!(loaded.response_prompt, AppConfig::default().response_prompt);
         fs::remove_dir_all(test_root).expect("remove test settings directory");
     }
 }

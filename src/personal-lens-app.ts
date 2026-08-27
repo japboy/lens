@@ -42,6 +42,8 @@ export class PersonalLensApp extends LitElement {
     busy: { state: true },
     message: { state: true },
     activeLensTab: { state: true },
+    responsePromptDraft: { state: true },
+    responsePromptDirty: { state: true },
   };
 
   static styles = [
@@ -64,6 +66,8 @@ export class PersonalLensApp extends LitElement {
   declare private busy: boolean;
   declare private message: string;
   declare private activeLensTab: LensTab;
+  declare private responsePromptDraft: string;
+  declare private responsePromptDirty: boolean;
   private unlisten: UnlistenFn[];
   private permissionTimer?: number;
   private revision: number;
@@ -82,6 +86,8 @@ export class PersonalLensApp extends LitElement {
     this.busy = false;
     this.message = "";
     this.activeLensTab = "translation";
+    this.responsePromptDraft = "";
+    this.responsePromptDirty = false;
     this.unlisten = [];
     this.revision = -1;
     this.loadGeneration = 0;
@@ -138,6 +144,10 @@ export class PersonalLensApp extends LitElement {
   private applySnapshot(next: AppSnapshot): void {
     if (!shouldApplySnapshot(this.revision, next.revision)) return;
     this.revision = next.revision;
+    if (!this.responsePromptDirty || next.config.response_prompt === this.responsePromptDraft) {
+      this.responsePromptDraft = next.config.response_prompt;
+      this.responsePromptDirty = false;
+    }
     this.config = next.config;
     this.agentSelection = next.agent_selection;
     this.agentRuntime = next.agent_runtime;
@@ -181,6 +191,40 @@ export class PersonalLensApp extends LitElement {
             }
           </output>
           ${this.renderAgentSelectionAuthentication()} ${this.renderSelectedAgentActions()}
+        </section>
+
+        <section aria-labelledby="prompt-heading">
+          <h2 id="prompt-heading">Agent Prompt</h2>
+          <form @submit=${this.saveResponsePrompt}>
+            <textarea
+              class="prompt-editor"
+              aria-label="Agent Prompt"
+              required
+              .value=${this.responsePromptDraft}
+              @input=${this.editResponsePrompt}
+              ?disabled=${this.busy || !this.config}
+            ></textarea>
+            <p class="help">
+              Controls how the Agent transforms the source. PersonalLens appends fixed source-data
+              boundaries and safety instructions when it sends the prompt.
+            </p>
+            <div class="prompt-actions">
+              <button
+                type="button"
+                @click=${this.resetResponsePrompt}
+                ?disabled=${this.busy || !this.config}
+              >
+                Reset to Default…
+              </button>
+              <button
+                type="submit"
+                class="primary"
+                ?disabled=${this.busy || !this.responsePromptDirty || !this.responsePromptDraft.trim()}
+              >
+                Save Prompt
+              </button>
+            </div>
+          </form>
         </section>
 
         <section aria-labelledby="cwd-heading">
@@ -648,6 +692,50 @@ export class PersonalLensApp extends LitElement {
       this.message = "Working directory updated.";
     } catch (error) {
       this.message = String(error);
+    }
+  };
+
+  private editResponsePrompt = (event: Event): void => {
+    this.responsePromptDraft = (event.currentTarget as HTMLTextAreaElement).value;
+    this.responsePromptDirty = this.responsePromptDraft !== this.config?.response_prompt;
+  };
+
+  private saveResponsePrompt = async (event: SubmitEvent): Promise<void> => {
+    event.preventDefault();
+    if (!this.responsePromptDirty || !this.responsePromptDraft.trim()) return;
+    this.busy = true;
+    try {
+      const config = await invoke<AppConfig>("set_response_prompt", {
+        responsePrompt: this.responsePromptDraft,
+      });
+      this.config = config;
+      this.responsePromptDraft = config.response_prompt;
+      this.responsePromptDirty = false;
+      this.message = "Agent prompt updated.";
+    } catch (error) {
+      this.message = String(error);
+    } finally {
+      this.busy = false;
+    }
+  };
+
+  private resetResponsePrompt = async (): Promise<void> => {
+    const approved = await confirm("Reset the Agent Prompt to the built-in default?", {
+      title: "Reset Agent Prompt",
+      kind: "warning",
+    });
+    if (!approved) return;
+    this.busy = true;
+    try {
+      const config = await invoke<AppConfig>("reset_response_prompt");
+      this.config = config;
+      this.responsePromptDraft = config.response_prompt;
+      this.responsePromptDirty = false;
+      this.message = "Agent prompt reset to the built-in default.";
+    } catch (error) {
+      this.message = String(error);
+    } finally {
+      this.busy = false;
     }
   };
 
