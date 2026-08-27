@@ -31,6 +31,40 @@ const OVERLAY_POLLING_FALLBACK_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(250);
 const OVERLAY_TRACKING_MAX_MISSES: u8 = 8;
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-icon-template@2x.png");
+const DESKTOP_PLATFORM: &str = if cfg!(target_os = "macos") {
+    "macos"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "linux") {
+    "linux"
+} else {
+    panic!("PersonalLens requires an explicit desktop platform presentation state")
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebviewView {
+    Settings,
+    Overlay,
+}
+
+impl WebviewView {
+    const fn as_query_value(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Overlay => "overlay",
+        }
+    }
+}
+
+fn webview_url(view: WebviewView) -> WebviewUrl {
+    WebviewUrl::App(
+        format!(
+            "index.html?view={}&platform={DESKTOP_PLATFORM}",
+            view.as_query_value()
+        )
+        .into(),
+    )
+}
 
 fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
     let icon = Image::from_bytes(TRAY_ICON_PNG)?;
@@ -371,17 +405,13 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         })
         .unwrap_or(SettingsWindowSize::PREFERRED);
 
-    WebviewWindowBuilder::new(
-        app,
-        SETTINGS_LABEL,
-        WebviewUrl::App("index.html?view=settings".into()),
-    )
-    .title("PersonalLens Settings")
-    .inner_size(size.width, size.height)
-    .min_inner_size(SETTINGS_MINIMUM_WIDTH, SETTINGS_MINIMUM_HEIGHT)
-    .resizable(true)
-    .center()
-    .build()?;
+    WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
+        .title("PersonalLens Settings")
+        .inner_size(size.width, size.height)
+        .min_inner_size(SETTINGS_MINIMUM_WIDTH, SETTINGS_MINIMUM_HEIGHT)
+        .resizable(true)
+        .center()
+        .build()?;
     Ok(())
 }
 
@@ -405,27 +435,23 @@ pub fn show_overlay(
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
-        app,
-        OVERLAY_LABEL,
-        WebviewUrl::App("index.html?view=overlay".into()),
-    )
-    .title("PersonalLens")
-    .inner_size(geometry.width, geometry.height)
-    .position(geometry.x, geometry.y)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .transparent(true)
-    .shadow(true)
-    .resizable(false)
-    .effects(WindowEffectsConfig {
-        effects: vec![WindowEffect::UnderWindowBackground],
-        state: Some(WindowEffectState::Active),
-        radius: Some(12.0),
-        color: None,
-    })
-    .build()?;
+    WebviewWindowBuilder::new(app, OVERLAY_LABEL, webview_url(WebviewView::Overlay))
+        .title("PersonalLens")
+        .inner_size(geometry.width, geometry.height)
+        .position(geometry.x, geometry.y)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .transparent(true)
+        .shadow(true)
+        .resizable(false)
+        .effects(WindowEffectsConfig {
+            effects: vec![WindowEffect::UnderWindowBackground],
+            state: Some(WindowEffectState::Active),
+            radius: Some(12.0),
+            color: None,
+        })
+        .build()?;
     track_parent_window(app.clone(), target.clone(), operation_id, geometry);
     Ok(())
 }
@@ -565,6 +591,30 @@ mod tests {
                 height: SETTINGS_MINIMUM_HEIGHT,
             }
         );
+    }
+
+    #[test]
+    fn webview_urls_publish_explicit_finite_presentation_state() {
+        let WebviewUrl::App(settings) = webview_url(WebviewView::Settings) else {
+            panic!("Settings must use an application WebView URL");
+        };
+        let WebviewUrl::App(overlay) = webview_url(WebviewView::Overlay) else {
+            panic!("Lens must use an application WebView URL");
+        };
+
+        assert_eq!(
+            settings,
+            std::path::PathBuf::from(format!(
+                "index.html?view=settings&platform={DESKTOP_PLATFORM}"
+            ))
+        );
+        assert_eq!(
+            overlay,
+            std::path::PathBuf::from(format!(
+                "index.html?view=overlay&platform={DESKTOP_PLATFORM}"
+            ))
+        );
+        assert!(matches!(DESKTOP_PLATFORM, "macos" | "windows" | "linux"));
     }
 
     #[test]

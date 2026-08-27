@@ -58,7 +58,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 beforeAll(() => {
-  window.history.replaceState({}, "", "/?view=overlay");
+  window.history.replaceState({}, "", "/?view=overlay&platform=macos");
   window.matchMedia ??= () => ({ matches: false }) as MediaQueryList;
   globalThis.requestAnimationFrame ??= (callback: FrameRequestCallback) =>
     window.setTimeout(() => callback(performance.now()), 0);
@@ -68,6 +68,7 @@ beforeAll(() => {
 
 afterEach(() => {
   document.body.replaceChildren();
+  window.history.replaceState({}, "", "/?view=overlay&platform=macos");
 });
 
 describe("PersonalLens rich Agent output", () => {
@@ -93,5 +94,32 @@ describe("PersonalLens rich Agent output", () => {
     ]);
     expect(image?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
     expect(image?.getAttribute("alt")).toBe("Visual output from the agent");
+  });
+});
+
+describe("PersonalLens Settings text entry", () => {
+  it("preserves native HTML behavior on the platform presentation targets", async () => {
+    window.history.replaceState({}, "", "/?view=settings&platform=macos");
+    await import("./personal-lens-app");
+    const element = document.createElement("personal-lens-app") as HTMLElement & {
+      updateComplete: Promise<boolean>;
+    };
+    document.body.append(element);
+    await element.updateComplete;
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelector<HTMLInputElement>(".directory-field")?.value).toBe(
+        "/tmp",
+      );
+    });
+
+    const directory = element.shadowRoot?.querySelector<HTMLInputElement>(".directory-field");
+    const prompt = element.shadowRoot?.querySelector<HTMLTextAreaElement>(".prompt-editor");
+
+    expect(directory).toBeInstanceOf(HTMLInputElement);
+    expect(directory?.type).toBe("text");
+    expect(directory?.readOnly).toBe(true);
+    expect(prompt).toBeInstanceOf(HTMLTextAreaElement);
+    expect(prompt?.required).toBe(true);
+    expect(prompt?.disabled).toBe(false);
   });
 });

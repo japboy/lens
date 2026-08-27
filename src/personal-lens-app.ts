@@ -234,6 +234,8 @@ export class PersonalLensApp extends LitElement {
           <h2 id="cwd-heading">Working Directory</h2>
           <div class="directory-row">
             <input
+              type="text"
+              class="directory-field"
               aria-label="Working Directory"
               readonly
               .value=${this.config?.working_directory ?? ""}
