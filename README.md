@@ -48,13 +48,13 @@ The application creates no ordinary WebView window at startup. Left-clicking the
 
 An Agent receives a check mark only after PersonalLens installs and verifies its managed runtime and then verifies its existing authentication. Codex is verified by ACP session creation; Claude is first verified by the adapter's official CLI authentication-status command because Claude Agent ACP does not reject unauthenticated session creation. Clicking an unauthenticated Agent opens the adapter-owned authentication flow in Settings. `Select Lens Target…` remains disabled until an authenticated Agent is selected. Clicking the Working Directory item opens the native macOS folder picker and updates the path shown in the menu.
 
-Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, Working Directory, and Accessibility permission controls. Reauthentication and sign-out first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Variable authentication content remains contained in a scrollable, responsive Settings layout.
+Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, an editable Agent Prompt, Working Directory, and Accessibility permission controls. The Agent Prompt controls the response transformation while PersonalLens keeps its source-data boundary and safety instructions fixed. Reauthentication, sign-out, and restoring the built-in prompt first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Its preferred size shows all default content without scrolling, while its monitor-aware height cap and compact layout keep it within an HD work area and preserve scrolling when variable content requires it.
 
 The Lens overlay opens centered at 80% of the selected window's width and height, follows its move/resize lifecycle, and uses a lightly translucent native background material. Translation is the default tab. ACP text deltas render through an append-only Markdown DOM with a stream cursor and reader-aware auto-scroll; terminal output settles once as sanitized GitHub Flavored Markdown. Source keeps the extracted Accessibility text and diagnostics available without flashing them as the Agent result. Loading uses only bundled assets.
 
 ## Security Boundary
 
-- PersonalLens stores only the last successfully selected agent and working directory. Authentication status is verified at runtime and is not persisted.
+- PersonalLens stores only the last successfully selected agent, Agent Prompt, and working directory. Authentication status is verified at runtime and is not persisted.
 - Managed Agent runtimes are provider-specific, versioned application data. Interrupted installs remain in staging and are never selected; an invalid existing install is quarantined before replacement.
 - It does not read or write OAuth tokens, API keys, or Claude/Codex credential files.
 - Accessibility extraction is limited to a snapshot of the target explicitly selected by the user.

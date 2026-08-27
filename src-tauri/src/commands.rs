@@ -6,7 +6,7 @@ use crate::{
     },
     model::{
         AgentKind, AgentSelectionState, AppConfig, AppSnapshot, LensInput, LensStage, LensState,
-        SelectedWindow,
+        SelectedWindow, BUILT_IN_RESPONSE_PROMPT,
     },
     platform, ui,
 };
@@ -38,10 +38,38 @@ pub fn set_working_directory(path: String, app: AppHandle) -> Result<AppConfig, 
     update_working_directory(&app, PathBuf::from(path))
 }
 
+#[tauri::command]
+pub fn set_response_prompt(response_prompt: String, app: AppHandle) -> Result<AppConfig, String> {
+    let response_prompt = normalize_response_prompt(response_prompt)?;
+    update_config(&app, |config| config.response_prompt = response_prompt)
+}
+
+fn normalize_response_prompt(response_prompt: String) -> Result<String, String> {
+    let response_prompt = response_prompt.replace("\r\n", "\n").replace('\r', "\n");
+    if response_prompt.trim().is_empty() {
+        return Err("response prompt must not be empty".into());
+    }
+    Ok(response_prompt)
+}
+
+#[tauri::command]
+pub fn reset_response_prompt(app: AppHandle) -> Result<AppConfig, String> {
+    update_config(&app, |config| {
+        config.response_prompt = BUILT_IN_RESPONSE_PROMPT.into();
+    })
+}
+
 pub fn update_working_directory(app: &AppHandle, directory: PathBuf) -> Result<AppConfig, String> {
     if !directory.is_absolute() || !directory.is_dir() {
         return Err("working directory must be an existing absolute directory".into());
     }
+    update_config(app, |config| config.working_directory = directory)
+}
+
+fn update_config(
+    app: &AppHandle,
+    update: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
     let snapshot = {
         let mut snapshot = state
@@ -49,7 +77,7 @@ pub fn update_working_directory(app: &AppHandle, directory: PathBuf) -> Result<A
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
         let mut next = snapshot.config.clone();
-        next.working_directory = directory;
+        update(&mut next);
         let revision = next_revision(&snapshot)?;
         state.store.save(&next).map_err(|error| error.to_string())?;
         snapshot.config = next;
@@ -306,6 +334,18 @@ fn replace_operation_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_prompt_is_non_empty_and_has_deterministic_line_endings() {
+        assert_eq!(
+            normalize_response_prompt("First\r\nSecond\rThird".into()),
+            Ok("First\nSecond\nThird".into())
+        );
+        assert_eq!(
+            normalize_response_prompt(" \n\t".into()),
+            Err("response prompt must not be empty".into())
+        );
+    }
 
     #[test]
     fn failed_operation_preserves_identity_and_target() {

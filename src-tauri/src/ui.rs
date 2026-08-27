@@ -17,6 +17,12 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 const SETTINGS_LABEL: &str = "settings";
+const SETTINGS_PREFERRED_WIDTH: f64 = 720.0;
+const SETTINGS_PREFERRED_HEIGHT: f64 = 800.0;
+const SETTINGS_MINIMUM_WIDTH: f64 = 420.0;
+const SETTINGS_MINIMUM_HEIGHT: f64 = 360.0;
+const SETTINGS_WORK_AREA_HORIZONTAL_INSET: f64 = 32.0;
+const SETTINGS_WORK_AREA_VERTICAL_INSET: f64 = 48.0;
 const OVERLAY_LABEL: &str = "lens-overlay";
 const OVERLAY_PARENT_RATIO: f64 = 0.8;
 const OVERLAY_OBSERVER_RECONCILIATION_INTERVAL: std::time::Duration =
@@ -54,6 +60,36 @@ struct OverlayGeometry {
     y: f64,
     width: f64,
     height: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SettingsWindowSize {
+    width: f64,
+    height: f64,
+}
+
+impl SettingsWindowSize {
+    const PREFERRED: Self = Self {
+        width: SETTINGS_PREFERRED_WIDTH,
+        height: SETTINGS_PREFERRED_HEIGHT,
+    };
+
+    fn from_work_area(work_area: LogicalSize<f64>) -> Self {
+        let width = if work_area.width.is_finite() {
+            (work_area.width - SETTINGS_WORK_AREA_HORIZONTAL_INSET).max(SETTINGS_MINIMUM_WIDTH)
+        } else {
+            SETTINGS_PREFERRED_WIDTH
+        };
+        let height = if work_area.height.is_finite() {
+            (work_area.height - SETTINGS_WORK_AREA_VERTICAL_INSET).max(SETTINGS_MINIMUM_HEIGHT)
+        } else {
+            SETTINGS_PREFERRED_HEIGHT
+        };
+        Self {
+            width: width.min(SETTINGS_PREFERRED_WIDTH),
+            height: height.min(SETTINGS_PREFERRED_HEIGHT),
+        }
+    }
 }
 
 impl OverlayGeometry {
@@ -326,14 +362,23 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
+    let size = app
+        .primary_monitor()?
+        .map(|monitor| {
+            SettingsWindowSize::from_work_area(
+                monitor.work_area().size.to_logical(monitor.scale_factor()),
+            )
+        })
+        .unwrap_or(SettingsWindowSize::PREFERRED);
+
     WebviewWindowBuilder::new(
         app,
         SETTINGS_LABEL,
         WebviewUrl::App("index.html?view=settings".into()),
     )
     .title("PersonalLens Settings")
-    .inner_size(560.0, 600.0)
-    .min_inner_size(420.0, 360.0)
+    .inner_size(size.width, size.height)
+    .min_inner_size(SETTINGS_MINIMUM_WIDTH, SETTINGS_MINIMUM_HEIGHT)
     .resizable(true)
     .center()
     .build()?;
@@ -497,6 +542,32 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn settings_size_prefers_content_height_and_is_capped_by_hd_work_area() {
+        assert_eq!(
+            SettingsWindowSize::from_work_area(LogicalSize::new(1920.0, 1050.0)),
+            SettingsWindowSize::PREFERRED
+        );
+        assert_eq!(
+            SettingsWindowSize::from_work_area(LogicalSize::new(1280.0, 696.0)),
+            SettingsWindowSize {
+                width: 720.0,
+                height: 648.0,
+            }
+        );
+    }
+
+    #[test]
+    fn settings_size_preserves_its_explicit_minimum_on_a_smaller_work_area() {
+        assert_eq!(
+            SettingsWindowSize::from_work_area(LogicalSize::new(400.0, 300.0)),
+            SettingsWindowSize {
+                width: SETTINGS_MINIMUM_WIDTH,
+                height: SETTINGS_MINIMUM_HEIGHT,
+            }
+        );
+    }
+
+    #[test]
     fn overlay_geometry_is_eighty_percent_and_centered_in_parent_coordinates() {
         let geometry = OverlayGeometry::from_parent(Bounds {
             x: -1440.0,
@@ -540,6 +611,7 @@ mod tests {
         let config = AppConfig {
             agent: AgentKind::Codex,
             working_directory: PathBuf::from("/Users/example/Work"),
+            response_prompt: AppConfig::default().response_prompt,
         };
         let selected = AgentSelectionState {
             stage: AgentSelectionStage::Selected,

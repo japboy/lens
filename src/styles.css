@@ -69,7 +69,7 @@ p {
   min-height: 0;
   padding: 24px;
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto auto 1fr;
   gap: 22px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -111,6 +111,23 @@ fieldset {
 .directory-row input {
   min-width: 0;
   flex: 1;
+}
+
+.prompt-editor {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 9rem;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .help {
@@ -576,6 +593,36 @@ fieldset {
   *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+@media (max-height: 700px) {
+  .settings-shell {
+    padding: 14px 20px;
+    gap: 12px;
+  }
+  .settings-shell header p {
+    margin-top: 3px;
+  }
+  .settings-shell h2 {
+    margin-bottom: 6px;
+  }
+  .settings-shell .prompt-editor {
+    min-height: 6rem;
+  }
+  .settings-shell .help {
+    margin-top: 4px;
+    line-height: 1.3;
+  }
+  .settings-shell .agent-actions,
+  .settings-shell .prompt-actions {
+    margin-top: 6px;
+  }
+  .settings-shell .runtime-status {
+    margin: 4px 0;
+  }
+  .settings-shell footer {
+    padding-top: 8px;
   }
 }
 

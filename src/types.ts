@@ -31,6 +31,7 @@ export type LensStage =
 export interface AppConfig {
   agent: AgentKind;
   working_directory: string;
+  response_prompt: string;
 }
 
 export interface Bounds {
