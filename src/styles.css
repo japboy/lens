@@ -6,6 +6,15 @@
   background: transparent;
   accent-color: AccentColor;
   font-synthesis: none;
+  --settings-backdrop: Canvas;
+  --settings-group-background: Canvas;
+  --settings-group-border: ButtonBorder;
+}
+
+html[data-view="settings"][data-platform="macos"] {
+  --settings-backdrop: -apple-system-grouped-background;
+  --settings-group-background: -apple-system-secondary-grouped-background;
+  --settings-group-border: -apple-system-separator;
 }
 
 * {
@@ -21,7 +30,7 @@ body {
 }
 
 body {
-  background: Canvas;
+  background: var(--settings-backdrop);
 }
 
 html[data-view="overlay"],
@@ -48,11 +57,6 @@ input:not([type]) {
   background: Field;
 }
 
-h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-}
 h2 {
   margin: 0 0 10px;
   font-size: 13px;
@@ -68,22 +72,24 @@ p {
   min-width: 0;
   min-height: 0;
   padding: 24px;
-  display: grid;
-  grid-template-rows: auto auto auto auto auto 1fr;
-  gap: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   overflow: auto;
   overscroll-behavior: contain;
-  background: Canvas;
+  background: var(--settings-backdrop);
 }
 
 .settings-shell > *,
-.settings-shell section {
+.settings-group {
   min-width: 0;
 }
 
-.settings-shell header p {
-  margin: 6px 0 0;
-  color: GrayText;
+:host([data-platform="macos"]) .settings-group {
+  padding: 16px;
+  border: 1px solid var(--settings-group-border);
+  border-radius: 10px;
+  background: var(--settings-group-background);
 }
 
 fieldset {
@@ -206,12 +212,13 @@ fieldset {
 }
 
 .settings-shell footer {
-  align-self: end;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 16px;
-  border-top: 1px solid Separator;
+  margin-top: auto;
+  border-top: 1px solid var(--settings-group-border);
   padding-top: 16px;
 }
 
@@ -854,8 +861,8 @@ fieldset {
     padding: 14px 20px;
     gap: 12px;
   }
-  .settings-shell header p {
-    margin-top: 3px;
+  :host([data-platform="macos"]) .settings-group {
+    padding: 12px;
   }
   .settings-shell h2 {
     margin-bottom: 6px;
@@ -904,6 +911,11 @@ fieldset {
 }
 
 @media (prefers-contrast: more) {
+  :host([data-platform="macos"]) .settings-group {
+    border-width: 2px;
+    border-color: CanvasText;
+  }
+
   :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-editor) {
     border-width: 2px;
     border-color: CanvasText;
