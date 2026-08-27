@@ -7,7 +7,7 @@ use crate::{
     },
     model::{
         AgentAuthMethod, AgentAuthMethodKind, AgentKind, AgentRunState, AgentSelectionStage,
-        AgentSelectionState, AppConfig, LensInput, LensStage, LensState,
+        AgentSelectionState, AppConfig, LensInput, LensOutputBlock, LensStage, LensState,
     },
 };
 use agent_client_protocol::{
@@ -24,6 +24,7 @@ use agent_client_protocol::{
     util::MatchDispatch,
     AcpAgent, AcpAgentConfig, Agent, ConnectionTo, Dispatch, Error, ErrorCode, SessionMessage,
 };
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -625,7 +626,7 @@ pub async fn transform_current(
     };
     let mut run = begin_agent_run(&app, operation_id, |run_id, lens| {
         lens.stage = LensStage::Connecting;
-        lens.transformed_text = None;
+        lens.output_blocks.clear();
         lens.agent = Some(descriptor.run_state(run_id));
         lens.error = None;
     })?;
@@ -878,7 +879,7 @@ async fn run_transform(
             let safe_mode_id_text = safe_mode_id.to_string();
             if !update_lens_state_for_run(&app, key, |lens| {
                 lens.stage = LensStage::Transforming;
-                lens.transformed_text = Some(String::new());
+                lens.output_blocks.clear();
                 if let Some(agent) = lens.agent.as_mut() {
                     agent.session_id = Some(session_id_text);
                     agent.session_mode_id = Some(safe_mode_id_text);
@@ -909,8 +910,8 @@ async fn run_transform(
                     message = session.read_update() => {
                         match message? {
                             SessionMessage::SessionMessage(dispatch) => {
-                                let text = match agent_text(dispatch, descriptor.safe_mode_id).await {
-                                    Ok(text) => text,
+                                let output_block = match agent_output_block(dispatch, descriptor.safe_mode_id).await {
+                                    Ok(output_block) => output_block,
                                     Err(error) => {
                                         session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
                                         return Err(error);
@@ -920,8 +921,8 @@ async fn run_transform(
                                     if let Some(agent) = lens.agent.as_mut() {
                                         agent.received_updates += 1;
                                     }
-                                    if let Some(text) = text {
-                                        lens.transformed_text.get_or_insert_with(String::new).push_str(&text);
+                                    if let Some(output_block) = output_block {
+                                        lens.push_output_block(output_block);
                                     }
                                 }).map_err(state_error)? {
                                     session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
@@ -934,7 +935,7 @@ async fn run_transform(
                                     || cancellation_sent
                                     || *cancellation.borrow();
                                 update_lens_state_for_run(&app, key, |lens| {
-                                    let has_output = lens.transformed_text.as_ref().is_some_and(|text| !text.trim().is_empty());
+                                    let has_output = lens.has_output();
                                     lens.stage = if cancelled {
                                         LensStage::Cancelled
                                     } else if has_output {
@@ -943,7 +944,7 @@ async fn run_transform(
                                         LensStage::Failed
                                     };
                                     lens.error = if !cancelled && !has_output {
-                                        Some("Agent completed without a text representation.".into())
+                                        Some("Agent completed without a displayable representation.".into())
                                     } else {
                                         None
                                     };
@@ -1068,15 +1069,17 @@ fn required_safe_mode(
         })
 }
 
-async fn agent_text(dispatch: Dispatch, safe_mode_id: &str) -> Result<Option<String>, Error> {
-    let mut text = None;
+async fn agent_output_block(
+    dispatch: Dispatch,
+    safe_mode_id: &str,
+) -> Result<Option<LensOutputBlock>, Error> {
+    let mut output_block = None;
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
             match notification.update {
-                SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(content),
-                    ..
-                }) => text = Some(content.text),
+                SessionUpdate::AgentMessageChunk(chunk) => {
+                    output_block = Some(lens_output_block(chunk));
+                }
                 SessionUpdate::CurrentModeUpdate(update)
                     if update.current_mode_id.to_string() != safe_mode_id =>
                 {
@@ -1090,7 +1093,56 @@ async fn agent_text(dispatch: Dispatch, safe_mode_id: &str) -> Result<Option<Str
         })
         .await
         .otherwise_ignore()?;
-    Ok(text)
+    Ok(output_block)
+}
+
+fn lens_output_block(chunk: ContentChunk) -> LensOutputBlock {
+    let message_id = chunk.message_id.map(|message_id| message_id.to_string());
+    match chunk.content {
+        ContentBlock::Text(content) => LensOutputBlock::Markdown {
+            message_id,
+            text: content.text,
+        },
+        ContentBlock::Image(content)
+            if is_supported_image_mime_type(&content.mime_type)
+                && !content.data.is_empty()
+                && BASE64_STANDARD.decode(&content.data).is_ok() =>
+        {
+            LensOutputBlock::Image {
+                message_id,
+                mime_type: content.mime_type.to_ascii_lowercase(),
+                data: content.data,
+                uri: content.uri,
+            }
+        }
+        ContentBlock::Image(content) => LensOutputBlock::Unsupported {
+            message_id,
+            content_type: format!("image ({})", content.mime_type),
+        },
+        ContentBlock::Audio(content) => LensOutputBlock::Unsupported {
+            message_id,
+            content_type: format!("audio ({})", content.mime_type),
+        },
+        ContentBlock::ResourceLink(_) => LensOutputBlock::Unsupported {
+            message_id,
+            content_type: "resource_link".into(),
+        },
+        ContentBlock::Resource(_) => LensOutputBlock::Unsupported {
+            message_id,
+            content_type: "resource".into(),
+        },
+        _ => LensOutputBlock::Unsupported {
+            message_id,
+            content_type: "unknown".into(),
+        },
+    }
+}
+
+fn is_supported_image_mime_type(mime_type: &str) -> bool {
+    matches!(
+        mime_type.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+    )
 }
 
 fn stop_reason_text(stop_reason: StopReason) -> String {
@@ -1227,7 +1279,7 @@ fn extraction_quality_text(quality: crate::model::ExtractionQuality) -> &'static
 mod tests {
     use super::*;
     use crate::model::{ExtractionQuality, LensSource};
-    use agent_client_protocol::schema::v1::SessionMode;
+    use agent_client_protocol::schema::v1::{ImageContent, SessionMode, TextContent};
 
     #[test]
     fn prompt_preserves_agent_native_personalization_boundary() {
@@ -1363,5 +1415,72 @@ mod tests {
 
         assert_eq!(config["env"]["NODE_OPTIONS"], "");
         assert_eq!(config["env"]["NODE_PATH"], "");
+    }
+
+    #[test]
+    fn acp_text_and_image_chunks_become_typed_output_blocks() {
+        let text = lens_output_block(
+            ContentChunk::new(ContentBlock::Text(TextContent::new("Description")))
+                .message_id("message-1"),
+        );
+        let image = lens_output_block(
+            ContentChunk::new(ContentBlock::Image(
+                ImageContent::new("iVBORw0KGgo=", "IMAGE/PNG").uri("urn:fixture:image"),
+            ))
+            .message_id("message-1"),
+        );
+
+        assert_eq!(
+            text,
+            LensOutputBlock::Markdown {
+                message_id: Some("message-1".into()),
+                text: "Description".into(),
+            }
+        );
+        assert_eq!(
+            image,
+            LensOutputBlock::Image {
+                message_id: Some("message-1".into()),
+                mime_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+                uri: Some("urn:fixture:image".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn image_output_uses_an_explicit_finite_mime_type_allowlist() {
+        for mime_type in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/avif",
+        ] {
+            assert!(is_supported_image_mime_type(mime_type));
+        }
+        assert!(!is_supported_image_mime_type("image/svg+xml"));
+
+        let unsupported = lens_output_block(ContentChunk::new(ContentBlock::Image(
+            ImageContent::new("PHN2Zz4=", "image/svg+xml"),
+        )));
+        assert_eq!(
+            unsupported,
+            LensOutputBlock::Unsupported {
+                message_id: None,
+                content_type: "image (image/svg+xml)".into(),
+            }
+        );
+
+        let invalid_data = lens_output_block(ContentChunk::new(ContentBlock::Image(
+            ImageContent::new("not base64", "image/png"),
+        )));
+        assert_eq!(
+            invalid_data,
+            LensOutputBlock::Unsupported {
+                message_id: None,
+                content_type: "image (image/png)".into(),
+            }
+        );
     }
 }

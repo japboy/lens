@@ -326,6 +326,39 @@ fieldset {
   overflow-wrap: anywhere;
 }
 
+.lens-output {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lens-output-image {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.lens-output-image img {
+  display: block;
+  max-width: 100%;
+  max-height: min(65vh, 720px);
+  width: auto;
+  height: auto;
+  border: 1px solid Separator;
+  border-radius: 8px;
+  object-fit: contain;
+  background: color-mix(in srgb, CanvasText 4%, transparent);
+}
+
+.lens-output-unsupported {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid Separator;
+  border-radius: 7px;
+  color: GrayText;
+  background: color-mix(in srgb, CanvasText 4%, transparent);
+}
+
 .markdown-body {
   display: block;
   overflow-wrap: anywhere;

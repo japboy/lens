@@ -4,6 +4,8 @@ import type {
   AgentRuntimeStage,
   AgentSelectionStage,
   AgentSelectionState,
+  LensImageOutputBlock,
+  LensOutputBlock,
   LensStage,
   LensState,
 } from "./types";
@@ -59,8 +61,23 @@ export const STAGE_LABEL: Record<LensStage, string> = {
   failed: "Unable to complete the operation",
 };
 
-export function lensTranslationText(lens: LensState): string {
-  return lens.transformed_text ?? "";
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+]);
+
+export function lensOutputBlocks(lens: LensState): LensOutputBlock[] {
+  return lens.output_blocks;
+}
+
+export function imageDataUrl(block: LensImageOutputBlock): string | undefined {
+  const mimeType = block.mime_type.toLowerCase();
+  return SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)
+    ? `data:${mimeType};base64,${block.data}`
+    : undefined;
 }
 
 export function supportedAuthMethods(lens: LensState): AgentAuthMethod[] {

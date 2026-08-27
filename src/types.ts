@@ -117,13 +117,39 @@ export interface AgentRunState {
   authentication_message?: string;
 }
 
+interface LensOutputBlockBase {
+  message_id?: string;
+}
+
+export interface LensMarkdownOutputBlock extends LensOutputBlockBase {
+  type: "markdown";
+  text: string;
+}
+
+export interface LensImageOutputBlock extends LensOutputBlockBase {
+  type: "image";
+  mime_type: string;
+  data: string;
+  uri?: string;
+}
+
+export interface LensUnsupportedOutputBlock extends LensOutputBlockBase {
+  type: "unsupported";
+  content_type: string;
+}
+
+export type LensOutputBlock =
+  | LensMarkdownOutputBlock
+  | LensImageOutputBlock
+  | LensUnsupportedOutputBlock;
+
 export interface LensState {
   operation_id?: string;
   stage: LensStage;
   target?: SelectedWindow;
   extraction?: ExtractionResult;
   input?: LensInput;
-  transformed_text?: string;
+  output_blocks: LensOutputBlock[];
   agent?: AgentRunState;
   error?: string;
 }

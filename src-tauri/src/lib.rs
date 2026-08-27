@@ -7,12 +7,16 @@ mod platform;
 mod store;
 mod ui;
 
+#[cfg(debug_assertions)]
+use base64::prelude::*;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let validate_a11y = std::env::var_os("PERSONAL_LENS_VALIDATE_A11Y").is_some();
     let validate_acp = std::env::var_os("PERSONAL_LENS_VALIDATE_ACP").is_some();
+    let validate_rich_output =
+        cfg!(debug_assertions) && std::env::var_os("PERSONAL_LENS_VALIDATE_RICH_OUTPUT").is_some();
     let validation_runtime = std::env::var("PERSONAL_LENS_VALIDATE_RUNTIME")
         .ok()
         .map(|value| match value.as_str() {
@@ -40,7 +44,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(app_state::AppState::load())
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             ui::install_menu_bar(app)?;
@@ -64,6 +68,7 @@ pub fn run() {
             if std::env::var_os("PERSONAL_LENS_VALIDATE_A11Y").is_none()
                 && std::env::var_os("PERSONAL_LENS_VALIDATE_ACP").is_none()
                 && std::env::var_os("PERSONAL_LENS_VALIDATE_RUNTIME").is_none()
+                && !validate_rich_output
             {
                 let handle = app.handle().clone();
                 let preferred_agent = handle
@@ -79,7 +84,7 @@ pub fn run() {
                     }
                 });
             }
-            if !platform::accessibility_is_trusted() {
+            if !validate_rich_output && !platform::accessibility_is_trusted() {
                 platform::request_accessibility_trust();
             }
             Ok(())
@@ -131,6 +136,12 @@ pub fn run() {
                     println!("PERSONAL_LENS_RUNTIME_RESULT={summary}");
                     handle.exit(exit_code);
                 });
+            }
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if validate_rich_output => {
+                if let Err(error) = show_rich_output_validation(app.clone()) {
+                    eprintln!("Unable to show rich output validation: {error}");
+                }
             }
             tauri::RunEvent::Ready if validate_a11y || validate_acp => {
                 let handle = app.clone();
@@ -185,6 +196,48 @@ pub fn run() {
                     };
                     match result {
                         Ok(state) => {
+                            let transformed_text = state
+                                .output_blocks
+                                .iter()
+                                .filter_map(|block| match block {
+                                    model::LensOutputBlock::Markdown { text, .. } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<String>();
+                            let output_blocks = state
+                                .output_blocks
+                                .iter()
+                                .map(|block| match block {
+                                    model::LensOutputBlock::Markdown {
+                                        message_id,
+                                        text,
+                                    } => serde_json::json!({
+                                        "type": "markdown",
+                                        "message_id": message_id,
+                                        "text_bytes": text.len(),
+                                    }),
+                                    model::LensOutputBlock::Image {
+                                        message_id,
+                                        mime_type,
+                                        data,
+                                        uri,
+                                    } => serde_json::json!({
+                                        "type": "image",
+                                        "message_id": message_id,
+                                        "mime_type": mime_type,
+                                        "data_bytes": data.len(),
+                                        "uri": uri,
+                                    }),
+                                    model::LensOutputBlock::Unsupported {
+                                        message_id,
+                                        content_type,
+                                    } => serde_json::json!({
+                                        "type": "unsupported",
+                                        "message_id": message_id,
+                                        "content_type": content_type,
+                                    }),
+                                })
+                                .collect::<Vec<_>>();
                             let summary = serde_json::json!({
                                 "stage": state.stage,
                                 "target": state.target,
@@ -195,8 +248,9 @@ pub fn run() {
                                 }),
                                 "input_text_bytes": state.input.as_ref().map(|input| input.text.len()),
                                 "agent": state.agent,
-                                "transformed_text_bytes": state.transformed_text.as_ref().map(|text| text.len()),
-                                "transformed_text": state.transformed_text,
+                                "transformed_text_bytes": transformed_text.len(),
+                                "transformed_text": transformed_text,
+                                "output_blocks": output_blocks,
                                 "error": state.error,
                             });
                             match serde_json::to_string(&summary) {
@@ -220,4 +274,49 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(debug_assertions)]
+fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
+    let operation_id = uuid::Uuid::new_v4();
+    let target = model::SelectedWindow {
+        window_id: 0,
+        title: "Rich output validation".into(),
+        application_name: "PersonalLens Fixture".into(),
+        bundle_id: "com.github.japboy.personallens.fixture".into(),
+        pid: std::process::id() as i32,
+        frame: model::Bounds {
+            x: 120.0,
+            y: 100.0,
+            width: 1_200.0,
+            height: 800.0,
+        },
+    };
+    let state = model::LensState {
+        operation_id: Some(operation_id),
+        stage: model::LensStage::Completed,
+        target: Some(target.clone()),
+        output_blocks: vec![
+            model::LensOutputBlock::Markdown {
+                message_id: Some("validation-message".into()),
+                text: "# Rich output validation\n\nThis Markdown was emitted before the ACP image block."
+                    .into(),
+            },
+            model::LensOutputBlock::Image {
+                message_id: Some("validation-message".into()),
+                mime_type: "image/png".into(),
+                data: BASE64_STANDARD.encode(include_bytes!("../icons/128x128@2x.png")),
+                uri: Some("fixture://personal-lens-icon".into()),
+            },
+            model::LensOutputBlock::Markdown {
+                message_id: Some("validation-message".into()),
+                text: "The image block rendered above; this Markdown block follows it.".into(),
+            },
+        ],
+        ..model::LensState::default()
+    };
+    app_state::publish_lens_state(&app, state)?;
+    ui::show_overlay(&app, &target, operation_id).map_err(|error| error.to_string())?;
+    println!("PERSONAL_LENS_RICH_OUTPUT_RESULT=displayed");
+    Ok(())
 }

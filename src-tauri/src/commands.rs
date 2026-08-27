@@ -221,7 +221,7 @@ async fn extract_target_for_operation(
         target: Some(target.clone()),
         extraction: Some(extraction.clone()),
         input,
-        transformed_text: None,
+        output_blocks: Vec::new(),
         agent: None,
         error: if extraction.quality == crate::model::ExtractionQuality::Unavailable {
             Some("Accessibility extraction did not yield usable text.".into())

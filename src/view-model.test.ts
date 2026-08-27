@@ -3,8 +3,9 @@ import type { AgentRuntimeStage, AgentSelectionStage, LensStage, LensState } fro
 import {
   AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
+  imageDataUrl,
   isAgentRuntimeActive,
-  lensTranslationText,
+  lensOutputBlocks,
   selectedAgent,
   showsLensProgress,
   shouldApplySnapshot,
@@ -69,10 +70,18 @@ describe("PersonalLens view model", () => {
     expect(stages.every((stage) => STAGE_LABEL[stage].length > 0)).toBe(true);
   });
 
-  it("never exposes extraction text as the translation fallback", () => {
+  it("preserves ordered typed output without falling back to extraction text", () => {
     const lens = {
       stage: "transforming",
-      transformed_text: "Agent output",
+      output_blocks: [
+        { type: "markdown", message_id: "message-1", text: "Agent output" },
+        {
+          type: "image",
+          message_id: "message-1",
+          mime_type: "image/png",
+          data: "iVBORw0KGgo=",
+        },
+      ],
       input: {
         source: {
           application: "Safari",
@@ -85,13 +94,24 @@ describe("PersonalLens view model", () => {
       },
     } satisfies LensState;
 
-    expect(lensTranslationText(lens)).toBe("Agent output");
-    expect(lensTranslationText({ ...lens, transformed_text: undefined })).toBe("");
+    expect(lensOutputBlocks(lens)).toEqual(lens.output_blocks);
+    const imageBlock = lens.output_blocks[1];
+    expect(imageBlock?.type).toBe("image");
+    if (imageBlock?.type !== "image") throw new Error("expected image output block");
+    expect(imageDataUrl(imageBlock)).toBe("data:image/png;base64,iVBORw0KGgo=");
+    expect(lensOutputBlocks({ ...lens, output_blocks: [] })).toEqual([]);
+  });
+
+  it("rejects image MIME types outside the renderer allowlist", () => {
+    expect(
+      imageDataUrl({ type: "image", mime_type: "image/svg+xml", data: "PHN2Zz4=" }),
+    ).toBeUndefined();
   });
 
   it("offers only authentication methods the client supports", () => {
     const lens = {
       stage: "authentication_required",
+      output_blocks: [],
       agent: {
         run_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
         kind: "claude",

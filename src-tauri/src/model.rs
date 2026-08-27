@@ -333,6 +333,29 @@ pub enum LensStage {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LensOutputBlock {
+    Markdown {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        text: String,
+    },
+    Image {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        mime_type: String,
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uri: Option<String>,
+    },
+    Unsupported {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        content_type: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensState {
     #[serde(default)]
@@ -345,7 +368,7 @@ pub struct LensState {
     #[serde(default)]
     pub input: Option<LensInput>,
     #[serde(default)]
-    pub transformed_text: Option<String>,
+    pub output_blocks: Vec<LensOutputBlock>,
     #[serde(default)]
     pub agent: Option<AgentRunState>,
     #[serde(default)]
@@ -360,10 +383,35 @@ impl Default for LensState {
             target: None,
             extraction: None,
             input: None,
-            transformed_text: None,
+            output_blocks: Vec::new(),
             agent: None,
             error: None,
         }
+    }
+}
+
+impl LensState {
+    pub fn push_output_block(&mut self, block: LensOutputBlock) {
+        if let LensOutputBlock::Markdown { message_id, text } = &block {
+            if text.is_empty() {
+                return;
+            }
+            if let Some(LensOutputBlock::Markdown {
+                message_id: previous_message_id,
+                text: previous_text,
+            }) = self.output_blocks.last_mut()
+            {
+                if previous_message_id == message_id {
+                    previous_text.push_str(text);
+                    return;
+                }
+            }
+        }
+        self.output_blocks.push(block);
+    }
+
+    pub fn has_output(&self) -> bool {
+        !self.output_blocks.is_empty()
     }
 }
 
@@ -477,5 +525,77 @@ mod tests {
         };
         assert_eq!(selected.selected_agent(), Some(AgentKind::Codex));
         assert!(selected.can_select_lens_target());
+    }
+
+    #[test]
+    fn output_blocks_merge_only_adjacent_markdown_from_the_same_message() {
+        let mut lens = LensState::default();
+        lens.push_output_block(LensOutputBlock::Markdown {
+            message_id: Some("message-1".into()),
+            text: "First ".into(),
+        });
+        lens.push_output_block(LensOutputBlock::Markdown {
+            message_id: Some("message-1".into()),
+            text: "message".into(),
+        });
+        lens.push_output_block(LensOutputBlock::Image {
+            message_id: Some("message-1".into()),
+            mime_type: "image/png".into(),
+            data: "aW1hZ2U=".into(),
+            uri: None,
+        });
+        lens.push_output_block(LensOutputBlock::Markdown {
+            message_id: Some("message-1".into()),
+            text: "After image".into(),
+        });
+        lens.push_output_block(LensOutputBlock::Markdown {
+            message_id: Some("message-2".into()),
+            text: "Second message".into(),
+        });
+
+        assert_eq!(
+            lens.output_blocks,
+            vec![
+                LensOutputBlock::Markdown {
+                    message_id: Some("message-1".into()),
+                    text: "First message".into(),
+                },
+                LensOutputBlock::Image {
+                    message_id: Some("message-1".into()),
+                    mime_type: "image/png".into(),
+                    data: "aW1hZ2U=".into(),
+                    uri: None,
+                },
+                LensOutputBlock::Markdown {
+                    message_id: Some("message-1".into()),
+                    text: "After image".into(),
+                },
+                LensOutputBlock::Markdown {
+                    message_id: Some("message-2".into()),
+                    text: "Second message".into(),
+                },
+            ]
+        );
+        assert!(lens.has_output());
+    }
+
+    #[test]
+    fn output_block_serialization_is_tagged_and_self_describing() {
+        let block = LensOutputBlock::Image {
+            message_id: None,
+            mime_type: "image/webp".into(),
+            data: "aW1hZ2U=".into(),
+            uri: Some("urn:fixture:image".into()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(block).expect("serialize output block"),
+            serde_json::json!({
+                "type": "image",
+                "mime_type": "image/webp",
+                "data": "aW1hZ2U=",
+                "uri": "urn:fixture:image"
+            })
+        );
     }
 }
