@@ -80,6 +80,10 @@ export function imageDataUrl(block: LensImageOutputBlock): string | undefined {
     : undefined;
 }
 
+export function lensSourceJson(lens: LensState): string {
+  return lens.input ? JSON.stringify(lens.input, undefined, 2) : "";
+}
+
 export function supportedAuthMethods(lens: LensState): AgentAuthMethod[] {
   return lens.agent?.auth_methods.filter((method) => method.supported) ?? [];
 }

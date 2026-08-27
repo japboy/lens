@@ -204,28 +204,84 @@ fieldset {
   backdrop-filter: blur(16px) saturate(1.08);
 }
 
-.overlay-titlebar {
+.overlay-header {
   -webkit-app-region: drag;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   min-height: 36px;
-  padding: 6px 8px 6px 14px;
+  padding: 6px 14px;
   border-bottom: 1px solid Separator;
 }
 
-.overlay-titlebar > div {
+.overlay-header .close-button {
+  flex: 0 0 auto;
+}
+
+.overlay-title,
+.overlay-footer-status,
+.overlay-stage {
+  min-width: 0;
+}
+
+.overlay-title,
+.overlay-stage {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.overlay-titlebar span {
+
+.overlay-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.overlay-title span {
   color: GrayText;
+}
+
+.overlay-footer-status {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  color: GrayText;
+  font-size: 12px;
+}
+
+.overlay-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.overlay-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px 6px 14px;
+  border-top: 1px solid Separator;
+}
+
+.overlay-footer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
 }
 
 .close-button {
   -webkit-app-region: no-drag;
   appearance: none;
+  display: grid;
+  place-items: center;
   border: 0;
   border-radius: 50%;
   min-width: 24px;
@@ -234,7 +290,34 @@ fieldset {
   padding: 0;
   background: transparent;
   color: GrayText;
-  font-size: 18px;
+  line-height: 1;
+}
+
+.close-icon {
+  position: relative;
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.close-icon::before,
+.close-icon::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+}
+
+.close-icon::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.close-icon::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 .close-button:hover {
@@ -242,17 +325,8 @@ fieldset {
   color: SelectedItemText;
 }
 
-.overlay-status {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  color: GrayText;
-  font-size: 12px;
-}
-
 .quality {
+  flex: 0 0 auto;
   border: 1px solid Separator;
   border-radius: 999px;
   padding: 1px 7px;
@@ -274,7 +348,8 @@ fieldset {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin: 0 14px 8px;
+  min-width: 0;
+  margin: 0;
   padding: 2px;
   border: 1px solid Separator;
   border-radius: 7px;
@@ -324,6 +399,13 @@ fieldset {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  tab-size: 2;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, monospace;
+  font-size: 12px;
+}
+
+.source-content code {
+  font: inherit;
 }
 
 .lens-output {
@@ -578,8 +660,8 @@ fieldset {
   color: GrayText;
 }
 
-.overlay-shell > .error,
-.overlay-shell > .notice {
+.overlay-main > .error,
+.overlay-main > .notice {
   margin: 8px 14px;
   padding: 8px;
   border-radius: 5px;
@@ -606,30 +688,114 @@ fieldset {
 }
 
 .extraction-diagnostics {
-  max-height: 180px;
+  flex: 0 1 auto;
+  max-height: min(42%, 280px);
   overflow: auto;
-  border-top: 1px solid Separator;
-  padding: 8px 14px 12px;
+  margin: 0 14px 10px;
+  border: 1px solid Separator;
+  border-radius: 8px;
+  padding: 8px;
   color: GrayText;
   font-size: 11px;
+  background: color-mix(in srgb, CanvasText 3%, transparent);
 }
 
 .extraction-diagnostics summary {
-  cursor: default;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border: 1px solid Separator;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  color: CanvasText;
+  background: color-mix(in srgb, Canvas 78%, transparent);
+  font-weight: 600;
+}
+
+.extraction-diagnostics[open] summary {
+  margin-bottom: 8px;
+}
+
+.diagnostic-count {
+  float: right;
+  margin-inline-start: 12px;
+  border: 1px solid Separator;
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: GrayText;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.diagnostics-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px;
+}
+
+.extraction-diagnostics:not([open]) > .diagnostics-layout {
+  display: none;
+}
+
+.diagnostic-group {
+  min-width: 0;
+}
+
+.diagnostic-group h2 {
+  margin: 0 0 6px;
+  color: GrayText;
+  font-size: 10px;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.04em;
+}
+
+.diagnostic-messages {
+  grid-column: 1 / -1;
+}
+
+.diagnostic-messages p,
+.diagnostic-messages ul {
+  margin: 0;
+}
+
+.diagnostic-messages ul {
+  padding-inline-start: 18px;
+}
+
+.diagnostic-messages li {
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-messages li + li {
+  margin-top: 4px;
 }
 
 .metrics {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 2px 12px;
-}
-
-.metrics dt,
-.metrics dd {
+  grid-template-columns: repeat(auto-fit, minmax(min(112px, 100%), 1fr));
+  gap: 6px;
   margin: 0;
 }
+
+.metrics > div {
+  min-width: 0;
+  border: 1px solid Separator;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, Canvas 75%, transparent);
+}
+
+.metrics dt {
+  margin: 0 0 2px;
+  font-size: 10px;
+}
+
 .metrics dd {
+  margin: 0;
+  overflow-wrap: anywhere;
   color: CanvasText;
+  font-variant-numeric: tabular-nums;
 }
 
 .visually-hidden {

@@ -6,6 +6,7 @@ import {
   imageDataUrl,
   isAgentRuntimeActive,
   lensOutputBlocks,
+  lensSourceJson,
   selectedAgent,
   showsLensProgress,
   shouldApplySnapshot,
@@ -106,6 +107,42 @@ describe("PersonalLens view model", () => {
     expect(
       imageDataUrl({ type: "image", mime_type: "image/svg+xml", data: "PHN2Zz4=" }),
     ).toBeUndefined();
+  });
+
+  it("pretty-prints only the normalized LensInput in the Source view", () => {
+    const lens = {
+      stage: "ready",
+      output_blocks: [],
+      extraction: {
+        quality: "full",
+        text: "Raw extraction must not become a second Source authority.",
+        diagnostics: [],
+        metrics: {
+          visited_nodes: 1,
+          text_bytes: 10,
+          offscreen_text_nodes: 0,
+          virtualization_signals: 0,
+          truncated_nodes: false,
+          truncated_text: false,
+          children_read_errors: 0,
+        },
+      },
+      input: {
+        source: {
+          application: "Safari",
+          window_title: "Fixture",
+          bundle_id: "com.apple.Safari",
+          window_id: 417,
+        },
+        text: "Normalized source",
+        extraction_quality: "full",
+      },
+    } satisfies LensState;
+
+    const sourceJson = lensSourceJson(lens);
+    expect(sourceJson).toBe(JSON.stringify(lens.input, undefined, 2));
+    expect(JSON.parse(sourceJson)).toEqual(lens.input);
+    expect(lensSourceJson({ ...lens, input: undefined })).toBe("");
   });
 
   it("offers only authentication methods the client supports", () => {
