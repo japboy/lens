@@ -2,7 +2,7 @@
 
 PersonalLens is a menu-bar-first application that reads the Accessibility Tree exposed by another macOS application and transforms that information through an ACP agent selected by the user.
 
-The PoC focuses on accessibility-based text extraction and ACP-based transformation. It does not handle images, OCR, audio, or real-time content translation. AXObserver-based selected-window geometry following is included.
+The PoC focuses on accessibility-based text extraction and ACP-based transformation. It renders ordered ACP Markdown and raster-image output blocks, but does not extract images, perform OCR, handle audio, or translate content in real time. AXObserver-based selected-window geometry following is included.
 
 ## Requirements
 
@@ -50,7 +50,7 @@ An Agent receives a check mark only after PersonalLens installs and verifies its
 
 Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, an editable Agent Prompt, Working Directory, and Accessibility permission controls. The Agent Prompt controls the response transformation while PersonalLens keeps its source-data boundary and safety instructions fixed. Reauthentication, sign-out, and restoring the built-in prompt first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Its preferred size shows all default content without scrolling, while its monitor-aware height cap and compact layout keep it within an HD work area and preserve scrolling when variable content requires it.
 
-The Lens overlay opens centered at 80% of the selected window's width and height, follows its move/resize lifecycle, and uses a lightly translucent native background material. Translation is the default tab. ACP text deltas render through an append-only Markdown DOM with a stream cursor and reader-aware auto-scroll; terminal output settles once as sanitized GitHub Flavored Markdown. Completed `mermaid` code fences are then rendered from the bundled Mermaid runtime with strict security, bounded input, deterministic IDs, and system-aware light/dark themes; invalid diagrams remain visible as source code. Source keeps the extracted Accessibility text and diagnostics available without flashing them as the Agent result. Loading uses only bundled assets.
+The Lens overlay opens centered at 80% of the selected window's width and height, follows its move/resize lifecycle, and uses a lightly translucent native background material. Translation is the default tab. Ordered ACP text and image chunks remain typed output blocks. Text deltas render through an append-only Markdown DOM with a stream cursor and reader-aware auto-scroll; terminal text settles once as sanitized GitHub Flavored Markdown. Completed `mermaid` code fences are then rendered from the bundled Mermaid runtime with strict security, bounded input, deterministic IDs, and system-aware light/dark themes; invalid diagrams remain visible as source code. PNG, JPEG, GIF, WebP, and AVIF output renders inline, while unsupported content remains explicit. Source keeps the extracted Accessibility text and diagnostics available without flashing them as the Agent result. Loading uses only bundled assets.
 
 ## Security Boundary
 
@@ -73,5 +73,11 @@ PERSONAL_LENS_VALIDATE_RUNTIME=codex pnpm run tauri dev
 ```
 
 On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, managed Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
+
+A debug-only rich-output fixture exercises the bundled Tauri WebView with ordered Markdown, an inline PNG data URL, and trailing Markdown without requiring Agent authentication or Accessibility permission:
+
+```sh
+PERSONAL_LENS_VALIDATE_RICH_OUTPUT=1 pnpm exec tauri dev --no-watch
+```
 
 Official runtime references: [ACP Registry](https://agentclientprotocol.com/get-started/registry), [pnpm supply-chain security settings](https://pnpm.io/settings#minimumreleaseage), [Takumi Guard npm compatibility](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).

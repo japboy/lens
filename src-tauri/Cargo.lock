@@ -2807,6 +2807,7 @@ name = "personal-lens"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "base64 0.22.1",
  "cc",
  "dirs",
  "flate2",

@@ -16,13 +16,15 @@ import type {
   AgentSelectionState,
   AppConfig,
   AppSnapshot,
+  LensOutputBlock,
   LensState,
 } from "./types";
 import {
   AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
+  imageDataUrl,
   isAgentRuntimeActive,
-  lensTranslationText,
+  lensOutputBlocks,
   selectedAgent,
   showsLensProgress,
   shouldApplySnapshot,
@@ -81,7 +83,7 @@ export class PersonalLensApp extends LitElement {
       stage: "not_installed",
       downloaded_bytes: 0,
     };
-    this.lens = { stage: "idle" };
+    this.lens = { stage: "idle", output_blocks: [] };
     this.trusted = false;
     this.busy = false;
     this.message = "";
@@ -340,7 +342,7 @@ export class PersonalLensApp extends LitElement {
   private renderOverlay() {
     const extraction = this.lens.extraction;
     const target = this.lens.target;
-    const translationText = lensTranslationText(this.lens);
+    const outputBlocks = lensOutputBlocks(this.lens);
     const sourceText = this.lens.input?.text ?? extraction?.text ?? "";
     const activeAgent = this.lens.agent;
     const authenticationMethods = supportedAuthMethods(this.lens);
@@ -426,21 +428,17 @@ export class PersonalLensApp extends LitElement {
                   aria-labelledby="translation-tab"
                 >
                   ${
-                    translationText
-                      ? html`<personal-lens-markdown
-                          class="lens-content markdown-body"
+                    outputBlocks.length
+                      ? html`<div
+                          class="lens-content lens-output"
+                          data-auto-scroll-container
                           role="document"
                           aria-live="polite"
-                          .state=${
-                            {
-                              operationId: this.lens.operation_id,
-                              markdown: translationText,
-                              phase: this.lens.stage === "transforming" ? "streaming" : "settled",
-                            } satisfies StreamingMarkdownState
-                          }
-                          @click=${this.openMarkdownLink}
-                          @markdown-render-error=${this.handleMarkdownRenderError}
-                        ></personal-lens-markdown>`
+                        >
+                          ${outputBlocks.map((block, index) =>
+                            this.renderOutputBlock(block, index === outputBlocks.length - 1),
+                          )}
+                        </div>`
                       : showsLensProgress(this.lens.stage)
                         ? this.renderLoadingState()
                         : this.renderTranslationEmptyState()
@@ -465,6 +463,40 @@ export class PersonalLensApp extends LitElement {
         }
       </main>
     `;
+  }
+
+  private renderOutputBlock(block: LensOutputBlock, isLastBlock: boolean) {
+    switch (block.type) {
+      case "markdown":
+        return html`<personal-lens-markdown
+          class="markdown-body"
+          .state=${
+            {
+              operationId: this.lens.operation_id,
+              markdown: block.text,
+              phase: this.lens.stage === "transforming" && isLastBlock ? "streaming" : "settled",
+            } satisfies StreamingMarkdownState
+          }
+          @click=${this.openMarkdownLink}
+          @markdown-render-error=${this.handleMarkdownRenderError}
+        ></personal-lens-markdown>`;
+      case "image": {
+        const source = imageDataUrl(block);
+        return source
+          ? html`<figure class="lens-output-image">
+              <img src=${source} alt="Visual output from the agent" />
+            </figure>`
+          : this.renderUnsupportedOutput(`image (${block.mime_type})`);
+      }
+      case "unsupported":
+        return this.renderUnsupportedOutput(block.content_type);
+    }
+  }
+
+  private renderUnsupportedOutput(contentType: string) {
+    return html`<p class="lens-output-unsupported" role="note">
+      This agent output type is not supported yet: <code>${contentType}</code>
+    </p>`;
   }
 
   private renderLensTab(tab: LensTab, label: string) {
@@ -509,7 +541,7 @@ export class PersonalLensApp extends LitElement {
         case "failed":
           return "The Agent did not produce a translation.";
         case "completed":
-          return "The Agent completed without returning Markdown content.";
+          return "The Agent completed without returning displayable content.";
         case "selecting":
         case "extracting":
         case "ready":
