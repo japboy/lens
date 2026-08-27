@@ -7,6 +7,7 @@
     "core:default",
     "core:event:default",
     "core:window:allow-close",
+    "core:window:allow-start-dragging",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "http://*" }, { "url": "https://*" }, { "url": "mailto:*" }]

@@ -353,7 +353,7 @@ export class PersonalLensApp extends LitElement {
     const windowContext = target?.title ? `${applicationName} — ${target.title}` : applicationName;
     return html`
       <div class="overlay-shell">
-        <header class="overlay-header">
+        <header class="overlay-header" data-tauri-drag-region="deep">
           <h1 class="overlay-title" title=${windowContext}>
             <strong>${applicationName}</strong>
             ${target?.title ? html`<span> — ${target.title}</span>` : nothing}
@@ -361,6 +361,7 @@ export class PersonalLensApp extends LitElement {
           <button
             type="button"
             class="close-button"
+            data-tauri-drag-region="false"
             aria-label="Close Lens"
             @click=${this.closeWindow}
           >

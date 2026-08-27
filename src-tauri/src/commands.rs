@@ -193,8 +193,8 @@ async fn extract_target_for_operation(
             if !replace_operation_state(&app, operation_id, failed)? {
                 return Err(OPERATION_SUPERSEDED.into());
             }
-            ui::show_overlay(&app, &target, operation_id).map_err(|overlay_error| {
-                format!("{message}; unable to show Lens overlay: {overlay_error}")
+            ui::show_lens_window(&app, &target).map_err(|window_error| {
+                format!("{message}; unable to show Lens window: {window_error}")
             })?;
             return Err(message);
         }
@@ -204,8 +204,8 @@ async fn extract_target_for_operation(
             if !replace_operation_state(&app, operation_id, failed)? {
                 return Err(OPERATION_SUPERSEDED.into());
             }
-            ui::show_overlay(&app, &target, operation_id).map_err(|overlay_error| {
-                format!("{message}; unable to show Lens overlay: {overlay_error}")
+            ui::show_lens_window(&app, &target).map_err(|window_error| {
+                format!("{message}; unable to show Lens window: {window_error}")
             })?;
             return Err(message);
         }
@@ -232,8 +232,8 @@ async fn extract_target_for_operation(
     if !replace_operation_state(&app, operation_id, next.clone())? {
         return Err(OPERATION_SUPERSEDED.into());
     }
-    if let Err(error) = ui::show_overlay(&app, &target, operation_id) {
-        let message = format!("unable to show Lens overlay: {error}");
+    if let Err(error) = ui::show_lens_window(&app, &target) {
+        let message = format!("unable to show Lens window: {error}");
         if !update_lens_state(&app, operation_id, |lens| {
             lens.stage = LensStage::Failed;
             lens.error = Some(message.clone());

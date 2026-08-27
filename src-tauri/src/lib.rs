@@ -316,7 +316,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         ..model::LensState::default()
     };
     app_state::publish_lens_state(&app, state)?;
-    ui::show_overlay(&app, &target, operation_id).map_err(|error| error.to_string())?;
+    ui::show_lens_window(&app, &target).map_err(|error| error.to_string())?;
     println!("PERSONAL_LENS_RICH_OUTPUT_RESULT=displayed");
     Ok(())
 }

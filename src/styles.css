@@ -231,14 +231,12 @@ fieldset {
   overflow: hidden;
   border: 1px solid Separator;
   border-radius: 12px;
-  background: color-mix(in srgb, Canvas 90%, transparent);
+  background: transparent;
   color: CanvasText;
   box-shadow: 0 12px 36px color-mix(in srgb, CanvasText 20%, transparent);
-  backdrop-filter: blur(16px) saturate(1.08);
 }
 
 .overlay-header {
-  -webkit-app-region: drag;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -311,7 +309,6 @@ fieldset {
 }
 
 .close-button {
-  -webkit-app-region: no-drag;
   appearance: none;
   display: grid;
   place-items: center;
@@ -919,10 +916,11 @@ fieldset {
     border-color: AccentColor;
     outline-width: 4px;
   }
+}
 
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   .overlay-shell {
     border-width: 2px;
-    backdrop-filter: none;
     background: Canvas;
   }
 }
