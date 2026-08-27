@@ -209,6 +209,62 @@ static id PLCopyAXAttribute(AXUIElementRef element, CFStringRef attribute, AXErr
     return CFBridgingRelease(value);
 }
 
+typedef NS_ENUM(NSUInteger, PLAXApplicationPreparationState) {
+    PLAXApplicationPreparationStateReady,
+    PLAXApplicationPreparationStateUnsupported,
+    PLAXApplicationPreparationStateFailed,
+};
+
+typedef struct {
+    PLAXApplicationPreparationState state;
+    AXError roleError;
+} PLAXApplicationPreparation;
+
+static NSString *PLAXErrorName(AXError error) {
+    switch (error) {
+        case kAXErrorSuccess: return @"success";
+        case kAXErrorFailure: return @"failure";
+        case kAXErrorIllegalArgument: return @"illegal_argument";
+        case kAXErrorInvalidUIElement: return @"invalid_ui_element";
+        case kAXErrorInvalidUIElementObserver: return @"invalid_ui_element_observer";
+        case kAXErrorCannotComplete: return @"cannot_complete";
+        case kAXErrorAttributeUnsupported: return @"attribute_unsupported";
+        case kAXErrorActionUnsupported: return @"action_unsupported";
+        case kAXErrorNotificationUnsupported: return @"notification_unsupported";
+        case kAXErrorNotImplemented: return @"not_implemented";
+        case kAXErrorNotificationAlreadyRegistered: return @"notification_already_registered";
+        case kAXErrorNotificationNotRegistered: return @"notification_not_registered";
+        case kAXErrorAPIDisabled: return @"api_disabled";
+        case kAXErrorNoValue: return @"no_value";
+        case kAXErrorParameterizedAttributeUnsupported: return @"parameterized_attribute_unsupported";
+        case kAXErrorNotEnoughPrecision: return @"not_enough_precision";
+    }
+    return @"unknown";
+}
+
+static NSString *PLAXApplicationPreparationStateName(PLAXApplicationPreparationState state) {
+    switch (state) {
+        case PLAXApplicationPreparationStateReady: return @"ready";
+        case PLAXApplicationPreparationStateUnsupported: return @"unsupported";
+        case PLAXApplicationPreparationStateFailed: return @"failed";
+    }
+    return @"unknown";
+}
+
+static PLAXApplicationPreparation PLPrepareAXApplication(AXUIElementRef application) {
+    AXError roleError = kAXErrorFailure;
+    id role = PLCopyAXAttribute(application, kAXRoleAttribute, &roleError);
+    PLAXApplicationPreparationState state;
+    if (roleError == kAXErrorSuccess && [role isKindOfClass:NSString.class]) {
+        state = PLAXApplicationPreparationStateReady;
+    } else if (roleError == kAXErrorAttributeUnsupported || roleError == kAXErrorNoValue) {
+        state = PLAXApplicationPreparationStateUnsupported;
+    } else {
+        state = PLAXApplicationPreparationStateFailed;
+    }
+    return (PLAXApplicationPreparation){ state, roleError };
+}
+
 static NSString *PLAXString(AXUIElementRef element, CFStringRef attribute) {
     id value = PLCopyAXAttribute(element, attribute, NULL);
     if ([value isKindOfClass:NSString.class]) {
@@ -367,13 +423,40 @@ static AXUIElementRef PLCopyResolvedAXWindow(
     CGRect selectedFrame,
     NSString *__autoreleasing _Nullable *resolvedTitleOut,
     CGRect *resolvedFrameOut,
-    double *resolutionScoreOut
+    double *resolutionScoreOut,
+    NSMutableArray<NSString *> *_Nullable diagnostics
 ) {
     AXUIElementRef application = AXUIElementCreateApplication(pid);
-    NSArray *windows = PLCopyAXAttribute(application, kAXWindowsAttribute, NULL);
+    // Firefox lazily enables its macOS accessibility service when the application AXRole is read.
+    // Keep this standard read before AXWindows so extraction does not depend on another assistive
+    // technology having activated the target first.
+    // Source: https://searchfox.org/firefox-main/source/accessible/mac/Platform.mm#829-842
+    PLAXApplicationPreparation preparation = PLPrepareAXApplication(application);
+    AXError windowsError = kAXErrorFailure;
+    NSArray *windows = PLCopyAXAttribute(application, kAXWindowsAttribute, &windowsError);
     if (![windows isKindOfClass:NSArray.class] || windows.count == 0) {
+        if (diagnostics != nil) {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"Accessibility target window list is unavailable after application preparation "
+                 "(preparation: %@; AXRole: %@ (%d); AXWindows: %@ (%d)).",
+                PLAXApplicationPreparationStateName(preparation.state),
+                PLAXErrorName(preparation.roleError),
+                preparation.roleError,
+                PLAXErrorName(windowsError),
+                windowsError
+            ]];
+        }
         CFRelease(application);
         return NULL;
+    }
+    if (preparation.state != PLAXApplicationPreparationStateReady && diagnostics != nil) {
+        [diagnostics addObject:[NSString stringWithFormat:
+            @"Accessibility application preparation was %@ (AXRole: %@ (%d)); "
+             "window extraction continued because AXWindows remained available.",
+            PLAXApplicationPreparationStateName(preparation.state),
+            PLAXErrorName(preparation.roleError),
+            preparation.roleError
+        ]];
     }
 
     AXUIElementRef resolvedWindow = NULL;
@@ -404,6 +487,14 @@ static AXUIElementRef PLCopyResolvedAXWindow(
     }
 
     if (resolvedWindow == NULL || (bestScore < 25.0 && windows.count > 1)) {
+        if (diagnostics != nil) {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"LensTargetResolver found %lu AXWindows but none met the deterministic match "
+                 "contract (best score %.1f).",
+                (unsigned long)windows.count,
+                bestScore
+            ]];
+        }
         CFRelease(application);
         return NULL;
     }
@@ -465,7 +556,7 @@ static void PLWindowObserverDidReceive(
         return NO;
     }
 
-    AXUIElementRef window = PLCopyResolvedAXWindow(pid, title, frame, NULL, NULL, NULL);
+    AXUIElementRef window = PLCopyResolvedAXWindow(pid, title, frame, NULL, NULL, NULL, nil);
     if (window == NULL) {
         return NO;
     }
@@ -689,7 +780,7 @@ static BOOL PLIsWindowChromeText(NSString *candidate, NSString *windowTitle) {
     return text != nil && title != nil && [text caseInsensitiveCompare:title] == NSOrderedSame;
 }
 
-static NSDictionary *PLExtractionUnavailable(NSString *diagnostic) {
+static NSDictionary *PLExtractionUnavailableWithDiagnostics(NSArray<NSString *> *diagnostics) {
     return @{
         @"quality": @"unavailable",
         @"nodes": @[],
@@ -703,8 +794,12 @@ static NSDictionary *PLExtractionUnavailable(NSString *diagnostic) {
             @"truncated_text": @NO,
             @"children_read_errors": @0
         },
-        @"diagnostics": @[diagnostic]
+        @"diagnostics": diagnostics
     };
+}
+
+static NSDictionary *PLExtractionUnavailable(NSString *diagnostic) {
+    return PLExtractionUnavailableWithDiagnostics(@[diagnostic]);
 }
 
 char *pl_extract_window_json(
@@ -731,23 +826,22 @@ char *pl_extract_window_json(
         double bestScore = -1.0;
         NSString *resolvedTitle = @"";
         CGRect resolvedFrame = CGRectZero;
+        NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
         AXUIElementRef resolvedWindow = PLCopyResolvedAXWindow(
             pid,
             selectedTitle,
             selectedFrame,
             &resolvedTitle,
             &resolvedFrame,
-            &bestScore
+            &bestScore,
+            diagnostics
         );
         if (resolvedWindow == NULL) {
-            return PLCopyJSONString(PLExtractionUnavailable(
-                @"LensTargetResolver could not deterministically match the SCWindow to an AXWindow."
-            ));
+            return PLCopyJSONString(PLExtractionUnavailableWithDiagnostics(diagnostics));
         }
 
         NSMutableArray *nodes = [NSMutableArray array];
         NSMutableArray<NSString *> *fragments = [NSMutableArray array];
-        NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
         NSMutableArray<NSDictionary *> *queue = [NSMutableArray arrayWithObject:@{
             @"element": (__bridge id)resolvedWindow,
             @"depth": @0
