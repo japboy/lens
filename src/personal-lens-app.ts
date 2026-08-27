@@ -570,7 +570,7 @@ export class PersonalLensApp extends LitElement {
   };
 
   private handleMarkdownRenderError = (event: CustomEvent<string>): void => {
-    this.message = `Unable to render the streaming Markdown update: ${event.detail}`;
+    this.message = `Unable to render Markdown: ${event.detail}`;
   };
 
   private renderDiagnostics(extraction: NonNullable<LensState["extraction"]>) {

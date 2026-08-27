@@ -461,6 +461,30 @@ fieldset {
   accent-color: AccentColor;
 }
 
+.markdown-body .mermaid-diagram {
+  max-width: 100%;
+  margin: 0 0 1em;
+  overflow: auto;
+  border: 1px solid Separator;
+  border-radius: 7px;
+  padding: 12px;
+  background: color-mix(in srgb, Canvas 94%, transparent);
+}
+
+.markdown-body .mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: auto;
+}
+
+.markdown-body .mermaid-error-message {
+  margin: -0.6em 0 1em;
+  color: CanvasText;
+  font-size: 0.9em;
+  opacity: 0.72;
+}
+
 .markdown-body .streaming-cursor {
   display: inline-block;
   margin-inline-start: 0.1em;

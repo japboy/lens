@@ -1,6 +1,11 @@
 packages:
   - "."
 
+# Mermaid's declared range accepts this trusted-publisher release; newer
+# Cytoscape releases are rejected by the workspace's no-downgrade policy.
+overrides:
+  cytoscape: 3.34.0
+
 minimumReleaseAge: 4320
 minimumReleaseAgeIgnoreMissingTime: false
 minimumReleaseAgeStrict: true
