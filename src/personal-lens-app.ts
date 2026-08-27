@@ -6,6 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import fontAwesomeStyles from "@fortawesome/fontawesome-free/css/fontawesome.css?inline";
 import fontAwesomeSolidStyles from "@fortawesome/fontawesome-free/css/solid.css?inline";
 import { LitElement, css, html, nothing, unsafeCSS } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import componentStyles from "./styles.css?inline";
 import { externalMarkdownUrl } from "./markdown";
 import "./streaming-markdown";
@@ -35,20 +36,8 @@ import {
 
 type LensTab = "translation" | "source";
 
+@customElement("personal-lens-app")
 export class PersonalLensApp extends LitElement {
-  static properties = {
-    config: { state: true },
-    agentSelection: { state: true },
-    agentRuntime: { state: true },
-    lens: { state: true },
-    trusted: { state: true },
-    busy: { state: true },
-    message: { state: true },
-    activeLensTab: { state: true },
-    responsePromptDraft: { state: true },
-    responsePromptDirty: { state: true },
-  };
-
   static styles = [
     css`
       :host {
@@ -61,40 +50,43 @@ export class PersonalLensApp extends LitElement {
     unsafeCSS(fontAwesomeSolidStyles),
   ];
 
-  declare private config: AppConfig | undefined;
-  declare private agentSelection: AgentSelectionState;
-  declare private agentRuntime: AgentRuntimeState;
-  declare private lens: LensState;
-  declare private trusted: boolean;
-  declare private busy: boolean;
-  declare private message: string;
-  declare private activeLensTab: LensTab;
-  declare private responsePromptDraft: string;
-  declare private responsePromptDirty: boolean;
-  private unlisten: UnlistenFn[];
-  private permissionTimer?: number;
-  private revision: number;
-  private loadGeneration: number;
+  @state()
+  private config: AppConfig | undefined = undefined;
 
-  constructor() {
-    super();
-    this.config = undefined;
-    this.agentSelection = { stage: "unselected", auth_methods: [] };
-    this.agentRuntime = {
-      stage: "not_installed",
-      downloaded_bytes: 0,
-    };
-    this.lens = { stage: "idle", output_blocks: [] };
-    this.trusted = false;
-    this.busy = false;
-    this.message = "";
-    this.activeLensTab = "translation";
-    this.responsePromptDraft = "";
-    this.responsePromptDirty = false;
-    this.unlisten = [];
-    this.revision = -1;
-    this.loadGeneration = 0;
-  }
+  @state()
+  private agentSelection: AgentSelectionState = { stage: "unselected", auth_methods: [] };
+
+  @state()
+  private agentRuntime: AgentRuntimeState = {
+    stage: "not_installed",
+    downloaded_bytes: 0,
+  };
+
+  @state()
+  private lens: LensState = { stage: "idle", output_blocks: [] };
+
+  @state()
+  private trusted = false;
+
+  @state()
+  private busy = false;
+
+  @state()
+  private message = "";
+
+  @state()
+  private activeLensTab: LensTab = "translation";
+
+  @state()
+  private responsePromptDraft = "";
+
+  @state()
+  private responsePromptDirty = false;
+
+  private unlisten: UnlistenFn[] = [];
+  private permissionTimer: number | undefined = undefined;
+  private revision = -1;
+  private loadGeneration = 0;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -896,5 +888,3 @@ export class PersonalLensApp extends LitElement {
     void getCurrentWindow().close();
   };
 }
-
-customElements.define("personal-lens-app", PersonalLensApp);
