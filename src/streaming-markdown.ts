@@ -14,6 +14,7 @@ import { markdownList } from "@generative-dom/plugin-markdown-list";
 import { markdownQuote } from "@generative-dom/plugin-markdown-quote";
 import { markdownTable } from "@generative-dom/plugin-markdown-table";
 import { renderMarkdown } from "./markdown";
+import { renderMermaidCodeBlocks, type MermaidTheme } from "./mermaid";
 
 export type MarkdownRenderPhase = "streaming" | "settled";
 
@@ -36,11 +37,16 @@ const EMPTY_STATE: StreamingMarkdownState = {
  * is reparsed once through the canonical Marked + DOMPurify boundary.
  */
 export class StreamingMarkdownElement extends HTMLElement {
+  private static nextInstanceId = 1;
+
+  private readonly instanceId = StreamingMarkdownElement.nextInstanceId++;
   private pendingState: StreamingMarkdownState = EMPTY_STATE;
   private appliedState?: StreamingMarkdownState;
   private renderer?: GenerativeDom;
   private streamCursor?: CursorPlugin;
   private autoScroller?: AutoScroller;
+  private colorScheme?: MediaQueryList;
+  private mermaidRevision = 0;
 
   set state(next: StreamingMarkdownState) {
     this.pendingState = { ...next };
@@ -53,13 +59,18 @@ export class StreamingMarkdownElement extends HTMLElement {
 
   connectedCallback(): void {
     this.autoScroller ??= createAutoScroller(this, { threshold: 36, smooth: false });
+    this.colorScheme ??= window.matchMedia("(prefers-color-scheme: dark)");
+    this.colorScheme.addEventListener?.("change", this.handleColorSchemeChange);
     this.applyState(this.pendingState);
   }
 
   disconnectedCallback(): void {
+    this.mermaidRevision += 1;
     this.disposeRenderer();
     this.autoScroller?.destroy();
     this.autoScroller = undefined;
+    this.colorScheme?.removeEventListener?.("change", this.handleColorSchemeChange);
+    this.colorScheme = undefined;
     this.appliedState = undefined;
   }
 
@@ -82,10 +93,12 @@ export class StreamingMarkdownElement extends HTMLElement {
         this.renderSettled(next.markdown);
       }
       this.appliedState = { ...next };
-      this.setAttribute("aria-busy", "false");
       this.removeAttribute("data-streaming");
       return;
     }
+
+    this.mermaidRevision += 1;
+    this.removeAttribute("data-mermaid-state");
 
     const appliedText = this.appliedState?.phase === "streaming" ? this.appliedState.markdown : "";
     const appendOnly = next.markdown.startsWith(appliedText);
@@ -135,9 +148,38 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   private renderSettled(markdown: string): void {
+    const revision = ++this.mermaidRevision;
     if (this.renderer) this.renderer.end();
     this.disposeRenderer();
     this.innerHTML = renderMarkdown(markdown);
+
+    const hasMermaid = this.querySelector("pre > code.language-mermaid") !== null;
+    if (!hasMermaid) {
+      this.setAttribute("aria-busy", "false");
+      this.removeAttribute("data-mermaid-state");
+      return;
+    }
+
+    this.setAttribute("aria-busy", "true");
+    this.dataset.mermaidState = "rendering";
+    const theme: MermaidTheme = this.colorScheme?.matches ? "dark" : "default";
+    void renderMermaidCodeBlocks(this, {
+      idPrefix: `personal-lens-mermaid-${this.instanceId}-${revision}`,
+      isCurrent: () => this.isConnected && revision === this.mermaidRevision,
+      theme,
+    })
+      .then((outcome) => {
+        if (outcome.status === "stale" || revision !== this.mermaidRevision) return;
+        this.setAttribute("aria-busy", "false");
+        this.dataset.mermaidState = outcome.errors.length > 0 ? "error" : "ready";
+        if (outcome.errors.length > 0) this.reportMermaidErrors(outcome.errors);
+      })
+      .catch((reason) => {
+        if (revision !== this.mermaidRevision) return;
+        this.setAttribute("aria-busy", "false");
+        this.dataset.mermaidState = "error";
+        this.reportMermaidErrors([reason instanceof Error ? reason : new Error(String(reason))]);
+      });
   }
 
   private disposeRenderer(): void {
@@ -156,6 +198,24 @@ export class StreamingMarkdownElement extends HTMLElement {
       }),
     );
   }
+
+  private reportMermaidErrors(errors: Error[]): void {
+    const firstError = errors[0]?.message ?? "Unknown Mermaid rendering error";
+    const remaining = errors.length > 1 ? ` (${errors.length - 1} more)` : "";
+    this.dispatchEvent(
+      new CustomEvent("markdown-render-error", {
+        bubbles: true,
+        composed: true,
+        detail: `mermaid: ${firstError}${remaining}`,
+      }),
+    );
+  }
+
+  private handleColorSchemeChange = (): void => {
+    if (this.appliedState?.phase === "settled") {
+      this.renderSettled(this.appliedState.markdown);
+    }
+  };
 }
 
 if (!customElements.get("personal-lens-markdown")) {
