@@ -28,6 +28,7 @@ const EMPTY_STATE: StreamingMarkdownState = {
   markdown: "",
   phase: "settled",
 };
+const AUTO_SCROLL_CONTAINER_SELECTOR = "[data-auto-scroll-container]";
 
 /**
  * Owns an append-only Markdown DOM while ACP chunks are arriving.
@@ -58,7 +59,8 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   connectedCallback(): void {
-    this.autoScroller ??= createAutoScroller(this, { threshold: 36, smooth: false });
+    const scrollContainer = this.closest<HTMLElement>(AUTO_SCROLL_CONTAINER_SELECTOR) ?? this;
+    this.autoScroller ??= createAutoScroller(scrollContainer, { threshold: 36, smooth: false });
     this.colorScheme ??= window.matchMedia("(prefers-color-scheme: dark)");
     this.colorScheme.addEventListener?.("change", this.handleColorSchemeChange);
     this.applyState(this.pendingState);

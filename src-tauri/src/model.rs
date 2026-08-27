@@ -411,7 +411,10 @@ impl LensState {
     }
 
     pub fn has_output(&self) -> bool {
-        !self.output_blocks.is_empty()
+        self.output_blocks.iter().any(|block| match block {
+            LensOutputBlock::Markdown { text, .. } => !text.trim().is_empty(),
+            LensOutputBlock::Image { .. } | LensOutputBlock::Unsupported { .. } => true,
+        })
     }
 }
 
@@ -597,5 +600,22 @@ mod tests {
                 "uri": "urn:fixture:image"
             })
         );
+    }
+
+    #[test]
+    fn whitespace_only_markdown_is_not_displayable_output() {
+        let mut lens = LensState::default();
+        lens.push_output_block(LensOutputBlock::Markdown {
+            message_id: Some("message-1".into()),
+            text: " \n\t".into(),
+        });
+
+        assert!(!lens.has_output());
+
+        lens.push_output_block(LensOutputBlock::Unsupported {
+            message_id: Some("message-1".into()),
+            content_type: "audio (audio/wav)".into(),
+        });
+        assert!(lens.has_output());
     }
 }

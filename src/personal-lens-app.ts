@@ -431,6 +431,7 @@ export class PersonalLensApp extends LitElement {
                     outputBlocks.length
                       ? html`<div
                           class="lens-content lens-output"
+                          data-auto-scroll-container
                           role="document"
                           aria-live="polite"
                         >

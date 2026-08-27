@@ -40,6 +40,8 @@ use uuid::Uuid;
 
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_INLINE_IMAGE_DECODED_BYTES: usize = 10 * 1024 * 1024;
+const MAX_INLINE_IMAGE_ENCODED_BYTES: usize = MAX_INLINE_IMAGE_DECODED_BYTES.div_ceil(3) * 4;
 
 #[derive(Debug, Clone)]
 struct AgentDescriptor {
@@ -1105,8 +1107,7 @@ fn lens_output_block(chunk: ContentChunk) -> LensOutputBlock {
         },
         ContentBlock::Image(content)
             if is_supported_image_mime_type(&content.mime_type)
-                && !content.data.is_empty()
-                && BASE64_STANDARD.decode(&content.data).is_ok() =>
+                && is_valid_inline_image_data(&content.data) =>
         {
             LensOutputBlock::Image {
                 message_id,
@@ -1143,6 +1144,16 @@ fn is_supported_image_mime_type(mime_type: &str) -> bool {
         mime_type.to_ascii_lowercase().as_str(),
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
     )
+}
+
+fn is_valid_inline_image_data(data: &str) -> bool {
+    if data.is_empty() || data.len() > MAX_INLINE_IMAGE_ENCODED_BYTES {
+        return false;
+    }
+
+    BASE64_STANDARD
+        .decode(data)
+        .is_ok_and(|decoded| decoded.len() <= MAX_INLINE_IMAGE_DECODED_BYTES)
 }
 
 fn stop_reason_text(stop_reason: StopReason) -> String {
@@ -1477,6 +1488,28 @@ mod tests {
         )));
         assert_eq!(
             invalid_data,
+            LensOutputBlock::Unsupported {
+                message_id: None,
+                content_type: "image (image/png)".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn image_output_rejects_encoded_and_decoded_payloads_above_the_inline_limit() {
+        let oversized_encoded = "A".repeat(MAX_INLINE_IMAGE_ENCODED_BYTES + 1);
+        assert!(!is_valid_inline_image_data(&oversized_encoded));
+
+        let oversized_decoded =
+            BASE64_STANDARD.encode(vec![0_u8; MAX_INLINE_IMAGE_DECODED_BYTES + 1]);
+        assert_eq!(oversized_decoded.len(), MAX_INLINE_IMAGE_ENCODED_BYTES);
+        assert!(!is_valid_inline_image_data(&oversized_decoded));
+
+        let unsupported = lens_output_block(ContentChunk::new(ContentBlock::Image(
+            ImageContent::new(oversized_encoded, "image/png"),
+        )));
+        assert_eq!(
+            unsupported,
             LensOutputBlock::Unsupported {
                 message_id: None,
                 content_type: "image (image/png)".into(),

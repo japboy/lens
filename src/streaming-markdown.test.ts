@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { StreamingMarkdownElement } from "./streaming-markdown";
 
 beforeAll(() => {
@@ -90,5 +90,28 @@ describe("streaming Agent Markdown", () => {
 
     expect(element.textContent).toContain("New response.");
     expect(element.textContent).not.toContain("Old response.");
+  });
+
+  it("auto-scrolls the declared ancestor scroll container", async () => {
+    const container = document.createElement("div");
+    container.setAttribute("data-auto-scroll-container", "");
+    Object.defineProperty(container, "scrollHeight", { configurable: true, value: 480 });
+    const scrollTo = vi.fn<(options: ScrollToOptions) => void>();
+    Object.defineProperty(container, "scrollTo", { configurable: true, value: scrollTo });
+
+    const element = document.createElement("personal-lens-markdown") as StreamingMarkdownElement;
+    container.append(element);
+    document.body.append(container);
+
+    element.state = {
+      operationId: "operation-scroll",
+      markdown: "Streaming content.\n",
+      phase: "streaming",
+    };
+    element.flush();
+
+    await vi.waitFor(() => {
+      expect(scrollTo).toHaveBeenCalledWith({ top: 480, behavior: "auto" });
+    });
   });
 });
