@@ -31,6 +31,7 @@ use base64::prelude::*;
 use serde::Deserialize;
 use std::{
     fs::{self, OpenOptions},
+    future::Future,
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::PathBuf,
@@ -818,6 +819,31 @@ fn current_lens(app: &AppHandle) -> Result<LensState, String> {
     app.state::<AppState>().lens()
 }
 
+enum PromptEvent<C, U, R> {
+    Cancellation(C),
+    Update(U),
+    Response(R),
+}
+
+async fn next_prompt_event<C, U, R>(
+    cancellation: C,
+    cancellation_enabled: bool,
+    update: U,
+    response: R,
+) -> PromptEvent<C::Output, U::Output, R::Output>
+where
+    C: Future,
+    U: Future,
+    R: Future,
+{
+    tokio::select! {
+        biased;
+        cancellation = cancellation, if cancellation_enabled => PromptEvent::Cancellation(cancellation),
+        update = update => PromptEvent::Update(update),
+        response = response => PromptEvent::Response(response),
+    }
+}
+
 async fn run_transform(
     app: AppHandle,
     key: AgentRunKey,
@@ -863,7 +889,8 @@ async fn run_transform(
                     }
                 }
             })
-            .map_err(state_error)? {
+            .map_err(state_error)?
+            {
                 return Err(Error::request_cancelled());
             }
 
@@ -900,7 +927,8 @@ async fn run_transform(
                     agent.session_mode_id = Some(safe_mode_id_text);
                 }
             })
-            .map_err(state_error)? {
+            .map_err(state_error)?
+            {
                 connection.send_notification(CancelNotification::new(session_id))?;
                 return Err(Error::request_cancelled());
             }
@@ -918,14 +946,51 @@ async fn run_transform(
             let mut cancellation_sent = false;
 
             loop {
-                tokio::select! {
-                    changed = cancellation.changed(), if !cancellation_sent => {
+                match next_prompt_event(
+                    cancellation.changed(),
+                    !cancellation_sent,
+                    session.read_update(),
+                    &mut prompt_response,
+                )
+                .await
+                {
+                    PromptEvent::Cancellation(changed) => {
                         if changed.is_ok() && *cancellation.borrow() {
-                            session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
+                            session_connection
+                                .send_notification(CancelNotification::new(session_id.clone()))?;
                             cancellation_sent = true;
                         }
                     }
-                    response = &mut prompt_response => {
+                    PromptEvent::Update(message) => {
+                        if let SessionMessage::SessionMessage(dispatch) = message? {
+                            let output_block =
+                                match agent_output_block(dispatch, descriptor.safe_mode_id).await {
+                                    Ok(output_block) => output_block,
+                                    Err(error) => {
+                                        session_connection.send_notification(
+                                            CancelNotification::new(session_id.clone()),
+                                        )?;
+                                        return Err(error);
+                                    }
+                                };
+                            if !update_lens_state_for_run(&app, key, |lens| {
+                                if let Some(agent) = lens.agent.as_mut() {
+                                    agent.received_updates += 1;
+                                }
+                                if let Some(output_block) = output_block {
+                                    lens.push_output_block(output_block);
+                                }
+                            })
+                            .map_err(state_error)?
+                            {
+                                session_connection.send_notification(CancelNotification::new(
+                                    session_id.clone(),
+                                ))?;
+                                return Err(Error::request_cancelled());
+                            }
+                        }
+                    }
+                    PromptEvent::Response(response) => {
                         let stop_reason = response?.stop_reason;
                         let stop_reason_text = stop_reason_text(stop_reason);
                         let cancelled = stop_reason == StopReason::Cancelled
@@ -948,30 +1013,9 @@ async fn run_transform(
                             if let Some(agent) = lens.agent.as_mut() {
                                 agent.stop_reason = Some(stop_reason_text);
                             }
-                        }).map_err(state_error)?;
+                        })
+                        .map_err(state_error)?;
                         return Ok(());
-                    }
-                    message = session.read_update() => {
-                        if let SessionMessage::SessionMessage(dispatch) = message? {
-                            let output_block = match agent_output_block(dispatch, descriptor.safe_mode_id).await {
-                                Ok(output_block) => output_block,
-                                Err(error) => {
-                                    session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
-                                    return Err(error);
-                                }
-                            };
-                            if !update_lens_state_for_run(&app, key, |lens| {
-                                if let Some(agent) = lens.agent.as_mut() {
-                                    agent.received_updates += 1;
-                                }
-                                if let Some(output_block) = output_block {
-                                    lens.push_output_block(output_block);
-                                }
-                            }).map_err(state_error)? {
-                                session_connection.send_notification(CancelNotification::new(session_id.clone()))?;
-                                return Err(Error::request_cancelled());
-                            }
-                        }
                     }
                 }
             }
@@ -1613,6 +1657,19 @@ mod tests {
 
         assert_eq!(config["env"]["NODE_OPTIONS"], "");
         assert_eq!(config["env"]["NODE_PATH"], "");
+    }
+
+    #[tokio::test]
+    async fn queued_session_update_precedes_ready_prompt_response() {
+        let event = next_prompt_event(
+            std::future::ready(()),
+            false,
+            std::future::ready("final update"),
+            std::future::ready("prompt response"),
+        )
+        .await;
+
+        assert!(matches!(event, PromptEvent::Update("final update")));
     }
 
     #[test]
