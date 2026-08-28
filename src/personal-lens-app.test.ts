@@ -113,7 +113,31 @@ describe("PersonalLens rich Agent output", () => {
   });
 });
 
-describe("PersonalLens Settings text entry", () => {
+describe("PersonalLens Settings", () => {
+  it("starts with explicitly named setting groups instead of a redundant visible header", async () => {
+    window.history.replaceState({}, "", "/?view=settings&platform=macos");
+    await import("./personal-lens-app");
+    const element = document.createElement("personal-lens-app") as HTMLElement & {
+      updateComplete: Promise<boolean>;
+    };
+    document.body.append(element);
+    await element.updateComplete;
+
+    const main = element.shadowRoot?.querySelector("main");
+    const groups = Array.from(main?.children ?? []).filter((child) =>
+      child.classList.contains("settings-group"),
+    );
+
+    expect(main?.getAttribute("aria-label")).toBe("Settings");
+    expect(main?.querySelector("header")).toBeNull();
+    expect(groups.map((group) => group.querySelector("h2")?.textContent)).toEqual([
+      "AI Agent",
+      "Agent Prompt",
+      "Working Directory",
+      "Accessibility",
+    ]);
+  });
+
   it("preserves native HTML behavior on the platform presentation targets", async () => {
     window.history.replaceState({}, "", "/?view=settings&platform=macos");
     await import("./personal-lens-app");

@@ -155,13 +155,8 @@ export class PersonalLensApp extends LitElement {
 
   private renderSettings() {
     return html`
-      <main class="settings-shell">
-        <header>
-          <h1>PersonalLens</h1>
-          <p>Transform accessibility content from the selected window with the selected agent.</p>
-        </header>
-
-        <section aria-labelledby="agent-heading">
+      <main class="settings-shell" aria-label="Settings">
+        <section class="settings-group" aria-labelledby="agent-heading">
           <h2 id="agent-heading">AI Agent</h2>
           <fieldset
             ?disabled=${
@@ -188,7 +183,7 @@ export class PersonalLensApp extends LitElement {
           ${this.renderAgentSelectionAuthentication()} ${this.renderSelectedAgentActions()}
         </section>
 
-        <section aria-labelledby="prompt-heading">
+        <section class="settings-group" aria-labelledby="prompt-heading">
           <h2 id="prompt-heading">Agent Prompt</h2>
           <form @submit=${this.saveResponsePrompt}>
             <textarea
@@ -222,7 +217,7 @@ export class PersonalLensApp extends LitElement {
           </form>
         </section>
 
-        <section aria-labelledby="cwd-heading">
+        <section class="settings-group" aria-labelledby="cwd-heading">
           <h2 id="cwd-heading">Working Directory</h2>
           <div class="directory-row">
             <input
@@ -240,7 +235,7 @@ export class PersonalLensApp extends LitElement {
           </p>
         </section>
 
-        <section aria-labelledby="permission-heading">
+        <section class="settings-group" aria-labelledby="permission-heading">
           <h2 id="permission-heading">Accessibility</h2>
           <div class="permission-row">
             <output class=${this.trusted ? "status-ok" : "status-warning"}>
