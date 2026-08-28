@@ -1,10 +1,10 @@
 import "./styles.css";
-import "./personal-lens-app";
+import "./lens-app";
 import { applyPresentationContext, presentationContextFromSearch } from "./presentation-context";
 
-const appRoot = document.querySelector("personal-lens-app");
+const appRoot = document.querySelector("lens-app");
 if (!(appRoot instanceof HTMLElement)) {
-  throw new Error("PersonalLens application root is missing");
+  throw new Error("Lens application root is missing");
 }
 
 applyPresentationContext(presentationContextFromSearch(window.location.search), [

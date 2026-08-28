@@ -9,8 +9,8 @@ beforeAll(() => {
     window.setTimeout(() => callback(performance.now()), 0);
   globalThis.cancelAnimationFrame ??= (handle: number) => window.clearTimeout(handle);
   HTMLElement.prototype.scrollTo ??= () => undefined;
-  if (!customElements.get("personal-lens-markdown")) {
-    customElements.define("personal-lens-markdown", StreamingMarkdownElement);
+  if (!customElements.get("lens-markdown")) {
+    customElements.define("lens-markdown", StreamingMarkdownElement);
   }
 });
 
@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 function mountedRenderer(): StreamingMarkdownElement {
-  const element = document.createElement("personal-lens-markdown") as StreamingMarkdownElement;
+  const element = document.createElement("lens-markdown") as StreamingMarkdownElement;
   document.body.append(element);
   return element;
 }
@@ -99,7 +99,7 @@ describe("streaming Agent Markdown", () => {
     const scrollTo = vi.fn<(options: ScrollToOptions) => void>();
     Object.defineProperty(container, "scrollTo", { configurable: true, value: scrollTo });
 
-    const element = document.createElement("personal-lens-markdown") as StreamingMarkdownElement;
+    const element = document.createElement("lens-markdown") as StreamingMarkdownElement;
     container.append(element);
     document.body.append(container);
 

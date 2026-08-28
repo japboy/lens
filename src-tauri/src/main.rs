@@ -1,3 +1,3 @@
 fn main() {
-    personal_lens_lib::run();
+    lens_lib::run();
 }

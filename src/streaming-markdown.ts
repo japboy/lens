@@ -166,7 +166,7 @@ export class StreamingMarkdownElement extends HTMLElement {
     this.dataset.mermaidState = "rendering";
     const theme: MermaidTheme = this.colorScheme?.matches ? "dark" : "default";
     void renderMermaidCodeBlocks(this, {
-      idPrefix: `personal-lens-mermaid-${this.instanceId}-${revision}`,
+      idPrefix: `lens-mermaid-${this.instanceId}-${revision}`,
       isCurrent: () => this.isConnected && revision === this.mermaidRevision,
       theme,
     })
@@ -220,6 +220,6 @@ export class StreamingMarkdownElement extends HTMLElement {
   };
 }
 
-if (!customElements.get("personal-lens-markdown")) {
-  customElements.define("personal-lens-markdown", StreamingMarkdownElement);
+if (!customElements.get("lens-markdown")) {
+  customElements.define("lens-markdown", StreamingMarkdownElement);
 }

@@ -382,7 +382,7 @@ async fn verify_installed_runtime(
 }
 
 fn verify_install_record(agent_root: &Path, approved: AgentRuntimePolicy) -> Result<(), String> {
-    let record_path = agent_root.join("personal-lens-runtime.json");
+    let record_path = agent_root.join("lens-runtime.json");
     let record_bytes = fs::read(&record_path)
         .map_err(|error| format!("managed Agent install record is unavailable: {error}"))?;
     let record = serde_json::from_slice::<InstallRecord>(&record_bytes)
@@ -579,11 +579,8 @@ async fn ensure_node_runtime(
         };
         let node_record = serde_json::to_vec_pretty(&node_record)
             .map_err(|error| format!("unable to serialize Node install record: {error}"))?;
-        fs::write(
-            extracted_node.join("personal-lens-node-runtime.json"),
-            node_record,
-        )
-        .map_err(|error| format!("unable to write Node install record: {error}"))?;
+        fs::write(extracted_node.join("lens-node-runtime.json"), node_record)
+            .map_err(|error| format!("unable to write Node install record: {error}"))?;
         verify_node_runtime(&extracted_node).await?;
         let parent = final_root
             .parent()
@@ -605,7 +602,7 @@ async fn ensure_node_runtime(
 }
 
 async fn verify_node_runtime(node_root: &Path) -> Result<(), String> {
-    let record_path = node_root.join("personal-lens-node-runtime.json");
+    let record_path = node_root.join("lens-node-runtime.json");
     let record_bytes = fs::read(&record_path)
         .map_err(|error| format!("managed Node install record is unavailable: {error}"))?;
     let record = serde_json::from_slice::<NodeInstallRecord>(&record_bytes)
@@ -805,11 +802,8 @@ async fn ensure_pnpm_runtime(
         };
         let pnpm_record = serde_json::to_vec_pretty(&pnpm_record)
             .map_err(|error| format!("unable to serialize pnpm install record: {error}"))?;
-        fs::write(
-            extracted_pnpm.join("personal-lens-pnpm-runtime.json"),
-            pnpm_record,
-        )
-        .map_err(|error| format!("unable to write pnpm install record: {error}"))?;
+        fs::write(extracted_pnpm.join("lens-pnpm-runtime.json"), pnpm_record)
+            .map_err(|error| format!("unable to write pnpm install record: {error}"))?;
         verify_pnpm_runtime(node_root, &extracted_pnpm).await?;
         let parent = final_root
             .parent()
@@ -831,7 +825,7 @@ async fn ensure_pnpm_runtime(
 }
 
 async fn verify_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
-    let record_path = pnpm_root.join("personal-lens-pnpm-runtime.json");
+    let record_path = pnpm_root.join("lens-pnpm-runtime.json");
     let record_bytes = fs::read(&record_path)
         .map_err(|error| format!("managed pnpm install record is unavailable: {error}"))?;
     let record = serde_json::from_slice::<PnpmInstallRecord>(&record_bytes)
@@ -997,7 +991,7 @@ async fn ensure_agent_runtime(
         verify_runtime_paths(node_root, &staged_agent, approved).await?;
         let record = serde_json::to_vec_pretty(&install_record(approved))
             .map_err(|error| format!("unable to serialize Agent install record: {error}"))?;
-        fs::write(staged_agent.join("personal-lens-runtime.json"), record)
+        fs::write(staged_agent.join("lens-runtime.json"), record)
             .map_err(|error| format!("unable to write Agent install record: {error}"))?;
         let parent = final_root
             .parent()
@@ -1228,7 +1222,7 @@ fn http_client() -> Result<Client, String> {
         .https_only(true)
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(300))
-        .user_agent(concat!("PersonalLens/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Lens/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("unable to create managed runtime HTTP client: {error}"))
 }

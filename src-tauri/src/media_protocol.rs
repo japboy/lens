@@ -5,7 +5,7 @@ use tauri::{
     Manager, Runtime, UriSchemeContext,
 };
 
-pub const LENS_MEDIA_SCHEME: &str = "personallens";
+pub const LENS_MEDIA_SCHEME: &str = "lens";
 
 pub fn handle<R: Runtime>(
     context: UriSchemeContext<'_, R>,
@@ -123,8 +123,7 @@ mod tests {
 
     #[test]
     fn serves_only_the_exact_active_png_to_the_lens_webview() {
-        let uri =
-            "personallens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
+        let uri = "lens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
         let state = active_state(uri, "image/png", "iVBORw0KGgo=");
         let served = response(
             &state,
@@ -146,7 +145,7 @@ mod tests {
             &state,
             LENS_WINDOW_LABEL,
             &Method::GET,
-            &"personallens://context/other/1/media/media-node-000001"
+            &"lens://context/other/1/media/media-node-000001"
                 .parse()
                 .expect("valid URI"),
         );
@@ -155,8 +154,7 @@ mod tests {
 
     #[test]
     fn rejects_other_webviews_methods_types_and_invalid_payloads() {
-        let uri =
-            "personallens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
+        let uri = "lens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
         let png = active_state(uri, "image/png", "iVBORw0KGgo=");
         assert_eq!(
             response(
@@ -204,8 +202,7 @@ mod tests {
 
     #[test]
     fn superseding_the_operation_revokes_the_previous_uri() {
-        let uri =
-            "personallens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
+        let uri = "lens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
         let state = active_state(uri, "image/png", "iVBORw0KGgo=");
         state
             .lens_media

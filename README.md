@@ -1,6 +1,6 @@
-# PersonalLens
+# Lens
 
-PersonalLens is a menu-bar-first application that reads the Accessibility Tree of another macOS application's selected window, captures AX-identified image regions when present, and transforms that structured multimodal information through an ACP agent selected by the user.
+Lens is a menu-bar-first application that reads the Accessibility Tree of another macOS application's selected window, captures AX-identified image regions when present, and transforms that structured multimodal information through an ACP agent selected by the user.
 
 The current implementation creates one canonical Accessibility document for one selected window. `AXImage` nodes retain links to bounded PNG attachments captured from their screen regions with ScreenCaptureKit and sent as ACP image blocks; no OCR step converts them to text. A whole-window bitmap is used only when no usable Accessibility document can be normalized. It does not handle audio, multiple selected windows, or live source synchronization. The Lens window uses the selected target only for its initial frame, then leaves movement and resizing to the user.
 
@@ -31,7 +31,7 @@ hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. T
 
 The root TypeScript solution declares shared strict, no-emit checks and explicitly references separate application and Node.js tooling projects. Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping; the Node.js project admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
 
-The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. PersonalLens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
+The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. Lens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
 
 To produce a debug application bundle:
 
@@ -45,32 +45,33 @@ The application creates no ordinary WebView window at startup. Left-clicking the
 - `AI Agent` (Claude / Codex)
 - `Working Directory: <absolute path>…`
 - `Settings…`
-- `Quit PersonalLens`
+- `Quit Lens`
 
-An Agent receives a check mark only after PersonalLens installs and verifies its managed runtime and then verifies its existing authentication. Codex is verified by ACP session creation; Claude is first verified by the adapter's official CLI authentication-status command because Claude Agent ACP does not reject unauthenticated session creation. Clicking an unauthenticated Agent opens the adapter-owned authentication flow in Settings. `Select Lens Target…` remains disabled until an authenticated Agent is selected. Clicking the Working Directory item opens the native macOS folder picker and updates the path shown in the menu.
+An Agent receives a check mark only after Lens installs and verifies its managed runtime and then verifies its existing authentication. Codex is verified by ACP session creation; Claude is first verified by the adapter's official CLI authentication-status command because Claude Agent ACP does not reject unauthenticated session creation. Clicking an unauthenticated Agent opens the adapter-owned authentication flow in Settings. `Select Lens Target…` remains disabled until an authenticated Agent is selected. Clicking the Working Directory item opens the native macOS folder picker and updates the path shown in the menu.
 
-Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, an editable Agent Prompt, Working Directory, and Accessibility permission controls. The Agent Prompt controls the response transformation while PersonalLens keeps its source-data boundary and safety instructions fixed. Reauthentication, sign-out, and restoring the built-in prompt first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Its preferred size shows all default content without scrolling, while its monitor-aware height cap and compact layout keep it within an HD work area and preserve scrolling when variable content requires it.
+Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, an editable Agent Prompt, Working Directory, and Accessibility permission controls. The Agent Prompt controls the response transformation while Lens keeps its source-data boundary and safety instructions fixed. Reauthentication, sign-out, and restoring the built-in prompt first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Its preferred size shows all default content without scrolling, while its monitor-aware height cap and compact layout keep it within an HD work area and preserve scrolling when variable content requires it.
 
 The Lens window is initially sized to 80% of the selected target and centered in that target, uses normal window stacking, and remains movable and resizable without following later target movement or resizing. Its transparent WebView surface reveals macOS's active native `HudWindow` material during standard presentation so background colors and structure remain recognizable while text is visibly blurred; increased-contrast and reduced-transparency modes become opaque. Reusing an existing Lens window preserves the user's frame. Translation is the default tab. Ordered ACP text and image chunks remain typed output blocks. Text deltas render through an append-only Markdown DOM with a stream cursor and reader-aware auto-scroll; terminal text settles once as sanitized GitHub Flavored Markdown. Completed `mermaid` code fences are then rendered from the bundled Mermaid runtime with strict security, bounded input, deterministic IDs, and system-aware light/dark themes; invalid diagrams remain visible as source code. PNG, JPEG, GIF, WebP, and AVIF output renders inline, while unsupported content remains explicit. Source shows the Agent-bound images one at a time in their exact input order, followed by a pretty-printed view of the same compact, versioned `LensInput`; Diagnostics shows AX and media capture metrics. The native newline-joined Accessibility text is diagnostic compatibility data only. Loading uses only bundled assets.
 
 ## Security Boundary
 
-- PersonalLens stores only the last successfully selected agent, Agent Prompt, and working directory. Authentication status is verified at runtime and is not persisted.
+- Lens has the single Tauri identity `com.github.japboy.lens`. Settings, managed runtimes, and authentication cache are created under the canonical Lens identity; local state from another application identity is not read or migrated, and managed runtimes are installed and verified again when needed.
+- Lens stores only the last successfully selected agent, Agent Prompt, and working directory. Authentication status is verified at runtime and is not persisted.
 - Managed Agent runtimes are provider-specific, versioned application data. Interrupted installs remain in staging and are never selected; an invalid existing install is quarantined before replacement.
 - It does not read or write OAuth tokens, API keys, or Claude/Codex credential files.
 - Accessibility and image-region extraction are limited to the window explicitly selected by the user. Bounded PNG payloads are kept only in operation-scoped memory and sent to the selected ACP agent as image input; they are not persisted or exposed in the WebView snapshot or JavaScript state. The Lens overlay can resolve only the current operation's exact media URIs through a read-only, non-caching custom protocol while an input image is selected in Source.
-- PersonalLens exposes no coding client capabilities to the ACP agent.
-- Authentication methods and logout come from the agent adapter. Codex browser authentication and Claude terminal authentication start adapter-owned flows; ACP `logout` delegates sign-out to the selected adapter. PersonalLens stores no tokens, API keys, or credential files.
+- Lens exposes no coding client capabilities to the ACP agent.
+- Authentication methods and logout come from the agent adapter. Codex browser authentication and Claude terminal authentication start adapter-owned flows; ACP `logout` delegates sign-out to the selected adapter. Lens stores no tokens, API keys, or credential files.
 
 ## Validation
 
-`pnpm run verify` runs publication-boundary and repository-language policies, Oxfmt and Oxlint checks, the root TypeScript solution across its separate browser and Node.js tooling projects, the Lit frontend build and Vitest suite, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
+`pnpm run verify` runs product-identity, publication-boundary, and repository-language policies, Oxfmt and Oxlint checks, the root TypeScript solution across its separate browser and Node.js tooling projects, the Lit frontend build and Vitest suite, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
 
 An on-device managed-runtime install and verification can be run independently for each Agent:
 
 ```sh
-PERSONAL_LENS_VALIDATE_RUNTIME=claude pnpm run tauri dev
-PERSONAL_LENS_VALIDATE_RUNTIME=codex pnpm run tauri dev
+LENS_VALIDATE_RUNTIME=claude pnpm run tauri dev
+LENS_VALIDATE_RUNTIME=codex pnpm run tauri dev
 ```
 
 On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, managed Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
@@ -78,7 +79,7 @@ On-device PoC validation covers native Safari window selection, Accessibility ex
 A debug-only rich-output fixture exercises the bundled Tauri WebView with ordered Markdown, an inline PNG Agent output, trailing Markdown, and an operation-scoped Source input-image preview without requiring Agent authentication, Accessibility permission, or Screen Recording permission:
 
 ```sh
-PERSONAL_LENS_VALIDATE_RICH_OUTPUT=1 pnpm exec tauri dev --no-watch
+LENS_VALIDATE_RICH_OUTPUT=1 pnpm exec tauri dev --no-watch
 ```
 
-Official runtime references: [ACP Registry](https://agentclientprotocol.com/get-started/registry), [pnpm supply-chain security settings](https://pnpm.io/settings#minimumreleaseage), [Takumi Guard npm compatibility](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).
+Official references: [Tauri application identifier configuration](https://v2.tauri.app/reference/config/#identifier), [Tauri 2.11.5 application path resolver source](https://docs.rs/crate/tauri/2.11.5/source/src/path/desktop.rs), [ACP Registry](https://agentclientprotocol.com/get-started/registry), [pnpm supply-chain security settings](https://pnpm.io/settings#minimumreleaseage), [Takumi Guard npm compatibility](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).

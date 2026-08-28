@@ -26,7 +26,7 @@ const DESKTOP_PLATFORM: &str = if cfg!(target_os = "macos") {
 } else if cfg!(target_os = "linux") {
     "linux"
 } else {
-    panic!("PersonalLens requires an explicit desktop platform presentation state")
+    panic!("Lens requires an explicit desktop platform presentation state")
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,7 +206,7 @@ pub fn install_menu_bar(app: &mut App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit PersonalLens", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Lens", true, None::<&str>)?;
     let separator_one = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
@@ -222,10 +222,10 @@ pub fn install_menu_bar(app: &mut App) -> tauri::Result<()> {
         ],
     )?;
 
-    TrayIconBuilder::with_id("personal-lens")
+    TrayIconBuilder::with_id("lens")
         .icon(tray_icon(false)?)
         .icon_as_template(true)
-        .tooltip("PersonalLens — select and authenticate an AI Agent to enable target selection")
+        .tooltip("Lens — select and authenticate an AI Agent to enable target selection")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -295,19 +295,19 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
         .set_text(presentation.working_directory_text)
         .map_err(|error| error.to_string())?;
     let tray = app
-        .tray_by_id("personal-lens")
-        .ok_or_else(|| "PersonalLens tray icon is unavailable".to_string())?;
+        .tray_by_id("lens")
+        .ok_or_else(|| "Lens tray icon is unavailable".to_string())?;
     tray.set_icon_with_as_template(
         Some(tray_icon(presentation.select_target_enabled).map_err(|error| error.to_string())?),
         true,
     )
     .map_err(|error| error.to_string())?;
     let tooltip = if presentation.target_selection_active {
-        "PersonalLens — Lens Target selection is already active"
+        "Lens — Lens Target selection is already active"
     } else if presentation.select_target_enabled {
-        "PersonalLens — left-click to select a Lens Target"
+        "Lens — left-click to select a Lens Target"
     } else {
-        "PersonalLens — select and authenticate an AI Agent to enable target selection"
+        "Lens — select and authenticate an AI Agent to enable target selection"
     };
     tray.set_tooltip(Some(tooltip))
         .map_err(|error| error.to_string())
@@ -329,7 +329,7 @@ fn select_lens_target_from_tray(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(error) = commands::select_lens_target(handle).await {
-            eprintln!("PersonalLens selection failed: {error}");
+            eprintln!("Lens selection failed: {error}");
         }
     });
 }
@@ -408,7 +408,7 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         .unwrap_or(SETTINGS_WINDOW_SIZE_POLICY.preferred);
 
     WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
-        .title("PersonalLens Settings")
+        .title("Lens Settings")
         .inner_size(size.width, size.height)
         .min_inner_size(
             SETTINGS_WINDOW_SIZE_POLICY.minimum.width,
@@ -435,7 +435,7 @@ pub fn show_lens_window(app: &AppHandle, target: &SelectedWindow) -> tauri::Resu
     })?;
 
     WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
-        .title("PersonalLens")
+        .title("Lens")
         .inner_size(geometry.width, geometry.height)
         .position(geometry.x, geometry.y)
         .decorations(false)

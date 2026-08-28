@@ -64,7 +64,7 @@ const snapshot: AppSnapshot = {
       media: [
         {
           id: "media-node-000001",
-          uri: `personallens://context/${operationId}/1/media/media-node-000001`,
+          uri: `lens://context/${operationId}/1/media/media-node-000001`,
           scope: "ax_element_region",
           source_node_id: "node-000001",
           source_bounds: { x: 10, y: 20, width: 30, height: 40 },
@@ -78,7 +78,7 @@ const snapshot: AppSnapshot = {
         },
         {
           id: "media-node-000002",
-          uri: `personallens://context/${operationId}/1/media/media-node-000002`,
+          uri: `lens://context/${operationId}/1/media/media-node-000002`,
           scope: "ax_element_region",
           source_node_id: "node-000002",
           source_bounds: { x: 45, y: 50, width: 100, height: 120 },
@@ -142,10 +142,10 @@ afterEach(() => {
   window.history.replaceState({}, "", "/?view=overlay&platform=macos");
 });
 
-describe("PersonalLens rich Agent output", () => {
+describe("Lens rich Agent output", () => {
   it("declares the titlebar as the Lens window drag region", async () => {
-    await import("./personal-lens-app");
-    const element = document.createElement("personal-lens-app") as HTMLElement & {
+    await import("./lens-app");
+    const element = document.createElement("lens-app") as HTMLElement & {
       updateComplete: Promise<boolean>;
     };
     document.body.append(element);
@@ -160,8 +160,8 @@ describe("PersonalLens rich Agent output", () => {
   });
 
   it("renders ACP image data inline and preserves surrounding block order", async () => {
-    await import("./personal-lens-app");
-    const element = document.createElement("personal-lens-app") as HTMLElement & {
+    await import("./lens-app");
+    const element = document.createElement("lens-app") as HTMLElement & {
       updateComplete: Promise<boolean>;
     };
     document.body.append(element);
@@ -175,17 +175,17 @@ describe("PersonalLens rich Agent output", () => {
     const image = output?.querySelector("img");
 
     expect(blocks.map((block) => block.tagName.toLowerCase())).toEqual([
-      "personal-lens-markdown",
+      "lens-markdown",
       "figure",
-      "personal-lens-markdown",
+      "lens-markdown",
     ]);
     expect(image?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
     expect(image?.getAttribute("alt")).toBe("Visual output from the agent");
   });
 
   it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {
-    await import("./personal-lens-app");
-    const element = document.createElement("personal-lens-app") as HTMLElement & {
+    await import("./lens-app");
+    const element = document.createElement("lens-app") as HTMLElement & {
       updateComplete: Promise<boolean>;
     };
     document.body.append(element);
@@ -234,11 +234,11 @@ describe("PersonalLens rich Agent output", () => {
   });
 });
 
-describe("PersonalLens Settings", () => {
+describe("Lens Settings", () => {
   it("starts with explicitly named setting groups instead of a redundant visible header", async () => {
     window.history.replaceState({}, "", "/?view=settings&platform=macos");
-    await import("./personal-lens-app");
-    const element = document.createElement("personal-lens-app") as HTMLElement & {
+    await import("./lens-app");
+    const element = document.createElement("lens-app") as HTMLElement & {
       updateComplete: Promise<boolean>;
     };
     document.body.append(element);
@@ -261,8 +261,8 @@ describe("PersonalLens Settings", () => {
 
   it("preserves native HTML behavior on the platform presentation targets", async () => {
     window.history.replaceState({}, "", "/?view=settings&platform=macos");
-    await import("./personal-lens-app");
-    const element = document.createElement("personal-lens-app") as HTMLElement & {
+    await import("./lens-app");
+    const element = document.createElement("lens-app") as HTMLElement & {
       updateComplete: Promise<boolean>;
     };
     document.body.append(element);

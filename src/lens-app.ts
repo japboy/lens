@@ -37,8 +37,8 @@ import {
 
 type LensTab = "translation" | "source";
 
-@customElement("personal-lens-app")
-export class PersonalLensApp extends LitElement {
+@customElement("lens-app")
+export class LensApp extends LitElement {
   static styles = [
     css`
       :host {
@@ -176,7 +176,7 @@ export class PersonalLensApp extends LitElement {
             <legend class="visually-hidden">AI agent to use</legend>
             ${this.agentOption("claude", "Claude")} ${this.agentOption("codex", "Codex")}
           </fieldset>
-          <p class="help">The ACP agent, not PersonalLens, manages authentication credentials.</p>
+          <p class="help">The ACP agent, not Lens, manages authentication credentials.</p>
           ${this.renderAgentRuntimeStatus()}
           <output
             class=${this.agentSelection.stage === "selected" ? "status-ok" : "status-warning"}
@@ -202,7 +202,7 @@ export class PersonalLensApp extends LitElement {
               ?disabled=${this.busy || !this.config}
             ></textarea>
             <p class="help">
-              Controls how the Agent transforms the source. PersonalLens appends fixed source-data
+              Controls how the Agent transforms the source. Lens appends fixed source-data
               boundaries and safety instructions when it sends the prompt.
             </p>
             <div class="prompt-actions">
@@ -343,7 +343,7 @@ export class PersonalLensApp extends LitElement {
     const sourceJson = lensSourceJson(this.lens);
     const activeAgent = this.lens.agent;
     const authenticationMethods = supportedAuthMethods(this.lens);
-    const applicationName = target?.application_name ?? "PersonalLens";
+    const applicationName = target?.application_name ?? "Lens";
     const windowContext = target?.title ? `${applicationName} — ${target.title}` : applicationName;
     return html`
       <div class="overlay-shell">
@@ -489,7 +489,7 @@ export class PersonalLensApp extends LitElement {
   private renderOutputBlock(block: LensOutputBlock, isLastBlock: boolean) {
     switch (block.type) {
       case "markdown":
-        return html`<personal-lens-markdown
+        return html`<lens-markdown
           class="markdown-body"
           .state=${
             {
@@ -500,7 +500,7 @@ export class PersonalLensApp extends LitElement {
           }
           @click=${this.openMarkdownLink}
           @markdown-render-error=${this.handleMarkdownRenderError}
-        ></personal-lens-markdown>`;
+        ></lens-markdown>`;
       case "image": {
         const source = imageDataUrl(block);
         return source
@@ -704,7 +704,7 @@ export class PersonalLensApp extends LitElement {
       <div class="loading-state" role="status" aria-live="polite">
         <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
         <strong>${STAGE_LABEL[this.lens.stage]}</strong>
-        <p>The source remains available in its own tab while PersonalLens prepares the result.</p>
+        <p>The source remains available in its own tab while Lens prepares the result.</p>
       </div>
     `;
   }
@@ -1031,7 +1031,7 @@ export class PersonalLensApp extends LitElement {
 
   private requestPermission = async (): Promise<void> => {
     await invoke<boolean>("request_accessibility_permission");
-    this.message = "Allow PersonalLens in System Settings, then check again.";
+    this.message = "Allow Lens in System Settings, then check again.";
     window.setTimeout(() => void this.refreshPermission(), 1_200);
   };
 

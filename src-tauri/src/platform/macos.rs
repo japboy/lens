@@ -17,10 +17,10 @@ use uuid::Uuid;
 type PickerCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
 
 unsafe extern "C" {
-    fn pl_accessibility_is_trusted() -> bool;
-    fn pl_accessibility_request_trust() -> bool;
-    fn pl_present_window_picker(callback: PickerCallback, context: *mut c_void) -> bool;
-    fn pl_capture_window_regions_json(
+    fn lens_accessibility_is_trusted() -> bool;
+    fn lens_accessibility_request_trust() -> bool;
+    fn lens_present_window_picker(callback: PickerCallback, context: *mut c_void) -> bool;
+    fn lens_capture_window_regions_json(
         window_id: u32,
         requests_json: *const c_char,
         max_long_edge: u32,
@@ -28,7 +28,7 @@ unsafe extern "C" {
         max_attachment_bytes: u32,
         max_total_bytes: u32,
     ) -> *mut c_char;
-    fn pl_extract_window_json(
+    fn lens_extract_window_json(
         pid: i32,
         selected_title: *const c_char,
         selected_x: f64,
@@ -41,7 +41,7 @@ unsafe extern "C" {
         max_resource_uri_bytes: u32,
         max_total_resource_uri_bytes: u32,
     ) -> *mut c_char;
-    fn pl_free_string(value: *mut c_char);
+    fn lens_free_string(value: *mut c_char);
 }
 
 struct PickerContext {
@@ -70,12 +70,12 @@ unsafe extern "C" fn picker_callback(json: *const c_char, context: *mut c_void) 
 
 pub fn accessibility_is_trusted() -> bool {
     // SAFETY: This C function takes no pointers and delegates to AXIsProcessTrusted.
-    unsafe { pl_accessibility_is_trusted() }
+    unsafe { lens_accessibility_is_trusted() }
 }
 
 pub fn request_accessibility_trust() -> bool {
     // SAFETY: This C function takes no pointers and delegates to AXIsProcessTrustedWithOptions.
-    unsafe { pl_accessibility_request_trust() }
+    unsafe { lens_accessibility_request_trust() }
 }
 
 pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError> {
@@ -87,7 +87,7 @@ pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError>
 
     // SAFETY: The context remains owned by the callback when presentation succeeds. If
     // presentation fails synchronously, it is reconstructed below.
-    let presented = unsafe { pl_present_window_picker(picker_callback, raw_context) };
+    let presented = unsafe { lens_present_window_picker(picker_callback, raw_context) };
     if !presented {
         // SAFETY: A failed presentation guarantees that the native side did not retain or call
         // the callback context.
@@ -108,7 +108,7 @@ pub fn extract_window(target: &SelectedWindow) -> Result<ExtractionResult, Platf
     // SAFETY: All pointer arguments are valid for the duration of the call. The native bridge
     // returns a malloc-owned NUL-terminated buffer, released with its matching free function.
     let raw = unsafe {
-        pl_extract_window_json(
+        lens_extract_window_json(
             target.pid,
             title.as_ptr(),
             target.frame.x,
@@ -132,7 +132,7 @@ pub fn extract_window(target: &SelectedWindow) -> Result<ExtractionResult, Platf
         .to_string_lossy()
         .into_owned();
     // SAFETY: The buffer was allocated by `PLCopyJSONString` and has not been freed yet.
-    unsafe { pl_free_string(raw) };
+    unsafe { lens_free_string(raw) };
     serde_json::from_str(&json)
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }
@@ -201,7 +201,7 @@ pub fn capture_window_media(
     // SAFETY: All pointer arguments remain valid for the duration of this blocking call. The
     // native bridge returns a malloc-owned NUL-terminated buffer released below.
     let raw = unsafe {
-        pl_capture_window_regions_json(
+        lens_capture_window_regions_json(
             target.window_id,
             requests_json.as_ptr(),
             limits.max_long_edge,
@@ -220,7 +220,7 @@ pub fn capture_window_media(
         .to_string_lossy()
         .into_owned();
     // SAFETY: The buffer was allocated by `PLCopyJSONString` and has not been freed yet.
-    unsafe { pl_free_string(raw) };
+    unsafe { lens_free_string(raw) };
     let native: NativeImageCaptureBatch = serde_json::from_str(&json).map_err(|error| {
         PlatformError::InvalidResponse(format!(
             "unable to decode native image capture response: {error}"
@@ -279,7 +279,7 @@ pub fn capture_window_media(
             ));
         }
         let uri = format!(
-            "personallens://context/{context_id}/1/media/{}",
+            "lens://context/{context_id}/1/media/{}",
             capture.attachment_id
         );
         result.attachments.push(LensMediaAttachment {
