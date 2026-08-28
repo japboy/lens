@@ -4,17 +4,24 @@ use crate::{
         emit_app_snapshot, next_revision, publish_lens_state, update_lens_state, AgentRunKey,
         AppState,
     },
+    lens::{
+        LensContext, LensInput, LensMediaCapture, LensMediaOmission, LensMediaOmissionReason,
+        LensMediaPlan, MAX_LENS_MEDIA_ATTACHMENT_BYTES, MAX_LENS_MEDIA_LONG_EDGE,
+        MAX_LENS_MEDIA_PIXELS, MAX_LENS_MEDIA_TOTAL_BYTES,
+    },
     model::{
-        AgentKind, AgentSelectionState, AppConfig, AppSnapshot, LensInput, LensStage, LensState,
+        AgentKind, AgentSelectionState, AppConfig, AppSnapshot, LensStage, LensState,
         SelectedWindow, BUILT_IN_RESPONSE_PROMPT,
     },
-    platform, ui,
+    platform::{self, ImageCaptureLimits},
+    ui,
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
+const MAX_RESPONSE_PROMPT_CHARS: usize = 16_384;
 
 #[tauri::command]
 pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
@@ -48,6 +55,11 @@ fn normalize_response_prompt(response_prompt: String) -> Result<String, String> 
     let response_prompt = response_prompt.replace("\r\n", "\n").replace('\r', "\n");
     if response_prompt.trim().is_empty() {
         return Err("response prompt must not be empty".into());
+    }
+    if response_prompt.chars().count() > MAX_RESPONSE_PROMPT_CHARS {
+        return Err(format!(
+            "response prompt must not exceed {MAX_RESPONSE_PROMPT_CHARS} characters"
+        ));
     }
     Ok(response_prompt)
 }
@@ -104,6 +116,7 @@ pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
     let picker_lease = state.picker_control.try_begin()?;
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
+    state.lens_media.begin(operation_id)?;
     publish_lens_state(
         &app,
         LensState {
@@ -163,6 +176,7 @@ pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<Le
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
+    state.lens_media.begin(operation_id)?;
     publish_lens_state(
         &app,
         LensState {
@@ -180,37 +194,56 @@ async fn extract_target_for_operation(
     operation_id: Uuid,
     target: SelectedWindow,
 ) -> Result<LensState, String> {
-    let extraction_target = target.clone();
-    let extraction = match tauri::async_runtime::spawn_blocking(move || {
-        platform::extract_window(&extraction_target)
+    let accessibility_target = target.clone();
+    let accessibility_task = tauri::async_runtime::spawn_blocking(move || {
+        platform::extract_window(&accessibility_target)
     })
-    .await
-    {
+    .await;
+    let accessibility = match accessibility_task {
         Ok(Ok(extraction)) => extraction,
-        Ok(Err(error)) => {
-            let message = error.to_string();
-            let failed = failed_state(operation_id, Some(target.clone()), message.clone());
-            if !replace_operation_state(&app, operation_id, failed)? {
-                return Err(OPERATION_SUPERSEDED.into());
-            }
-            ui::show_lens_window(&app, &target).map_err(|window_error| {
-                format!("{message}; unable to show Lens window: {window_error}")
-            })?;
-            return Err(message);
+        Ok(Err(error)) => LensContext::unavailable_accessibility(error.to_string()),
+        Err(error) => LensContext::unavailable_accessibility(error.to_string()),
+    };
+    let media_plan = LensMediaPlan::from_accessibility(&target, &accessibility);
+    let media = if media_plan.requests.is_empty() {
+        LensMediaCapture {
+            omissions: media_plan.omissions,
+            ..LensMediaCapture::default()
         }
-        Err(error) => {
-            let message = error.to_string();
-            let failed = failed_state(operation_id, Some(target.clone()), message.clone());
-            if !replace_operation_state(&app, operation_id, failed)? {
-                return Err(OPERATION_SUPERSEDED.into());
-            }
-            ui::show_lens_window(&app, &target).map_err(|window_error| {
-                format!("{message}; unable to show Lens window: {window_error}")
-            })?;
-            return Err(message);
+    } else {
+        let image_target = target.clone();
+        let capture_plan = media_plan.clone();
+        let limits = ImageCaptureLimits {
+            max_long_edge: u32::try_from(MAX_LENS_MEDIA_LONG_EDGE)
+                .expect("versioned media long-edge limit fits u32"),
+            max_pixels: u32::try_from(MAX_LENS_MEDIA_PIXELS)
+                .expect("versioned media pixel limit fits u32"),
+            max_attachment_bytes: u32::try_from(MAX_LENS_MEDIA_ATTACHMENT_BYTES)
+                .expect("versioned media attachment-byte limit fits u32"),
+            max_total_bytes: u32::try_from(MAX_LENS_MEDIA_TOTAL_BYTES)
+                .expect("versioned media total-byte limit fits u32"),
+        };
+        match tauri::async_runtime::spawn_blocking(move || {
+            platform::capture_window_media(&image_target, operation_id, capture_plan, limits)
+        })
+        .await
+        {
+            Ok(Ok(capture)) => capture,
+            Ok(Err(error)) => failed_media_capture(media_plan, error.to_string()),
+            Err(error) => failed_media_capture(media_plan, error.to_string()),
         }
     };
-    let input = LensInput::from_extraction(&target, &extraction);
+    let mut media = media;
+    let payloads = std::mem::take(&mut media.payloads);
+    let context = LensContext::from_capture(operation_id, &target, accessibility, media);
+    let input = LensInput::from_context(&context);
+    let error = input.is_none().then(|| {
+        if context.diagnostics.is_empty() {
+            "Window extraction did not yield usable structured content.".into()
+        } else {
+            context.diagnostics.join("; ")
+        }
+    });
     let next = LensState {
         operation_id: Some(operation_id),
         stage: if input.is_some() {
@@ -219,16 +252,19 @@ async fn extract_target_for_operation(
             LensStage::Failed
         },
         target: Some(target.clone()),
-        extraction: Some(extraction.clone()),
+        context: Some(context),
         input,
         output_blocks: Vec::new(),
         agent: None,
-        error: if extraction.quality == crate::model::ExtractionQuality::Unavailable {
-            Some("Accessibility extraction did not yield usable text.".into())
-        } else {
-            None
-        },
+        error,
     };
+    if !app
+        .state::<AppState>()
+        .lens_media
+        .replace(operation_id, payloads)?
+    {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
     if !replace_operation_state(&app, operation_id, next.clone())? {
         return Err(OPERATION_SUPERSEDED.into());
     }
@@ -243,6 +279,24 @@ async fn extract_target_for_operation(
         return Err(message);
     }
     Ok(next)
+}
+
+fn failed_media_capture(plan: LensMediaPlan, message: String) -> LensMediaCapture {
+    let mut omissions = plan.omissions;
+    omissions.extend(plan.requests.into_iter().map(|request| LensMediaOmission {
+        attachment_id: Some(request.id),
+        source_node_id: request.source_node_id,
+        reason: LensMediaOmissionReason::CaptureFailed,
+        omitted_count: 1,
+        first_order: None,
+        last_order: None,
+        detail: message.clone(),
+    }));
+    LensMediaCapture {
+        omissions,
+        diagnostics: vec![format!("ScreenCaptureKit media capture failed: {message}")],
+        ..LensMediaCapture::default()
+    }
 }
 
 #[tauri::command]
@@ -344,6 +398,13 @@ mod tests {
         assert_eq!(
             normalize_response_prompt(" \n\t".into()),
             Err("response prompt must not be empty".into())
+        );
+        assert!(normalize_response_prompt("x".repeat(MAX_RESPONSE_PROMPT_CHARS)).is_ok());
+        assert_eq!(
+            normalize_response_prompt("x".repeat(MAX_RESPONSE_PROMPT_CHARS + 1)),
+            Err(format!(
+                "response prompt must not exceed {MAX_RESPONSE_PROMPT_CHARS} characters"
+            ))
         );
     }
 

@@ -166,6 +166,296 @@ bool pl_present_window_picker(PLPickerCallback callback, void *context) {
     return presented;
 }
 
+static NSDictionary *PLImageCaptureFailure(NSString *diagnostic) {
+    return @{
+        @"captures": @[],
+        @"omissions": @[],
+        @"diagnostics": @[diagnostic]
+    };
+}
+
+static CGImageRef PLCopyScaledImage(
+    CGImageRef image,
+    size_t maxLongEdge,
+    size_t maxPixels
+) {
+    size_t width = CGImageGetWidth(image);
+    size_t height = CGImageGetHeight(image);
+    if (width == 0 || height == 0) {
+        return NULL;
+    }
+    double scale = 1.0;
+    size_t longEdge = MAX(width, height);
+    if (longEdge > maxLongEdge) {
+        scale = MIN(scale, (double)maxLongEdge / (double)longEdge);
+    }
+    double pixels = (double)width * (double)height;
+    if (pixels > (double)maxPixels) {
+        scale = MIN(scale, sqrt((double)maxPixels / pixels));
+    }
+    if (scale >= 1.0) {
+        return CGImageRetain(image);
+    }
+
+    size_t targetWidth = MAX((size_t)1, (size_t)floor((double)width * scale));
+    size_t targetHeight = MAX((size_t)1, (size_t)floor((double)height * scale));
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+        NULL,
+        targetWidth,
+        targetHeight,
+        8,
+        0,
+        colorSpace,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
+    );
+    CGColorSpaceRelease(colorSpace);
+    if (context == NULL) {
+        return NULL;
+    }
+    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+    CGContextDrawImage(context, CGRectMake(0, 0, targetWidth, targetHeight), image);
+    CGImageRef scaled = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    return scaled;
+}
+
+static NSData *PLPNGData(CGImageRef image) {
+    NSBitmapImageRep *representation = [[NSBitmapImageRep alloc] initWithCGImage:image];
+    return [representation representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+
+char *pl_capture_window_regions_json(
+    uint32_t windowID,
+    const char *requestsJSON,
+    uint32_t maxLongEdge,
+    uint32_t maxPixels,
+    uint32_t maxAttachmentBytes,
+    uint32_t maxTotalBytes
+) {
+    @autoreleasepool {
+        if (requestsJSON == NULL || maxLongEdge == 0 || maxPixels == 0 ||
+            maxAttachmentBytes == 0 || maxTotalBytes == 0) {
+            return PLCopyJSONString(PLImageCaptureFailure(
+                @"Image capture requests and limits must be present and greater than zero."
+            ));
+        }
+        NSData *requestData = [NSData dataWithBytes:requestsJSON length:strlen(requestsJSON)];
+        NSError *requestError = nil;
+        id requestObject = [NSJSONSerialization
+            JSONObjectWithData:requestData
+            options:0
+            error:&requestError];
+        if (![requestObject isKindOfClass:NSArray.class]) {
+            return PLCopyJSONString(PLImageCaptureFailure(
+                requestError.localizedDescription
+                    ?: @"Image capture requests must be a JSON array."
+            ));
+        }
+        NSArray<NSDictionary *> *requests = requestObject;
+        if (requests.count == 0) {
+            return PLCopyJSONString(@{
+                @"captures": @[],
+                @"omissions": @[],
+                @"diagnostics": @[]
+            });
+        }
+
+        dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+        __block NSDictionary *result = nil;
+        [SCShareableContent getShareableContentWithCompletionHandler:^(
+            SCShareableContent *shareableContent,
+            NSError *shareableError
+        ) {
+            if (shareableContent == nil) {
+                result = PLImageCaptureFailure(
+                    shareableError.localizedDescription
+                        ?: @"ScreenCaptureKit returned no shareable content."
+                );
+                dispatch_semaphore_signal(completion);
+                return;
+            }
+
+            SCWindow *selectedWindow = nil;
+            for (SCWindow *window in shareableContent.windows) {
+                if (window.windowID == windowID) {
+                    selectedWindow = window;
+                    break;
+                }
+            }
+            if (selectedWindow == nil) {
+                result = PLImageCaptureFailure(
+                    @"The picker-authoritative window is no longer available to ScreenCaptureKit."
+                );
+                dispatch_semaphore_signal(completion);
+                return;
+            }
+
+            CGFloat sourceWidth = MAX(selectedWindow.frame.size.width, 1.0);
+            CGFloat sourceHeight = MAX(selectedWindow.frame.size.height, 1.0);
+            CGFloat scale = MIN(2.0, MIN(4096.0 / sourceWidth, 4096.0 / sourceHeight));
+            SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
+            configuration.width = (size_t)MAX(1.0, floor(sourceWidth * scale));
+            configuration.height = (size_t)MAX(1.0, floor(sourceHeight * scale));
+            configuration.scalesToFit = YES;
+            configuration.preservesAspectRatio = YES;
+            configuration.showsCursor = NO;
+            configuration.ignoreShadowsSingleWindow = YES;
+            configuration.shouldBeOpaque = YES;
+            SCContentFilter *filter = [[SCContentFilter alloc]
+                initWithDesktopIndependentWindow:selectedWindow];
+            [SCScreenshotManager
+                captureImageWithFilter:filter
+                configuration:configuration
+                completionHandler:^(CGImageRef image, NSError *captureError) {
+                    if (image == NULL) {
+                        result = PLImageCaptureFailure(
+                            captureError.localizedDescription
+                                ?: @"ScreenCaptureKit returned no window image."
+                        );
+                        dispatch_semaphore_signal(completion);
+                        return;
+                    }
+
+                    CGRect windowFrame = selectedWindow.frame;
+                    CGFloat pixelScaleX = (CGFloat)CGImageGetWidth(image) / sourceWidth;
+                    CGFloat pixelScaleY = (CGFloat)CGImageGetHeight(image) / sourceHeight;
+                    NSUInteger totalBytes = 0;
+                    NSMutableArray<NSDictionary *> *captures = [NSMutableArray array];
+                    NSMutableArray<NSDictionary *> *omissions = [NSMutableArray array];
+                    for (NSDictionary *request in requests) {
+                        NSString *attachmentID = request[@"id"];
+                        NSString *scope = request[@"scope"];
+                        if (attachmentID.length == 0 || scope.length == 0) {
+                            [omissions addObject:@{
+                                @"reason": @"capture_failed",
+                                @"detail": @"Image capture request is missing its id or scope."
+                            }];
+                            continue;
+                        }
+                        CGRect requestedBounds = windowFrame;
+                        if (![scope isEqualToString:@"window_fallback"]) {
+                            NSDictionary *bounds = request[@"bounds"];
+                            if (![bounds isKindOfClass:NSDictionary.class]) {
+                                [omissions addObject:@{
+                                    @"attachment_id": attachmentID,
+                                    @"reason": @"capture_failed",
+                                    @"detail": @"AX image-region request has no bounds."
+                                }];
+                                continue;
+                            }
+                            requestedBounds = CGRectMake(
+                                [bounds[@"x"] doubleValue],
+                                [bounds[@"y"] doubleValue],
+                                [bounds[@"width"] doubleValue],
+                                [bounds[@"height"] doubleValue]
+                            );
+                        }
+                        CGRect capturedBounds = CGRectIntersection(windowFrame, requestedBounds);
+                        if (CGRectIsNull(capturedBounds) || CGRectIsEmpty(capturedBounds)) {
+                            [omissions addObject:@{
+                                @"attachment_id": attachmentID,
+                                @"reason": @"outside_window",
+                                @"detail": @"AX image region does not intersect the current selected-window frame."
+                            }];
+                            continue;
+                        }
+
+                        CGFloat localMinX =
+                            (CGRectGetMinX(capturedBounds) - CGRectGetMinX(windowFrame)) * pixelScaleX;
+                        CGFloat localMinY =
+                            (CGRectGetMinY(capturedBounds) - CGRectGetMinY(windowFrame)) * pixelScaleY;
+                        CGFloat localMaxX =
+                            (CGRectGetMaxX(capturedBounds) - CGRectGetMinX(windowFrame)) * pixelScaleX;
+                        CGFloat localMaxY =
+                            (CGRectGetMaxY(capturedBounds) - CGRectGetMinY(windowFrame)) * pixelScaleY;
+                        CGFloat pixelMinX = MAX(0.0, floor(localMinX));
+                        CGFloat pixelMinY = MAX(0.0, floor(localMinY));
+                        CGRect pixelRect = CGRectMake(
+                            pixelMinX,
+                            pixelMinY,
+                            MIN((CGFloat)CGImageGetWidth(image), ceil(localMaxX)) - pixelMinX,
+                            MIN((CGFloat)CGImageGetHeight(image), ceil(localMaxY)) - pixelMinY
+                        );
+                        if (CGRectIsEmpty(pixelRect)) {
+                            [omissions addObject:@{
+                                @"attachment_id": attachmentID,
+                                @"reason": @"outside_window",
+                                @"detail": @"AX image region produced an empty pixel intersection."
+                            }];
+                            continue;
+                        }
+
+                        CGImageRef cropped = CGImageCreateWithImageInRect(image, pixelRect);
+                        CGImageRef bounded = cropped == NULL
+                            ? NULL
+                            : PLCopyScaledImage(cropped, maxLongEdge, maxPixels);
+                        if (cropped != NULL) CGImageRelease(cropped);
+                        if (bounded == NULL) {
+                            [omissions addObject:@{
+                                @"attachment_id": attachmentID,
+                                @"reason": @"capture_failed",
+                                @"detail": @"Unable to create the bounded image-region bitmap."
+                            }];
+                            continue;
+                        }
+                        NSData *png = PLPNGData(bounded);
+                        size_t pixelWidth = CGImageGetWidth(bounded);
+                        size_t pixelHeight = CGImageGetHeight(bounded);
+                        CGImageRelease(bounded);
+                        if (png == nil) {
+                            [omissions addObject:@{
+                                @"attachment_id": attachmentID,
+                                @"reason": @"capture_failed",
+                                @"detail": @"Unable to encode the image-region bitmap as PNG."
+                            }];
+                            continue;
+                        }
+                        if (png.length > maxAttachmentBytes ||
+                            totalBytes + png.length > maxTotalBytes) {
+                            [omissions addObject:@{
+                                @"attachment_id": attachmentID,
+                                @"reason": @"byte_budget",
+                                @"detail": @"Encoded PNG exceeded the versioned per-attachment or total media byte budget."
+                            }];
+                            continue;
+                        }
+                        totalBytes += png.length;
+                        BOOL capturedFullRegion = CGRectEqualToRect(capturedBounds, requestedBounds);
+                        [captures addObject:@{
+                            @"attachment_id": attachmentID,
+                            @"source_bounds": PLFrameDictionary(requestedBounds),
+                            @"captured_bounds": PLFrameDictionary(capturedBounds),
+                            @"window_bounds": PLFrameDictionary(windowFrame),
+                            @"coverage": capturedFullRegion ? @"full_region" : @"visible_subregion",
+                            @"mime_type": @"image/png",
+                            @"pixel_width": @(pixelWidth),
+                            @"pixel_height": @(pixelHeight),
+                            @"encoded_bytes": @(png.length),
+                            @"data": [png base64EncodedStringWithOptions:0]
+                        }];
+                    }
+                    result = @{
+                        @"captures": captures,
+                        @"omissions": omissions,
+                        @"diagnostics": @[]
+                    };
+                    dispatch_semaphore_signal(completion);
+                }];
+        }];
+
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
+        if (dispatch_semaphore_wait(completion, timeout) != 0) {
+            return PLCopyJSONString(PLImageCaptureFailure(
+                @"ScreenCaptureKit image-region capture timed out after 15 seconds."
+            ));
+        }
+        return PLCopyJSONString(
+            result ?: PLImageCaptureFailure(@"Image-region capture produced no result.")
+        );
+    }
+}
+
 static id PLCopyAXAttribute(AXUIElementRef element, CFStringRef attribute, AXError *errorOut) {
     CFTypeRef value = NULL;
     AXError error = AXUIElementCopyAttributeValue(element, attribute, &value);
@@ -249,6 +539,70 @@ static NSString *PLAXString(AXUIElementRef element, CFStringRef attribute) {
         return [value string];
     }
     return nil;
+}
+
+static NSString *PLAXURIString(
+    AXUIElementRef element,
+    CFStringRef attribute,
+    BOOL acceptsString,
+    NSUInteger *readErrors
+) {
+    AXError error = kAXErrorFailure;
+    id value = PLCopyAXAttribute(element, attribute, &error);
+    if (value == nil) {
+        if (error != kAXErrorAttributeUnsupported && error != kAXErrorNoValue) {
+            *readErrors += 1;
+        }
+        return nil;
+    }
+    CFTypeRef type = (__bridge CFTypeRef)value;
+    NSString *candidate = nil;
+    if (CFGetTypeID(type) == CFURLGetTypeID()) {
+        candidate = [(__bridge NSURL *)type absoluteString];
+    } else if (acceptsString && [value isKindOfClass:NSString.class]) {
+        candidate = value;
+    }
+    if (candidate.length == 0) {
+        *readErrors += 1;
+        return nil;
+    }
+    NSURLComponents *components = [NSURLComponents componentsWithString:candidate];
+    if (components.scheme.length == 0) {
+        *readErrors += 1;
+        return nil;
+    }
+    return candidate;
+}
+
+static void PLAppendAXResourceReference(
+    NSMutableArray<NSDictionary *> *references,
+    NSString *uri,
+    NSString *sourceAttribute,
+    NSUInteger maxResourceRefs,
+    NSUInteger maxResourceURIBytes,
+    NSUInteger maxTotalResourceURIBytes,
+    NSUInteger *resourceRefCount,
+    NSUInteger *resourceURIBytes,
+    NSUInteger *omittedResourceRefs
+) {
+    if (uri.length == 0) {
+        return;
+    }
+    NSUInteger uriBytes = [uri lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+    BOOL fitsTotal = *resourceURIBytes <= maxTotalResourceURIBytes
+        && uriBytes <= maxTotalResourceURIBytes - *resourceURIBytes;
+    if (uriBytes <= maxResourceURIBytes
+        && *resourceRefCount < maxResourceRefs
+        && fitsTotal) {
+        [references addObject:@{
+            @"uri": uri,
+            @"source_attribute": sourceAttribute
+        }];
+        *resourceRefCount += 1;
+        *resourceURIBytes += uriBytes;
+    } else {
+        *omittedResourceRefs += 1;
+    }
 }
 
 static NSNumber *PLAXNumber(AXUIElementRef element, CFStringRef attribute) {
@@ -540,7 +894,11 @@ static NSDictionary *PLExtractionUnavailableWithDiagnostics(NSArray<NSString *> 
             @"virtualization_signals": @0,
             @"truncated_nodes": @NO,
             @"truncated_text": @NO,
-            @"children_read_errors": @0
+            @"children_read_errors": @0,
+            @"resource_ref_count": @0,
+            @"resource_uri_bytes": @0,
+            @"omitted_resource_refs": @0,
+            @"resource_read_errors": @0
         },
         @"diagnostics": diagnostics
     };
@@ -558,7 +916,10 @@ char *pl_extract_window_json(
     double selectedWidth,
     double selectedHeight,
     uint32_t maxNodes,
-    uint32_t maxTextBytes
+    uint32_t maxTextBytes,
+    uint32_t maxResourceRefs,
+    uint32_t maxResourceURIBytes,
+    uint32_t maxTotalResourceURIBytes
 ) {
     @autoreleasepool {
         if (!AXIsProcessTrusted()) {
@@ -592,15 +953,23 @@ char *pl_extract_window_json(
         NSMutableArray<NSString *> *fragments = [NSMutableArray array];
         NSMutableArray<NSDictionary *> *queue = [NSMutableArray arrayWithObject:@{
             @"element": (__bridge id)resolvedWindow,
+            @"id": @"node-000000",
+            @"order": @0,
             @"depth": @0
         }];
-        CFMutableSetRef visited = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+        CFMutableSetRef scheduled = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+        CFSetAddValue(scheduled, resolvedWindow);
 
         NSUInteger cursor = 0;
+        NSUInteger nextNodeOrder = 1;
         NSUInteger textBytes = 0;
         NSUInteger offscreenTextNodes = 0;
         NSUInteger virtualizationSignals = 0;
         NSUInteger childrenReadErrors = 0;
+        NSUInteger resourceRefCount = 0;
+        NSUInteger resourceURIBytes = 0;
+        NSUInteger omittedResourceRefs = 0;
+        NSUInteger resourceReadErrors = 0;
         BOOL truncatedNodes = NO;
         BOOL truncatedText = NO;
 
@@ -612,27 +981,51 @@ char *pl_extract_window_json(
 
             NSDictionary *entry = queue[cursor++];
             AXUIElementRef element = (__bridge AXUIElementRef)entry[@"element"];
-            if (CFSetContainsValue(visited, element)) {
-                continue;
-            }
-            CFSetAddValue(visited, element);
-
+            NSString *nodeID = entry[@"id"];
+            NSString *parentID = entry[@"parent_id"];
+            NSUInteger order = [entry[@"order"] unsignedIntegerValue];
             NSUInteger depth = [entry[@"depth"] unsignedIntegerValue];
             NSString *role = PLAXString(element, kAXRoleAttribute);
             NSString *subrole = PLAXString(element, kAXSubroleAttribute);
             NSString *title = PLAXString(element, kAXTitleAttribute);
             NSString *value = PLAXString(element, kAXValueAttribute);
             NSString *description = PLAXString(element, kAXDescriptionAttribute);
+            NSString *axURL = PLAXURIString(
+                element, kAXURLAttribute, NO, &resourceReadErrors
+            );
+            NSString *axDocument = depth == 0 || [role isEqualToString:(__bridge NSString *)kAXWindowRole]
+                ? PLAXURIString(element, kAXDocumentAttribute, YES, &resourceReadErrors)
+                : nil;
             CGRect frame = CGRectZero;
             BOOL hasFrame = PLAXFrame(element, &frame);
 
-            NSMutableDictionary *node = [NSMutableDictionary dictionaryWithObject:@(depth) forKey:@"depth"];
+            NSMutableDictionary *node = [NSMutableDictionary dictionaryWithDictionary:@{
+                @"id": nodeID,
+                @"order": @(order),
+                @"depth": @(depth),
+                @"children": @[]
+            }];
+            if (parentID != nil) node[@"parent_id"] = parentID;
             if (role.length > 0) node[@"role"] = role;
             if (subrole.length > 0) node[@"subrole"] = subrole;
             if (title.length > 0) node[@"title"] = title;
             if (value.length > 0) node[@"value"] = value;
             if (description.length > 0) node[@"description"] = description;
             if (hasFrame) node[@"bounds"] = PLFrameDictionary(frame);
+            NSMutableArray<NSDictionary *> *resourceRefs = [NSMutableArray array];
+            PLAppendAXResourceReference(
+                resourceRefs, axURL, @"AXURL",
+                maxResourceRefs, maxResourceURIBytes, maxTotalResourceURIBytes,
+                &resourceRefCount, &resourceURIBytes, &omittedResourceRefs
+            );
+            PLAppendAXResourceReference(
+                resourceRefs, axDocument, @"AXDocument",
+                maxResourceRefs, maxResourceURIBytes, maxTotalResourceURIBytes,
+                &resourceRefCount, &resourceURIBytes, &omittedResourceRefs
+            );
+            if (resourceRefs.count > 0) {
+                node[@"resource_refs"] = resourceRefs;
+            }
             [nodes addObject:node];
 
             NSUInteger fragmentsBefore = fragments.count;
@@ -701,9 +1094,11 @@ char *pl_extract_window_json(
                 }
             }
 
+            NSMutableArray<NSString *> *childIDs = [NSMutableArray array];
             for (id child in children) {
                 CFTypeRef childType = (__bridge CFTypeRef)child;
-                if (CFGetTypeID(childType) == AXUIElementGetTypeID()) {
+                if (CFGetTypeID(childType) == AXUIElementGetTypeID()
+                    && !CFSetContainsValue(scheduled, childType)) {
                     NSUInteger scheduledNodes = queue.count - cursor;
                     NSUInteger availableSlots = nodes.count < maxNodes
                         ? maxNodes - nodes.count
@@ -712,12 +1107,26 @@ char *pl_extract_window_json(
                         truncatedNodes = YES;
                         break;
                     }
-                    [queue addObject:@{ @"element": child, @"depth": @(depth + 1) }];
+                    NSString *childID = [NSString stringWithFormat:
+                        @"node-%06lu",
+                        (unsigned long)nextNodeOrder
+                    ];
+                    nextNodeOrder += 1;
+                    CFSetAddValue(scheduled, childType);
+                    [childIDs addObject:childID];
+                    [queue addObject:@{
+                        @"element": child,
+                        @"id": childID,
+                        @"parent_id": nodeID,
+                        @"order": @(nextNodeOrder - 1),
+                        @"depth": @(depth + 1)
+                    }];
                 }
             }
+            node[@"children"] = childIDs;
         }
 
-        CFRelease(visited);
+        CFRelease(scheduled);
         CFRelease(resolvedWindow);
 
         if (bestScore < 100.0) {
@@ -750,15 +1159,30 @@ char *pl_extract_window_json(
                 (unsigned long)childrenReadErrors
             ]];
         }
+        if (omittedResourceRefs > 0) {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"%lu URI resource references were omitted whole after reaching the configured count or UTF-8 byte limits.",
+                (unsigned long)omittedResourceRefs
+            ]];
+        }
+        if (resourceReadErrors > 0) {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"%lu URI-valued Accessibility attributes could not be read or did not contain an absolute URI of their declared type.",
+                (unsigned long)resourceReadErrors
+            ]];
+        }
 
         NSString *text = [fragments componentsJoinedByString:@"\n"];
-        NSString *quality = text.length == 0
+        BOOL hasUsefulContent = text.length > 0 || resourceRefCount > 0;
+        NSString *quality = !hasUsefulContent
             ? @"unavailable"
-            : (truncatedNodes || truncatedText || childrenReadErrors > 0 || virtualizationSignals > 0
+            : (truncatedNodes || truncatedText || childrenReadErrors > 0
+                || virtualizationSignals > 0 || omittedResourceRefs > 0
+                || resourceReadErrors > 0
                 ? @"partial"
                 : @"full");
-        if (text.length == 0) {
-            [diagnostics addObject:@"The resolved AXWindow contains no useful textual attributes."];
+        if (!hasUsefulContent) {
+            [diagnostics addObject:@"The resolved AXWindow contains no useful text or URI resource references."];
         }
 
         NSDictionary *result = @{
@@ -777,7 +1201,11 @@ char *pl_extract_window_json(
                 @"virtualization_signals": @(virtualizationSignals),
                 @"truncated_nodes": @(truncatedNodes),
                 @"truncated_text": @(truncatedText),
-                @"children_read_errors": @(childrenReadErrors)
+                @"children_read_errors": @(childrenReadErrors),
+                @"resource_ref_count": @(resourceRefCount),
+                @"resource_uri_bytes": @(resourceURIBytes),
+                @"omitted_resource_refs": @(omittedResourceRefs),
+                @"resource_read_errors": @(resourceReadErrors)
             },
             @"diagnostics": diagnostics
         };

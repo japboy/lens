@@ -14,7 +14,7 @@ use tauri::{
 use tauri_plugin_dialog::DialogExt;
 
 const SETTINGS_LABEL: &str = "settings";
-const LENS_WINDOW_LABEL: &str = "lens-overlay";
+pub(crate) const LENS_WINDOW_LABEL: &str = "lens-overlay";
 const LENS_WINDOW_PARENT_RATIO: f64 = 0.8;
 const LENS_WINDOW_CORNER_RADIUS: f64 = 12.0;
 const LENS_WINDOW_EFFECT: WindowEffect = WindowEffect::HudWindow;

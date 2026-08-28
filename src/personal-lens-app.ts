@@ -24,6 +24,7 @@ import {
   AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
   imageDataUrl,
+  inputMediaPreviewUrl,
   isAgentRuntimeActive,
   lensOutputBlocks,
   lensSourceJson,
@@ -76,6 +77,12 @@ export class PersonalLensApp extends LitElement {
 
   @state()
   private activeLensTab: LensTab = "translation";
+
+  @state()
+  private activeInputMediaIndex = 0;
+
+  @state()
+  private inputMediaPreviewError = "";
 
   @state()
   private responsePromptDraft = "";
@@ -330,7 +337,7 @@ export class PersonalLensApp extends LitElement {
   }
 
   private renderOverlay() {
-    const extraction = this.lens.extraction;
+    const context = this.lens.context;
     const target = this.lens.target;
     const outputBlocks = lensOutputBlocks(this.lens);
     const sourceJson = lensSourceJson(this.lens);
@@ -441,13 +448,19 @@ export class PersonalLensApp extends LitElement {
                   >
                     ${
                       sourceJson
-                        ? html`<pre
-                            class="lens-content source-content"
-                            aria-label="Normalized Lens source JSON"
-                          ><code>${sourceJson}</code></pre>`
+                        ? html`<div class="lens-content source-view">
+                            ${this.renderInputMediaPreview()}
+                            <section class="source-json" aria-labelledby="source-json-heading">
+                              <h2 id="source-json-heading">Structured input</h2>
+                              <pre
+                                class="source-content"
+                                aria-label="Normalized Lens source JSON"
+                              ><code>${sourceJson}</code></pre>
+                            </section>
+                          </div>`
                         : html`<p class="empty-state">No normalized source data is available.</p>`
                     }
-                    ${extraction ? this.renderDiagnostics(extraction) : nothing}
+                    ${context ? this.renderDiagnostics(context) : nothing}
                   </section>
                 `
           }
@@ -458,10 +471,8 @@ export class PersonalLensApp extends LitElement {
             <div class="overlay-footer-status" role="status" title=${STAGE_LABEL[this.lens.stage]}>
               <span class="overlay-stage">${STAGE_LABEL[this.lens.stage]}</span>
               ${
-                extraction
-                  ? html`<span class="quality quality-${extraction.quality}"
-                      >${extraction.quality}</span
-                    >`
+                context
+                  ? html`<span class="quality quality-${context.quality}">${context.quality}</span>`
                   : nothing
               }
             </div>
@@ -501,6 +512,164 @@ export class PersonalLensApp extends LitElement {
       case "unsupported":
         return this.renderUnsupportedOutput(block.content_type);
     }
+  }
+
+  private renderInputMediaPreview() {
+    const media = this.lens.input?.media ?? [];
+    if (!media.length) return nothing;
+    const index = Math.min(this.activeInputMediaIndex, media.length - 1);
+    const attachment = media[index];
+    if (!attachment) return nothing;
+    const source = inputMediaPreviewUrl(this.lens, attachment);
+    const scopeLabel =
+      attachment.scope === "window_fallback" ? "Whole-window fallback" : "AX image region";
+    const alt =
+      attachment.scope === "window_fallback"
+        ? "Whole-window fallback sent to the Agent"
+        : `AX image region sent to the Agent for node ${attachment.source_node_id ?? "unknown"}`;
+    return html`
+      <section class="input-media-preview" aria-labelledby="input-media-heading">
+        <header>
+          <h2 id="input-media-heading">Input images</h2>
+          <span>${index + 1} of ${media.length}</span>
+        </header>
+        <div class="input-media-carousel" role="group" aria-label="Input image carousel">
+          <button
+            type="button"
+            aria-label="Previous input image"
+            ?disabled=${index === 0}
+            @click=${() => this.selectInputMedia(index - 1, media.length)}
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <ol class="input-media-thumbnails" aria-label="Input image thumbnails">
+            ${media.map(
+              (candidate, candidateIndex) => html`
+                <li>
+                  <button
+                    type="button"
+                    class=${
+                      candidateIndex === index
+                        ? "input-media-thumbnail is-selected"
+                        : "input-media-thumbnail"
+                    }
+                    aria-label=${`Show input image ${candidateIndex + 1} of ${media.length}`}
+                    aria-current=${candidateIndex === index ? "true" : "false"}
+                    @click=${() => this.selectInputMedia(candidateIndex, media.length)}
+                  >
+                    <img
+                      src=${inputMediaPreviewUrl(this.lens, candidate) ?? ""}
+                      alt=""
+                      draggable="false"
+                    />
+                    <span aria-hidden="true">${candidateIndex + 1}</span>
+                  </button>
+                </li>
+              `,
+            )}
+          </ol>
+          <button
+            type="button"
+            aria-label="Next input image"
+            ?disabled=${index === media.length - 1}
+            @click=${() => this.selectInputMedia(index + 1, media.length)}
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        </div>
+        <figure>
+          ${
+            source
+              ? html`<img
+                  src=${source}
+                  alt=${alt}
+                  draggable="false"
+                  ?hidden=${Boolean(this.inputMediaPreviewError)}
+                  @load=${() => {
+                    this.inputMediaPreviewError = "";
+                  }}
+                  @error=${() => {
+                    this.inputMediaPreviewError =
+                      "The selected input image is no longer available for this operation.";
+                  }}
+                />`
+              : nothing
+          }
+          ${
+            !source || this.inputMediaPreviewError
+              ? html`<p class="input-media-error" role="alert">
+                  ${
+                    this.inputMediaPreviewError ||
+                    "The selected input image URI does not match the current operation."
+                  }
+                </p>`
+              : nothing
+          }
+          <figcaption>
+            <dl class="input-media-metadata">
+              <div>
+                <dt>Scope</dt>
+                <dd>${scopeLabel}</dd>
+              </div>
+              <div>
+                <dt>Attachment</dt>
+                <dd><code>${attachment.id}</code></dd>
+              </div>
+              <div>
+                <dt>AX node</dt>
+                <dd>
+                  ${
+                    attachment.source_node_id
+                      ? html`<code>${attachment.source_node_id}</code>`
+                      : "—"
+                  }
+                </dd>
+              </div>
+              <div>
+                <dt>Pixels</dt>
+                <dd>${attachment.pixel_width} × ${attachment.pixel_height}</dd>
+              </div>
+              <div>
+                <dt>Coverage</dt>
+                <dd>${attachment.coverage}</dd>
+              </div>
+              <div>
+                <dt>Source bounds</dt>
+                <dd>
+                  ${attachment.source_bounds.x}, ${attachment.source_bounds.y} ·
+                  ${attachment.source_bounds.width} × ${attachment.source_bounds.height}
+                </dd>
+              </div>
+              <div>
+                <dt>Captured bounds</dt>
+                <dd>
+                  ${attachment.captured_bounds.x}, ${attachment.captured_bounds.y} ·
+                  ${attachment.captured_bounds.width} × ${attachment.captured_bounds.height}
+                </dd>
+              </div>
+              <div>
+                <dt>Coordinates</dt>
+                <dd>${attachment.coordinate_space}</dd>
+              </div>
+              <div>
+                <dt>Format</dt>
+                <dd>${attachment.mime_type}</dd>
+              </div>
+              <div>
+                <dt>Encoded size</dt>
+                <dd>${attachment.encoded_bytes.toLocaleString()} bytes</dd>
+              </div>
+            </dl>
+          </figcaption>
+        </figure>
+      </section>
+    `;
+  }
+
+  private selectInputMedia(index: number, total: number): void {
+    if (!Number.isInteger(index) || index < 0 || index >= total) return;
+    this.activeInputMediaIndex = index;
+    this.inputMediaPreviewError = "";
   }
 
   private renderUnsupportedOutput(contentType: string) {
@@ -567,6 +736,8 @@ export class PersonalLensApp extends LitElement {
   private applyLensState(next: LensState): void {
     if (next.operation_id !== this.lens.operation_id) {
       this.activeLensTab = "translation";
+      this.activeInputMediaIndex = 0;
+      this.inputMediaPreviewError = "";
     }
     this.lens = next;
   }
@@ -616,15 +787,33 @@ export class PersonalLensApp extends LitElement {
     this.message = `Unable to render Markdown: ${event.detail}`;
   };
 
-  private renderDiagnostics(extraction: NonNullable<LensState["extraction"]>) {
-    const extractionMetrics = [
-      ["Visited nodes", extraction.metrics.visited_nodes],
-      ["UTF-8 bytes", extraction.metrics.text_bytes],
-      ["Off-window text nodes", extraction.metrics.offscreen_text_nodes],
-      ["Virtualization signals", extraction.metrics.virtualization_signals],
-      ["Child read errors", extraction.metrics.children_read_errors],
-      ["Nodes truncated", extraction.metrics.truncated_nodes ? "Yes" : "No"],
-      ["Text truncated", extraction.metrics.truncated_text ? "Yes" : "No"],
+  private renderDiagnostics(context: NonNullable<LensState["context"]>) {
+    const accessibility = context.accessibility.capture;
+    const accessibilityMetrics = [
+      ["Quality", accessibility.quality],
+      ["Visited nodes", accessibility.metrics.visited_nodes],
+      ["UTF-8 bytes", accessibility.metrics.text_bytes],
+      ["Off-window text nodes", accessibility.metrics.offscreen_text_nodes],
+      ["Virtualization signals", accessibility.metrics.virtualization_signals],
+      ["Child read errors", accessibility.metrics.children_read_errors],
+      ["URI resource references", accessibility.metrics.resource_ref_count],
+      ["URI UTF-8 bytes", accessibility.metrics.resource_uri_bytes],
+      ["Omitted URI references", accessibility.metrics.omitted_resource_refs],
+      ["URI read errors", accessibility.metrics.resource_read_errors],
+      ["Nodes truncated", accessibility.metrics.truncated_nodes ? "Yes" : "No"],
+      ["Text truncated", accessibility.metrics.truncated_text ? "Yes" : "No"],
+    ] as const;
+    const mediaMetrics = [
+      [
+        "AX image regions",
+        context.media.filter((item) => item.scope === "ax_element_region").length,
+      ],
+      ["Window fallbacks", context.media.filter((item) => item.scope === "window_fallback").length],
+      ["PNG bytes", context.media.reduce((total, item) => total + item.encoded_bytes, 0)],
+      [
+        "Omitted images",
+        context.media_omissions.reduce((total, item) => total + item.omitted_count, 0),
+      ],
     ] as const;
     const agentMetrics = this.lens.agent
       ? ([
@@ -633,7 +822,7 @@ export class PersonalLensApp extends LitElement {
           ["Stop reason", this.lens.agent.stop_reason ?? "—"],
         ] as const)
       : [];
-    const diagnosticCount = extraction.diagnostics.length;
+    const diagnosticCount = context.diagnostics.length;
 
     return html`
       <details class="extraction-diagnostics">
@@ -648,10 +837,23 @@ export class PersonalLensApp extends LitElement {
           >
         </summary>
         <div class="diagnostics-layout">
-          <section class="diagnostic-group" aria-labelledby="extraction-metrics-heading">
-            <h2 id="extraction-metrics-heading">Extraction</h2>
+          <section class="diagnostic-group" aria-labelledby="accessibility-metrics-heading">
+            <h2 id="accessibility-metrics-heading">Accessibility</h2>
             <dl class="metrics">
-              ${extractionMetrics.map(
+              ${accessibilityMetrics.map(
+                ([label, value]) => html`
+                  <div>
+                    <dt>${label}</dt>
+                    <dd>${value}</dd>
+                  </div>
+                `,
+              )}
+            </dl>
+          </section>
+          <section class="diagnostic-group" aria-labelledby="media-metrics-heading">
+            <h2 id="media-metrics-heading">AX-linked images</h2>
+            <dl class="metrics">
+              ${mediaMetrics.map(
                 ([label, value]) => html`
                   <div>
                     <dt>${label}</dt>
@@ -688,7 +890,7 @@ export class PersonalLensApp extends LitElement {
             ${
               diagnosticCount
                 ? html`<ul>
-                    ${extraction.diagnostics.map((item) => html`<li>${item}</li>`)}
+                    ${context.diagnostics.map((item) => html`<li>${item}</li>`)}
                   </ul>`
                 : html`<p>No extraction warnings or errors.</p>`
             }

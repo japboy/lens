@@ -2,6 +2,8 @@ mod agent;
 mod agent_runtime;
 mod app_state;
 mod commands;
+mod lens;
+mod media_protocol;
 mod model;
 mod platform;
 mod store;
@@ -44,6 +46,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(app_state::AppState::load())
+        .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -241,12 +244,37 @@ pub fn run() {
                             let summary = serde_json::json!({
                                 "stage": state.stage,
                                 "target": state.target,
-                                "quality": state.extraction.as_ref().map(|value| value.quality),
-                                "metrics": state.extraction.as_ref().map(|value| &value.metrics),
-                                "contains_offscreen_marker": state.input.as_ref().is_some_and(|input| {
-                                    input.text.contains("PL_OFFSCREEN_END_MARKER_9F3A7C")
+                                "quality": state.context.as_ref().map(|value| value.quality),
+                                "accessibility_metrics": state.context.as_ref().map(|context| {
+                                    &context.accessibility_capture().metrics
                                 }),
-                                "input_text_bytes": state.input.as_ref().map(|input| input.text.len()),
+                                "media_capture": state.context.as_ref().map(|context| {
+                                    serde_json::json!({
+                                        "attachment_count": context.media.len(),
+                                        "attachments": context.media.iter().map(|attachment| serde_json::json!({
+                                            "id": attachment.id,
+                                            "scope": attachment.scope,
+                                            "source_node_id": attachment.source_node_id,
+                                            "pixel_width": attachment.pixel_width,
+                                            "pixel_height": attachment.pixel_height,
+                                            "encoded_bytes": attachment.encoded_bytes,
+                                        })).collect::<Vec<_>>(),
+                                        "encoded_bytes": context.media.iter()
+                                            .map(|attachment| attachment.encoded_bytes)
+                                            .sum::<usize>(),
+                                        "omission_count": context.media_omissions.iter()
+                                            .map(|omission| omission.omitted_count)
+                                            .sum::<usize>(),
+                                        "omission_group_count": context.media_omissions.len(),
+                                        "omissions": context.media_omissions,
+                                    })
+                                }),
+                                "contains_offscreen_marker": state.input.as_ref().is_some_and(|input| {
+                                    input.contains_text("PL_OFFSCREEN_END_MARKER_9F3A7C")
+                                }),
+                                "input_context_bytes": state.input.as_ref().and_then(|input| {
+                                    input.serialized_len().ok()
+                                }),
                                 "agent": state.agent,
                                 "transformed_text_bytes": transformed_text.len(),
                                 "transformed_text": transformed_text,
@@ -279,6 +307,8 @@ pub fn run() {
 #[cfg(debug_assertions)]
 fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     let operation_id = uuid::Uuid::new_v4();
+    let first_input_image = include_bytes!("../icons/128x128@2x.png");
+    let second_input_image = include_bytes!("../icons/128x128.png");
     let target = model::SelectedWindow {
         window_id: 0,
         title: "Rich output validation".into(),
@@ -292,10 +322,140 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
             height: 800.0,
         },
     };
+    let first_attachment_id = "media-node-000001".to_string();
+    let first_media_uri =
+        format!("personallens://context/{operation_id}/1/media/{first_attachment_id}");
+    let first_attachment = lens::LensMediaAttachment {
+        id: first_attachment_id.clone(),
+        uri: first_media_uri.clone(),
+        scope: lens::LensMediaScope::AxElementRegion,
+        source_node_id: Some("node-000001".into()),
+        source_bounds: model::Bounds {
+            x: 240.0,
+            y: 180.0,
+            width: 256.0,
+            height: 256.0,
+        },
+        captured_bounds: model::Bounds {
+            x: 240.0,
+            y: 180.0,
+            width: 256.0,
+            height: 256.0,
+        },
+        coverage: lens::LensMediaCoverage::FullRegion,
+        coordinate_space: lens::LensCoordinateSpace::ScreenPoints,
+        mime_type: "image/png".into(),
+        pixel_width: 256,
+        pixel_height: 256,
+        encoded_bytes: first_input_image.len(),
+    };
+    let second_attachment_id = "media-node-000002".to_string();
+    let second_media_uri =
+        format!("personallens://context/{operation_id}/1/media/{second_attachment_id}");
+    let second_attachment = lens::LensMediaAttachment {
+        id: second_attachment_id.clone(),
+        uri: second_media_uri.clone(),
+        scope: lens::LensMediaScope::AxElementRegion,
+        source_node_id: Some("node-000002".into()),
+        source_bounds: model::Bounds {
+            x: 540.0,
+            y: 140.0,
+            width: 256.0,
+            height: 192.0,
+        },
+        captured_bounds: model::Bounds {
+            x: 540.0,
+            y: 180.0,
+            width: 128.0,
+            height: 128.0,
+        },
+        coverage: lens::LensMediaCoverage::VisibleSubregion,
+        coordinate_space: lens::LensCoordinateSpace::ScreenPoints,
+        mime_type: "image/png".into(),
+        pixel_width: 128,
+        pixel_height: 128,
+        encoded_bytes: second_input_image.len(),
+    };
+    let source = lens::LensSource::from(&target);
+    let input = lens::LensInput {
+        schema_version: lens::LENS_INPUT_SCHEMA_VERSION,
+        context_id: operation_id,
+        context_revision: 1,
+        sources: vec![lens::LensInputSource {
+            source_id: format!(
+                "macos:{}:{}:accessibility",
+                target.bundle_id, target.window_id
+            ),
+            target_id: format!("macos:{}:{}", target.bundle_id, target.window_id),
+            source_revision: 1,
+            source,
+            document: Some(lens::LensDocumentProjection {
+                nodes: vec![
+                    lens::LensContentNode {
+                        id: "node-000001".into(),
+                        parent_id: None,
+                        kind: lens::LensNodeKind::Image,
+                        role: Some("AXImage".into()),
+                        subrole: None,
+                        title: Some("PersonalLens validation icon".into()),
+                        value: None,
+                        description: Some("First input media preview fixture".into()),
+                        media_refs: vec![first_attachment_id.clone()],
+                        resource_refs: vec![model::ResourceReference {
+                            uri: "https://example.test/assets/validation-icon.png".into(),
+                            source_attribute: "AXURL".into(),
+                        }],
+                    },
+                    lens::LensContentNode {
+                        id: "node-000002".into(),
+                        parent_id: None,
+                        kind: lens::LensNodeKind::Image,
+                        role: Some("AXImage".into()),
+                        subrole: None,
+                        title: Some("PersonalLens validation icon thumbnail".into()),
+                        value: None,
+                        description: Some("Second input media preview fixture".into()),
+                        media_refs: vec![second_attachment_id.clone()],
+                        resource_refs: vec![model::ResourceReference {
+                            uri: "blob:https://example.test/fixture-image".into(),
+                            source_attribute: "AXURL".into(),
+                        }],
+                    },
+                ],
+            }),
+            quality: model::ExtractionQuality::Full,
+            omissions: Vec::new(),
+        }],
+        media: vec![first_attachment, second_attachment],
+        media_omissions: Vec::new(),
+        quality: model::ExtractionQuality::Full,
+    };
+    let app_state = app.state::<app_state::AppState>();
+    app_state.lens_media.begin(operation_id)?;
+    if !app_state.lens_media.replace(
+        operation_id,
+        vec![
+            lens::LensMediaPayload {
+                attachment_id: first_attachment_id,
+                uri: first_media_uri,
+                mime_type: "image/png".into(),
+                data: BASE64_STANDARD.encode(first_input_image),
+            },
+            lens::LensMediaPayload {
+                attachment_id: second_attachment_id,
+                uri: second_media_uri,
+                mime_type: "image/png".into(),
+                data: BASE64_STANDARD.encode(second_input_image),
+            },
+        ],
+    )? {
+        return Err("rich-output validation media operation was superseded".into());
+    }
     let state = model::LensState {
         operation_id: Some(operation_id),
         stage: model::LensStage::Completed,
         target: Some(target.clone()),
+        input: Some(input),
         output_blocks: vec![
             model::LensOutputBlock::Markdown {
                 message_id: Some("validation-message".into()),
@@ -317,6 +477,44 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     };
     app_state::publish_lens_state(&app, state)?;
     ui::show_lens_window(&app, &target).map_err(|error| error.to_string())?;
+    let validation_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let Some(window) = validation_app.get_webview_window(ui::LENS_WINDOW_LABEL) else {
+            eprintln!("Unable to inspect Source input-media validation window");
+            return;
+        };
+        let script = r#"
+          (() => {
+            const root = document.querySelector('personal-lens-app')?.shadowRoot;
+            root?.querySelector('#source-tab')?.click();
+            window.setTimeout(() => {
+              const currentRoot = document.querySelector('personal-lens-app')?.shadowRoot;
+              const thumbnails = currentRoot?.querySelectorAll('.input-media-thumbnail') ?? [];
+              thumbnails[1]?.click();
+              window.setTimeout(() => {
+              const selectedRoot = document.querySelector('personal-lens-app')?.shadowRoot;
+              const image = selectedRoot?.querySelector('.input-media-preview figure > img');
+              const source = currentRoot?.querySelector('.source-content code')?.textContent ?? '';
+              console.warn('PERSONAL_LENS_SOURCE_PREVIEW_RESULT=' + JSON.stringify({
+                displayed: Boolean(image?.complete && image?.naturalWidth > 0),
+                natural_width: image?.naturalWidth ?? 0,
+                natural_height: image?.naturalHeight ?? 0,
+                uri: image?.getAttribute('src') ?? null,
+                thumbnail_count: thumbnails.length,
+                selected_thumbnail: selectedRoot?.querySelector('.input-media-thumbnail[aria-current="true"]')?.getAttribute('aria-label') ?? null,
+                metadata_contains_second_attachment: selectedRoot?.querySelector('.input-media-metadata')?.textContent?.includes('media-node-000002') ?? false,
+                source_contains_data_url: source.includes('data:image'),
+                source_contains_base64_payload: source.includes('iVBORw0KGgo')
+              }));
+              }, 500);
+            }, 1000);
+          })();
+        "#;
+        if let Err(error) = window.eval(script) {
+            eprintln!("Unable to inspect Source input-media validation DOM: {error}");
+        }
+    });
     println!("PERSONAL_LENS_RICH_OUTPUT_RESULT=displayed");
     Ok(())
 }

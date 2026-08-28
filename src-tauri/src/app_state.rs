@@ -1,7 +1,9 @@
 use crate::{
+    lens::LensMediaPayload,
     model::{AgentRuntimeState, AgentSelectionState, AppConfig, AppSnapshot, LensStage, LensState},
     store::ConfigStore,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex, RwLock,
@@ -115,10 +117,86 @@ impl Drop for PickerLease {
     }
 }
 
+#[derive(Default)]
+struct ActiveLensMedia {
+    operation_id: Option<Uuid>,
+    payloads: BTreeMap<String, LensMediaPayload>,
+}
+
+#[derive(Default)]
+pub struct LensMediaStore {
+    active: Mutex<ActiveLensMedia>,
+}
+
+impl LensMediaStore {
+    pub fn begin(&self, operation_id: Uuid) -> Result<(), String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Lens media store lock is poisoned".to_string())?;
+        active.operation_id = Some(operation_id);
+        active.payloads.clear();
+        Ok(())
+    }
+
+    pub fn replace(
+        &self,
+        operation_id: Uuid,
+        payloads: Vec<LensMediaPayload>,
+    ) -> Result<bool, String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Lens media store lock is poisoned".to_string())?;
+        if active.operation_id != Some(operation_id) {
+            return Ok(false);
+        }
+        let mut next = BTreeMap::new();
+        let mut uris = BTreeSet::new();
+        for payload in payloads {
+            if !uris.insert(payload.uri.clone()) {
+                return Err("Lens media attachment URI is duplicated".into());
+            }
+            if next
+                .insert(payload.attachment_id.clone(), payload)
+                .is_some()
+            {
+                return Err("Lens media attachment identity is duplicated".into());
+            }
+        }
+        active.payloads = next;
+        Ok(true)
+    }
+
+    pub fn payloads(&self, operation_id: Uuid) -> Result<Vec<LensMediaPayload>, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Lens media store lock is poisoned".to_string())?;
+        if active.operation_id != Some(operation_id) {
+            return Err("Lens media operation was superseded".into());
+        }
+        Ok(active.payloads.values().cloned().collect())
+    }
+
+    pub fn payload_for_uri(&self, uri: &str) -> Result<Option<LensMediaPayload>, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Lens media store lock is poisoned".to_string())?;
+        Ok(active
+            .payloads
+            .values()
+            .find(|payload| payload.uri == uri)
+            .cloned())
+    }
+}
+
 pub struct AppState {
     pub(crate) runtime: RwLock<AppSnapshot>,
     pub agent_runtime_install: AsyncMutex<()>,
     pub agent_control: AgentControl,
+    pub lens_media: LensMediaStore,
     pub picker_control: PickerControl,
     pub store: ConfigStore,
 }
@@ -131,6 +209,7 @@ impl AppState {
             runtime: RwLock::new(AppSnapshot::new(config)),
             agent_runtime_install: AsyncMutex::new(()),
             agent_control: AgentControl::default(),
+            lens_media: LensMediaStore::default(),
             picker_control: PickerControl::default(),
             store,
         }
@@ -375,5 +454,66 @@ mod tests {
         assert!(control.try_begin().is_err());
         drop(lease);
         assert!(control.try_begin().is_ok());
+    }
+
+    #[test]
+    fn media_payloads_are_finite_and_scoped_to_the_current_operation() {
+        let store = LensMediaStore::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let payload = LensMediaPayload {
+            attachment_id: "media-node-1".into(),
+            uri: "personallens://fixture/media-node-1".into(),
+            mime_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        };
+
+        store.begin(first).expect("begin first operation");
+        assert!(store
+            .replace(first, vec![payload.clone()])
+            .expect("store first payload"));
+        assert_eq!(
+            store.payloads(first).expect("first payloads"),
+            vec![payload.clone()]
+        );
+        assert_eq!(
+            store
+                .payload_for_uri(&payload.uri)
+                .expect("lookup active payload"),
+            Some(payload.clone())
+        );
+
+        store.begin(second).expect("begin second operation");
+        assert!(store.payloads(first).is_err());
+        assert!(store.payloads(second).expect("second payloads").is_empty());
+        assert!(store
+            .payload_for_uri(&payload.uri)
+            .expect("old URI is no longer active")
+            .is_none());
+        assert!(!store
+            .replace(first, Vec::new())
+            .expect("reject superseded payloads"));
+    }
+
+    #[test]
+    fn media_store_rejects_duplicate_attachment_uris() {
+        let store = LensMediaStore::default();
+        let operation_id = Uuid::new_v4();
+        store.begin(operation_id).expect("begin operation");
+        let payload = LensMediaPayload {
+            attachment_id: "media-node-1".into(),
+            uri: "personallens://fixture/media-node-1".into(),
+            mime_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        };
+        let duplicate = LensMediaPayload {
+            attachment_id: "media-node-2".into(),
+            ..payload.clone()
+        };
+
+        assert!(store
+            .replace(operation_id, vec![payload, duplicate])
+            .expect_err("duplicate URI must fail")
+            .contains("URI is duplicated"));
     }
 }

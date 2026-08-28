@@ -3,6 +3,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppSnapshot } from "./types";
 
+const operationId = "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d";
+
 const snapshot: AppSnapshot = {
   revision: 1,
   config: {
@@ -21,8 +23,77 @@ const snapshot: AppSnapshot = {
     downloaded_bytes: 0,
   },
   lens: {
-    operation_id: "operation-1",
+    operation_id: operationId,
     stage: "completed",
+    input: {
+      schema_version: 3,
+      context_id: operationId,
+      context_revision: 1,
+      sources: [
+        {
+          source_id: "macos:com.apple.Safari:417:accessibility",
+          target_id: "macos:com.apple.Safari:417",
+          source_revision: 1,
+          source: {
+            application: "Safari",
+            window_title: "Fixture",
+            bundle_id: "com.apple.Safari",
+            window_id: 417,
+          },
+          document: {
+            nodes: [
+              {
+                id: "node-000001",
+                kind: "image",
+                media_refs: ["media-node-000001"],
+                resource_refs: [
+                  { uri: "https://example.test/first.png", source_attribute: "AXURL" },
+                ],
+              },
+              {
+                id: "node-000002",
+                kind: "image",
+                media_refs: ["media-node-000002"],
+              },
+            ],
+          },
+          quality: "full",
+          omissions: [],
+        },
+      ],
+      media: [
+        {
+          id: "media-node-000001",
+          uri: `personallens://context/${operationId}/1/media/media-node-000001`,
+          scope: "ax_element_region",
+          source_node_id: "node-000001",
+          source_bounds: { x: 10, y: 20, width: 30, height: 40 },
+          captured_bounds: { x: 10, y: 20, width: 30, height: 40 },
+          coverage: "full_region",
+          coordinate_space: "screen_points",
+          mime_type: "image/png",
+          pixel_width: 300,
+          pixel_height: 400,
+          encoded_bytes: 512,
+        },
+        {
+          id: "media-node-000002",
+          uri: `personallens://context/${operationId}/1/media/media-node-000002`,
+          scope: "ax_element_region",
+          source_node_id: "node-000002",
+          source_bounds: { x: 45, y: 50, width: 100, height: 120 },
+          captured_bounds: { x: 50, y: 60, width: 70, height: 80 },
+          coverage: "visible_subregion",
+          coordinate_space: "screen_points",
+          mime_type: "image/png",
+          pixel_width: 700,
+          pixel_height: 800,
+          encoded_bytes: 1024,
+        },
+      ],
+      media_omissions: [],
+      quality: "full",
+    },
     output_blocks: [
       { type: "markdown", message_id: "message-1", text: "Before image" },
       {
@@ -110,6 +181,56 @@ describe("PersonalLens rich Agent output", () => {
     ]);
     expect(image?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
     expect(image?.getAttribute("alt")).toBe("Visual output from the agent");
+  });
+
+  it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {
+    await import("./personal-lens-app");
+    const element = document.createElement("personal-lens-app") as HTMLElement & {
+      updateComplete: Promise<boolean>;
+    };
+    document.body.append(element);
+    await element.updateComplete;
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelector("#source-tab")).not.toBeNull();
+    });
+    element.shadowRoot?.querySelector<HTMLButtonElement>("#source-tab")?.click();
+    await element.updateComplete;
+
+    const preview = element.shadowRoot?.querySelector<HTMLImageElement>(
+      ".input-media-preview figure > img",
+    );
+    const thumbnails = Array.from(
+      element.shadowRoot?.querySelectorAll<HTMLButtonElement>(".input-media-thumbnail") ?? [],
+    );
+    const source = element.shadowRoot?.querySelector(".source-content code")?.textContent;
+    expect(preview?.getAttribute("src")).toBe(snapshot.lens.input?.media[0]?.uri);
+    expect(preview?.getAttribute("src")).not.toContain("data:");
+    expect(thumbnails).toHaveLength(2);
+    expect(thumbnails[0]?.getAttribute("aria-current")).toBe("true");
+    expect(thumbnails[1]?.querySelector("img")?.getAttribute("src")).toBe(
+      snapshot.lens.input?.media[1]?.uri,
+    );
+    expect(source).toBe(JSON.stringify(snapshot.lens.input, undefined, 2));
+    expect(source).not.toContain("iVBORw0KGgo=");
+
+    thumbnails[1]?.click();
+    await element.updateComplete;
+    expect(
+      element.shadowRoot
+        ?.querySelector<HTMLImageElement>(".input-media-preview figure > img")
+        ?.getAttribute("src"),
+    ).toBe(snapshot.lens.input?.media[1]?.uri);
+    const metadata = element.shadowRoot
+      ?.querySelector(".input-media-metadata")
+      ?.textContent?.replace(/\s+/g, " ");
+    expect(metadata).toContain("media-node-000002");
+    expect(metadata).toContain("node-000002");
+    expect(metadata).toContain("700 × 800");
+    expect(metadata).toContain("visible_subregion");
+    expect(metadata).toContain("45, 50 · 100 × 120");
+    expect(metadata).toContain("50, 60 · 70 × 80");
+    expect(metadata).toContain("image/png");
+    expect(thumbnails[1]?.getAttribute("aria-current")).toBe("true");
   });
 });
 

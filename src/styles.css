@@ -436,8 +436,25 @@ fieldset {
   user-select: text;
 }
 
+.source-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.source-json h2,
+.input-media-preview h2 {
+  margin: 0;
+  color: CanvasText;
+  font-size: 13px;
+}
+
 .source-content {
   margin: 0;
+  border: 1px solid Separator;
+  border-radius: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, CanvasText 3%, transparent);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 2;
@@ -447,6 +464,162 @@ fieldset {
 
 .source-content code {
   font: inherit;
+}
+
+.source-json {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-media-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.input-media-preview > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: GrayText;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.input-media-carousel {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-media-carousel > button {
+  display: grid;
+  align-self: stretch;
+  min-height: 58px;
+  padding: 0;
+  place-items: center;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.input-media-thumbnails {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 2px 8px;
+  gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline mandatory;
+  scrollbar-width: thin;
+  list-style: none;
+}
+
+.input-media-thumbnails li {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
+
+.input-media-thumbnail {
+  position: relative;
+  display: block;
+  width: 76px;
+  height: 56px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  padding: 2px;
+  background: color-mix(in srgb, CanvasText 6%, transparent);
+}
+
+.input-media-thumbnail.is-selected {
+  border-color: AccentColor;
+  box-shadow: 0 0 0 1px color-mix(in srgb, AccentColor 45%, transparent);
+}
+
+.input-media-thumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.input-media-thumbnail span {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  min-width: 16px;
+  border-radius: 999px;
+  padding: 1px 4px;
+  color: Canvas;
+  background: color-mix(in srgb, CanvasText 82%, transparent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  text-align: center;
+}
+
+.input-media-carousel,
+.input-media-thumbnails,
+.input-media-thumbnail {
+  min-width: 0;
+}
+
+.input-media-preview figure {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid Separator;
+  border-radius: 8px;
+  background: color-mix(in srgb, CanvasText 4%, transparent);
+}
+
+.input-media-preview img {
+  display: block;
+  width: 100%;
+  max-height: min(48vh, 520px);
+  object-fit: contain;
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+}
+
+.input-media-preview figcaption {
+  border-top: 1px solid Separator;
+  padding: 8px 10px;
+  color: GrayText;
+  font-size: 11px;
+}
+
+.input-media-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin: 0;
+  gap: 8px 16px;
+}
+
+.input-media-metadata div {
+  min-width: 0;
+}
+
+.input-media-metadata dt {
+  margin-bottom: 2px;
+  color: GrayText;
+}
+
+.input-media-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: CanvasText;
+  font-variant-numeric: tabular-nums;
+}
+
+.input-media-error {
+  margin: 0;
+  padding: 24px;
+  color: CanvasText;
+  text-align: center;
 }
 
 .lens-output {

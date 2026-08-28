@@ -1,8 +1,20 @@
 #[cfg(target_os = "macos")]
 mod macos;
 
-use crate::model::{ExtractionResult, SelectedWindow, WindowPickerReply};
+use crate::{
+    lens::{LensMediaCapture, LensMediaPlan},
+    model::{ExtractionResult, SelectedWindow, WindowPickerReply},
+};
 use thiserror::Error;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImageCaptureLimits {
+    pub max_long_edge: u32,
+    pub max_pixels: u32,
+    pub max_attachment_bytes: u32,
+    pub max_total_bytes: u32,
+}
 
 #[derive(Debug, Error)]
 pub enum PlatformError {
@@ -30,4 +42,13 @@ pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError>
 
 pub fn extract_window(target: &SelectedWindow) -> Result<ExtractionResult, PlatformError> {
     macos::extract_window(target)
+}
+
+pub fn capture_window_media(
+    target: &SelectedWindow,
+    context_id: Uuid,
+    plan: LensMediaPlan,
+    limits: ImageCaptureLimits,
+) -> Result<LensMediaCapture, PlatformError> {
+    macos::capture_window_media(target, context_id, plan, limits)
 }
