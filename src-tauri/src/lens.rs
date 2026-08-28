@@ -924,7 +924,7 @@ impl LensInput {
 
     pub fn to_markdown(&self) -> Result<String, serde_json::Error> {
         Ok(format!(
-            "## PersonalLens context\n\n```json\n{}\n```",
+            "## Lens context\n\n```json\n{}\n```",
             self.to_json()?
         ))
     }
@@ -1032,7 +1032,8 @@ mod tests {
     fn captured_region() -> LensMediaCapture {
         let attachment = LensMediaAttachment {
             id: "media-node-000002".into(),
-            uri: "personallens://context/00000000-0000-0000-0000-000000000000/1/media/media-node-000002".into(),
+            uri: "lens://context/00000000-0000-0000-0000-000000000000/1/media/media-node-000002"
+                .into(),
             scope: LensMediaScope::AxElementRegion,
             source_node_id: Some("node-000002".into()),
             source_bounds: Bounds {

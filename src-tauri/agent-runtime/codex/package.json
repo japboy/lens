@@ -1,5 +1,5 @@
 {
-  "name": "personal-lens-codex-agent-runtime",
+  "name": "lens-codex-agent-runtime",
   "version": "0.1.0",
   "private": true,
   "description": "Locked managed runtime inputs for Codex ACP",

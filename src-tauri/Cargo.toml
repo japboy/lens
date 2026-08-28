@@ -1,18 +1,18 @@
 [package]
-name = "personal-lens"
+name = "lens"
 version = "0.1.0"
 description = "Accessibility-first personal information lens for macOS"
-authors = ["PersonalLens contributors"]
+authors = ["Lens contributors"]
 edition = "2021"
 rust-version = "1.88"
 publish = false
 
 [lib]
-name = "personal_lens_lib"
+name = "lens_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [[bin]]
-name = "personal-lens"
+name = "lens"
 path = "src/main.rs"
 
 [build-dependencies]

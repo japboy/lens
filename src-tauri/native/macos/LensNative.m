@@ -2,11 +2,11 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 
-typedef void (*PLPickerCallback)(const char *_Nullable json, void *_Nullable context);
+typedef void (*LensPickerCallback)(const char *_Nullable json, void *_Nullable context);
 
-static NSDictionary *PLFrameDictionary(CGRect frame);
+static NSDictionary *LensFrameDictionary(CGRect frame);
 
-static char *PLCopyJSONString(id object) {
+static char *LensCopyJSONString(id object) {
     NSError *error = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
     if (data == nil) {
@@ -23,43 +23,43 @@ static char *PLCopyJSONString(id object) {
     return result;
 }
 
-static NSString *PLStringOrEmpty(NSString *value) {
+static NSString *LensStringOrEmpty(NSString *value) {
     return value ?: @"";
 }
 
-@interface PLContentPickerCoordinator : NSObject <SCContentSharingPickerObserver>
-@property(nonatomic, assign) PLPickerCallback callback;
+@interface LensContentPickerCoordinator : NSObject <SCContentSharingPickerObserver>
+@property(nonatomic, assign) LensPickerCallback callback;
 @property(nonatomic, assign) void *callbackContext;
 @property(nonatomic, assign) BOOL observing;
 + (instancetype)shared;
-- (BOOL)presentWithCallback:(PLPickerCallback)callback context:(void *)context;
+- (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context;
 @end
 
-@implementation PLContentPickerCoordinator
+@implementation LensContentPickerCoordinator
 
 + (instancetype)shared {
-    static PLContentPickerCoordinator *coordinator;
+    static LensContentPickerCoordinator *coordinator;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        coordinator = [[PLContentPickerCoordinator alloc] init];
+        coordinator = [[LensContentPickerCoordinator alloc] init];
     });
     return coordinator;
 }
 
 - (void)deliver:(NSDictionary *)payload {
-    PLPickerCallback callback = self.callback;
+    LensPickerCallback callback = self.callback;
     void *context = self.callbackContext;
     self.callback = NULL;
     self.callbackContext = NULL;
 
     if (callback != NULL) {
-        char *json = PLCopyJSONString(payload);
+        char *json = LensCopyJSONString(payload);
         callback(json, context);
         free(json);
     }
 }
 
-- (BOOL)presentWithCallback:(PLPickerCallback)callback context:(void *)context {
+- (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context {
     NSAssert([NSThread isMainThread], @"The ScreenCaptureKit picker must be presented on the main thread");
     if (self.callback != NULL) {
         return NO;
@@ -111,9 +111,9 @@ static NSString *PLStringOrEmpty(NSString *value) {
         [self deliver:@{
             @"status": @"selected",
             @"window_id": @(window.windowID),
-            @"title": PLStringOrEmpty(window.title),
-            @"application_name": PLStringOrEmpty(application.applicationName),
-            @"bundle_id": PLStringOrEmpty(application.bundleIdentifier),
+            @"title": LensStringOrEmpty(window.title),
+            @"application_name": LensStringOrEmpty(application.applicationName),
+            @"bundle_id": LensStringOrEmpty(application.bundleIdentifier),
             @"pid": @(application.processID),
             @"frame": @{
                 @"x": @(frame.origin.x),
@@ -127,7 +127,7 @@ static NSString *PLStringOrEmpty(NSString *value) {
 
     [self deliver:@{
         @"status": @"error",
-        @"message": @"PersonalLens requires macOS 15.2 or later for deterministic SCWindow resolution."
+        @"message": @"Lens requires macOS 15.2 or later for deterministic SCWindow resolution."
     }];
 }
 
@@ -141,32 +141,32 @@ static NSString *PLStringOrEmpty(NSString *value) {
 
 @end
 
-bool pl_accessibility_is_trusted(void) {
+bool lens_accessibility_is_trusted(void) {
     return AXIsProcessTrusted();
 }
 
-bool pl_accessibility_request_trust(void) {
+bool lens_accessibility_request_trust(void) {
     NSDictionary *options = @{ (__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES };
     return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
 
-bool pl_present_window_picker(PLPickerCallback callback, void *context) {
+bool lens_present_window_picker(LensPickerCallback callback, void *context) {
     if (callback == NULL) {
         return false;
     }
 
     if ([NSThread isMainThread]) {
-        return [[PLContentPickerCoordinator shared] presentWithCallback:callback context:context];
+        return [[LensContentPickerCoordinator shared] presentWithCallback:callback context:context];
     }
 
     __block BOOL presented = NO;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        presented = [[PLContentPickerCoordinator shared] presentWithCallback:callback context:context];
+        presented = [[LensContentPickerCoordinator shared] presentWithCallback:callback context:context];
     });
     return presented;
 }
 
-static NSDictionary *PLImageCaptureFailure(NSString *diagnostic) {
+static NSDictionary *LensImageCaptureFailure(NSString *diagnostic) {
     return @{
         @"captures": @[],
         @"omissions": @[],
@@ -174,7 +174,7 @@ static NSDictionary *PLImageCaptureFailure(NSString *diagnostic) {
     };
 }
 
-static CGImageRef PLCopyScaledImage(
+static CGImageRef LensCopyScaledImage(
     CGImageRef image,
     size_t maxLongEdge,
     size_t maxPixels
@@ -220,12 +220,12 @@ static CGImageRef PLCopyScaledImage(
     return scaled;
 }
 
-static NSData *PLPNGData(CGImageRef image) {
+static NSData *LensPNGData(CGImageRef image) {
     NSBitmapImageRep *representation = [[NSBitmapImageRep alloc] initWithCGImage:image];
     return [representation representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
 }
 
-char *pl_capture_window_regions_json(
+char *lens_capture_window_regions_json(
     uint32_t windowID,
     const char *requestsJSON,
     uint32_t maxLongEdge,
@@ -236,7 +236,7 @@ char *pl_capture_window_regions_json(
     @autoreleasepool {
         if (requestsJSON == NULL || maxLongEdge == 0 || maxPixels == 0 ||
             maxAttachmentBytes == 0 || maxTotalBytes == 0) {
-            return PLCopyJSONString(PLImageCaptureFailure(
+            return LensCopyJSONString(LensImageCaptureFailure(
                 @"Image capture requests and limits must be present and greater than zero."
             ));
         }
@@ -247,14 +247,14 @@ char *pl_capture_window_regions_json(
             options:0
             error:&requestError];
         if (![requestObject isKindOfClass:NSArray.class]) {
-            return PLCopyJSONString(PLImageCaptureFailure(
+            return LensCopyJSONString(LensImageCaptureFailure(
                 requestError.localizedDescription
                     ?: @"Image capture requests must be a JSON array."
             ));
         }
         NSArray<NSDictionary *> *requests = requestObject;
         if (requests.count == 0) {
-            return PLCopyJSONString(@{
+            return LensCopyJSONString(@{
                 @"captures": @[],
                 @"omissions": @[],
                 @"diagnostics": @[]
@@ -268,7 +268,7 @@ char *pl_capture_window_regions_json(
             NSError *shareableError
         ) {
             if (shareableContent == nil) {
-                result = PLImageCaptureFailure(
+                result = LensImageCaptureFailure(
                     shareableError.localizedDescription
                         ?: @"ScreenCaptureKit returned no shareable content."
                 );
@@ -284,7 +284,7 @@ char *pl_capture_window_regions_json(
                 }
             }
             if (selectedWindow == nil) {
-                result = PLImageCaptureFailure(
+                result = LensImageCaptureFailure(
                     @"The picker-authoritative window is no longer available to ScreenCaptureKit."
                 );
                 dispatch_semaphore_signal(completion);
@@ -309,7 +309,7 @@ char *pl_capture_window_regions_json(
                 configuration:configuration
                 completionHandler:^(CGImageRef image, NSError *captureError) {
                     if (image == NULL) {
-                        result = PLImageCaptureFailure(
+                        result = LensImageCaptureFailure(
                             captureError.localizedDescription
                                 ?: @"ScreenCaptureKit returned no window image."
                         );
@@ -389,7 +389,7 @@ char *pl_capture_window_regions_json(
                         CGImageRef cropped = CGImageCreateWithImageInRect(image, pixelRect);
                         CGImageRef bounded = cropped == NULL
                             ? NULL
-                            : PLCopyScaledImage(cropped, maxLongEdge, maxPixels);
+                            : LensCopyScaledImage(cropped, maxLongEdge, maxPixels);
                         if (cropped != NULL) CGImageRelease(cropped);
                         if (bounded == NULL) {
                             [omissions addObject:@{
@@ -399,7 +399,7 @@ char *pl_capture_window_regions_json(
                             }];
                             continue;
                         }
-                        NSData *png = PLPNGData(bounded);
+                        NSData *png = LensPNGData(bounded);
                         size_t pixelWidth = CGImageGetWidth(bounded);
                         size_t pixelHeight = CGImageGetHeight(bounded);
                         CGImageRelease(bounded);
@@ -424,9 +424,9 @@ char *pl_capture_window_regions_json(
                         BOOL capturedFullRegion = CGRectEqualToRect(capturedBounds, requestedBounds);
                         [captures addObject:@{
                             @"attachment_id": attachmentID,
-                            @"source_bounds": PLFrameDictionary(requestedBounds),
-                            @"captured_bounds": PLFrameDictionary(capturedBounds),
-                            @"window_bounds": PLFrameDictionary(windowFrame),
+                            @"source_bounds": LensFrameDictionary(requestedBounds),
+                            @"captured_bounds": LensFrameDictionary(capturedBounds),
+                            @"window_bounds": LensFrameDictionary(windowFrame),
                             @"coverage": capturedFullRegion ? @"full_region" : @"visible_subregion",
                             @"mime_type": @"image/png",
                             @"pixel_width": @(pixelWidth),
@@ -446,17 +446,17 @@ char *pl_capture_window_regions_json(
 
         dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
         if (dispatch_semaphore_wait(completion, timeout) != 0) {
-            return PLCopyJSONString(PLImageCaptureFailure(
+            return LensCopyJSONString(LensImageCaptureFailure(
                 @"ScreenCaptureKit image-region capture timed out after 15 seconds."
             ));
         }
-        return PLCopyJSONString(
-            result ?: PLImageCaptureFailure(@"Image-region capture produced no result.")
+        return LensCopyJSONString(
+            result ?: LensImageCaptureFailure(@"Image-region capture produced no result.")
         );
     }
 }
 
-static id PLCopyAXAttribute(AXUIElementRef element, CFStringRef attribute, AXError *errorOut) {
+static id LensCopyAXAttribute(AXUIElementRef element, CFStringRef attribute, AXError *errorOut) {
     CFTypeRef value = NULL;
     AXError error = AXUIElementCopyAttributeValue(element, attribute, &value);
     if (errorOut != NULL) {
@@ -471,18 +471,18 @@ static id PLCopyAXAttribute(AXUIElementRef element, CFStringRef attribute, AXErr
     return CFBridgingRelease(value);
 }
 
-typedef NS_ENUM(NSUInteger, PLAXApplicationPreparationState) {
-    PLAXApplicationPreparationStateReady,
-    PLAXApplicationPreparationStateUnsupported,
-    PLAXApplicationPreparationStateFailed,
+typedef NS_ENUM(NSUInteger, LensAXApplicationPreparationState) {
+    LensAXApplicationPreparationStateReady,
+    LensAXApplicationPreparationStateUnsupported,
+    LensAXApplicationPreparationStateFailed,
 };
 
 typedef struct {
-    PLAXApplicationPreparationState state;
+    LensAXApplicationPreparationState state;
     AXError roleError;
-} PLAXApplicationPreparation;
+} LensAXApplicationPreparation;
 
-static NSString *PLAXErrorName(AXError error) {
+static NSString *LensAXErrorName(AXError error) {
     switch (error) {
         case kAXErrorSuccess: return @"success";
         case kAXErrorFailure: return @"failure";
@@ -504,31 +504,31 @@ static NSString *PLAXErrorName(AXError error) {
     return @"unknown";
 }
 
-static NSString *PLAXApplicationPreparationStateName(PLAXApplicationPreparationState state) {
+static NSString *LensAXApplicationPreparationStateName(LensAXApplicationPreparationState state) {
     switch (state) {
-        case PLAXApplicationPreparationStateReady: return @"ready";
-        case PLAXApplicationPreparationStateUnsupported: return @"unsupported";
-        case PLAXApplicationPreparationStateFailed: return @"failed";
+        case LensAXApplicationPreparationStateReady: return @"ready";
+        case LensAXApplicationPreparationStateUnsupported: return @"unsupported";
+        case LensAXApplicationPreparationStateFailed: return @"failed";
     }
     return @"unknown";
 }
 
-static PLAXApplicationPreparation PLPrepareAXApplication(AXUIElementRef application) {
+static LensAXApplicationPreparation LensPrepareAXApplication(AXUIElementRef application) {
     AXError roleError = kAXErrorFailure;
-    id role = PLCopyAXAttribute(application, kAXRoleAttribute, &roleError);
-    PLAXApplicationPreparationState state;
+    id role = LensCopyAXAttribute(application, kAXRoleAttribute, &roleError);
+    LensAXApplicationPreparationState state;
     if (roleError == kAXErrorSuccess && [role isKindOfClass:NSString.class]) {
-        state = PLAXApplicationPreparationStateReady;
+        state = LensAXApplicationPreparationStateReady;
     } else if (roleError == kAXErrorAttributeUnsupported || roleError == kAXErrorNoValue) {
-        state = PLAXApplicationPreparationStateUnsupported;
+        state = LensAXApplicationPreparationStateUnsupported;
     } else {
-        state = PLAXApplicationPreparationStateFailed;
+        state = LensAXApplicationPreparationStateFailed;
     }
-    return (PLAXApplicationPreparation){ state, roleError };
+    return (LensAXApplicationPreparation){ state, roleError };
 }
 
-static NSString *PLAXString(AXUIElementRef element, CFStringRef attribute) {
-    id value = PLCopyAXAttribute(element, attribute, NULL);
+static NSString *LensAXString(AXUIElementRef element, CFStringRef attribute) {
+    id value = LensCopyAXAttribute(element, attribute, NULL);
     if ([value isKindOfClass:NSString.class]) {
         return value;
     }
@@ -541,14 +541,14 @@ static NSString *PLAXString(AXUIElementRef element, CFStringRef attribute) {
     return nil;
 }
 
-static NSString *PLAXURIString(
+static NSString *LensAXURIString(
     AXUIElementRef element,
     CFStringRef attribute,
     BOOL acceptsString,
     NSUInteger *readErrors
 ) {
     AXError error = kAXErrorFailure;
-    id value = PLCopyAXAttribute(element, attribute, &error);
+    id value = LensCopyAXAttribute(element, attribute, &error);
     if (value == nil) {
         if (error != kAXErrorAttributeUnsupported && error != kAXErrorNoValue) {
             *readErrors += 1;
@@ -574,7 +574,7 @@ static NSString *PLAXURIString(
     return candidate;
 }
 
-static void PLAppendAXResourceReference(
+static void LensAppendAXResourceReference(
     NSMutableArray<NSDictionary *> *references,
     NSString *uri,
     NSString *sourceAttribute,
@@ -605,14 +605,14 @@ static void PLAppendAXResourceReference(
     }
 }
 
-static NSNumber *PLAXNumber(AXUIElementRef element, CFStringRef attribute) {
-    id value = PLCopyAXAttribute(element, attribute, NULL);
+static NSNumber *LensAXNumber(AXUIElementRef element, CFStringRef attribute) {
+    id value = LensCopyAXAttribute(element, attribute, NULL);
     return [value isKindOfClass:NSNumber.class] ? value : nil;
 }
 
-static BOOL PLAXFrame(AXUIElementRef element, CGRect *frameOut) {
-    id positionObject = PLCopyAXAttribute(element, kAXPositionAttribute, NULL);
-    id sizeObject = PLCopyAXAttribute(element, kAXSizeAttribute, NULL);
+static BOOL LensAXFrame(AXUIElementRef element, CGRect *frameOut) {
+    id positionObject = LensCopyAXAttribute(element, kAXPositionAttribute, NULL);
+    id sizeObject = LensCopyAXAttribute(element, kAXSizeAttribute, NULL);
     if (positionObject == nil || sizeObject == nil) {
         return NO;
     }
@@ -635,7 +635,7 @@ static BOOL PLAXFrame(AXUIElementRef element, CGRect *frameOut) {
     return YES;
 }
 
-static NSDictionary *PLFrameDictionary(CGRect frame) {
+static NSDictionary *LensFrameDictionary(CGRect frame) {
     return @{
         @"x": @(frame.origin.x),
         @"y": @(frame.origin.y),
@@ -644,7 +644,7 @@ static NSDictionary *PLFrameDictionary(CGRect frame) {
     };
 }
 
-static NSArray *PLAXElementsForArrayAttribute(
+static NSArray *LensAXElementsForArrayAttribute(
     AXUIElementRef element,
     CFStringRef attribute,
     NSUInteger maxValues,
@@ -704,7 +704,7 @@ static NSArray *PLAXElementsForArrayAttribute(
     return result;
 }
 
-static double PLWindowResolutionScore(
+static double LensWindowResolutionScore(
     NSString *selectedTitle,
     CGRect selectedFrame,
     NSString *candidateTitle,
@@ -743,7 +743,7 @@ static double PLWindowResolutionScore(
     return score;
 }
 
-static AXUIElementRef PLCopyResolvedAXWindow(
+static AXUIElementRef LensCopyResolvedAXWindow(
     int32_t pid,
     NSString *selectedTitle,
     CGRect selectedFrame,
@@ -757,30 +757,30 @@ static AXUIElementRef PLCopyResolvedAXWindow(
     // Keep this standard read before AXWindows so extraction does not depend on another assistive
     // technology having activated the target first.
     // Source: https://searchfox.org/firefox-main/source/accessible/mac/Platform.mm#829-842
-    PLAXApplicationPreparation preparation = PLPrepareAXApplication(application);
+    LensAXApplicationPreparation preparation = LensPrepareAXApplication(application);
     AXError windowsError = kAXErrorFailure;
-    NSArray *windows = PLCopyAXAttribute(application, kAXWindowsAttribute, &windowsError);
+    NSArray *windows = LensCopyAXAttribute(application, kAXWindowsAttribute, &windowsError);
     if (![windows isKindOfClass:NSArray.class] || windows.count == 0) {
         if (diagnostics != nil) {
             [diagnostics addObject:[NSString stringWithFormat:
                 @"Accessibility target window list is unavailable after application preparation "
                  "(preparation: %@; AXRole: %@ (%d); AXWindows: %@ (%d)).",
-                PLAXApplicationPreparationStateName(preparation.state),
-                PLAXErrorName(preparation.roleError),
+                LensAXApplicationPreparationStateName(preparation.state),
+                LensAXErrorName(preparation.roleError),
                 preparation.roleError,
-                PLAXErrorName(windowsError),
+                LensAXErrorName(windowsError),
                 windowsError
             ]];
         }
         CFRelease(application);
         return NULL;
     }
-    if (preparation.state != PLAXApplicationPreparationStateReady && diagnostics != nil) {
+    if (preparation.state != LensAXApplicationPreparationStateReady && diagnostics != nil) {
         [diagnostics addObject:[NSString stringWithFormat:
             @"Accessibility application preparation was %@ (AXRole: %@ (%d)); "
              "window extraction continued because AXWindows remained available.",
-            PLAXApplicationPreparationStateName(preparation.state),
-            PLAXErrorName(preparation.roleError),
+            LensAXApplicationPreparationStateName(preparation.state),
+            LensAXErrorName(preparation.roleError),
             preparation.roleError
         ]];
     }
@@ -795,10 +795,10 @@ static AXUIElementRef PLCopyResolvedAXWindow(
             continue;
         }
         AXUIElementRef candidate = (__bridge AXUIElementRef)candidateObject;
-        NSString *candidateTitle = PLAXString(candidate, kAXTitleAttribute) ?: @"";
+        NSString *candidateTitle = LensAXString(candidate, kAXTitleAttribute) ?: @"";
         CGRect candidateFrame = CGRectZero;
-        BOOL hasFrame = PLAXFrame(candidate, &candidateFrame);
-        double score = PLWindowResolutionScore(
+        BOOL hasFrame = LensAXFrame(candidate, &candidateFrame);
+        double score = LensWindowResolutionScore(
             selectedTitle,
             selectedFrame,
             candidateTitle,
@@ -832,7 +832,7 @@ static AXUIElementRef PLCopyResolvedAXWindow(
     return resolvedWindow;
 }
 
-static NSString *PLTrimmedText(NSString *text) {
+static NSString *LensTrimmedText(NSString *text) {
     if (text == nil) {
         return nil;
     }
@@ -840,7 +840,7 @@ static NSString *PLTrimmedText(NSString *text) {
     return trimmed.length > 0 ? trimmed : nil;
 }
 
-static void PLAppendTextFragment(
+static void LensAppendTextFragment(
     NSMutableArray<NSString *> *fragments,
     NSMutableSet<NSString *> *seenInNode,
     NSString *candidate,
@@ -848,7 +848,7 @@ static void PLAppendTextFragment(
     NSUInteger *textBytes,
     BOOL *truncated
 ) {
-    NSString *text = PLTrimmedText(candidate);
+    NSString *text = LensTrimmedText(candidate);
     if (text == nil || [seenInNode containsObject:text] || *truncated) {
         return;
     }
@@ -876,13 +876,13 @@ static void PLAppendTextFragment(
     *textBytes += candidateBytes;
 }
 
-static BOOL PLIsWindowChromeText(NSString *candidate, NSString *windowTitle) {
-    NSString *text = PLTrimmedText(candidate);
-    NSString *title = PLTrimmedText(windowTitle);
+static BOOL LensIsWindowChromeText(NSString *candidate, NSString *windowTitle) {
+    NSString *text = LensTrimmedText(candidate);
+    NSString *title = LensTrimmedText(windowTitle);
     return text != nil && title != nil && [text caseInsensitiveCompare:title] == NSOrderedSame;
 }
 
-static NSDictionary *PLExtractionUnavailableWithDiagnostics(NSArray<NSString *> *diagnostics) {
+static NSDictionary *LensExtractionUnavailableWithDiagnostics(NSArray<NSString *> *diagnostics) {
     return @{
         @"quality": @"unavailable",
         @"nodes": @[],
@@ -904,11 +904,11 @@ static NSDictionary *PLExtractionUnavailableWithDiagnostics(NSArray<NSString *> 
     };
 }
 
-static NSDictionary *PLExtractionUnavailable(NSString *diagnostic) {
-    return PLExtractionUnavailableWithDiagnostics(@[diagnostic]);
+static NSDictionary *LensExtractionUnavailable(NSString *diagnostic) {
+    return LensExtractionUnavailableWithDiagnostics(@[diagnostic]);
 }
 
-char *pl_extract_window_json(
+char *lens_extract_window_json(
     int32_t pid,
     const char *selectedTitleCString,
     double selectedX,
@@ -923,8 +923,8 @@ char *pl_extract_window_json(
 ) {
     @autoreleasepool {
         if (!AXIsProcessTrusted()) {
-            return PLCopyJSONString(PLExtractionUnavailable(
-                @"Accessibility permission is not granted to PersonalLens."
+            return LensCopyJSONString(LensExtractionUnavailable(
+                @"Accessibility permission is not granted to Lens."
             ));
         }
 
@@ -936,7 +936,7 @@ char *pl_extract_window_json(
         NSString *resolvedTitle = @"";
         CGRect resolvedFrame = CGRectZero;
         NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
-        AXUIElementRef resolvedWindow = PLCopyResolvedAXWindow(
+        AXUIElementRef resolvedWindow = LensCopyResolvedAXWindow(
             pid,
             selectedTitle,
             selectedFrame,
@@ -946,7 +946,7 @@ char *pl_extract_window_json(
             diagnostics
         );
         if (resolvedWindow == NULL) {
-            return PLCopyJSONString(PLExtractionUnavailableWithDiagnostics(diagnostics));
+            return LensCopyJSONString(LensExtractionUnavailableWithDiagnostics(diagnostics));
         }
 
         NSMutableArray *nodes = [NSMutableArray array];
@@ -985,19 +985,19 @@ char *pl_extract_window_json(
             NSString *parentID = entry[@"parent_id"];
             NSUInteger order = [entry[@"order"] unsignedIntegerValue];
             NSUInteger depth = [entry[@"depth"] unsignedIntegerValue];
-            NSString *role = PLAXString(element, kAXRoleAttribute);
-            NSString *subrole = PLAXString(element, kAXSubroleAttribute);
-            NSString *title = PLAXString(element, kAXTitleAttribute);
-            NSString *value = PLAXString(element, kAXValueAttribute);
-            NSString *description = PLAXString(element, kAXDescriptionAttribute);
-            NSString *axURL = PLAXURIString(
+            NSString *role = LensAXString(element, kAXRoleAttribute);
+            NSString *subrole = LensAXString(element, kAXSubroleAttribute);
+            NSString *title = LensAXString(element, kAXTitleAttribute);
+            NSString *value = LensAXString(element, kAXValueAttribute);
+            NSString *description = LensAXString(element, kAXDescriptionAttribute);
+            NSString *axURL = LensAXURIString(
                 element, kAXURLAttribute, NO, &resourceReadErrors
             );
             NSString *axDocument = depth == 0 || [role isEqualToString:(__bridge NSString *)kAXWindowRole]
-                ? PLAXURIString(element, kAXDocumentAttribute, YES, &resourceReadErrors)
+                ? LensAXURIString(element, kAXDocumentAttribute, YES, &resourceReadErrors)
                 : nil;
             CGRect frame = CGRectZero;
-            BOOL hasFrame = PLAXFrame(element, &frame);
+            BOOL hasFrame = LensAXFrame(element, &frame);
 
             NSMutableDictionary *node = [NSMutableDictionary dictionaryWithDictionary:@{
                 @"id": nodeID,
@@ -1011,14 +1011,14 @@ char *pl_extract_window_json(
             if (title.length > 0) node[@"title"] = title;
             if (value.length > 0) node[@"value"] = value;
             if (description.length > 0) node[@"description"] = description;
-            if (hasFrame) node[@"bounds"] = PLFrameDictionary(frame);
+            if (hasFrame) node[@"bounds"] = LensFrameDictionary(frame);
             NSMutableArray<NSDictionary *> *resourceRefs = [NSMutableArray array];
-            PLAppendAXResourceReference(
+            LensAppendAXResourceReference(
                 resourceRefs, axURL, @"AXURL",
                 maxResourceRefs, maxResourceURIBytes, maxTotalResourceURIBytes,
                 &resourceRefCount, &resourceURIBytes, &omittedResourceRefs
             );
-            PLAppendAXResourceReference(
+            LensAppendAXResourceReference(
                 resourceRefs, axDocument, @"AXDocument",
                 maxResourceRefs, maxResourceURIBytes, maxTotalResourceURIBytes,
                 &resourceRefCount, &resourceURIBytes, &omittedResourceRefs
@@ -1037,14 +1037,14 @@ char *pl_extract_window_json(
                 // description attributes. Deduplicate only within this node so equal text on
                 // distinct rows, cells, or list items retains its structural meaning.
                 NSMutableSet<NSString *> *seenInNode = [NSMutableSet set];
-                if (!PLIsWindowChromeText(title, selectedTitle)) {
-                    PLAppendTextFragment(fragments, seenInNode, title, maxTextBytes, &textBytes, &truncatedText);
+                if (!LensIsWindowChromeText(title, selectedTitle)) {
+                    LensAppendTextFragment(fragments, seenInNode, title, maxTextBytes, &textBytes, &truncatedText);
                 }
-                if (!PLIsWindowChromeText(value, selectedTitle)) {
-                    PLAppendTextFragment(fragments, seenInNode, value, maxTextBytes, &textBytes, &truncatedText);
+                if (!LensIsWindowChromeText(value, selectedTitle)) {
+                    LensAppendTextFragment(fragments, seenInNode, value, maxTextBytes, &textBytes, &truncatedText);
                 }
-                if (!PLIsWindowChromeText(description, selectedTitle)) {
-                    PLAppendTextFragment(fragments, seenInNode, description, maxTextBytes, &textBytes, &truncatedText);
+                if (!LensIsWindowChromeText(description, selectedTitle)) {
+                    LensAppendTextFragment(fragments, seenInNode, description, maxTextBytes, &textBytes, &truncatedText);
                 }
             }
             BOOL addedText = fragments.count > fragmentsBefore;
@@ -1058,7 +1058,7 @@ char *pl_extract_window_json(
                 remainingNodeBudget = maxNodes - nodes.count - pendingNodes;
             }
             BOOL childrenTruncated = NO;
-            NSArray *children = PLAXElementsForArrayAttribute(
+            NSArray *children = LensAXElementsForArrayAttribute(
                 element,
                 kAXChildrenAttribute,
                 remainingNodeBudget,
@@ -1069,11 +1069,11 @@ char *pl_extract_window_json(
             if (childrenTruncated) {
                 truncatedNodes = YES;
             }
-            NSNumber *rowCount = PLAXNumber(element, kAXRowCountAttribute);
+            NSNumber *rowCount = LensAXNumber(element, kAXRowCountAttribute);
             if (rowCount != nil) {
                 NSUInteger reportedRows = 0;
                 BOOL rowsTruncated = NO;
-                NSArray *rows = PLAXElementsForArrayAttribute(
+                NSArray *rows = LensAXElementsForArrayAttribute(
                     element,
                     kAXRowsAttribute,
                     children.count == 0 ? remainingNodeBudget : 0,
@@ -1189,7 +1189,7 @@ char *pl_extract_window_json(
             @"quality": quality,
             @"resolved_window": @{
                 @"title": resolvedTitle,
-                @"bounds": PLFrameDictionary(resolvedFrame),
+                @"bounds": LensFrameDictionary(resolvedFrame),
                 @"resolution_score": @(bestScore)
             },
             @"nodes": nodes,
@@ -1209,10 +1209,10 @@ char *pl_extract_window_json(
             },
             @"diagnostics": diagnostics
         };
-        return PLCopyJSONString(result);
+        return LensCopyJSONString(result);
     }
 }
 
-void pl_free_string(char *value) {
+void lens_free_string(char *value) {
     free(value);
 }

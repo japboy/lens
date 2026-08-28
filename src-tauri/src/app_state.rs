@@ -463,7 +463,7 @@ mod tests {
         let second = Uuid::new_v4();
         let payload = LensMediaPayload {
             attachment_id: "media-node-1".into(),
-            uri: "personallens://fixture/media-node-1".into(),
+            uri: "lens://fixture/media-node-1".into(),
             mime_type: "image/png".into(),
             data: "iVBORw0KGgo=".into(),
         };
@@ -502,7 +502,7 @@ mod tests {
         store.begin(operation_id).expect("begin operation");
         let payload = LensMediaPayload {
             attachment_id: "media-node-1".into(),
-            uri: "personallens://fixture/media-node-1".into(),
+            uri: "lens://fixture/media-node-1".into(),
             mime_type: "image/png".into(),
             data: "iVBORw0KGgo=".into(),
         };

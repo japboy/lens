@@ -1,11 +1,12 @@
 {
-  "name": "personal-lens",
+  "name": "lens",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "pnpm run check:types && vite build",
+    "check:identity": "node scripts/check-product-identity.ts",
     "check:language": "node scripts/check-repository-language.ts",
     "check:publication": "node scripts/check-publication-boundary.ts",
     "check:quality": "mise exec -- hk check --all",
@@ -14,7 +15,7 @@
     "check:dependencies": "mise exec -- cargo deny --manifest-path src-tauri/Cargo.toml check",
     "check": "pnpm run build && pnpm run check:rust",
     "fix": "mise exec -- hk fix --all",
-    "verify": "pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run check && pnpm test && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
+    "verify": "pnpm run check:identity && pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run check && pnpm test && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
     "tauri": "tauri",
     "test": "vitest run"
   },

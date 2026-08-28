@@ -12,7 +12,7 @@ impl ConfigStore {
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
         Self {
-            path: base.join("PersonalLens").join("settings.json"),
+            path: base.join("Lens").join("settings.json"),
         }
     }
 
@@ -50,8 +50,7 @@ mod tests {
 
     #[test]
     fn load_normalizes_an_unavailable_directory_without_resetting_the_agent() {
-        let test_root =
-            std::env::temp_dir().join(format!("personal-lens-config-store-{}", Uuid::new_v4()));
+        let test_root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
         fs::create_dir_all(&test_root).expect("create test settings directory");
         let store = ConfigStore {
             path: test_root.join("settings.json"),
@@ -80,8 +79,7 @@ mod tests {
 
     #[test]
     fn load_migrates_settings_without_a_response_prompt_to_the_built_in_prompt() {
-        let test_root =
-            std::env::temp_dir().join(format!("personal-lens-config-store-{}", Uuid::new_v4()));
+        let test_root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
         fs::create_dir_all(&test_root).expect("create test settings directory");
         let store = ConfigStore {
             path: test_root.join("settings.json"),

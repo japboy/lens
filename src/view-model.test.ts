@@ -50,7 +50,7 @@ function lensInput(text: string): NonNullable<LensState["input"]> {
   };
 }
 
-describe("PersonalLens view model", () => {
+describe("Lens view model", () => {
   it("defines every managed Agent runtime stage and its active states", () => {
     const stages: AgentRuntimeStage[] = [
       "not_installed",
@@ -192,7 +192,7 @@ describe("PersonalLens view model", () => {
     const input = lensInput("Normalized source");
     const attachment = {
       id: "media-node-000001",
-      uri: `personallens://context/${input.context_id}/${input.context_revision}/media/media-node-000001`,
+      uri: `lens://context/${input.context_id}/${input.context_revision}/media/media-node-000001`,
       scope: "ax_element_region",
       source_node_id: "node-000001",
       source_bounds: { x: 10, y: 20, width: 30, height: 40 },

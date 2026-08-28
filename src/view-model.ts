@@ -97,7 +97,7 @@ export function inputMediaPreviewUrl(
   ) {
     return undefined;
   }
-  const expected = `personallens://context/${input.context_id}/${input.context_revision}/media/${attachment.id}`;
+  const expected = `lens://context/${input.context_id}/${input.context_revision}/media/${attachment.id}`;
   return attachment.uri === expected ? expected : undefined;
 }
 

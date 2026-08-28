@@ -15,33 +15,32 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let validate_a11y = std::env::var_os("PERSONAL_LENS_VALIDATE_A11Y").is_some();
-    let validate_acp = std::env::var_os("PERSONAL_LENS_VALIDATE_ACP").is_some();
+    let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();
+    let validate_acp = std::env::var_os("LENS_VALIDATE_ACP").is_some();
     let validate_rich_output =
-        cfg!(debug_assertions) && std::env::var_os("PERSONAL_LENS_VALIDATE_RICH_OUTPUT").is_some();
-    let validation_runtime = std::env::var("PERSONAL_LENS_VALIDATE_RUNTIME")
-        .ok()
-        .map(|value| match value.as_str() {
-            "claude" => model::AgentKind::Claude,
-            "codex" => model::AgentKind::Codex,
-            _ => panic!("PERSONAL_LENS_VALIDATE_RUNTIME must be claude or codex"),
-        });
-    let validation_agent = std::env::var("PERSONAL_LENS_VALIDATE_AGENT")
+        cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_RICH_OUTPUT").is_some();
+    let validation_runtime =
+        std::env::var("LENS_VALIDATE_RUNTIME")
+            .ok()
+            .map(|value| match value.as_str() {
+                "claude" => model::AgentKind::Claude,
+                "codex" => model::AgentKind::Codex,
+                _ => panic!("LENS_VALIDATE_RUNTIME must be claude or codex"),
+            });
+    let validation_agent = std::env::var("LENS_VALIDATE_AGENT")
         .ok()
         .and_then(|value| match value.as_str() {
             "claude" => Some(model::AgentKind::Claude),
             "codex" => Some(model::AgentKind::Codex),
             _ => None,
         });
-    let validation_cancel_after = std::env::var("PERSONAL_LENS_VALIDATE_CANCEL_AFTER_MS")
+    let validation_cancel_after = std::env::var("LENS_VALIDATE_CANCEL_AFTER_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok());
-    let validation_target = std::env::var("PERSONAL_LENS_VALIDATE_TARGET")
-        .ok()
-        .map(|json| {
-            serde_json::from_str::<model::SelectedWindow>(&json)
-                .expect("PERSONAL_LENS_VALIDATE_TARGET must be a SelectedWindow JSON object")
-        });
+    let validation_target = std::env::var("LENS_VALIDATE_TARGET").ok().map(|json| {
+        serde_json::from_str::<model::SelectedWindow>(&json)
+            .expect("LENS_VALIDATE_TARGET must be a SelectedWindow JSON object")
+    });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -52,15 +51,15 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             ui::install_menu_bar(app)?;
             #[cfg(debug_assertions)]
-            if std::env::var_os("PERSONAL_LENS_VALIDATE_UI").is_some() {
+            if std::env::var_os("LENS_VALIDATE_UI").is_some() {
                 ui::show_settings(app.handle())?;
                 let validation_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    if let Some(tray) = validation_handle.tray_by_id("personal-lens") {
+                    if let Some(tray) = validation_handle.tray_by_id("lens") {
                         match tray.rect() {
-                            Ok(Some(rect)) => println!("PERSONAL_LENS_TRAY_RECT={rect:?}"),
-                            Ok(None) => println!("PERSONAL_LENS_TRAY_RECT=unavailable"),
+                            Ok(Some(rect)) => println!("LENS_TRAY_RECT={rect:?}"),
+                            Ok(None) => println!("LENS_TRAY_RECT=unavailable"),
                             Err(error) => {
                                 eprintln!("Unable to inspect tray icon bounds: {error}")
                             }
@@ -68,9 +67,9 @@ pub fn run() {
                     }
                 });
             }
-            if std::env::var_os("PERSONAL_LENS_VALIDATE_A11Y").is_none()
-                && std::env::var_os("PERSONAL_LENS_VALIDATE_ACP").is_none()
-                && std::env::var_os("PERSONAL_LENS_VALIDATE_RUNTIME").is_none()
+            if std::env::var_os("LENS_VALIDATE_A11Y").is_none()
+                && std::env::var_os("LENS_VALIDATE_ACP").is_none()
+                && std::env::var_os("LENS_VALIDATE_RUNTIME").is_none()
                 && !validate_rich_output
             {
                 let handle = app.handle().clone();
@@ -110,7 +109,7 @@ pub fn run() {
             commands::show_settings,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build PersonalLens")
+        .expect("failed to build Lens")
         .run(move |app, event| match event {
             tauri::RunEvent::Ready if validation_runtime.is_some() => {
                 let handle = app.clone();
@@ -136,7 +135,7 @@ pub fn run() {
                             1,
                         ),
                     };
-                    println!("PERSONAL_LENS_RUNTIME_RESULT={summary}");
+                    println!("LENS_RUNTIME_RESULT={summary}");
                     handle.exit(exit_code);
                 });
             }
@@ -270,7 +269,7 @@ pub fn run() {
                                     })
                                 }),
                                 "contains_offscreen_marker": state.input.as_ref().is_some_and(|input| {
-                                    input.contains_text("PL_OFFSCREEN_END_MARKER_9F3A7C")
+                                    input.contains_text("LENS_OFFSCREEN_END_MARKER_9F3A7C")
                                 }),
                                 "input_context_bytes": state.input.as_ref().and_then(|input| {
                                     input.serialized_len().ok()
@@ -283,15 +282,15 @@ pub fn run() {
                             });
                             match serde_json::to_string(&summary) {
                                 Ok(json) if validate_acp => {
-                                    println!("PERSONAL_LENS_E2E_RESULT={json}")
+                                    println!("LENS_E2E_RESULT={json}")
                                 }
-                                Ok(json) => println!("PERSONAL_LENS_A11Y_RESULT={json}"),
+                                Ok(json) => println!("LENS_A11Y_RESULT={json}"),
                             Err(error) => {
                                 eprintln!("Unable to serialize A11y validation result: {error}")
                             }
                             }
                         }
-                        Err(error) => eprintln!("PersonalLens A11y validation failed: {error}"),
+                        Err(error) => eprintln!("Lens A11y validation failed: {error}"),
                     }
                 });
             }
@@ -312,8 +311,8 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     let target = model::SelectedWindow {
         window_id: 0,
         title: "Rich output validation".into(),
-        application_name: "PersonalLens Fixture".into(),
-        bundle_id: "com.github.japboy.personallens.fixture".into(),
+        application_name: "Lens Fixture".into(),
+        bundle_id: "com.github.japboy.lens.fixture".into(),
         pid: std::process::id() as i32,
         frame: model::Bounds {
             x: 120.0,
@@ -323,8 +322,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         },
     };
     let first_attachment_id = "media-node-000001".to_string();
-    let first_media_uri =
-        format!("personallens://context/{operation_id}/1/media/{first_attachment_id}");
+    let first_media_uri = format!("lens://context/{operation_id}/1/media/{first_attachment_id}");
     let first_attachment = lens::LensMediaAttachment {
         id: first_attachment_id.clone(),
         uri: first_media_uri.clone(),
@@ -350,8 +348,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         encoded_bytes: first_input_image.len(),
     };
     let second_attachment_id = "media-node-000002".to_string();
-    let second_media_uri =
-        format!("personallens://context/{operation_id}/1/media/{second_attachment_id}");
+    let second_media_uri = format!("lens://context/{operation_id}/1/media/{second_attachment_id}");
     let second_attachment = lens::LensMediaAttachment {
         id: second_attachment_id.clone(),
         uri: second_media_uri.clone(),
@@ -397,7 +394,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
                         kind: lens::LensNodeKind::Image,
                         role: Some("AXImage".into()),
                         subrole: None,
-                        title: Some("PersonalLens validation icon".into()),
+                        title: Some("Lens validation icon".into()),
                         value: None,
                         description: Some("First input media preview fixture".into()),
                         media_refs: vec![first_attachment_id.clone()],
@@ -412,7 +409,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
                         kind: lens::LensNodeKind::Image,
                         role: Some("AXImage".into()),
                         subrole: None,
-                        title: Some("PersonalLens validation icon thumbnail".into()),
+                        title: Some("Lens validation icon thumbnail".into()),
                         value: None,
                         description: Some("Second input media preview fixture".into()),
                         media_refs: vec![second_attachment_id.clone()],
@@ -466,7 +463,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
                 message_id: Some("validation-message".into()),
                 mime_type: "image/png".into(),
                 data: BASE64_STANDARD.encode(include_bytes!("../icons/128x128@2x.png")),
-                uri: Some("fixture://personal-lens-icon".into()),
+                uri: Some("fixture://lens-icon".into()),
             },
             model::LensOutputBlock::Markdown {
                 message_id: Some("validation-message".into()),
@@ -486,17 +483,17 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         };
         let script = r#"
           (() => {
-            const root = document.querySelector('personal-lens-app')?.shadowRoot;
+            const root = document.querySelector('lens-app')?.shadowRoot;
             root?.querySelector('#source-tab')?.click();
             window.setTimeout(() => {
-              const currentRoot = document.querySelector('personal-lens-app')?.shadowRoot;
+              const currentRoot = document.querySelector('lens-app')?.shadowRoot;
               const thumbnails = currentRoot?.querySelectorAll('.input-media-thumbnail') ?? [];
               thumbnails[1]?.click();
               window.setTimeout(() => {
-              const selectedRoot = document.querySelector('personal-lens-app')?.shadowRoot;
+              const selectedRoot = document.querySelector('lens-app')?.shadowRoot;
               const image = selectedRoot?.querySelector('.input-media-preview figure > img');
               const source = currentRoot?.querySelector('.source-content code')?.textContent ?? '';
-              console.warn('PERSONAL_LENS_SOURCE_PREVIEW_RESULT=' + JSON.stringify({
+              console.warn('LENS_SOURCE_PREVIEW_RESULT=' + JSON.stringify({
                 displayed: Boolean(image?.complete && image?.naturalWidth > 0),
                 natural_width: image?.naturalWidth ?? 0,
                 natural_height: image?.naturalHeight ?? 0,
@@ -515,6 +512,6 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
             eprintln!("Unable to inspect Source input-media validation DOM: {error}");
         }
     });
-    println!("PERSONAL_LENS_RICH_OUTPUT_RESULT=displayed");
+    println!("LENS_RICH_OUTPUT_RESULT=displayed");
     Ok(())
 }

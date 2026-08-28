@@ -5,8 +5,8 @@
   <key>LSUIElement</key>
   <true/>
   <key>NSAccessibilityUsageDescription</key>
-  <string>PersonalLens reads accessibility content from the selected window and displays a transformed result.</string>
+  <string>Lens reads accessibility content from the selected window and displays a transformed result.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>PersonalLens captures image regions from windows you select for multimodal analysis and does not save images or video.</string>
+  <string>Lens captures image regions from windows you select for multimodal analysis and does not save images or video.</string>
 </dict>
 </plist>
