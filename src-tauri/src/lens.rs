@@ -95,10 +95,6 @@ impl LensTargetSet {
             targets,
         })
     }
-
-    pub fn placement_target(&self) -> Option<&SelectedWindow> {
-        self.targets.first().map(|target| &target.window)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1364,13 +1360,6 @@ mod tests {
 
         assert_eq!(target_set.targets[0].window.bundle_id, "a.example");
         assert_eq!(target_set.targets[1].window.bundle_id, "z.example");
-        assert_eq!(
-            target_set
-                .placement_target()
-                .expect("nonempty target set")
-                .window_id,
-            7
-        );
         assert_eq!(
             LensTargetSet::try_new(selection_id, Vec::new()),
             Err(LensTargetSetError::Empty)

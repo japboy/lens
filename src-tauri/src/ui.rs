@@ -6,6 +6,7 @@ use crate::{
         LensTargetSelection,
     },
 };
+use std::sync::Mutex;
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -14,11 +15,15 @@ use tauri::{
     App, AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_dialog::DialogExt;
+use uuid::Uuid;
 
 const SETTINGS_LABEL: &str = "settings";
 pub(crate) const LENS_WINDOW_LABEL: &str = "lens-overlay";
 pub(crate) const TARGET_SELECTION_WINDOW_LABEL: &str = "target-selection-preview";
-const LENS_WINDOW_PARENT_RATIO: f64 = 0.8;
+const LENS_SINGLE_TARGET_SIZE_RATIO: f64 = 0.8;
+const LENS_MULTIPLE_TARGET_SCREEN_HEIGHT_RATIO: f64 = 0.8;
+const LENS_MULTIPLE_TARGET_ASPECT_WIDTH: f64 = 10.0;
+const LENS_MULTIPLE_TARGET_ASPECT_HEIGHT: f64 = 16.0;
 const LENS_WINDOW_CORNER_RADIUS: f64 = 12.0;
 const LENS_WINDOW_EFFECT: WindowEffect = WindowEffect::HudWindow;
 const TARGET_SELECTION_WINDOW_WIDTH: f64 = 240.0;
@@ -138,6 +143,36 @@ struct LensWindowGeometry {
     height: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LensWindowPlacementDecision {
+    Apply,
+    Preserve,
+}
+
+#[derive(Debug, Default)]
+struct LensWindowPlacementState {
+    applied_selection_id: Option<Uuid>,
+}
+
+impl LensWindowPlacementState {
+    fn decision(&self, selection_id: Uuid, window_exists: bool) -> LensWindowPlacementDecision {
+        if window_exists && self.applied_selection_id == Some(selection_id) {
+            LensWindowPlacementDecision::Preserve
+        } else {
+            LensWindowPlacementDecision::Apply
+        }
+    }
+
+    fn record_applied(&mut self, selection_id: Uuid) {
+        self.applied_selection_id = Some(selection_id);
+    }
+}
+
+#[derive(Default)]
+pub struct LensWindowPresentationState {
+    placement: Mutex<LensWindowPlacementState>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct TargetSelectionWindowGeometry {
     x: f64,
@@ -218,14 +253,70 @@ impl LensWindowGeometry {
             return None;
         }
 
-        let width = frame.width * LENS_WINDOW_PARENT_RATIO;
-        let height = frame.height * LENS_WINDOW_PARENT_RATIO;
+        let width = frame.width * LENS_SINGLE_TARGET_SIZE_RATIO;
+        let height = frame.height * LENS_SINGLE_TARGET_SIZE_RATIO;
         Some(Self {
             x: frame.x + (frame.width - width) / 2.0,
             y: frame.y + (frame.height - height) / 2.0,
             width,
             height,
         })
+    }
+
+    fn from_primary_screen(position: LogicalPosition<f64>, size: LogicalSize<f64>) -> Option<Self> {
+        if !position.x.is_finite()
+            || !position.y.is_finite()
+            || !size.width.is_finite()
+            || !size.height.is_finite()
+            || size.width <= 0.0
+            || size.height <= 0.0
+        {
+            return None;
+        }
+
+        let height = size.height * LENS_MULTIPLE_TARGET_SCREEN_HEIGHT_RATIO;
+        let width = height * LENS_MULTIPLE_TARGET_ASPECT_WIDTH / LENS_MULTIPLE_TARGET_ASPECT_HEIGHT;
+        Some(Self {
+            x: position.x + (size.width - width) / 2.0,
+            y: position.y + (size.height - height) / 2.0,
+            width,
+            height,
+        })
+    }
+}
+
+fn lens_window_geometry(
+    app: &AppHandle,
+    target_set: &LensTargetSet,
+) -> tauri::Result<LensWindowGeometry> {
+    match target_set.targets.as_slice() {
+        [] => Err(tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Lens target set is empty",
+        ))),
+        [target] => LensWindowGeometry::from_target(target.window.frame).ok_or_else(|| {
+            tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selected window has invalid bounds",
+            ))
+        }),
+        [_, _, ..] => {
+            let monitor = app.primary_monitor()?.ok_or_else(|| {
+                tauri::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "primary monitor is unavailable",
+                ))
+            })?;
+            let scale_factor = monitor.scale_factor();
+            let position = monitor.position().to_logical::<f64>(scale_factor);
+            let size = monitor.size().to_logical::<f64>(scale_factor);
+            LensWindowGeometry::from_primary_screen(position, size).ok_or_else(|| {
+                tauri::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "primary monitor has invalid bounds",
+                ))
+            })
+        }
     }
 }
 
@@ -499,42 +590,57 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn show_lens_window(app: &AppHandle, target_set: &LensTargetSet) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(LENS_WINDOW_LABEL) {
-        window.show()?;
-        window.set_focus()?;
-        return Ok(());
+    let window = app.get_webview_window(LENS_WINDOW_LABEL);
+    let presentation = app.state::<LensWindowPresentationState>();
+    let mut placement = presentation.placement.lock().map_err(|_| {
+        tauri::Error::Io(std::io::Error::other(
+            "Lens window placement state lock is poisoned",
+        ))
+    })?;
+    let decision = placement.decision(target_set.selection_id, window.is_some());
+
+    match (window, decision) {
+        (Some(window), LensWindowPlacementDecision::Apply) => {
+            let geometry = lens_window_geometry(app, target_set)?;
+            window.set_size(LogicalSize::new(geometry.width, geometry.height))?;
+            window.set_position(LogicalPosition::new(geometry.x, geometry.y))?;
+            placement.record_applied(target_set.selection_id);
+            drop(placement);
+            window.show()?;
+            window.set_focus()?;
+            Ok(())
+        }
+        (Some(window), LensWindowPlacementDecision::Preserve) => {
+            drop(placement);
+            window.show()?;
+            window.set_focus()?;
+            Ok(())
+        }
+        (None, LensWindowPlacementDecision::Apply) => {
+            let geometry = lens_window_geometry(app, target_set)?;
+            WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
+                .title("Lens")
+                .inner_size(geometry.width, geometry.height)
+                .position(geometry.x, geometry.y)
+                .decorations(false)
+                .always_on_top(false)
+                .transparent(true)
+                .shadow(true)
+                .resizable(true)
+                .effects(WindowEffectsConfig {
+                    effects: vec![LENS_WINDOW_EFFECT],
+                    state: Some(WindowEffectState::Active),
+                    radius: Some(LENS_WINDOW_CORNER_RADIUS),
+                    color: None,
+                })
+                .build()?;
+            placement.record_applied(target_set.selection_id);
+            Ok(())
+        }
+        (None, LensWindowPlacementDecision::Preserve) => Err(tauri::Error::Io(
+            std::io::Error::other("missing Lens window cannot preserve placement"),
+        )),
     }
-
-    let placement_target = target_set.placement_target().ok_or_else(|| {
-        tauri::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Lens target set is empty",
-        ))
-    })?;
-    let geometry = LensWindowGeometry::from_target(placement_target.frame).ok_or_else(|| {
-        tauri::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "selected window has invalid bounds",
-        ))
-    })?;
-
-    WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
-        .title("Lens")
-        .inner_size(geometry.width, geometry.height)
-        .position(geometry.x, geometry.y)
-        .decorations(false)
-        .always_on_top(false)
-        .transparent(true)
-        .shadow(true)
-        .resizable(true)
-        .effects(WindowEffectsConfig {
-            effects: vec![LENS_WINDOW_EFFECT],
-            state: Some(WindowEffectState::Active),
-            radius: Some(LENS_WINDOW_CORNER_RADIUS),
-            color: None,
-        })
-        .build()?;
-    Ok(())
 }
 
 pub fn show_target_selection_window(
@@ -737,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn lens_window_geometry_is_eighty_percent_and_centered_in_target_coordinates() {
+    fn single_target_lens_window_is_eighty_percent_and_centered_in_target_coordinates() {
         assert_eq!(
             LensWindowGeometry::from_target(Bounds {
                 x: -1440.0,
@@ -751,6 +857,55 @@ mod tests {
                 width: 800.0,
                 height: 560.0,
             })
+        );
+    }
+
+    #[test]
+    fn multiple_target_lens_window_is_portrait_and_centered_on_the_primary_screen() {
+        let geometry = LensWindowGeometry::from_primary_screen(
+            LogicalPosition::new(-1920.0, 0.0),
+            LogicalSize::new(1920.0, 1200.0),
+        )
+        .expect("valid primary screen geometry");
+
+        assert_eq!(
+            geometry,
+            LensWindowGeometry {
+                x: -1260.0,
+                y: 120.0,
+                width: 600.0,
+                height: 960.0,
+            }
+        );
+        assert_eq!(geometry.height / 1200.0, 0.8);
+        assert_eq!(geometry.width / geometry.height, 10.0 / 16.0);
+    }
+
+    #[test]
+    fn lens_window_placement_is_scoped_to_selection_identity() {
+        let first_selection = Uuid::new_v4();
+        let second_selection = Uuid::new_v4();
+        let mut placement = LensWindowPlacementState::default();
+
+        assert_eq!(
+            placement.decision(first_selection, false),
+            LensWindowPlacementDecision::Apply
+        );
+        placement.record_applied(first_selection);
+        assert_eq!(
+            placement.decision(first_selection, true),
+            LensWindowPlacementDecision::Preserve,
+            "content revisions within one selection must preserve user geometry"
+        );
+        assert_eq!(
+            placement.decision(second_selection, true),
+            LensWindowPlacementDecision::Apply,
+            "a newly confirmed target set must reapply its placement"
+        );
+        assert_eq!(
+            placement.decision(first_selection, false),
+            LensWindowPlacementDecision::Apply,
+            "a destroyed window must apply geometry when recreated"
         );
     }
 
@@ -777,6 +932,20 @@ mod tests {
                 width: 1000.0,
                 height: 700.0,
             }),
+            None
+        );
+        assert_eq!(
+            LensWindowGeometry::from_primary_screen(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1440.0, 0.0),
+            ),
+            None
+        );
+        assert_eq!(
+            LensWindowGeometry::from_primary_screen(
+                LogicalPosition::new(f64::NAN, 0.0),
+                LogicalSize::new(1440.0, 900.0),
+            ),
             None
         );
     }
