@@ -592,7 +592,7 @@ fn target_selection_for_operation(
     Ok(selection)
 }
 
-fn publish_target_selection(
+async fn publish_target_selection(
     app: &AppHandle,
     operation_id: Uuid,
     selection: LensTargetSelection,
@@ -609,9 +609,9 @@ fn publish_target_selection(
     if selection.items.is_empty() {
         return Ok(next);
     }
-    if let Err(error) = ui::show_target_selection_window(app, &selection) {
+    if let Err(error) = ui::show_target_selection_window(app, &selection).await {
         let message = error.to_string();
-        let _ = ui::close_target_selection_window(app);
+        let _ = ui::destroy_target_selection_window(app);
         replace_operation_state(
             app,
             operation_id,
@@ -703,6 +703,7 @@ pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
             notice: None,
         },
     )
+    .await
 }
 
 #[tauri::command]
@@ -719,19 +720,19 @@ pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensS
     }
     selection.stage = LensTargetSelectionStage::Picking;
     selection.notice = None;
-    publish_target_selection(&app, operation_id, selection.clone())?;
+    publish_target_selection(&app, operation_id, selection.clone()).await?;
 
     let selected = select_single_window(&app).await;
     selection = target_selection_for_operation(&app, operation_id)?;
     match selected {
         Ok(None) => {
             selection.stage = LensTargetSelectionStage::Reviewing;
-            publish_target_selection(&app, operation_id, selection)
+            publish_target_selection(&app, operation_id, selection).await
         }
         Err(error) => {
             selection.stage = LensTargetSelectionStage::Reviewing;
             selection.notice = Some(format!("Unable to add a window: {error}"));
-            publish_target_selection(&app, operation_id, selection)?;
+            publish_target_selection(&app, operation_id, selection).await?;
             Err(error)
         }
         Ok(Some(window)) => {
@@ -742,20 +743,20 @@ pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensS
             {
                 selection.stage = LensTargetSelectionStage::Reviewing;
                 selection.notice = Some("That window is already selected.".into());
-                return publish_target_selection(&app, operation_id, selection);
+                return publish_target_selection(&app, operation_id, selection).await;
             }
             let (item, payload) = build_target_selection_item(operation_id, window).await;
             store_target_selection_payload(&app, operation_id, payload)?;
             selection.items.push(item);
             selection.stage = LensTargetSelectionStage::Reviewing;
             selection.notice = None;
-            publish_target_selection(&app, operation_id, selection)
+            publish_target_selection(&app, operation_id, selection).await
         }
     }
 }
 
 #[tauri::command]
-pub fn remove_lens_target(
+pub async fn remove_lens_target(
     app: AppHandle,
     operation_id: Uuid,
     target_id: String,
@@ -782,7 +783,9 @@ pub fn remove_lens_target(
     }
 
     if selection.items.is_empty() {
-        ui::close_target_selection_window(&app).map_err(|error| error.to_string())?;
+        ui::dismiss_target_selection_window(&app)
+            .await
+            .map_err(|error| error.to_string())?;
         let cancelled = LensState {
             operation_id: Some(operation_id),
             stage: LensStage::Cancelled,
@@ -794,7 +797,7 @@ pub fn remove_lens_target(
         return Err(OPERATION_SUPERSEDED.into());
     }
     selection.notice = None;
-    publish_target_selection(&app, operation_id, selection)
+    publish_target_selection(&app, operation_id, selection).await
 }
 
 #[tauri::command]
@@ -810,7 +813,9 @@ pub async fn confirm_lens_targets(app: AppHandle, operation_id: Uuid) -> Result<
         .collect();
     let target_set =
         LensTargetSet::try_new(operation_id, windows).map_err(|error| error.to_string())?;
-    ui::close_target_selection_window(&app).map_err(|error| error.to_string())?;
+    ui::dismiss_target_selection_window(&app)
+        .await
+        .map_err(|error| error.to_string())?;
     let extracting = LensState {
         operation_id: Some(operation_id),
         stage: LensStage::Extracting,

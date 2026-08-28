@@ -21,8 +21,12 @@ afterEach(() => {
 });
 
 describe("component property and event contracts", () => {
-  it("declares one right-side entrance and preserves its shell across selection updates", async () => {
-    const model: TargetSelectionViewModel = {
+  it("leaves target-selection entrance motion outside the WebView content", async () => {
+    const element = document.createElement("lens-target-selection-view") as HTMLElement & {
+      model: TargetSelectionViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = {
       platform: "macos",
       lens: {
         operation_id: "operation",
@@ -38,21 +42,11 @@ describe("component property and event contracts", () => {
       pending: false,
       message: "",
     };
-    const element = document.createElement("lens-target-selection-view") as HTMLElement & {
-      model: TargetSelectionViewModel;
-      updateComplete: Promise<boolean>;
-    };
-    element.model = model;
     document.body.append(element);
     await element.updateComplete;
 
-    const entranceShell = element.shadowRoot?.querySelector<HTMLElement>(".target-selection-shell");
-    expect(entranceShell?.dataset.entrance).toBe("slide-in-from-right");
-
-    element.model = { ...model, pending: true };
-    await element.updateComplete;
-
-    expect(element.shadowRoot?.querySelector(".target-selection-shell")).toBe(entranceShell);
+    const shell = element.shadowRoot?.querySelector<HTMLElement>(".target-selection-shell");
+    expect(shell?.hasAttribute("data-entrance")).toBe(false);
   });
 
   it("keeps the prompt draft local and emits a composed semantic save intent", async () => {
@@ -105,7 +99,7 @@ describe("component property and event contracts", () => {
     expect(element.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
   });
 
-  it("mediates a card remove event as a finite target-selection intent", async () => {
+  it("starts remove intent immediately and retains the departing card through its motion", async () => {
     const item: LensTargetSelectionItem = {
       id: "macos:com.apple.Safari:417",
       window: {
@@ -151,11 +145,95 @@ describe("component property and event contracts", () => {
 
     element.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label^="Remove Safari"]')?.click();
 
+    await element.updateComplete;
     expect(received).toHaveBeenCalledOnce();
     const event = received.mock.calls[0]?.[0] as CustomEvent<TargetSelectionIntent> | undefined;
     expect(event?.detail).toEqual({ type: "remove", targetId: item.id });
     expect(event?.bubbles).toBe(true);
     expect(event?.composed).toBe(true);
+
+    element.model = {
+      ...model,
+      pending: true,
+      lens: {
+        ...model.lens,
+        selection: { ...model.lens.selection!, items: [] },
+      },
+    };
+    await element.updateComplete;
+
+    const departingCard = element.shadowRoot?.querySelector<HTMLElement>(
+      `[data-target-id="${item.id}"]`,
+    );
+    expect(departingCard?.dataset.motion).toBe("removing");
+    departingCard?.dispatchEvent(new Event("animationend", { bubbles: true }));
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector(`[data-target-id="${item.id}"]`)).toBeNull();
+  });
+
+  it("declares the inverse card motion when one reviewed target is added", async () => {
+    const first: LensTargetSelectionItem = {
+      id: "macos:com.apple.Safari:417",
+      window: {
+        window_id: 417,
+        title: "Fixture",
+        application_name: "Safari",
+        bundle_id: "com.apple.Safari",
+        pid: 417,
+        frame: { x: 0, y: 0, width: 800, height: 600 },
+      },
+      preview_uri: "lens://selection/operation/window/417",
+    };
+    const second: LensTargetSelectionItem = {
+      id: "macos:com.apple.TextEdit:512",
+      window: {
+        window_id: 512,
+        title: "Notes",
+        application_name: "TextEdit",
+        bundle_id: "com.apple.TextEdit",
+        pid: 512,
+        frame: { x: 80, y: 80, width: 600, height: 500 },
+      },
+      preview_uri: "lens://selection/operation/window/512",
+    };
+    const selection = {
+      selection_id: "operation",
+      stage: "reviewing" as const,
+      maximum_targets: 4,
+      items: [first],
+    };
+    const element = document.createElement("lens-target-selection-view") as HTMLElement & {
+      model: TargetSelectionViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = {
+      platform: "macos",
+      lens: {
+        operation_id: "operation",
+        stage: "selecting",
+        selection,
+        output_blocks: [],
+      },
+      pending: true,
+      message: "",
+    };
+    document.body.append(element);
+    await element.updateComplete;
+
+    element.model = {
+      ...element.model,
+      lens: {
+        ...element.model.lens,
+        selection: { ...selection, items: [first, second] },
+      },
+    };
+    await element.updateComplete;
+
+    const added = element.shadowRoot?.querySelector<HTMLElement>(`[data-target-id="${second.id}"]`);
+    expect(added?.dataset.motion).toBe("adding");
+    added?.dispatchEvent(new Event("animationend", { bubbles: true }));
+    await element.updateComplete;
+    expect(added?.dataset.motion).toBe("settled");
   });
 
   it("keeps cancellation available while an Agent command is pending", async () => {

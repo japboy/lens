@@ -255,8 +255,8 @@ describe("Lens target selection preview", () => {
     expect(selectionRoot?.querySelector("[data-tauri-drag-region]")).toBeNull();
     expect(selectionRoot?.querySelector('[aria-label="Close Lens"]')).toBeNull();
     expect(
-      selectionRoot?.querySelector<HTMLElement>(".target-selection-shell")?.dataset.entrance,
-    ).toBe("slide-in-from-right");
+      selectionRoot?.querySelector(".target-selection-shell")?.hasAttribute("data-entrance"),
+    ).toBe(false);
     expect(selectionRoot?.querySelector(".target-selection-count")?.textContent).toContain("2 / 4");
 
     selectionRoot?.querySelector<HTMLButtonElement>('[aria-label="Add another window"]')?.click();

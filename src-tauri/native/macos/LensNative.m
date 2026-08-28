@@ -1,8 +1,12 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#include <math.h>
 
 typedef void (*LensPickerCallback)(const char *_Nullable json, void *_Nullable context);
+typedef void (*LensWindowTransitionCallback)(bool completed, void *_Nullable context);
+
+static const NSTimeInterval LensWindowFrameTransitionDuration = 0.18;
 
 static NSDictionary *LensFrameDictionary(CGRect frame);
 
@@ -33,6 +37,160 @@ static char *LensCopyJSONString(id object) {
 
 static NSString *LensStringOrEmpty(NSString *value) {
     return value ?: @"";
+}
+
+static NSScreen *LensScreenContainingFrame(NSRect frame) {
+    NSScreen *bestScreen = nil;
+    CGFloat bestIntersectionArea = -1.0;
+    for (NSScreen *screen in NSScreen.screens) {
+        NSRect intersection = NSIntersectionRect(frame, screen.frame);
+        CGFloat area = MAX(NSWidth(intersection), 0.0) * MAX(NSHeight(intersection), 0.0);
+        if (area > bestIntersectionArea) {
+            bestScreen = screen;
+            bestIntersectionArea = area;
+        }
+    }
+    return bestScreen;
+}
+
+static NSRect LensFrameBeyondScreenRight(NSRect frame, NSScreen *screen) {
+    NSRect outsideFrame = frame;
+    outsideFrame.origin.x = NSMaxX(screen.frame);
+    return outsideFrame;
+}
+
+bool lens_present_window_from_screen_right(void *windowPointer) {
+    if (windowPointer == NULL) {
+        return false;
+    }
+
+    __block BOOL presented = NO;
+    dispatch_block_t presentation = ^{
+        NSWindow *window = (__bridge NSWindow *)windowPointer;
+        NSRect settledFrame = window.frame;
+        NSScreen *screen = window.screen ?: LensScreenContainingFrame(settledFrame);
+        if (screen == nil) {
+            return;
+        }
+
+        if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+            [window setFrame:settledFrame display:YES];
+            [window makeKeyAndOrderFront:nil];
+            presented = YES;
+            return;
+        }
+
+        NSRect entranceFrame = LensFrameBeyondScreenRight(settledFrame, screen);
+        [window setFrame:entranceFrame display:YES];
+        [window makeKeyAndOrderFront:nil];
+        [window setFrame:settledFrame display:YES animate:YES];
+        if (!NSEqualRects(window.frame, settledFrame)) {
+            [window setFrame:settledFrame display:YES];
+        }
+        presented = YES;
+    };
+    if ([NSThread isMainThread]) {
+        presentation();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), presentation);
+    }
+    return presented;
+}
+
+bool lens_dismiss_window_to_screen_right(
+    void *windowPointer,
+    LensWindowTransitionCallback callback,
+    void *context
+) {
+    if (windowPointer == NULL || callback == NULL) {
+        return false;
+    }
+
+    dispatch_block_t dismissal = ^{
+        NSWindow *window = (__bridge NSWindow *)windowPointer;
+        NSScreen *screen = window.screen ?: LensScreenContainingFrame(window.frame);
+        if (screen == nil) {
+            callback(false, context);
+            return;
+        }
+
+        if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+            [window orderOut:nil];
+            callback(true, context);
+            return;
+        }
+
+        NSRect exitFrame = LensFrameBeyondScreenRight(window.frame, screen);
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *animationContext) {
+            animationContext.duration = [window animationResizeTime:exitFrame];
+            [[window animator] setFrame:exitFrame display:YES];
+        } completionHandler:^{
+            if (!NSEqualRects(window.frame, exitFrame)) {
+                [window setFrame:exitFrame display:YES];
+            }
+            [window orderOut:nil];
+            callback(true, context);
+        }];
+    };
+    if ([NSThread isMainThread]) {
+        dismissal();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), dismissal);
+    }
+    return true;
+}
+
+bool lens_transition_window_frame(
+    void *windowPointer,
+    double topLeftDeltaX,
+    double topLeftDeltaY,
+    double contentWidth,
+    double contentHeight,
+    LensWindowTransitionCallback callback,
+    void *context
+) {
+    if (windowPointer == NULL || callback == NULL ||
+        !isfinite(topLeftDeltaX) || !isfinite(topLeftDeltaY) ||
+        !isfinite(contentWidth) || !isfinite(contentHeight) ||
+        contentWidth <= 0.0 || contentHeight <= 0.0) {
+        return false;
+    }
+
+    dispatch_block_t transition = ^{
+        NSWindow *window = (__bridge NSWindow *)windowPointer;
+        NSRect currentFrame = window.frame;
+        NSRect targetFrame = [window frameRectForContentRect:NSMakeRect(
+            0.0,
+            0.0,
+            contentWidth,
+            contentHeight
+        )];
+        targetFrame.origin.x = NSMinX(currentFrame) + topLeftDeltaX;
+        targetFrame.origin.y = NSMaxY(currentFrame) - topLeftDeltaY - NSHeight(targetFrame);
+
+        if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion ||
+            NSEqualRects(currentFrame, targetFrame)) {
+            [window setFrame:targetFrame display:YES];
+            callback(true, context);
+            return;
+        }
+
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *animationContext) {
+            animationContext.duration = LensWindowFrameTransitionDuration;
+            [[window animator] setFrame:targetFrame display:YES];
+        } completionHandler:^{
+            if (!NSEqualRects(window.frame, targetFrame)) {
+                [window setFrame:targetFrame display:YES];
+            }
+            callback(true, context);
+        }];
+    };
+    if ([NSThread isMainThread]) {
+        transition();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), transition);
+    }
+    return true;
 }
 
 @class LensContentPickerCoordinator;

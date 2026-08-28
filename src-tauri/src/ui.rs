@@ -643,7 +643,7 @@ pub fn show_lens_window(app: &AppHandle, target_set: &LensTargetSet) -> tauri::R
     }
 }
 
-pub fn show_target_selection_window(
+pub async fn show_target_selection_window(
     app: &AppHandle,
     selection: &LensTargetSelection,
 ) -> tauri::Result<()> {
@@ -675,14 +675,21 @@ pub fn show_target_selection_window(
             })?;
 
     if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
-        window.set_size(LogicalSize::new(geometry.width, geometry.height))?;
-        window.set_position(LogicalPosition::new(geometry.x, geometry.y))?;
+        crate::platform::transition_window_frame(
+            &window,
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+        )
+        .await
+        .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
         window.show()?;
         window.set_focus()?;
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         TARGET_SELECTION_WINDOW_LABEL,
         webview_url(WebviewView::TargetSelection),
@@ -699,6 +706,7 @@ pub fn show_target_selection_window(
     .minimizable(false)
     .closable(false)
     .skip_taskbar(true)
+    .visible(false)
     .effects(WindowEffectsConfig {
         effects: vec![LENS_WINDOW_EFFECT],
         state: Some(WindowEffectState::Active),
@@ -706,10 +714,22 @@ pub fn show_target_selection_window(
         color: None,
     })
     .build()?;
+    crate::platform::present_window_from_screen_right(&window)
+        .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
     Ok(())
 }
 
-pub fn close_target_selection_window(app: &AppHandle) -> tauri::Result<()> {
+pub async fn dismiss_target_selection_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
+        crate::platform::dismiss_window_to_screen_right(&window)
+            .await
+            .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
+        window.destroy()?;
+    }
+    Ok(())
+}
+
+pub fn destroy_target_selection_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
         window.destroy()?;
     }

@@ -250,20 +250,6 @@ fieldset {
   box-shadow: 0 14px 38px color-mix(in srgb, CanvasText 24%, transparent);
 }
 
-.target-selection-shell[data-entrance="slide-in-from-right"] {
-  animation: 280ms ease-out both target-selection-slide-in-from-right;
-}
-
-@keyframes target-selection-slide-in-from-right {
-  from {
-    transform: translateX(100%);
-  }
-
-  to {
-    transform: translateX(0);
-  }
-}
-
 .target-selection-toolbar {
   flex: 0 0 48px;
   display: flex;
@@ -357,6 +343,39 @@ fieldset {
   border: 1px solid color-mix(in srgb, Separator 80%, transparent);
   border-radius: 11px;
   background: color-mix(in srgb, Canvas 76%, CanvasText 2%);
+}
+
+.target-selection-card[data-motion="adding"] {
+  animation: target-selection-card-add 180ms ease-out both;
+}
+
+.target-selection-card[data-motion="removing"] {
+  pointer-events: none;
+  animation: target-selection-card-remove 180ms ease-in both;
+}
+
+@keyframes target-selection-card-add {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes target-selection-card-remove {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(28px);
+  }
 }
 
 .target-selection-image {
@@ -1225,10 +1244,6 @@ fieldset {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .target-selection-shell[data-entrance="slide-in-from-right"] {
-    animation: none;
-  }
-
   *,
   *::before,
   *::after {
