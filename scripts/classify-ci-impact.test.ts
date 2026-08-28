@@ -15,4 +15,10 @@ describe("CI impact classification", () => {
   ] as const)("classifies %j as %s", (changedPaths, expected) => {
     expect(classifyCiImpact(changedPaths)).toBe(expected);
   });
+
+  it("keeps native verification for a rename from a native into a portable path", () => {
+    expect(classifyCiImpact(["src-tauri/icons/128x128.png", "src/128x128.png"])).toBe(
+      "native-or-control-plane",
+    );
+  });
 });
