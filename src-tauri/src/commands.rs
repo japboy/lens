@@ -232,6 +232,40 @@ pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<Le
     extract_target_set_for_operation(app, operation_id, target_set).await
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SourceExtractionBudget {
+    max_nodes: usize,
+    max_text_bytes: usize,
+    limits: ExtractionLimits,
+}
+
+fn source_extraction_budget(
+    remaining_nodes: usize,
+    remaining_text_bytes: usize,
+    remaining_resource_refs: usize,
+    remaining_resource_uri_bytes: usize,
+) -> Option<SourceExtractionBudget> {
+    let max_nodes = remaining_nodes.min(MAX_LENS_SOURCE_NODES);
+    if max_nodes == 0 {
+        return None;
+    }
+    let max_text_bytes = remaining_text_bytes.min(MAX_LENS_SOURCE_TEXT_BYTES);
+    Some(SourceExtractionBudget {
+        max_nodes,
+        max_text_bytes,
+        limits: ExtractionLimits {
+            max_nodes: u32::try_from(max_nodes).expect("versioned node budget fits u32"),
+            max_text_bytes: u32::try_from(max_text_bytes).expect("versioned text budget fits u32"),
+            max_resource_refs: u32::try_from(remaining_resource_refs)
+                .expect("versioned resource-reference budget fits u32"),
+            max_resource_uri_bytes: u32::try_from(MAX_AX_RESOURCE_URI_BYTES)
+                .expect("versioned resource-URI limit fits u32"),
+            max_total_resource_uri_bytes: u32::try_from(remaining_resource_uri_bytes)
+                .expect("versioned resource-URI group budget fits u32"),
+        },
+    })
+}
+
 async fn extract_target_set_for_operation(
     app: AppHandle,
     operation_id: Uuid,
@@ -247,25 +281,16 @@ async fn extract_target_set_for_operation(
     let mut payloads = Vec::new();
 
     for target in &target_set.targets {
-        let accessibility = if remaining_nodes == 0 || remaining_text_bytes == 0 {
-            LensContext::unavailable_accessibility(format!(
-                "{} was not extracted because the version 1 group content budget was exhausted",
-                target.id
-            ))
-        } else {
-            let max_nodes = remaining_nodes.min(MAX_LENS_SOURCE_NODES);
-            let max_text_bytes = remaining_text_bytes.min(MAX_LENS_SOURCE_TEXT_BYTES);
-            let limits = ExtractionLimits {
-                max_nodes: u32::try_from(max_nodes).expect("versioned node budget fits u32"),
-                max_text_bytes: u32::try_from(max_text_bytes)
-                    .expect("versioned text budget fits u32"),
-                max_resource_refs: u32::try_from(remaining_resource_refs)
-                    .expect("versioned resource-reference budget fits u32"),
-                max_resource_uri_bytes: u32::try_from(MAX_AX_RESOURCE_URI_BYTES)
-                    .expect("versioned resource-URI limit fits u32"),
-                max_total_resource_uri_bytes: u32::try_from(remaining_resource_uri_bytes)
-                    .expect("versioned resource-URI group budget fits u32"),
-            };
+        let extraction_budget = source_extraction_budget(
+            remaining_nodes,
+            remaining_text_bytes,
+            remaining_resource_refs,
+            remaining_resource_uri_bytes,
+        );
+        let accessibility = if let Some(extraction_budget) = extraction_budget {
+            let max_nodes = extraction_budget.max_nodes;
+            let max_text_bytes = extraction_budget.max_text_bytes;
+            let limits = extraction_budget.limits;
             let extraction_target = target.window.clone();
             let mut extraction = match tauri::async_runtime::spawn_blocking(move || {
                 platform::extract_window(&extraction_target, limits)
@@ -296,6 +321,11 @@ async fn extract_target_set_for_operation(
             remaining_resource_uri_bytes =
                 remaining_resource_uri_bytes.saturating_sub(extraction.metrics.resource_uri_bytes);
             extraction
+        } else {
+            LensContext::unavailable_accessibility(format!(
+                "{} was not extracted because the version 1 group traversal-node budget was exhausted",
+                target.id
+            ))
         };
 
         let plan = LensMediaPlan::from_accessibility(
@@ -911,5 +941,27 @@ mod tests {
         assert_eq!(state.stage, LensStage::Failed);
         assert_eq!(state.target_set, Some(target_set));
         assert_eq!(state.error.as_deref(), Some("failure"));
+    }
+
+    #[test]
+    fn exhausted_diagnostic_text_budget_keeps_source_traversal_available() {
+        let budget = source_extraction_budget(
+            MAX_LENS_SOURCE_NODES,
+            0,
+            MAX_AX_RESOURCE_REFERENCES,
+            MAX_AX_TOTAL_RESOURCE_URI_BYTES,
+        )
+        .expect("remaining nodes keep extraction available");
+
+        assert_eq!(budget.max_nodes, MAX_LENS_SOURCE_NODES);
+        assert_eq!(budget.max_text_bytes, 0);
+        assert_eq!(budget.limits.max_text_bytes, 0);
+        assert!(source_extraction_budget(
+            0,
+            MAX_LENS_SOURCE_TEXT_BYTES,
+            MAX_AX_RESOURCE_REFERENCES,
+            MAX_AX_TOTAL_RESOURCE_URI_BYTES,
+        )
+        .is_none());
     }
 }

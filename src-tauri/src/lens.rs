@@ -1463,6 +1463,28 @@ mod tests {
     }
 
     #[test]
+    fn zero_diagnostic_text_budget_preserves_structured_ax_and_image_regions() {
+        let mut extraction = accessibility(ExtractionQuality::Partial);
+        extraction.text.clear();
+        extraction.metrics.text_bytes = 0;
+        extraction.metrics.truncated_text = true;
+
+        let document = LensDocument::from_accessibility(&target(), &extraction)
+            .expect("valid graph")
+            .expect("structured document remains usable");
+        let plan =
+            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
+
+        assert_eq!(document.nodes.len(), 3);
+        assert_eq!(plan.requests.len(), 1);
+        assert_eq!(plan.requests[0].scope, LensMediaScope::AxElementRegion);
+        assert_eq!(
+            plan.requests[0].source_node_id.as_deref(),
+            Some("node-000002")
+        );
+    }
+
+    #[test]
     fn unavailable_ax_requests_one_whole_window_fallback() {
         let plan = LensMediaPlan::from_accessibility(
             &target(),

@@ -911,6 +911,10 @@ static BOOL LensIsWindowChromeText(NSString *candidate, NSString *windowTitle) {
     return text != nil && title != nil && [text caseInsensitiveCompare:title] == NSOrderedSame;
 }
 
+static BOOL LensIsUsefulNodeText(NSString *candidate, NSString *windowTitle) {
+    return LensTrimmedText(candidate) != nil && !LensIsWindowChromeText(candidate, windowTitle);
+}
+
 static NSDictionary *LensExtractionUnavailableWithDiagnostics(NSArray<NSString *> *diagnostics) {
     return @{
         @"quality": @"unavailable",
@@ -999,6 +1003,7 @@ char *lens_extract_window_json(
         NSUInteger resourceURIBytes = 0;
         NSUInteger omittedResourceRefs = 0;
         NSUInteger resourceReadErrors = 0;
+        BOOL hasUsefulNodeText = NO;
         BOOL truncatedNodes = NO;
         BOOL truncatedText = NO;
 
@@ -1062,6 +1067,10 @@ char *lens_extract_window_json(
             // model helps resolver diagnostics, while excluding root attributes and repeated title
             // descendants ensures a WebView exposing only its chrome is classified as unavailable.
             if (depth > 0) {
+                hasUsefulNodeText = hasUsefulNodeText
+                    || LensIsUsefulNodeText(title, selectedTitle)
+                    || LensIsUsefulNodeText(value, selectedTitle)
+                    || LensIsUsefulNodeText(description, selectedTitle);
                 // AX commonly repeats one semantic value across a node's title, value, and
                 // description attributes. Deduplicate only within this node so equal text on
                 // distinct rows, cells, or list items retains its structural meaning.
@@ -1202,7 +1211,9 @@ char *lens_extract_window_json(
         }
 
         NSString *text = [fragments componentsJoinedByString:@"\n"];
-        BOOL hasUsefulContent = text.length > 0 || resourceRefCount > 0;
+        // The flat text buffer is retained only for diagnostic compatibility. Reaching its byte
+        // limit must not discard a structurally useful AX graph or its AXImage capture plan.
+        BOOL hasUsefulContent = hasUsefulNodeText || resourceRefCount > 0;
         NSString *quality = !hasUsefulContent
             ? @"unavailable"
             : (truncatedNodes || truncatedText || childrenReadErrors > 0
