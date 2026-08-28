@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { AppView } from "./presentation-context";
 import type { AppSnapshot } from "./types";
 
 const operationId = "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d";
@@ -176,6 +177,25 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+interface TestLensApp extends HTMLElement {
+  context: { view: AppView; platform: "macos" };
+  updateComplete: Promise<boolean>;
+}
+
+async function createLensApp(view: AppView): Promise<TestLensApp> {
+  window.history.replaceState({}, "", `/?view=${view}&platform=macos`);
+  await import("./lens-app");
+  const element = document.createElement("lens-app") as TestLensApp;
+  element.context = { view, platform: "macos" };
+  document.body.append(element);
+  await element.updateComplete;
+  return element;
+}
+
+function viewRoot(element: TestLensApp, selector: string): ShadowRoot | undefined {
+  return element.shadowRoot?.querySelector<HTMLElement>(selector)?.shadowRoot ?? undefined;
+}
+
 describe("Lens target selection preview", () => {
   it("shows only the vertical preview cards and icon actions, then invokes finite edit commands", async () => {
     snapshot.lens = {
@@ -215,39 +235,32 @@ describe("Lens target selection preview", () => {
       },
       output_blocks: [],
     };
-    window.history.replaceState({}, "", "/?view=target-selection&platform=macos");
-    await import("./lens-app");
     const { invoke } = await import("@tauri-apps/api/core");
-    const element = document.createElement("lens-app") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    document.body.append(element);
-    await element.updateComplete;
+    const element = await createLensApp("target-selection");
     await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelectorAll(".target-selection-card")).toHaveLength(2);
+      expect(
+        viewRoot(element, "lens-target-selection-view")?.querySelectorAll(".target-selection-card"),
+      ).toHaveLength(2);
     });
+    const selectionRoot = viewRoot(element, "lens-target-selection-view");
 
     const images = Array.from(
-      element.shadowRoot?.querySelectorAll<HTMLImageElement>(".target-selection-image > img") ?? [],
+      selectionRoot?.querySelectorAll<HTMLImageElement>(".target-selection-image > img") ?? [],
     );
     expect(images.map((image) => image.getAttribute("src"))).toEqual([
       `lens://selection/${operationId}/window/417`,
       `lens://selection/${operationId}/window/512`,
     ]);
-    expect(element.shadowRoot?.querySelector(".overlay-header")).toBeNull();
-    expect(element.shadowRoot?.querySelector("[data-tauri-drag-region]")).toBeNull();
-    expect(element.shadowRoot?.querySelector('[aria-label="Close Lens"]')).toBeNull();
-    expect(element.shadowRoot?.querySelector(".target-selection-count")?.textContent).toContain(
-      "2 / 4",
-    );
+    expect(selectionRoot?.querySelector(".overlay-header")).toBeNull();
+    expect(selectionRoot?.querySelector("[data-tauri-drag-region]")).toBeNull();
+    expect(selectionRoot?.querySelector('[aria-label="Close Lens"]')).toBeNull();
+    expect(selectionRoot?.querySelector(".target-selection-count")?.textContent).toContain("2 / 4");
 
-    element.shadowRoot
-      ?.querySelector<HTMLButtonElement>('[aria-label="Add another window"]')
-      ?.click();
+    selectionRoot?.querySelector<HTMLButtonElement>('[aria-label="Add another window"]')?.click();
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("add_lens_target", { operationId });
     });
-    const removeButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+    const removeButton = selectionRoot?.querySelector<HTMLButtonElement>(
       '[aria-label^="Remove Safari"]',
     );
     await vi.waitFor(() => expect(removeButton?.disabled).toBe(false));
@@ -258,7 +271,7 @@ describe("Lens target selection preview", () => {
         targetId: "macos:com.apple.Safari:417",
       });
     });
-    const confirmButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+    const confirmButton = selectionRoot?.querySelector<HTMLButtonElement>(
       '[aria-label="Use selected windows"]',
     );
     await vi.waitFor(() => expect(confirmButton?.disabled).toBe(false));
@@ -271,41 +284,35 @@ describe("Lens target selection preview", () => {
 
 describe("Lens rich Agent output", () => {
   it("declares the titlebar as the Lens window drag region", async () => {
-    await import("./lens-app");
-    const element = document.createElement("lens-app") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    document.body.append(element);
-    await element.updateComplete;
+    const element = await createLensApp("overlay");
     await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector(".overlay-title")?.textContent).toContain(
-        "2 Windows",
-      );
+      expect(
+        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-title")?.textContent,
+      ).toContain("2 Windows");
     });
+    const overlayRoot = viewRoot(element, "lens-overlay-view");
 
     expect(
-      element.shadowRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
+      overlayRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
     ).toBe("deep");
     expect(
-      element.shadowRoot?.querySelector(".close-button")?.getAttribute("data-tauri-drag-region"),
+      overlayRoot?.querySelector(".close-button")?.getAttribute("data-tauri-drag-region"),
     ).toBe("false");
-    expect(element.shadowRoot?.querySelector(".overlay-title")?.getAttribute("title")).toContain(
+    expect(overlayRoot?.querySelector(".overlay-title")?.getAttribute("title")).toContain(
       "TextEdit — Notes",
     );
   });
 
   it("renders ACP image data inline and preserves surrounding block order", async () => {
-    await import("./lens-app");
-    const element = document.createElement("lens-app") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    document.body.append(element);
-    await element.updateComplete;
+    const element = await createLensApp("overlay");
     await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector(".lens-output img")).not.toBeNull();
+      expect(
+        viewRoot(element, "lens-overlay-view")?.querySelector(".lens-output img"),
+      ).not.toBeNull();
     });
+    const overlayRoot = viewRoot(element, "lens-overlay-view");
 
-    const output = element.shadowRoot?.querySelector(".lens-output");
+    const output = overlayRoot?.querySelector(".lens-output");
     const blocks = Array.from(output?.children ?? []);
     const image = output?.querySelector("img");
 
@@ -319,25 +326,31 @@ describe("Lens rich Agent output", () => {
   });
 
   it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {
-    await import("./lens-app");
-    const element = document.createElement("lens-app") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    document.body.append(element);
-    await element.updateComplete;
+    const element = await createLensApp("overlay");
     await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector("#source-tab")).not.toBeNull();
+      expect(
+        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-title")?.textContent,
+      ).toContain("2 Windows");
     });
-    element.shadowRoot?.querySelector<HTMLButtonElement>("#source-tab")?.click();
-    await element.updateComplete;
+    const overlayView = element.shadowRoot?.querySelector<
+      HTMLElement & { updateComplete: Promise<boolean> }
+    >("lens-overlay-view");
+    const overlayRoot = overlayView?.shadowRoot;
+    overlayRoot?.querySelector<HTMLButtonElement>("#source-tab")?.click();
+    await overlayView?.updateComplete;
+    await vi.waitFor(() => {
+      expect(
+        overlayRoot?.querySelector<HTMLImageElement>(".input-media-preview figure > img"),
+      ).not.toBeNull();
+    });
 
-    const preview = element.shadowRoot?.querySelector<HTMLImageElement>(
+    const preview = overlayRoot?.querySelector<HTMLImageElement>(
       ".input-media-preview figure > img",
     );
     const thumbnails = Array.from(
-      element.shadowRoot?.querySelectorAll<HTMLButtonElement>(".input-media-thumbnail") ?? [],
+      overlayRoot?.querySelectorAll<HTMLButtonElement>(".input-media-thumbnail") ?? [],
     );
-    const source = element.shadowRoot?.querySelector(".source-content code")?.textContent;
+    const source = overlayRoot?.querySelector(".source-content code")?.textContent;
     expect(preview?.getAttribute("src")).toBe(snapshot.lens.input?.media[0]?.uri);
     expect(preview?.getAttribute("src")).not.toContain("data:");
     expect(thumbnails).toHaveLength(2);
@@ -349,13 +362,16 @@ describe("Lens rich Agent output", () => {
     expect(source).not.toContain("iVBORw0KGgo=");
 
     thumbnails[1]?.click();
-    await element.updateComplete;
+    const gallery = overlayRoot?.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
+      "lens-media-gallery",
+    );
+    await gallery?.updateComplete;
     expect(
-      element.shadowRoot
+      overlayRoot
         ?.querySelector<HTMLImageElement>(".input-media-preview figure > img")
         ?.getAttribute("src"),
     ).toBe(snapshot.lens.input?.media[1]?.uri);
-    const metadata = element.shadowRoot
+    const metadata = overlayRoot
       ?.querySelector(".input-media-metadata")
       ?.textContent?.replace(/\s+/g, " ");
     expect(metadata).toContain("media-node-000002");
@@ -371,18 +387,11 @@ describe("Lens rich Agent output", () => {
 
 describe("Lens Settings", () => {
   it("starts with explicitly named setting groups instead of a redundant visible header", async () => {
-    window.history.replaceState({}, "", "/?view=settings&platform=macos");
-    await import("./lens-app");
-    const element = document.createElement("lens-app") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    document.body.append(element);
-    await element.updateComplete;
+    const element = await createLensApp("settings");
+    const settingsRoot = viewRoot(element, "lens-settings-view");
 
-    const main = element.shadowRoot?.querySelector("main");
-    const groups = Array.from(main?.children ?? []).filter((child) =>
-      child.classList.contains("settings-group"),
-    );
+    const main = settingsRoot?.querySelector("main");
+    const groups = Array.from(main?.querySelectorAll(".settings-group") ?? []);
 
     expect(main?.getAttribute("aria-label")).toBe("Settings");
     expect(main?.querySelector("header")).toBeNull();
@@ -395,21 +404,17 @@ describe("Lens Settings", () => {
   });
 
   it("preserves native HTML behavior on the platform presentation targets", async () => {
-    window.history.replaceState({}, "", "/?view=settings&platform=macos");
-    await import("./lens-app");
-    const element = document.createElement("lens-app") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    document.body.append(element);
-    await element.updateComplete;
+    const element = await createLensApp("settings");
     await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector<HTMLInputElement>(".directory-field")?.value).toBe(
-        "/tmp",
-      );
+      expect(
+        viewRoot(element, "lens-settings-view")?.querySelector<HTMLInputElement>(".directory-field")
+          ?.value,
+      ).toBe("/tmp");
     });
+    const settingsRoot = viewRoot(element, "lens-settings-view");
 
-    const directory = element.shadowRoot?.querySelector<HTMLInputElement>(".directory-field");
-    const prompt = element.shadowRoot?.querySelector<HTMLTextAreaElement>(".prompt-editor");
+    const directory = settingsRoot?.querySelector<HTMLInputElement>(".directory-field");
+    const prompt = settingsRoot?.querySelector<HTMLTextAreaElement>(".prompt-editor");
 
     expect(directory).toBeInstanceOf(HTMLInputElement);
     expect(directory?.type).toBe("text");

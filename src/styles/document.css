@@ -1,0 +1,41 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-size: 13px;
+  color: CanvasText;
+  background: transparent;
+  accent-color: AccentColor;
+  font-synthesis: none;
+  --settings-backdrop: Canvas;
+  --settings-group-background: Canvas;
+  --settings-group-border: ButtonBorder;
+}
+
+html[data-view="settings"][data-platform="macos"] {
+  --settings-backdrop: Window;
+  --settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);
+  --settings-group-border: color-mix(in srgb, -apple-system-separator 50%, transparent 50%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--settings-backdrop);
+}
+
+html[data-view="overlay"],
+body[data-view="overlay"],
+html[data-view="target-selection"],
+body[data-view="target-selection"] {
+  background: transparent;
+}
