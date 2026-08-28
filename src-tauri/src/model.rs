@@ -16,6 +16,12 @@ pub struct Bounds {
     pub height: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceReference {
+    pub uri: String,
+    pub source_attribute: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SelectedWindow {
     pub window_id: u32,
@@ -77,6 +83,10 @@ pub enum ExtractionQuality {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractedNode {
+    pub id: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    pub order: usize,
     pub depth: usize,
     #[serde(default)]
     pub role: Option<String>,
@@ -90,6 +100,10 @@ pub struct ExtractedNode {
     pub description: Option<String>,
     #[serde(default)]
     pub bounds: Option<Bounds>,
+    #[serde(default)]
+    pub resource_refs: Vec<ResourceReference>,
+    #[serde(default)]
+    pub children: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -108,6 +122,10 @@ pub struct ExtractionMetrics {
     pub truncated_nodes: bool,
     pub truncated_text: bool,
     pub children_read_errors: usize,
+    pub resource_ref_count: usize,
+    pub resource_uri_bytes: usize,
+    pub omitted_resource_refs: usize,
+    pub resource_read_errors: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,39 +141,6 @@ pub struct ExtractionResult {
     pub metrics: ExtractionMetrics,
     #[serde(default)]
     pub diagnostics: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LensSource {
-    pub application: String,
-    pub window_title: String,
-    pub bundle_id: String,
-    pub window_id: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LensInput {
-    pub source: LensSource,
-    pub text: String,
-    pub extraction_quality: ExtractionQuality,
-}
-
-impl LensInput {
-    pub fn from_extraction(target: &SelectedWindow, extraction: &ExtractionResult) -> Option<Self> {
-        if extraction.quality == ExtractionQuality::Unavailable || extraction.text.is_empty() {
-            return None;
-        }
-        Some(Self {
-            source: LensSource {
-                application: target.application_name.clone(),
-                window_title: target.title.clone(),
-                bundle_id: target.bundle_id.clone(),
-                window_id: target.window_id,
-            },
-            text: extraction.text.clone(),
-            extraction_quality: extraction.quality,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -364,9 +349,9 @@ pub struct LensState {
     #[serde(default)]
     pub target: Option<SelectedWindow>,
     #[serde(default)]
-    pub extraction: Option<ExtractionResult>,
+    pub context: Option<crate::lens::LensContext>,
     #[serde(default)]
-    pub input: Option<LensInput>,
+    pub input: Option<crate::lens::LensInput>,
     #[serde(default)]
     pub output_blocks: Vec<LensOutputBlock>,
     #[serde(default)]
@@ -381,7 +366,7 @@ impl Default for LensState {
             operation_id: None,
             stage: LensStage::Idle,
             target: None,
-            extraction: None,
+            context: None,
             input: None,
             output_blocks: Vec::new(),
             agent: None,
@@ -442,65 +427,6 @@ impl AppSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unavailable_extraction_never_becomes_lens_input() {
-        let target = SelectedWindow {
-            window_id: 1,
-            title: "Document".into(),
-            application_name: "Browser".into(),
-            bundle_id: "example.browser".into(),
-            pid: 42,
-            frame: Bounds {
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 100.0,
-            },
-        };
-        let extraction = ExtractionResult {
-            quality: ExtractionQuality::Unavailable,
-            resolved_window: None,
-            nodes: vec![],
-            text: String::new(),
-            metrics: ExtractionMetrics::default(),
-            diagnostics: vec![],
-        };
-        assert_eq!(LensInput::from_extraction(&target, &extraction), None);
-    }
-
-    #[test]
-    fn partial_extraction_remains_usable_and_explicit() {
-        let target = SelectedWindow {
-            window_id: 1,
-            title: "Virtualized list".into(),
-            application_name: "Application".into(),
-            bundle_id: "example.application".into(),
-            pid: 42,
-            frame: Bounds {
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 100.0,
-            },
-        };
-        let extraction = ExtractionResult {
-            quality: ExtractionQuality::Partial,
-            resolved_window: None,
-            nodes: vec![],
-            text: "Visible rows".into(),
-            metrics: ExtractionMetrics {
-                virtualization_signals: 1,
-                ..ExtractionMetrics::default()
-            },
-            diagnostics: vec!["Virtualized rows are partial by design.".into()],
-        };
-
-        let input = LensInput::from_extraction(&target, &extraction).expect("partial LensInput");
-
-        assert_eq!(input.extraction_quality, ExtractionQuality::Partial);
-        assert_eq!(input.text, "Visible rows");
-    }
 
     #[test]
     fn only_an_authenticated_selection_enables_lens_target_selection() {

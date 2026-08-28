@@ -4,6 +4,7 @@ import {
   AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
   imageDataUrl,
+  inputMediaPreviewUrl,
   isAgentRuntimeActive,
   lensOutputBlocks,
   lensSourceJson,
@@ -13,6 +14,41 @@ import {
   STAGE_LABEL,
   supportedAuthMethods,
 } from "./view-model";
+
+function lensInput(text: string): NonNullable<LensState["input"]> {
+  return {
+    schema_version: 3,
+    context_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
+    context_revision: 1,
+    sources: [
+      {
+        source_id: "macos:com.apple.Safari:417:accessibility",
+        target_id: "macos:com.apple.Safari:417",
+        source_revision: 1,
+        source: {
+          application: "Safari",
+          window_title: "Fixture",
+          bundle_id: "com.apple.Safari",
+          window_id: 417,
+        },
+        document: {
+          nodes: [
+            {
+              id: "node-000000",
+              kind: "text",
+              value: text,
+            },
+          ],
+        },
+        quality: "full",
+        omissions: [],
+      },
+    ],
+    media: [],
+    media_omissions: [],
+    quality: "full",
+  };
+}
 
 describe("PersonalLens view model", () => {
   it("defines every managed Agent runtime stage and its active states", () => {
@@ -83,16 +119,7 @@ describe("PersonalLens view model", () => {
           data: "iVBORw0KGgo=",
         },
       ],
-      input: {
-        source: {
-          application: "Safari",
-          window_title: "Fixture",
-          bundle_id: "com.apple.Safari",
-          window_id: 417,
-        },
-        text: "Accessibility input",
-        extraction_quality: "full",
-      },
+      input: lensInput("Accessibility input"),
     } satisfies LensState;
 
     expect(lensOutputBlocks(lens)).toEqual(lens.output_blocks);
@@ -113,36 +140,88 @@ describe("PersonalLens view model", () => {
     const lens = {
       stage: "ready",
       output_blocks: [],
-      extraction: {
+      context: {
+        schema_version: 3,
+        context_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
+        revision: 1,
+        accessibility: {
+          source_id: "macos:com.apple.Safari:417:accessibility",
+          target_id: "macos:com.apple.Safari:417",
+          revision: 1,
+          source: {
+            application: "Safari",
+            window_title: "Fixture",
+            bundle_id: "com.apple.Safari",
+            window_id: 417,
+          },
+          capture: {
+            quality: "full",
+            nodes: [],
+            text: "",
+            diagnostics: [],
+            metrics: {
+              visited_nodes: 0,
+              text_bytes: 0,
+              offscreen_text_nodes: 0,
+              virtualization_signals: 0,
+              truncated_nodes: false,
+              truncated_text: false,
+              children_read_errors: 0,
+              resource_ref_count: 0,
+              resource_uri_bytes: 0,
+              omitted_resource_refs: 0,
+              resource_read_errors: 0,
+            },
+          },
+        },
+        media: [],
+        media_omissions: [],
         quality: "full",
-        text: "Raw extraction must not become a second Source authority.",
-        diagnostics: [],
-        metrics: {
-          visited_nodes: 1,
-          text_bytes: 10,
-          offscreen_text_nodes: 0,
-          virtualization_signals: 0,
-          truncated_nodes: false,
-          truncated_text: false,
-          children_read_errors: 0,
-        },
+        diagnostics: ["Raw capture diagnostics must not become a second Source authority."],
       },
-      input: {
-        source: {
-          application: "Safari",
-          window_title: "Fixture",
-          bundle_id: "com.apple.Safari",
-          window_id: 417,
-        },
-        text: "Normalized source",
-        extraction_quality: "full",
-      },
+      input: lensInput("Normalized source"),
     } satisfies LensState;
 
     const sourceJson = lensSourceJson(lens);
     expect(sourceJson).toBe(JSON.stringify(lens.input, undefined, 2));
     expect(JSON.parse(sourceJson)).toEqual(lens.input);
     expect(lensSourceJson({ ...lens, input: undefined })).toBe("");
+  });
+
+  it("accepts only current operation-scoped PNG input preview URIs", () => {
+    const input = lensInput("Normalized source");
+    const attachment = {
+      id: "media-node-000001",
+      uri: `personallens://context/${input.context_id}/${input.context_revision}/media/media-node-000001`,
+      scope: "ax_element_region",
+      source_node_id: "node-000001",
+      source_bounds: { x: 10, y: 20, width: 30, height: 40 },
+      captured_bounds: { x: 10, y: 20, width: 30, height: 40 },
+      coverage: "full_region",
+      coordinate_space: "screen_points",
+      mime_type: "image/png",
+      pixel_width: 300,
+      pixel_height: 400,
+      encoded_bytes: 512,
+    } as const;
+    input.media = [attachment];
+    const lens = {
+      operation_id: input.context_id,
+      stage: "ready",
+      output_blocks: [],
+      input,
+    } satisfies LensState;
+
+    expect(inputMediaPreviewUrl(lens, attachment)).toBe(attachment.uri);
+    expect(
+      inputMediaPreviewUrl({ ...lens, operation_id: "superseding-operation" }, attachment),
+    ).toBeUndefined();
+    expect(
+      inputMediaPreviewUrl(lens, { ...attachment, uri: "https://example.com/image.png" }),
+    ).toBeUndefined();
+    expect(
+      inputMediaPreviewUrl(lens, { ...attachment, mime_type: "image/svg+xml" }),
+    ).toBeUndefined();
   });
 
   it("offers only authentication methods the client supports", () => {

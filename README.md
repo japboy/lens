@@ -1,8 +1,8 @@
 # PersonalLens
 
-PersonalLens is a menu-bar-first application that reads the Accessibility Tree exposed by another macOS application and transforms that information through an ACP agent selected by the user.
+PersonalLens is a menu-bar-first application that reads the Accessibility Tree of another macOS application's selected window, captures AX-identified image regions when present, and transforms that structured multimodal information through an ACP agent selected by the user.
 
-The PoC focuses on accessibility-based text extraction and ACP-based transformation. It renders ordered ACP Markdown and raster-image output blocks, but does not extract images, perform OCR, handle audio, or translate content in real time. The Lens window uses the selected target only for its initial frame, then leaves movement and resizing to the user.
+The current implementation creates one canonical Accessibility document for one selected window. `AXImage` nodes retain links to bounded PNG attachments captured from their screen regions with ScreenCaptureKit and sent as ACP image blocks; no OCR step converts them to text. A whole-window bitmap is used only when no usable Accessibility document can be normalized. It does not handle audio, multiple selected windows, or live source synchronization. The Lens window uses the selected target only for its initial frame, then leaves movement and resizing to the user.
 
 ## Requirements
 
@@ -10,6 +10,7 @@ The PoC focuses on accessibility-based text extraction and ACP-based transformat
 - Xcode Command Line Tools
 - [mise](https://mise.jdx.dev/) 2026.8.10 or later
 - Accessibility permission
+- Screen Recording permission for AX-linked image regions and the explicit whole-window fallback; text-only Accessibility remains usable independently when image capture is unavailable
 
 macOS 15.2 is the minimum because it is the first version that provides the public `includedWindows` API needed to deterministically obtain the selected `SCWindow` from the `SCContentFilter` returned by the native picker.
 
@@ -50,14 +51,14 @@ An Agent receives a check mark only after PersonalLens installs and verifies its
 
 Settings provides Agent selection, adapter-owned authentication, reauthentication, sign-out, an editable Agent Prompt, Working Directory, and Accessibility permission controls. The Agent Prompt controls the response transformation while PersonalLens keeps its source-data boundary and safety instructions fixed. Reauthentication, sign-out, and restoring the built-in prompt first show a native confirmation dialog. Settings contains no Lens Target button; Lens Target selection is a menu-bar action. Its preferred size shows all default content without scrolling, while its monitor-aware height cap and compact layout keep it within an HD work area and preserve scrolling when variable content requires it.
 
-The Lens window is initially sized to 80% of the selected target and centered in that target, uses normal window stacking, and remains movable and resizable without following later target movement or resizing. Its transparent WebView surface reveals macOS's active native `HudWindow` material during standard presentation so background colors and structure remain recognizable while text is visibly blurred; increased-contrast and reduced-transparency modes become opaque. Reusing an existing Lens window preserves the user's frame. Translation is the default tab. Ordered ACP text and image chunks remain typed output blocks. Text deltas render through an append-only Markdown DOM with a stream cursor and reader-aware auto-scroll; terminal text settles once as sanitized GitHub Flavored Markdown. Completed `mermaid` code fences are then rendered from the bundled Mermaid runtime with strict security, bounded input, deterministic IDs, and system-aware light/dark themes; invalid diagrams remain visible as source code. PNG, JPEG, GIF, WebP, and AVIF output renders inline, while unsupported content remains explicit. Source keeps the extracted Accessibility text and diagnostics available without flashing them as the Agent result. Loading uses only bundled assets.
+The Lens window is initially sized to 80% of the selected target and centered in that target, uses normal window stacking, and remains movable and resizable without following later target movement or resizing. Its transparent WebView surface reveals macOS's active native `HudWindow` material during standard presentation so background colors and structure remain recognizable while text is visibly blurred; increased-contrast and reduced-transparency modes become opaque. Reusing an existing Lens window preserves the user's frame. Translation is the default tab. Ordered ACP text and image chunks remain typed output blocks. Text deltas render through an append-only Markdown DOM with a stream cursor and reader-aware auto-scroll; terminal text settles once as sanitized GitHub Flavored Markdown. Completed `mermaid` code fences are then rendered from the bundled Mermaid runtime with strict security, bounded input, deterministic IDs, and system-aware light/dark themes; invalid diagrams remain visible as source code. PNG, JPEG, GIF, WebP, and AVIF output renders inline, while unsupported content remains explicit. Source shows the Agent-bound images one at a time in their exact input order, followed by a pretty-printed view of the same compact, versioned `LensInput`; Diagnostics shows AX and media capture metrics. The native newline-joined Accessibility text is diagnostic compatibility data only. Loading uses only bundled assets.
 
 ## Security Boundary
 
 - PersonalLens stores only the last successfully selected agent, Agent Prompt, and working directory. Authentication status is verified at runtime and is not persisted.
 - Managed Agent runtimes are provider-specific, versioned application data. Interrupted installs remain in staging and are never selected; an invalid existing install is quarantined before replacement.
 - It does not read or write OAuth tokens, API keys, or Claude/Codex credential files.
-- Accessibility extraction is limited to a snapshot of the target explicitly selected by the user.
+- Accessibility and image-region extraction are limited to the window explicitly selected by the user. Bounded PNG payloads are kept only in operation-scoped memory and sent to the selected ACP agent as image input; they are not persisted or exposed in the WebView snapshot or JavaScript state. The Lens overlay can resolve only the current operation's exact media URIs through a read-only, non-caching custom protocol while an input image is selected in Source.
 - PersonalLens exposes no coding client capabilities to the ACP agent.
 - Authentication methods and logout come from the agent adapter. Codex browser authentication and Claude terminal authentication start adapter-owned flows; ACP `logout` delegates sign-out to the selected adapter. PersonalLens stores no tokens, API keys, or credential files.
 
@@ -74,7 +75,7 @@ PERSONAL_LENS_VALIDATE_RUNTIME=codex pnpm run tauri dev
 
 On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, managed Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
 
-A debug-only rich-output fixture exercises the bundled Tauri WebView with ordered Markdown, an inline PNG data URL, and trailing Markdown without requiring Agent authentication or Accessibility permission:
+A debug-only rich-output fixture exercises the bundled Tauri WebView with ordered Markdown, an inline PNG Agent output, trailing Markdown, and an operation-scoped Source input-image preview without requiring Agent authentication, Accessibility permission, or Screen Recording permission:
 
 ```sh
 PERSONAL_LENS_VALIDATE_RICH_OUTPUT=1 pnpm exec tauri dev --no-watch

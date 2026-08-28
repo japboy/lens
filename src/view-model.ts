@@ -5,6 +5,7 @@ import type {
   AgentSelectionStage,
   AgentSelectionState,
   LensImageOutputBlock,
+  LensMediaAttachment,
   LensOutputBlock,
   LensStage,
   LensState,
@@ -82,6 +83,22 @@ export function imageDataUrl(block: LensImageOutputBlock): string | undefined {
 
 export function lensSourceJson(lens: LensState): string {
   return lens.input ? JSON.stringify(lens.input, undefined, 2) : "";
+}
+
+export function inputMediaPreviewUrl(
+  lens: LensState,
+  attachment: LensMediaAttachment,
+): string | undefined {
+  const input = lens.input;
+  if (
+    !input ||
+    lens.operation_id !== input.context_id ||
+    attachment.mime_type.toLowerCase() !== "image/png"
+  ) {
+    return undefined;
+  }
+  const expected = `personallens://context/${input.context_id}/${input.context_revision}/media/${attachment.id}`;
+  return attachment.uri === expected ? expected : undefined;
 }
 
 export function supportedAuthMethods(lens: LensState): AgentAuthMethod[] {

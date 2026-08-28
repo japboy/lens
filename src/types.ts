@@ -41,6 +41,11 @@ export interface Bounds {
   height: number;
 }
 
+export interface ResourceReference {
+  uri: string;
+  source_attribute: string;
+}
+
 export interface SelectedWindow {
   window_id: number;
   title: string;
@@ -50,8 +55,29 @@ export interface SelectedWindow {
   frame: Bounds;
 }
 
+export interface ExtractedNode {
+  id: string;
+  parent_id?: string;
+  order: number;
+  depth: number;
+  role?: string;
+  subrole?: string;
+  title?: string;
+  value?: string;
+  description?: string;
+  bounds?: Bounds;
+  resource_refs?: ResourceReference[];
+  children: string[];
+}
+
 export interface ExtractionResult {
   quality: ExtractionQuality;
+  resolved_window?: {
+    title: string;
+    bounds: Bounds;
+    resolution_score: number;
+  };
+  nodes: ExtractedNode[];
   text: string;
   diagnostics: string[];
   metrics: {
@@ -62,18 +88,163 @@ export interface ExtractionResult {
     truncated_nodes: boolean;
     truncated_text: boolean;
     children_read_errors: number;
+    resource_ref_count: number;
+    resource_uri_bytes: number;
+    omitted_resource_refs: number;
+    resource_read_errors: number;
   };
 }
 
+export interface LensSource {
+  application: string;
+  window_title: string;
+  bundle_id: string;
+  window_id: number;
+}
+
+export type LensNodeKind =
+  | "heading"
+  | "paragraph"
+  | "list"
+  | "list_item"
+  | "table"
+  | "row"
+  | "cell"
+  | "link"
+  | "control"
+  | "dialog"
+  | "region"
+  | "text"
+  | "image"
+  | "unknown";
+
+export type LensCoordinateSpace = "screen_points";
+
+export interface LensNode {
+  id: string;
+  parent_id?: string;
+  order: number;
+  depth: number;
+  kind: LensNodeKind;
+  role?: string;
+  subrole?: string;
+  title?: string;
+  value?: string;
+  description?: string;
+  bounds?: Bounds;
+  coordinate_space?: LensCoordinateSpace;
+  children?: string[];
+  media_refs?: string[];
+  resource_refs?: ResourceReference[];
+}
+
+export interface LensDocument {
+  schema_version: number;
+  source: LensSource;
+  roots: string[];
+  nodes: Record<string, LensNode>;
+  quality: ExtractionQuality;
+  omitted_resource_ref_count?: number;
+  diagnostics: string[];
+}
+
+export type LensMediaScope = "ax_element_region" | "window_fallback";
+export type LensMediaCoverage = "full_region" | "visible_subregion";
+
+export interface LensMediaAttachment {
+  id: string;
+  uri: string;
+  scope: LensMediaScope;
+  source_node_id?: string;
+  source_bounds: Bounds;
+  captured_bounds: Bounds;
+  coverage: LensMediaCoverage;
+  coordinate_space: LensCoordinateSpace;
+  mime_type: string;
+  pixel_width: number;
+  pixel_height: number;
+  encoded_bytes: number;
+}
+
+export interface LensMediaOmission {
+  attachment_id?: string;
+  source_node_id?: string;
+  reason:
+    | "missing_bounds"
+    | "invalid_bounds"
+    | "outside_window"
+    | "attachment_limit"
+    | "byte_budget"
+    | "capture_failed";
+  omitted_count: number;
+  first_order?: number;
+  last_order?: number;
+  detail: string;
+}
+
+export interface LensAccessibilitySource {
+  source_id: string;
+  target_id: string;
+  revision: number;
+  source: LensSource;
+  capture: ExtractionResult;
+  document?: LensDocument;
+}
+
+export interface LensContext {
+  schema_version: number;
+  context_id: string;
+  revision: number;
+  accessibility: LensAccessibilitySource;
+  media: LensMediaAttachment[];
+  media_omissions: LensMediaOmission[];
+  quality: ExtractionQuality;
+  diagnostics: string[];
+}
+
+export interface LensContentNode {
+  id: string;
+  parent_id?: string;
+  kind: LensNodeKind;
+  role?: string;
+  subrole?: string;
+  title?: string;
+  value?: string;
+  description?: string;
+  media_refs?: string[];
+  resource_refs?: ResourceReference[];
+}
+
+export interface LensDocumentProjection {
+  nodes: LensContentNode[];
+}
+
+export interface ProjectionOmission {
+  reason: "application_chrome" | "token_budget" | "unsupported_semantics" | "resource_budget";
+  omitted_node_count: number;
+  first_order?: number;
+  last_order?: number;
+  detail?: string;
+}
+
+export interface LensInputSource {
+  source_id: string;
+  target_id: string;
+  source_revision: number;
+  source: LensSource;
+  document?: LensDocumentProjection;
+  quality: ExtractionQuality;
+  omissions: ProjectionOmission[];
+}
+
 export interface LensInput {
-  source: {
-    application: string;
-    window_title: string;
-    bundle_id: string;
-    window_id: number;
-  };
-  text: string;
-  extraction_quality: ExtractionQuality;
+  schema_version: number;
+  context_id: string;
+  context_revision: number;
+  sources: LensInputSource[];
+  media: LensMediaAttachment[];
+  media_omissions: LensMediaOmission[];
+  quality: ExtractionQuality;
 }
 
 export interface AgentAuthMethod {
@@ -147,7 +318,7 @@ export interface LensState {
   operation_id?: string;
   stage: LensStage;
   target?: SelectedWindow;
-  extraction?: ExtractionResult;
+  context?: LensContext;
   input?: LensInput;
   output_blocks: LensOutputBlock[];
   agent?: AgentRunState;

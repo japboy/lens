@@ -7,6 +7,6 @@
   <key>NSAccessibilityUsageDescription</key>
   <string>PersonalLens reads accessibility content from the selected window and displays a transformed result.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>PersonalLens uses ScreenCaptureKit to display the macOS system window picker. It does not save video.</string>
+  <string>PersonalLens captures image regions from windows you select for multimodal analysis and does not save images or video.</string>
 </dict>
 </plist>
