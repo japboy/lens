@@ -113,10 +113,10 @@ export class LensApp extends LitElement {
     super.disconnectedCallback();
   }
 
-  private get view(): "settings" | "overlay" {
-    return new URLSearchParams(window.location.search).get("view") === "overlay"
-      ? "overlay"
-      : "settings";
+  private get view(): "settings" | "overlay" | "target-selection" {
+    const view = new URLSearchParams(window.location.search).get("view");
+    if (view === "overlay" || view === "target-selection") return view;
+    return "settings";
   }
 
   private async load(generation: number): Promise<void> {
@@ -135,6 +135,10 @@ export class LensApp extends LitElement {
       this.applySnapshot(await invoke<AppSnapshot>("get_app_snapshot"));
       if (generation !== this.loadGeneration || !this.isConnected) return;
 
+      if (this.view !== "settings") {
+        this.message = "";
+        return;
+      }
       this.message = "Checking Accessibility permission…";
       this.trusted = await invoke<boolean>("accessibility_permission");
       if (generation === this.loadGeneration && this.isConnected) this.message = "";
@@ -157,7 +161,14 @@ export class LensApp extends LitElement {
   }
 
   protected render() {
-    return this.view === "overlay" ? this.renderOverlay() : this.renderSettings();
+    switch (this.view) {
+      case "settings":
+        return this.renderSettings();
+      case "overlay":
+        return this.renderOverlay();
+      case "target-selection":
+        return this.renderTargetSelection();
+    }
   }
 
   private renderSettings() {
@@ -336,21 +347,136 @@ export class LensApp extends LitElement {
     `;
   }
 
+  private renderTargetSelection() {
+    const selection = this.lens.selection;
+    const items = selection?.items ?? [];
+    const pickerActive = selection?.stage === "picking";
+    const operationAvailable = Boolean(this.lens.operation_id && selection);
+    const canAdd = Boolean(
+      operationAvailable && !pickerActive && items.length < (selection?.maximum_targets ?? 0),
+    );
+    const canEdit = Boolean(operationAvailable && !pickerActive && !this.busy);
+    return html`
+      <section class="target-selection-shell" aria-label="Selected windows">
+        <header class="target-selection-toolbar">
+          <output class="target-selection-count" aria-label="Selected window count">
+            ${items.length}<span aria-hidden="true"> / ${selection?.maximum_targets ?? 0}</span>
+          </output>
+          <div class="target-selection-actions" aria-label="Selection actions">
+            <button
+              type="button"
+              class="target-selection-icon-button"
+              aria-label="Add another window"
+              title="Add another window"
+              ?disabled=${!canAdd || this.busy}
+              @click=${this.addSelectionTarget}
+            >
+              <i class="fa-solid fa-plus" aria-hidden="true"></i>
+            </button>
+            <button
+              type="button"
+              class="target-selection-icon-button is-primary"
+              aria-label="Use selected windows"
+              title="Use selected windows"
+              ?disabled=${!canEdit || items.length === 0}
+              @click=${this.confirmSelectionTargets}
+            >
+              <i class="fa-solid fa-check" aria-hidden="true"></i>
+            </button>
+          </div>
+        </header>
+
+        <ol class="target-selection-list" aria-label="Window previews">
+          ${items.map(
+            (item) => html`
+              <li class="target-selection-card">
+                <div class="target-selection-image">
+                  <div class="target-selection-placeholder" aria-hidden="true">
+                    <i class="fa-solid fa-window-maximize"></i>
+                  </div>
+                  ${
+                    item.preview_uri
+                      ? html`<img
+                          src=${item.preview_uri}
+                          alt=${`Preview of ${item.window.application_name}${
+                            item.window.title ? ` — ${item.window.title}` : ""
+                          }`}
+                          draggable="false"
+                          @error=${(event: Event) => {
+                            (event.currentTarget as HTMLImageElement).hidden = true;
+                          }}
+                        />`
+                      : nothing
+                  }
+                  <button
+                    type="button"
+                    class="target-selection-remove"
+                    aria-label=${`Remove ${item.window.application_name}${
+                      item.window.title ? ` — ${item.window.title}` : ""
+                    }`}
+                    title="Remove window"
+                    ?disabled=${!canEdit}
+                    @click=${() => this.removeSelectionTarget(item.id)}
+                  >
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                  </button>
+                </div>
+                <div class="target-selection-caption">
+                  <strong>${item.window.application_name || "Application"}</strong>
+                  <span title=${item.window.title || "Untitled window"}
+                    >${item.window.title || "Untitled window"}</span
+                  >
+                </div>
+                ${
+                  item.preview_error
+                    ? html`<span class="visually-hidden">Preview unavailable</span>`
+                    : nothing
+                }
+              </li>
+            `,
+          )}
+        </ol>
+
+        <p class="visually-hidden" role="status" aria-live="polite">
+          ${
+            this.message ||
+            selection?.notice ||
+            (pickerActive ? "Choose one window in the system picker." : "")
+          }
+        </p>
+      </section>
+    `;
+  }
+
   private renderOverlay() {
     const context = this.lens.context;
-    const target = this.lens.target;
+    const targets = this.lens.target_set?.targets ?? [];
     const outputBlocks = lensOutputBlocks(this.lens);
     const sourceJson = lensSourceJson(this.lens);
     const activeAgent = this.lens.agent;
     const authenticationMethods = supportedAuthMethods(this.lens);
-    const applicationName = target?.application_name ?? "Lens";
-    const windowContext = target?.title ? `${applicationName} — ${target.title}` : applicationName;
+    const firstWindow = targets[0]?.window;
+    const applicationName =
+      targets.length > 1 ? `${targets.length} Windows` : (firstWindow?.application_name ?? "Lens");
+    const windowContext = targets.length
+      ? targets
+          .map(({ window }) =>
+            window.title ? `${window.application_name} — ${window.title}` : window.application_name,
+          )
+          .join("\n")
+      : applicationName;
     return html`
       <div class="overlay-shell">
         <header class="overlay-header" data-tauri-drag-region="deep">
           <h1 class="overlay-title" title=${windowContext}>
             <strong>${applicationName}</strong>
-            ${target?.title ? html`<span> — ${target.title}</span>` : nothing}
+            ${
+              targets.length === 1 && firstWindow?.title
+                ? html`<span> — ${firstWindow.title}</span>`
+                : targets.length > 1
+                  ? html`<span> — Combined context</span>`
+                  : nothing
+            }
           </h1>
           <button
             type="button"
@@ -616,6 +742,10 @@ export class LensApp extends LitElement {
                 <dd><code>${attachment.id}</code></dd>
               </div>
               <div>
+                <dt>Target</dt>
+                <dd><code>${attachment.target_id}</code></dd>
+              </div>
+              <div>
                 <dt>AX node</dt>
                 <dd>
                   ${
@@ -713,7 +843,7 @@ export class LensApp extends LitElement {
     const message = (() => {
       switch (this.lens.stage) {
         case "idle":
-          return "Select a Lens Target from the menu bar.";
+          return "Select one or more Lens Targets from the menu bar.";
         case "authentication_required":
           return "Authenticate the selected Agent to continue.";
         case "cancelled":
@@ -788,21 +918,6 @@ export class LensApp extends LitElement {
   };
 
   private renderDiagnostics(context: NonNullable<LensState["context"]>) {
-    const accessibility = context.accessibility.capture;
-    const accessibilityMetrics = [
-      ["Quality", accessibility.quality],
-      ["Visited nodes", accessibility.metrics.visited_nodes],
-      ["UTF-8 bytes", accessibility.metrics.text_bytes],
-      ["Off-window text nodes", accessibility.metrics.offscreen_text_nodes],
-      ["Virtualization signals", accessibility.metrics.virtualization_signals],
-      ["Child read errors", accessibility.metrics.children_read_errors],
-      ["URI resource references", accessibility.metrics.resource_ref_count],
-      ["URI UTF-8 bytes", accessibility.metrics.resource_uri_bytes],
-      ["Omitted URI references", accessibility.metrics.omitted_resource_refs],
-      ["URI read errors", accessibility.metrics.resource_read_errors],
-      ["Nodes truncated", accessibility.metrics.truncated_nodes ? "Yes" : "No"],
-      ["Text truncated", accessibility.metrics.truncated_text ? "Yes" : "No"],
-    ] as const;
     const mediaMetrics = [
       [
         "AX image regions",
@@ -837,19 +952,42 @@ export class LensApp extends LitElement {
           >
         </summary>
         <div class="diagnostics-layout">
-          <section class="diagnostic-group" aria-labelledby="accessibility-metrics-heading">
-            <h2 id="accessibility-metrics-heading">Accessibility</h2>
-            <dl class="metrics">
-              ${accessibilityMetrics.map(
-                ([label, value]) => html`
-                  <div>
-                    <dt>${label}</dt>
-                    <dd>${value}</dd>
-                  </div>
-                `,
-              )}
-            </dl>
-          </section>
+          ${context.sources.map((source, index) => {
+            const accessibility = source.capture;
+            const metrics = [
+              ["Quality", source.quality],
+              ["Visited nodes", accessibility.metrics.visited_nodes],
+              ["UTF-8 bytes", accessibility.metrics.text_bytes],
+              ["Off-window text nodes", accessibility.metrics.offscreen_text_nodes],
+              ["Virtualization signals", accessibility.metrics.virtualization_signals],
+              ["Child read errors", accessibility.metrics.children_read_errors],
+              ["URI resource references", accessibility.metrics.resource_ref_count],
+              ["URI UTF-8 bytes", accessibility.metrics.resource_uri_bytes],
+              ["Omitted URI references", accessibility.metrics.omitted_resource_refs],
+              ["URI read errors", accessibility.metrics.resource_read_errors],
+              ["Nodes truncated", accessibility.metrics.truncated_nodes ? "Yes" : "No"],
+              ["Text truncated", accessibility.metrics.truncated_text ? "Yes" : "No"],
+            ] as const;
+            const headingId = `accessibility-metrics-heading-${index}`;
+            const sourceLabel = source.source.window_title
+              ? `${source.source.application} — ${source.source.window_title}`
+              : source.source.application;
+            return html`
+              <section class="diagnostic-group" aria-labelledby=${headingId}>
+                <h2 id=${headingId}>Accessibility — ${sourceLabel}</h2>
+                <dl class="metrics">
+                  ${metrics.map(
+                    ([label, value]) => html`
+                      <div>
+                        <dt>${label}</dt>
+                        <dd>${value}</dd>
+                      </div>
+                    `,
+                  )}
+                </dl>
+              </section>
+            `;
+          })}
           <section class="diagnostic-group" aria-labelledby="media-metrics-heading">
             <h2 id="media-metrics-heading">AX-linked images</h2>
             <dl class="metrics">
@@ -1044,6 +1182,47 @@ export class LensApp extends LitElement {
       // A transient IPC failure must not replace a more useful user-facing message.
     }
   }
+
+  private addSelectionTarget = async (): Promise<void> => {
+    const operationId = this.lens.operation_id;
+    if (!operationId) return;
+    this.busy = true;
+    this.message = "";
+    try {
+      await invoke<LensState>("add_lens_target", { operationId });
+    } catch (error) {
+      this.message = String(error);
+    } finally {
+      this.busy = false;
+    }
+  };
+
+  private async removeSelectionTarget(targetId: string): Promise<void> {
+    const operationId = this.lens.operation_id;
+    if (!operationId) return;
+    this.busy = true;
+    this.message = "";
+    try {
+      await invoke<LensState>("remove_lens_target", { operationId, targetId });
+    } catch (error) {
+      this.message = String(error);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private confirmSelectionTargets = async (): Promise<void> => {
+    const operationId = this.lens.operation_id;
+    if (!operationId) return;
+    this.busy = true;
+    this.message = "";
+    try {
+      await invoke<LensState>("confirm_lens_targets", { operationId });
+    } catch (error) {
+      this.message = String(error);
+      this.busy = false;
+    }
+  };
 
   private transform = async (): Promise<void> => {
     const operationId = this.lens.operation_id;

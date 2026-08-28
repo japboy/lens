@@ -8,8 +8,14 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 2;
-pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 3;
+pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 1;
+pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 4;
 pub const LENS_INPUT_SCHEMA_VERSION: u32 = 3;
+pub const MAX_LENS_TARGETS: usize = 4;
+pub const MAX_LENS_CONTEXT_NODES: usize = 60_000;
+pub const MAX_LENS_CONTEXT_TEXT_BYTES: usize = 2_000_000;
+pub const MAX_LENS_SOURCE_NODES: usize = 30_000;
+pub const MAX_LENS_SOURCE_TEXT_BYTES: usize = 1_000_000;
 pub const MAX_LENS_INPUT_BYTES: usize = 512 * 1024;
 pub const MAX_AX_RESOURCE_REFERENCES: usize = 256;
 pub const MAX_AX_RESOURCE_URI_BYTES: usize = 16 * 1024;
@@ -20,6 +26,80 @@ pub const MAX_LENS_MEDIA_PIXELS: usize = 1_150_000;
 pub const MAX_LENS_MEDIA_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_LENS_MEDIA_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LENS_INPUT_FIELD_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LensTarget {
+    pub id: String,
+    pub window: SelectedWindow,
+}
+
+impl LensTarget {
+    fn from_window(window: SelectedWindow) -> Self {
+        Self {
+            id: target_id(&window),
+            window,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LensTargetSet {
+    pub schema_version: u32,
+    pub selection_id: Uuid,
+    pub targets: Vec<LensTarget>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum LensTargetSetError {
+    #[error("the native picker returned no selected windows")]
+    Empty,
+    #[error("selected {actual} windows; the version 1 limit is {maximum}")]
+    TooMany { actual: usize, maximum: usize },
+    #[error("the native picker returned duplicate window identity {0}")]
+    DuplicateWindow(u32),
+}
+
+impl LensTargetSet {
+    pub fn try_new(
+        selection_id: Uuid,
+        windows: Vec<SelectedWindow>,
+    ) -> Result<Self, LensTargetSetError> {
+        if windows.is_empty() {
+            return Err(LensTargetSetError::Empty);
+        }
+        if windows.len() > MAX_LENS_TARGETS {
+            return Err(LensTargetSetError::TooMany {
+                actual: windows.len(),
+                maximum: MAX_LENS_TARGETS,
+            });
+        }
+
+        let mut window_ids = BTreeSet::new();
+        let mut targets = Vec::with_capacity(windows.len());
+        for window in windows {
+            if !window_ids.insert(window.window_id) {
+                return Err(LensTargetSetError::DuplicateWindow(window.window_id));
+            }
+            targets.push(LensTarget::from_window(window));
+        }
+        targets.sort_by(|left, right| {
+            left.window
+                .bundle_id
+                .cmp(&right.window.bundle_id)
+                .then(left.window.window_id.cmp(&right.window.window_id))
+        });
+
+        Ok(Self {
+            schema_version: LENS_TARGET_SET_SCHEMA_VERSION,
+            selection_id,
+            targets,
+        })
+    }
+
+    pub fn placement_target(&self) -> Option<&SelectedWindow> {
+        self.targets.first().map(|target| &target.window)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensSource {
@@ -422,6 +502,7 @@ pub enum LensMediaCoverage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensMediaAttachment {
     pub id: String,
+    pub target_id: String,
     pub uri: String,
     pub scope: LensMediaScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -457,6 +538,7 @@ pub enum LensMediaOmissionReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LensMediaOmission {
+    pub target_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -485,21 +567,45 @@ pub struct LensMediaPlan {
 }
 
 impl LensMediaPlan {
-    pub fn from_accessibility(target: &SelectedWindow, extraction: &ExtractionResult) -> Self {
+    pub fn from_accessibility(
+        target: &SelectedWindow,
+        extraction: &ExtractionResult,
+        max_attachments: usize,
+    ) -> Self {
+        let target_id = target_id(target);
         if extraction.quality == ExtractionQuality::Unavailable
             || !matches!(
                 LensDocument::from_accessibility(target, extraction),
                 Ok(Some(_))
             )
         {
-            return Self {
-                requests: vec![LensMediaRequest {
-                    id: "media-window-fallback".into(),
-                    scope: LensMediaScope::WindowFallback,
-                    source_node_id: None,
-                    bounds: None,
-                }],
-                omissions: Vec::new(),
+            let id = format!("media-window-{}-fallback", target.window_id);
+            return if max_attachments == 0 {
+                Self {
+                    requests: Vec::new(),
+                    omissions: vec![LensMediaOmission {
+                        target_id,
+                        attachment_id: Some(id),
+                        source_node_id: None,
+                        reason: LensMediaOmissionReason::AttachmentLimit,
+                        omitted_count: 1,
+                        first_order: None,
+                        last_order: None,
+                        detail: format!(
+                            "The whole-window fallback was omitted after the versioned {MAX_LENS_MEDIA_ATTACHMENTS}-attachment group limit."
+                        ),
+                    }],
+                }
+            } else {
+                Self {
+                    requests: vec![LensMediaRequest {
+                        id,
+                        scope: LensMediaScope::WindowFallback,
+                        source_node_id: None,
+                        bounds: None,
+                    }],
+                    omissions: Vec::new(),
+                }
             };
         }
 
@@ -516,7 +622,7 @@ impl LensMediaPlan {
         let mut plan = Self::default();
         let mut planning_omissions = BTreeMap::new();
         for node in image_nodes {
-            let attachment_id = format!("media-{}", node.id);
+            let attachment_id = format!("media-window-{}-{}", target.window_id, node.id);
             let Some(bounds) = node.bounds else {
                 record_planning_omission(
                     &mut planning_omissions,
@@ -541,7 +647,7 @@ impl LensMediaPlan {
                 );
                 continue;
             }
-            if plan.requests.len() >= MAX_LENS_MEDIA_ATTACHMENTS {
+            if plan.requests.len() >= max_attachments.min(MAX_LENS_MEDIA_ATTACHMENTS) {
                 record_planning_omission(
                     &mut planning_omissions,
                     LensMediaOmissionReason::AttachmentLimit,
@@ -560,6 +666,7 @@ impl LensMediaPlan {
             .into_iter()
             .map(
                 |(reason, (omitted_count, first_order, last_order))| LensMediaOmission {
+                    target_id: target_id.clone(),
                     attachment_id: None,
                     source_node_id: None,
                     reason,
@@ -638,6 +745,13 @@ pub struct LensAccessibilitySource {
     pub capture: ExtractionResult,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<LensDocument>,
+    pub quality: ExtractionQuality,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LensTargetCapture {
+    pub accessibility: ExtractionResult,
+    pub media: LensMediaCapture,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -645,104 +759,181 @@ pub struct LensContext {
     pub schema_version: u32,
     pub context_id: Uuid,
     pub revision: u64,
-    pub accessibility: LensAccessibilitySource,
+    pub sources: Vec<LensAccessibilitySource>,
     pub media: Vec<LensMediaAttachment>,
     pub media_omissions: Vec<LensMediaOmission>,
     pub quality: ExtractionQuality,
     pub diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum LensContextError {
+    #[error("received {actual} captures for {expected} selected targets")]
+    CaptureCount { expected: usize, actual: usize },
+    #[error("media outcome {attachment_id} belongs to {actual_target_id}; expected {expected_target_id}")]
+    MediaTargetMismatch {
+        attachment_id: String,
+        expected_target_id: String,
+        actual_target_id: String,
+    },
+}
+
 impl LensContext {
-    pub fn from_capture(
+    pub fn from_captures(
         context_id: Uuid,
-        target: &SelectedWindow,
-        mut accessibility: ExtractionResult,
-        mut media: LensMediaCapture,
-    ) -> Self {
-        let mut document = match LensDocument::from_accessibility(target, &accessibility) {
-            Ok(document) => document,
-            Err(error) => {
-                accessibility.diagnostics.push(format!(
-                    "unable to normalize Accessibility structure: {error}"
-                ));
-                None
-            }
-        };
-        if let Some(document) = document.as_mut() {
-            document.attach_media(&media.attachments);
+        target_set: &LensTargetSet,
+        captures: Vec<LensTargetCapture>,
+    ) -> Result<Self, LensContextError> {
+        if captures.len() != target_set.targets.len() {
+            return Err(LensContextError::CaptureCount {
+                expected: target_set.targets.len(),
+                actual: captures.len(),
+            });
         }
 
-        let has_document = document.is_some();
-        let has_window_fallback = media
-            .attachments
-            .iter()
-            .any(|attachment| attachment.scope == LensMediaScope::WindowFallback);
-        let quality = if has_document {
-            let has_partial_media = media
+        let mut sources = Vec::with_capacity(captures.len());
+        let mut attachments = Vec::new();
+        let mut omissions = Vec::new();
+        let mut diagnostics = Vec::new();
+        for (target, mut capture) in target_set.targets.iter().zip(captures) {
+            for attachment in &capture.media.attachments {
+                if attachment.target_id != target.id {
+                    return Err(LensContextError::MediaTargetMismatch {
+                        attachment_id: attachment.id.clone(),
+                        expected_target_id: target.id.clone(),
+                        actual_target_id: attachment.target_id.clone(),
+                    });
+                }
+            }
+            for omission in &capture.media.omissions {
+                if omission.target_id != target.id {
+                    return Err(LensContextError::MediaTargetMismatch {
+                        attachment_id: omission
+                            .attachment_id
+                            .clone()
+                            .unwrap_or_else(|| "unidentified".into()),
+                        expected_target_id: target.id.clone(),
+                        actual_target_id: omission.target_id.clone(),
+                    });
+                }
+            }
+
+            let source_id = format!("{}:accessibility", target.id);
+            let mut document =
+                match LensDocument::from_accessibility(&target.window, &capture.accessibility) {
+                    Ok(document) => document,
+                    Err(error) => {
+                        capture.accessibility.diagnostics.push(format!(
+                            "unable to normalize Accessibility structure: {error}"
+                        ));
+                        None
+                    }
+                };
+            if let Some(document) = document.as_mut() {
+                document.attach_media(&capture.media.attachments);
+            }
+
+            let has_document = document.is_some();
+            let has_window_fallback = capture
+                .media
+                .attachments
+                .iter()
+                .any(|attachment| attachment.scope == LensMediaScope::WindowFallback);
+            let has_partial_media = capture
+                .media
                 .attachments
                 .iter()
                 .any(|attachment| attachment.coverage == LensMediaCoverage::VisibleSubregion);
-            if accessibility.quality == ExtractionQuality::Full
-                && media.omissions.is_empty()
-                && !has_partial_media
-            {
-                ExtractionQuality::Full
-            } else {
+            let source_quality = if has_document {
+                if capture.accessibility.quality == ExtractionQuality::Full
+                    && capture.media.omissions.is_empty()
+                    && !has_partial_media
+                {
+                    ExtractionQuality::Full
+                } else {
+                    ExtractionQuality::Partial
+                }
+            } else if has_window_fallback {
                 ExtractionQuality::Partial
-            }
-        } else if has_window_fallback {
-            ExtractionQuality::Partial
-        } else {
+            } else {
+                ExtractionQuality::Unavailable
+            };
+
+            diagnostics.extend(
+                capture
+                    .accessibility
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| format!("{source_id}: {diagnostic}")),
+            );
+            diagnostics.extend(
+                capture
+                    .media
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| format!("{}: {diagnostic}", target.id)),
+            );
+            diagnostics.extend(capture.media.omissions.iter().map(|omission| {
+                format!(
+                    "{} media {}: {}",
+                    target.id,
+                    omission.attachment_id.as_deref().unwrap_or("unidentified"),
+                    omission.detail
+                )
+            }));
+            diagnostics.extend(
+                capture
+                    .media
+                    .attachments
+                    .iter()
+                    .filter(|attachment| {
+                        attachment.coverage == LensMediaCoverage::VisibleSubregion
+                    })
+                    .map(|attachment| {
+                        format!(
+                            "{} media {}: only the selected-window-visible subregion of the AX image could be captured",
+                            target.id, attachment.id
+                        )
+                    }),
+            );
+
+            sources.push(LensAccessibilitySource {
+                source_id,
+                target_id: target.id.clone(),
+                revision: 1,
+                source: LensSource::from(&target.window),
+                capture: capture.accessibility,
+                document,
+                quality: source_quality,
+            });
+            attachments.append(&mut capture.media.attachments);
+            omissions.append(&mut capture.media.omissions);
+        }
+
+        let quality = if sources
+            .iter()
+            .all(|source| source.quality == ExtractionQuality::Unavailable)
+        {
             ExtractionQuality::Unavailable
+        } else if sources
+            .iter()
+            .all(|source| source.quality == ExtractionQuality::Full)
+        {
+            ExtractionQuality::Full
+        } else {
+            ExtractionQuality::Partial
         };
 
-        let target_id = target_id(target);
-        let source_id = format!("{target_id}:accessibility");
-        let mut diagnostics = accessibility
-            .diagnostics
-            .iter()
-            .map(|diagnostic| format!("{source_id}: {diagnostic}"))
-            .collect::<Vec<_>>();
-        diagnostics.append(&mut media.diagnostics);
-        diagnostics.extend(media.omissions.iter().map(|omission| {
-            format!(
-                "media {}: {}",
-                omission.attachment_id.as_deref().unwrap_or("unidentified"),
-                omission.detail
-            )
-        }));
-        diagnostics.extend(
-            media
-                .attachments
-                .iter()
-                .filter(|attachment| {
-                    attachment.coverage == LensMediaCoverage::VisibleSubregion
-                })
-                .map(|attachment| {
-                    format!(
-                        "media {}: only the selected-window-visible subregion of the AX image could be captured",
-                        attachment.id
-                    )
-                }),
-        );
-
-        Self {
+        Ok(Self {
             schema_version: LENS_CONTEXT_SCHEMA_VERSION,
             context_id,
             revision: 1,
-            accessibility: LensAccessibilitySource {
-                source_id,
-                target_id,
-                revision: 1,
-                source: LensSource::from(target),
-                capture: accessibility,
-                document,
-            },
-            media: media.attachments,
-            media_omissions: media.omissions,
+            sources,
+            media: attachments,
+            media_omissions: omissions,
             quality,
             diagnostics,
-        }
+        })
     }
 
     pub fn unavailable_accessibility(message: impl Into<String>) -> ExtractionResult {
@@ -755,13 +946,9 @@ impl LensContext {
             diagnostics: vec![message.into()],
         }
     }
-
-    pub fn accessibility_capture(&self) -> &ExtractionResult {
-        &self.accessibility.capture
-    }
 }
 
-fn target_id(target: &SelectedWindow) -> String {
+pub fn target_id(target: &SelectedWindow) -> String {
     format!("macos:{}:{}", target.bundle_id, target.window_id)
 }
 
@@ -850,62 +1037,100 @@ pub struct LensInput {
 
 impl LensInput {
     pub fn from_context(context: &LensContext) -> Option<Self> {
-        let document = context.accessibility.document.as_ref();
-        if document.is_none() && context.media.is_empty() {
+        if !context
+            .sources
+            .iter()
+            .any(|source| source.document.is_some())
+            && context.media.is_empty()
+        {
             return None;
         }
-        let required = document
-            .map(|document| document.required_projection_nodes(&context.media))
-            .unwrap_or_default();
-        let optional_count = document.map_or(0, |document| {
-            document
-                .nodes
-                .keys()
-                .filter(|id| !required.contains(*id))
-                .count()
-        });
-        let build = |optional_limit: usize| {
-            let (projection, omissions) = document.map_or_else(
-                || {
-                    (
-                        None,
-                        vec![ProjectionOmission::document_wide(
-                            ProjectionOmissionReason::UnsupportedSemantics,
-                            "Accessibility extraction was unavailable; the attached whole-window bitmap is the explicit fallback.",
-                        )],
-                    )
-                },
-                |document| {
-                    let (projection, omissions) = document.project(&required, optional_limit);
-                    (Some(projection), omissions)
-                },
-            );
+        let required = context
+            .sources
+            .iter()
+            .map(|source| {
+                let source_media = context
+                    .media
+                    .iter()
+                    .filter(|attachment| attachment.target_id == source.target_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                source
+                    .document
+                    .as_ref()
+                    .map(|document| document.required_projection_nodes(&source_media))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let optional_counts = context
+            .sources
+            .iter()
+            .zip(&required)
+            .map(|(source, required)| {
+                source.document.as_ref().map_or(0, |document| {
+                    document
+                        .nodes
+                        .keys()
+                        .filter(|id| !required.contains(*id))
+                        .count()
+                })
+            })
+            .collect::<Vec<_>>();
+        let total_optional_count = optional_counts.iter().sum();
+        let build = |total_optional_limit: usize| {
+            let optional_limits =
+                distribute_optional_limits(total_optional_limit, &optional_counts);
+            let sources = context
+                .sources
+                .iter()
+                .zip(&required)
+                .zip(optional_limits)
+                .map(|((source, required), optional_limit)| {
+                    let (projection, omissions) = source.document.as_ref().map_or_else(
+                        || {
+                            (
+                                None,
+                                vec![ProjectionOmission::document_wide(
+                                    ProjectionOmissionReason::UnsupportedSemantics,
+                                    "Accessibility extraction was unavailable; any attached whole-window bitmap is the explicit fallback for this target.",
+                                )],
+                            )
+                        },
+                        |document| {
+                            let (projection, omissions) =
+                                document.project(required, optional_limit);
+                            (Some(projection), omissions)
+                        },
+                    );
+                    LensInputSource {
+                        source_id: source.source_id.clone(),
+                        target_id: source.target_id.clone(),
+                        source_revision: source.revision,
+                        source: source.source.clone(),
+                        document: projection,
+                        quality: source.quality,
+                        omissions,
+                    }
+                })
+                .collect();
             Self {
                 schema_version: LENS_INPUT_SCHEMA_VERSION,
                 context_id: context.context_id,
                 context_revision: context.revision,
-                sources: vec![LensInputSource {
-                    source_id: context.accessibility.source_id.clone(),
-                    target_id: context.accessibility.target_id.clone(),
-                    source_revision: context.accessibility.revision,
-                    source: context.accessibility.source.clone(),
-                    document: projection,
-                    quality: context.accessibility.capture.quality,
-                    omissions,
-                }],
+                sources,
                 media: context.media.clone(),
                 media_omissions: context.media_omissions.clone(),
                 quality: context.quality,
             }
         };
 
-        let full = build(optional_count);
+        let full = build(total_optional_count);
         if full.serialized_len().ok()? <= MAX_LENS_INPUT_BYTES {
             return Some(full);
         }
 
         let mut low = 0;
-        let mut high = optional_count;
+        let mut high = total_optional_count;
         while low < high {
             let middle = low + (high - low).div_ceil(2);
             if build(middle).serialized_len().ok()? <= MAX_LENS_INPUT_BYTES {
@@ -947,6 +1172,28 @@ impl LensInput {
     }
 }
 
+fn distribute_optional_limits(total: usize, capacities: &[usize]) -> Vec<usize> {
+    let mut limits = vec![0; capacities.len()];
+    let mut remaining = total.min(capacities.iter().sum());
+    while remaining > 0 {
+        let mut progressed = false;
+        for (limit, capacity) in limits.iter_mut().zip(capacities) {
+            if remaining == 0 {
+                break;
+            }
+            if *limit < *capacity {
+                *limit += 1;
+                remaining -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    limits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,6 +1211,14 @@ mod tests {
                 width: 100.0,
                 height: 100.0,
             },
+        }
+    }
+
+    fn target_with(window_id: u32, bundle_id: &str) -> SelectedWindow {
+        SelectedWindow {
+            window_id,
+            bundle_id: bundle_id.into(),
+            ..target()
         }
     }
 
@@ -1031,8 +1286,9 @@ mod tests {
 
     fn captured_region() -> LensMediaCapture {
         let attachment = LensMediaAttachment {
-            id: "media-node-000002".into(),
-            uri: "lens://context/00000000-0000-0000-0000-000000000000/1/media/media-node-000002"
+            id: "media-window-7-node-000002".into(),
+            target_id: target_id(&target()),
+            uri: "lens://context/00000000-0000-0000-0000-000000000000/1/media/media-window-7-node-000002"
                 .into(),
             scope: LensMediaScope::AxElementRegion,
             source_node_id: Some("node-000002".into()),
@@ -1067,6 +1323,20 @@ mod tests {
         }
     }
 
+    fn context(accessibility: ExtractionResult, media: LensMediaCapture) -> LensContext {
+        let target_set =
+            LensTargetSet::try_new(Uuid::nil(), vec![target()]).expect("valid target set");
+        LensContext::from_captures(
+            Uuid::nil(),
+            &target_set,
+            vec![LensTargetCapture {
+                accessibility,
+                media,
+            }],
+        )
+        .expect("valid context")
+    }
+
     #[test]
     fn accessibility_normalization_preserves_graph_and_maps_ax_image() {
         let document =
@@ -1081,6 +1351,83 @@ mod tests {
             document.nodes["node-000002"].resource_refs[0].uri,
             "https://example.test/chart.png"
         );
+    }
+
+    #[test]
+    fn target_set_is_nonempty_bounded_unique_and_canonical() {
+        let selection_id = Uuid::nil();
+        let target_set = LensTargetSet::try_new(
+            selection_id,
+            vec![target_with(9, "z.example"), target_with(7, "a.example")],
+        )
+        .expect("valid target set");
+
+        assert_eq!(target_set.targets[0].window.bundle_id, "a.example");
+        assert_eq!(target_set.targets[1].window.bundle_id, "z.example");
+        assert_eq!(
+            target_set
+                .placement_target()
+                .expect("nonempty target set")
+                .window_id,
+            7
+        );
+        assert_eq!(
+            LensTargetSet::try_new(selection_id, Vec::new()),
+            Err(LensTargetSetError::Empty)
+        );
+        assert_eq!(
+            LensTargetSet::try_new(
+                selection_id,
+                vec![target_with(7, "a.example"), target_with(7, "z.example")]
+            ),
+            Err(LensTargetSetError::DuplicateWindow(7))
+        );
+        assert_eq!(
+            LensTargetSet::try_new(
+                selection_id,
+                (0..=MAX_LENS_TARGETS)
+                    .map(|index| target_with(index as u32 + 1, "example.browser"))
+                    .collect()
+            ),
+            Err(LensTargetSetError::TooMany {
+                actual: MAX_LENS_TARGETS + 1,
+                maximum: MAX_LENS_TARGETS,
+            })
+        );
+    }
+
+    #[test]
+    fn context_preserves_canonical_per_target_sources_and_revisions() {
+        let target_set = LensTargetSet::try_new(
+            Uuid::nil(),
+            vec![target_with(9, "z.example"), target_with(7, "a.example")],
+        )
+        .expect("valid target set");
+        let captures = target_set
+            .targets
+            .iter()
+            .map(|_| LensTargetCapture {
+                accessibility: accessibility(ExtractionQuality::Full),
+                media: LensMediaCapture::default(),
+            })
+            .collect();
+        let context =
+            LensContext::from_captures(Uuid::nil(), &target_set, captures).expect("valid context");
+        let input = LensInput::from_context(&context).expect("usable input");
+
+        assert_eq!(context.sources.len(), 2);
+        assert_eq!(context.sources[0].target_id, target_set.targets[0].id);
+        assert_eq!(context.sources[1].target_id, target_set.targets[1].id);
+        assert!(context.sources.iter().all(|source| source.revision == 1));
+        assert_eq!(input.sources.len(), 2);
+        assert_eq!(input.sources[0].target_id, target_set.targets[0].id);
+        assert_eq!(input.sources[1].target_id, target_set.targets[1].id);
+    }
+
+    #[test]
+    fn compact_input_distributes_optional_nodes_across_sources_deterministically() {
+        assert_eq!(distribute_optional_limits(7, &[10, 10, 1]), vec![3, 3, 1]);
+        assert_eq!(distribute_optional_limits(8, &[1, 10]), vec![1, 7]);
     }
 
     #[test]
@@ -1099,10 +1446,14 @@ mod tests {
 
     #[test]
     fn usable_ax_requests_only_ax_image_regions() {
-        let plan =
-            LensMediaPlan::from_accessibility(&target(), &accessibility(ExtractionQuality::Full));
+        let plan = LensMediaPlan::from_accessibility(
+            &target(),
+            &accessibility(ExtractionQuality::Full),
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
 
         assert_eq!(plan.requests.len(), 1);
+        assert_eq!(plan.requests[0].id, "media-window-7-node-000002");
         assert_eq!(plan.requests[0].scope, LensMediaScope::AxElementRegion);
         assert_eq!(
             plan.requests[0].source_node_id.as_deref(),
@@ -1116,6 +1467,7 @@ mod tests {
         let plan = LensMediaPlan::from_accessibility(
             &target(),
             &LensContext::unavailable_accessibility("AX unavailable"),
+            MAX_LENS_MEDIA_ATTACHMENTS,
         );
 
         assert_eq!(plan.requests.len(), 1);
@@ -1133,7 +1485,8 @@ mod tests {
             height: 40.0,
         });
 
-        let plan = LensMediaPlan::from_accessibility(&target(), &extraction);
+        let plan =
+            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
 
         assert!(plan.requests.is_empty());
         assert_eq!(plan.omissions.len(), 1);
@@ -1173,7 +1526,8 @@ mod tests {
             });
         }
 
-        let plan = LensMediaPlan::from_accessibility(&target(), &extraction);
+        let plan =
+            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
 
         assert_eq!(plan.requests.len(), MAX_LENS_MEDIA_ATTACHMENTS);
         assert_eq!(plan.omissions.len(), 1);
@@ -1191,7 +1545,8 @@ mod tests {
         let mut extraction = accessibility(ExtractionQuality::Full);
         extraction.nodes[0].children.clear();
 
-        let plan = LensMediaPlan::from_accessibility(&target(), &extraction);
+        let plan =
+            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
 
         assert_eq!(plan.requests.len(), 1);
         assert_eq!(plan.requests[0].scope, LensMediaScope::WindowFallback);
@@ -1199,12 +1554,7 @@ mod tests {
 
     #[test]
     fn region_attachment_is_linked_to_its_ax_node_and_input_is_compact() {
-        let context = LensContext::from_capture(
-            Uuid::nil(),
-            &target(),
-            accessibility(ExtractionQuality::Full),
-            captured_region(),
-        );
+        let context = context(accessibility(ExtractionQuality::Full), captured_region());
         let input = LensInput::from_context(&context).expect("usable input");
         let document = input.sources[0].document.as_ref().expect("AX document");
         let image = document
@@ -1214,7 +1564,7 @@ mod tests {
             .expect("image node");
 
         assert_eq!(context.quality, ExtractionQuality::Full);
-        assert_eq!(image.media_refs, vec!["media-node-000002"]);
+        assert_eq!(image.media_refs, vec!["media-window-7-node-000002"]);
         assert_eq!(image.resource_refs[0].uri, "https://example.test/chart.png");
         assert_eq!(input.media.len(), 1);
         assert!(input.serialized_len().expect("serialize") <= MAX_LENS_INPUT_BYTES);
@@ -1232,12 +1582,7 @@ mod tests {
         };
         capture.attachments[0].coverage = LensMediaCoverage::VisibleSubregion;
 
-        let context = LensContext::from_capture(
-            Uuid::nil(),
-            &target(),
-            accessibility(ExtractionQuality::Full),
-            capture,
-        );
+        let context = context(accessibility(ExtractionQuality::Full), capture);
         let input = LensInput::from_context(&context).expect("partial image input");
 
         assert_eq!(context.quality, ExtractionQuality::Partial);
@@ -1279,12 +1624,7 @@ mod tests {
                 children: vec![],
             });
         }
-        let context = LensContext::from_capture(
-            Uuid::nil(),
-            &target(),
-            extraction,
-            LensMediaCapture::default(),
-        );
+        let context = context(extraction, LensMediaCapture::default());
         let input = LensInput::from_context(&context).expect("bounded URI input");
         let nodes = &input.sources[0].document.as_ref().expect("document").nodes;
 
@@ -1304,12 +1644,7 @@ mod tests {
     fn resource_budget_omission_is_agent_visible() {
         let mut extraction = accessibility(ExtractionQuality::Partial);
         extraction.metrics.omitted_resource_refs = 3;
-        let context = LensContext::from_capture(
-            Uuid::nil(),
-            &target(),
-            extraction,
-            LensMediaCapture::default(),
-        );
+        let context = context(extraction, LensMediaCapture::default());
         let input = LensInput::from_context(&context).expect("partial URI input");
         let omission = input.sources[0]
             .omissions
@@ -1329,9 +1664,7 @@ mod tests {
         capture.attachments[0].scope = LensMediaScope::WindowFallback;
         capture.attachments[0].source_node_id = None;
         capture.payloads[0].attachment_id = capture.attachments[0].id.clone();
-        let context = LensContext::from_capture(
-            Uuid::nil(),
-            &target(),
+        let context = context(
             LensContext::unavailable_accessibility("AX unavailable"),
             capture,
         );
@@ -1365,12 +1698,7 @@ mod tests {
                 children: vec![],
             });
         }
-        let context = LensContext::from_capture(
-            Uuid::nil(),
-            &target(),
-            extraction,
-            LensMediaCapture::default(),
-        );
+        let context = context(extraction, LensMediaCapture::default());
         let input = LensInput::from_context(&context).expect("bounded input");
 
         assert!(input.serialized_len().expect("serialize") <= MAX_LENS_INPUT_BYTES);

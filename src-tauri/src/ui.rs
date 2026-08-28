@@ -1,7 +1,9 @@
 use crate::{
     commands,
+    lens::LensTargetSet,
     model::{
-        AgentKind, AgentSelectionState, AppConfig, Bounds, LensStage, LensState, SelectedWindow,
+        AgentKind, AgentSelectionState, AppConfig, Bounds, LensStage, LensState,
+        LensTargetSelection,
     },
 };
 use tauri::{
@@ -9,15 +11,21 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     utils::{config::WindowEffectsConfig, WindowEffect, WindowEffectState},
-    App, AppHandle, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+    App, AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_dialog::DialogExt;
 
 const SETTINGS_LABEL: &str = "settings";
 pub(crate) const LENS_WINDOW_LABEL: &str = "lens-overlay";
+pub(crate) const TARGET_SELECTION_WINDOW_LABEL: &str = "target-selection-preview";
 const LENS_WINDOW_PARENT_RATIO: f64 = 0.8;
 const LENS_WINDOW_CORNER_RADIUS: f64 = 12.0;
 const LENS_WINDOW_EFFECT: WindowEffect = WindowEffect::HudWindow;
+const TARGET_SELECTION_WINDOW_WIDTH: f64 = 240.0;
+const TARGET_SELECTION_WINDOW_TOOLBAR_HEIGHT: f64 = 58.0;
+const TARGET_SELECTION_WINDOW_ITEM_HEIGHT: f64 = 144.0;
+const TARGET_SELECTION_WINDOW_ITEM_GAP: f64 = 10.0;
+const TARGET_SELECTION_WINDOW_MARGIN: f64 = 18.0;
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-icon-template@2x.png");
 const DESKTOP_PLATFORM: &str = if cfg!(target_os = "macos") {
     "macos"
@@ -33,6 +41,7 @@ const DESKTOP_PLATFORM: &str = if cfg!(target_os = "macos") {
 enum WebviewView {
     Settings,
     Overlay,
+    TargetSelection,
 }
 
 impl WebviewView {
@@ -40,6 +49,7 @@ impl WebviewView {
         match self {
             Self::Settings => "settings",
             Self::Overlay => "overlay",
+            Self::TargetSelection => "target-selection",
         }
     }
 }
@@ -128,6 +138,74 @@ struct LensWindowGeometry {
     height: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TargetSelectionWindowGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl TargetSelectionWindowGeometry {
+    fn from_anchor(
+        anchor: Bounds,
+        item_count: usize,
+        work_areas: &[(LogicalPosition<f64>, LogicalSize<f64>)],
+    ) -> Option<Self> {
+        if item_count == 0
+            || !anchor.x.is_finite()
+            || !anchor.y.is_finite()
+            || !anchor.width.is_finite()
+            || !anchor.height.is_finite()
+            || anchor.width <= 0.0
+            || anchor.height <= 0.0
+        {
+            return None;
+        }
+
+        let (work_area_position, work_area_size) = work_areas
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (position, size))| {
+                if !position.x.is_finite()
+                    || !position.y.is_finite()
+                    || !size.width.is_finite()
+                    || !size.height.is_finite()
+                    || size.width <= 0.0
+                    || size.height <= 0.0
+                {
+                    return None;
+                }
+                let left = anchor.x.max(position.x);
+                let top = anchor.y.max(position.y);
+                let right = (anchor.x + anchor.width).min(position.x + size.width);
+                let bottom = (anchor.y + anchor.height).min(position.y + size.height);
+                let intersection = (right - left).max(0.0) * (bottom - top).max(0.0);
+                Some((index, intersection, (*position, *size)))
+            })
+            .max_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| right.0.cmp(&left.0))
+            })
+            .map(|(_, _, work_area)| work_area)?;
+
+        let natural_height = TARGET_SELECTION_WINDOW_TOOLBAR_HEIGHT
+            + TARGET_SELECTION_WINDOW_ITEM_HEIGHT * item_count as f64
+            + TARGET_SELECTION_WINDOW_ITEM_GAP * item_count.saturating_sub(1) as f64;
+        let width = TARGET_SELECTION_WINDOW_WIDTH
+            .min((work_area_size.width - TARGET_SELECTION_WINDOW_MARGIN * 2.0).max(1.0));
+        let height = natural_height
+            .min((work_area_size.height - TARGET_SELECTION_WINDOW_MARGIN * 2.0).max(1.0));
+        Some(Self {
+            x: work_area_position.x + work_area_size.width - width - TARGET_SELECTION_WINDOW_MARGIN,
+            y: work_area_position.y + (work_area_size.height - height) / 2.0,
+            width,
+            height,
+        })
+    }
+}
+
 impl LensWindowGeometry {
     fn from_target(frame: Bounds) -> Option<Self> {
         if !frame.x.is_finite()
@@ -190,7 +268,7 @@ pub fn install_menu_bar(app: &mut App) -> tauri::Result<()> {
     let select = MenuItem::with_id(
         app,
         "select_target",
-        "Select Lens Target…",
+        "Select Lens Targets…",
         false,
         None::<&str>,
     )?;
@@ -305,7 +383,7 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
     let tooltip = if presentation.target_selection_active {
         "Lens — Lens Target selection is already active"
     } else if presentation.select_target_enabled {
-        "Lens — left-click to select a Lens Target"
+        "Lens — left-click to select Lens Targets"
     } else {
         "Lens — select and authenticate an AI Agent to enable target selection"
     };
@@ -420,14 +498,20 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn show_lens_window(app: &AppHandle, target: &SelectedWindow) -> tauri::Result<()> {
+pub fn show_lens_window(app: &AppHandle, target_set: &LensTargetSet) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(LENS_WINDOW_LABEL) {
         window.show()?;
         window.set_focus()?;
         return Ok(());
     }
 
-    let geometry = LensWindowGeometry::from_target(target.frame).ok_or_else(|| {
+    let placement_target = target_set.placement_target().ok_or_else(|| {
+        tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Lens target set is empty",
+        ))
+    })?;
+    let geometry = LensWindowGeometry::from_target(placement_target.frame).ok_or_else(|| {
         tauri::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "selected window has invalid bounds",
@@ -450,6 +534,79 @@ pub fn show_lens_window(app: &AppHandle, target: &SelectedWindow) -> tauri::Resu
             color: None,
         })
         .build()?;
+    Ok(())
+}
+
+pub fn show_target_selection_window(
+    app: &AppHandle,
+    selection: &LensTargetSelection,
+) -> tauri::Result<()> {
+    let anchor = selection.anchor.ok_or_else(|| {
+        tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "target selection has no placement anchor",
+        ))
+    })?;
+    let work_areas = app
+        .available_monitors()?
+        .into_iter()
+        .map(|monitor| {
+            let scale = monitor.scale_factor();
+            let work_area = monitor.work_area();
+            (
+                work_area.position.to_logical::<f64>(scale),
+                work_area.size.to_logical::<f64>(scale),
+            )
+        })
+        .collect::<Vec<_>>();
+    let geometry =
+        TargetSelectionWindowGeometry::from_anchor(anchor, selection.items.len(), &work_areas)
+            .ok_or_else(|| {
+                tauri::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "target selection cannot be placed in an available work area",
+                ))
+            })?;
+
+    if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
+        window.set_size(LogicalSize::new(geometry.width, geometry.height))?;
+        window.set_position(LogicalPosition::new(geometry.x, geometry.y))?;
+        window.show()?;
+        window.set_focus()?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(
+        app,
+        TARGET_SELECTION_WINDOW_LABEL,
+        webview_url(WebviewView::TargetSelection),
+    )
+    .title("Lens Target Selection")
+    .inner_size(geometry.width, geometry.height)
+    .position(geometry.x, geometry.y)
+    .decorations(false)
+    .always_on_top(true)
+    .transparent(true)
+    .shadow(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .skip_taskbar(true)
+    .effects(WindowEffectsConfig {
+        effects: vec![LENS_WINDOW_EFFECT],
+        state: Some(WindowEffectState::Active),
+        radius: Some(LENS_WINDOW_CORNER_RADIUS),
+        color: None,
+    })
+    .build()?;
+    Ok(())
+}
+
+pub fn close_target_selection_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
+        window.destroy()?;
+    }
     Ok(())
 }
 
@@ -487,6 +644,9 @@ mod tests {
         let WebviewUrl::App(overlay) = webview_url(WebviewView::Overlay) else {
             panic!("Lens must use an application WebView URL");
         };
+        let WebviewUrl::App(target_selection) = webview_url(WebviewView::TargetSelection) else {
+            panic!("Target selection must use an application WebView URL");
+        };
 
         assert_eq!(
             settings,
@@ -500,7 +660,80 @@ mod tests {
                 "index.html?view=overlay&platform={DESKTOP_PLATFORM}"
             ))
         );
+        assert_eq!(
+            target_selection,
+            std::path::PathBuf::from(format!(
+                "index.html?view=target-selection&platform={DESKTOP_PLATFORM}"
+            ))
+        );
         assert!(matches!(DESKTOP_PLATFORM, "macos" | "windows" | "linux"));
+    }
+
+    #[test]
+    fn target_selection_window_is_right_centered_on_the_anchor_monitor() {
+        let work_areas = [
+            (
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1440.0, 900.0),
+            ),
+            (
+                LogicalPosition::new(-1440.0, 0.0),
+                LogicalSize::new(1440.0, 900.0),
+            ),
+        ];
+
+        assert_eq!(
+            TargetSelectionWindowGeometry::from_anchor(
+                Bounds {
+                    x: -1200.0,
+                    y: 100.0,
+                    width: 800.0,
+                    height: 600.0,
+                },
+                2,
+                &work_areas,
+            ),
+            Some(TargetSelectionWindowGeometry {
+                x: -258.0,
+                y: 272.0,
+                width: 240.0,
+                height: 356.0,
+            })
+        );
+    }
+
+    #[test]
+    fn target_selection_window_rejects_empty_or_invalid_selection() {
+        let work_areas = [(
+            LogicalPosition::new(0.0, 0.0),
+            LogicalSize::new(1440.0, 900.0),
+        )];
+        assert_eq!(
+            TargetSelectionWindowGeometry::from_anchor(
+                Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 800.0,
+                    height: 600.0,
+                },
+                0,
+                &work_areas,
+            ),
+            None
+        );
+        assert_eq!(
+            TargetSelectionWindowGeometry::from_anchor(
+                Bounds {
+                    x: f64::NAN,
+                    y: 0.0,
+                    width: 800.0,
+                    height: 600.0,
+                },
+                1,
+                &work_areas,
+            ),
+            None
+        );
     }
 
     #[test]

@@ -6,6 +6,14 @@ typedef void (*LensPickerCallback)(const char *_Nullable json, void *_Nullable c
 
 static NSDictionary *LensFrameDictionary(CGRect frame);
 
+static void LensPerformOnMainThread(dispatch_block_t block) {
+    if ([NSThread isMainThread]) {
+        block();
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), block);
+}
+
 static char *LensCopyJSONString(id object) {
     NSError *error = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
@@ -27,30 +35,29 @@ static NSString *LensStringOrEmpty(NSString *value) {
     return value ?: @"";
 }
 
+@class LensContentPickerCoordinator;
+static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinator;
+
 @interface LensContentPickerCoordinator : NSObject <SCContentSharingPickerObserver>
 @property(nonatomic, assign) LensPickerCallback callback;
 @property(nonatomic, assign) void *callbackContext;
-@property(nonatomic, assign) BOOL observing;
-+ (instancetype)shared;
 - (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context;
 @end
 
 @implementation LensContentPickerCoordinator
 
-+ (instancetype)shared {
-    static LensContentPickerCoordinator *coordinator;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        coordinator = [[LensContentPickerCoordinator alloc] init];
-    });
-    return coordinator;
-}
-
 - (void)deliver:(NSDictionary *)payload {
+    NSAssert([NSThread isMainThread], @"Picker completion must be delivered on the main thread");
     LensPickerCallback callback = self.callback;
     void *context = self.callbackContext;
     self.callback = NULL;
     self.callbackContext = NULL;
+    SCContentSharingPicker *picker = SCContentSharingPicker.sharedPicker;
+    picker.active = NO;
+    [picker removeObserver:self];
+    if (LensActiveContentPickerCoordinator == self) {
+        LensActiveContentPickerCoordinator = nil;
+    }
 
     if (callback != NULL) {
         char *json = LensCopyJSONString(payload);
@@ -59,20 +66,46 @@ static NSString *LensStringOrEmpty(NSString *value) {
     }
 }
 
-- (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context {
-    NSAssert([NSThread isMainThread], @"The ScreenCaptureKit picker must be presented on the main thread");
-    if (self.callback != NULL) {
-        return NO;
+- (NSDictionary *)selectedPayloadForFilter:(SCContentFilter *)filter API_AVAILABLE(macos(15.2)) {
+    NSArray<SCWindow *> *windows = filter.includedWindows;
+    if (windows.count != 1) {
+        return @{
+            @"status": @"error",
+            @"message": [NSString stringWithFormat:
+                @"The single-window picker returned %lu included windows.",
+                (unsigned long)windows.count]
+        };
     }
 
+    NSMutableArray<NSDictionary *> *serializedWindows =
+        [NSMutableArray arrayWithCapacity:windows.count];
+    for (SCWindow *window in windows) {
+        SCRunningApplication *application = window.owningApplication;
+        CGRect frame = window.frame;
+        [serializedWindows addObject:@{
+            @"window_id": @(window.windowID),
+            @"title": LensStringOrEmpty(window.title),
+            @"application_name": LensStringOrEmpty(application.applicationName),
+            @"bundle_id": LensStringOrEmpty(application.bundleIdentifier),
+            @"pid": @(application.processID),
+            @"frame": @{
+                @"x": @(frame.origin.x),
+                @"y": @(frame.origin.y),
+                @"width": @(frame.size.width),
+                @"height": @(frame.size.height)
+            }
+        }];
+    }
+    return @{ @"status": @"selected", @"windows": serializedWindows };
+}
+
+- (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context {
+    NSAssert([NSThread isMainThread], @"The ScreenCaptureKit picker must be presented on the main thread");
     self.callback = callback;
     self.callbackContext = context;
 
     SCContentSharingPicker *picker = SCContentSharingPicker.sharedPicker;
-    if (!self.observing) {
-        [picker addObserver:self];
-        self.observing = YES;
-    }
+    [picker addObserver:self];
 
     SCContentSharingPickerConfiguration *configuration = [[SCContentSharingPickerConfiguration alloc] init];
     configuration.allowedPickerModes = SCContentSharingPickerModeSingleWindow;
@@ -87,56 +120,43 @@ static NSString *LensStringOrEmpty(NSString *value) {
 
 - (void)contentSharingPicker:(SCContentSharingPicker *)picker
           didCancelForStream:(SCStream *)stream {
-    picker.active = NO;
-    [self deliver:@{ @"status": @"cancelled" }];
+    LensPerformOnMainThread(^{
+        if (self.callback == NULL) {
+            return;
+        }
+        [self deliver:@{ @"status": @"cancelled" }];
+    });
 }
 
 - (void)contentSharingPicker:(SCContentSharingPicker *)picker
          didUpdateWithFilter:(SCContentFilter *)filter
                    forStream:(SCStream *)stream {
-    picker.active = NO;
-
-    if (@available(macOS 15.2, *)) {
-        SCWindow *window = filter.includedWindows.firstObject;
-        if (window == nil) {
-            [self deliver:@{
-                @"status": @"error",
-                @"message": @"The picker returned no included SCWindow."
-            }];
+    LensPerformOnMainThread(^{
+        if (self.callback == NULL) {
+            return;
+        }
+        if (@available(macOS 15.2, *)) {
+            [self deliver:[self selectedPayloadForFilter:filter]];
             return;
         }
 
-        SCRunningApplication *application = window.owningApplication;
-        CGRect frame = window.frame;
         [self deliver:@{
-            @"status": @"selected",
-            @"window_id": @(window.windowID),
-            @"title": LensStringOrEmpty(window.title),
-            @"application_name": LensStringOrEmpty(application.applicationName),
-            @"bundle_id": LensStringOrEmpty(application.bundleIdentifier),
-            @"pid": @(application.processID),
-            @"frame": @{
-                @"x": @(frame.origin.x),
-                @"y": @(frame.origin.y),
-                @"width": @(frame.size.width),
-                @"height": @(frame.size.height)
-            }
+            @"status": @"error",
+            @"message": @"Lens requires macOS 15.2 or later for deterministic SCWindow resolution."
         }];
-        return;
-    }
-
-    [self deliver:@{
-        @"status": @"error",
-        @"message": @"Lens requires macOS 15.2 or later for deterministic SCWindow resolution."
-    }];
+    });
 }
 
 - (void)contentSharingPickerStartDidFailWithError:(NSError *)error {
-    SCContentSharingPicker.sharedPicker.active = NO;
-    [self deliver:@{
-        @"status": @"error",
-        @"message": error.localizedDescription ?: @"The native window picker failed to start."
-    }];
+    LensPerformOnMainThread(^{
+        if (self.callback == NULL) {
+            return;
+        }
+        [self deliver:@{
+            @"status": @"error",
+            @"message": error.localizedDescription ?: @"The native window picker failed to start."
+        }];
+    });
 }
 
 @end
@@ -155,14 +175,23 @@ bool lens_present_window_picker(LensPickerCallback callback, void *context) {
         return false;
     }
 
-    if ([NSThread isMainThread]) {
-        return [[LensContentPickerCoordinator shared] presentWithCallback:callback context:context];
-    }
-
     __block BOOL presented = NO;
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        presented = [[LensContentPickerCoordinator shared] presentWithCallback:callback context:context];
-    });
+    dispatch_block_t presentation = ^{
+        if (LensActiveContentPickerCoordinator != nil) {
+            return;
+        }
+        LensContentPickerCoordinator *coordinator = [[LensContentPickerCoordinator alloc] init];
+        LensActiveContentPickerCoordinator = coordinator;
+        presented = [coordinator presentWithCallback:callback context:context];
+        if (!presented && LensActiveContentPickerCoordinator == coordinator) {
+            LensActiveContentPickerCoordinator = nil;
+        }
+    };
+    if ([NSThread isMainThread]) {
+        presentation();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), presentation);
+    }
     return presented;
 }
 

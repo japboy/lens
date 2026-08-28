@@ -5,7 +5,7 @@
   <key>LSUIElement</key>
   <true/>
   <key>NSAccessibilityUsageDescription</key>
-  <string>Lens reads accessibility content from the selected window and displays a transformed result.</string>
+  <string>Lens reads accessibility content from selected windows and displays a transformed result.</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>Lens captures image regions from windows you select for multimodal analysis and does not save images or video.</string>
 </dict>

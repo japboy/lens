@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "target-selection-preview",
+  "description": "Read-only state events and command invocation for the target-selection preview HUD.",
+  "windows": ["target-selection-preview"],
+  "permissions": ["core:default", "core:event:default"]
+}

@@ -38,7 +38,9 @@ body {
 }
 
 html[data-view="overlay"],
-body[data-view="overlay"] {
+body[data-view="overlay"],
+html[data-view="target-selection"],
+body[data-view="target-selection"] {
   background: transparent;
 }
 
@@ -233,6 +235,190 @@ fieldset {
 
 .primary {
   font-weight: 600;
+}
+
+.target-selection-shell {
+  width: 100%;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, Separator 78%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, Canvas 86%, transparent);
+  color: CanvasText;
+  box-shadow: 0 14px 38px color-mix(in srgb, CanvasText 24%, transparent);
+}
+
+.target-selection-toolbar {
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px 7px 14px;
+}
+
+.target-selection-count {
+  color: GrayText;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.target-selection-count span {
+  opacity: 0.72;
+}
+
+.target-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.target-selection-icon-button,
+.target-selection-remove {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  padding: 0;
+  color: GrayText;
+  cursor: default;
+}
+
+.target-selection-icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border-radius: 50%;
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+  font-size: 11px;
+}
+
+.target-selection-icon-button.is-primary {
+  color: AccentColorText;
+  background: AccentColor;
+}
+
+.target-selection-icon-button:is(:hover, :focus-visible):not(:disabled) {
+  color: CanvasText;
+  background: color-mix(in srgb, CanvasText 14%, transparent);
+}
+
+.target-selection-icon-button.is-primary:is(:hover, :focus-visible):not(:disabled) {
+  color: AccentColorText;
+  background: color-mix(in srgb, AccentColor 86%, CanvasText 14%);
+}
+
+.target-selection-icon-button:focus-visible,
+.target-selection-remove:focus-visible {
+  outline: 3px solid color-mix(in srgb, AccentColor 48%, transparent);
+  outline-offset: 1px;
+}
+
+.target-selection-icon-button:disabled,
+.target-selection-remove:disabled {
+  opacity: 0.38;
+}
+
+.target-selection-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.target-selection-card {
+  flex: 0 0 140px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, Separator 80%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, Canvas 76%, CanvasText 2%);
+}
+
+.target-selection-image {
+  position: relative;
+  height: 102px;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, Separator 68%, transparent);
+  background: color-mix(in srgb, CanvasText 7%, Canvas);
+}
+
+.target-selection-image > img,
+.target-selection-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.target-selection-image > img {
+  object-fit: cover;
+  object-position: top center;
+}
+
+.target-selection-placeholder {
+  display: grid;
+  place-items: center;
+  color: color-mix(in srgb, GrayText 56%, transparent);
+  font-size: 24px;
+}
+
+.target-selection-remove {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  border-radius: 50%;
+  color: white;
+  background: color-mix(in srgb, black 64%, transparent);
+  box-shadow: 0 1px 4px color-mix(in srgb, black 32%, transparent);
+  font-size: 10px;
+}
+
+.target-selection-remove:is(:hover, :focus-visible):not(:disabled) {
+  background: color-mix(in srgb, black 82%, transparent);
+}
+
+.target-selection-caption {
+  min-width: 0;
+  height: 37px;
+  padding: 5px 9px 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  line-height: 1.15;
+}
+
+.target-selection-caption strong,
+.target-selection-caption span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-selection-caption strong {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.target-selection-caption span {
+  color: GrayText;
+  font-size: 10px;
 }
 
 .overlay-shell {

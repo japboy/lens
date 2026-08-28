@@ -51,7 +51,7 @@ export function selectedAgent(selection: AgentSelectionState): AgentKind | undef
 
 export const STAGE_LABEL: Record<LensStage, string> = {
   idle: "Idle",
-  selecting: "Selecting a window…",
+  selecting: "Selecting windows…",
   extracting: "Extracting accessibility content…",
   ready: "Extraction complete",
   connecting: "Connecting to the agent…",

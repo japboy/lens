@@ -48,7 +48,11 @@ pub fn run() {
         .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(if validate_a11y {
+                tauri::ActivationPolicy::Regular
+            } else {
+                tauri::ActivationPolicy::Accessory
+            });
             ui::install_menu_bar(app)?;
             #[cfg(debug_assertions)]
             if std::env::var_os("LENS_VALIDATE_UI").is_some() {
@@ -100,6 +104,9 @@ pub fn run() {
             commands::accessibility_permission,
             commands::request_accessibility_permission,
             commands::select_lens_target,
+            commands::add_lens_target,
+            commands::remove_lens_target,
+            commands::confirm_lens_targets,
             commands::transform_lens,
             commands::authenticate_agent,
             commands::authenticate_agent_selection,
@@ -242,10 +249,13 @@ pub fn run() {
                                 .collect::<Vec<_>>();
                             let summary = serde_json::json!({
                                 "stage": state.stage,
-                                "target": state.target,
+                                "target_set": state.target_set,
                                 "quality": state.context.as_ref().map(|value| value.quality),
                                 "accessibility_metrics": state.context.as_ref().map(|context| {
-                                    &context.accessibility_capture().metrics
+                                    context.sources.iter().map(|source| serde_json::json!({
+                                        "target_id": source.target_id,
+                                        "metrics": source.capture.metrics,
+                                    })).collect::<Vec<_>>()
                                 }),
                                 "media_capture": state.context.as_ref().map(|context| {
                                     serde_json::json!({
@@ -321,10 +331,14 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
             height: 800.0,
         },
     };
+    let target_id = lens::target_id(&target);
+    let target_set = lens::LensTargetSet::try_new(operation_id, vec![target.clone()])
+        .map_err(|error| error.to_string())?;
     let first_attachment_id = "media-node-000001".to_string();
     let first_media_uri = format!("lens://context/{operation_id}/1/media/{first_attachment_id}");
     let first_attachment = lens::LensMediaAttachment {
         id: first_attachment_id.clone(),
+        target_id: target_id.clone(),
         uri: first_media_uri.clone(),
         scope: lens::LensMediaScope::AxElementRegion,
         source_node_id: Some("node-000001".into()),
@@ -351,6 +365,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     let second_media_uri = format!("lens://context/{operation_id}/1/media/{second_attachment_id}");
     let second_attachment = lens::LensMediaAttachment {
         id: second_attachment_id.clone(),
+        target_id: target_id.clone(),
         uri: second_media_uri.clone(),
         scope: lens::LensMediaScope::AxElementRegion,
         source_node_id: Some("node-000002".into()),
@@ -383,7 +398,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
                 "macos:{}:{}:accessibility",
                 target.bundle_id, target.window_id
             ),
-            target_id: format!("macos:{}:{}", target.bundle_id, target.window_id),
+            target_id,
             source_revision: 1,
             source,
             document: Some(lens::LensDocumentProjection {
@@ -451,7 +466,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     let state = model::LensState {
         operation_id: Some(operation_id),
         stage: model::LensStage::Completed,
-        target: Some(target.clone()),
+        target_set: Some(target_set.clone()),
         input: Some(input),
         output_blocks: vec![
             model::LensOutputBlock::Markdown {
@@ -473,7 +488,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         ..model::LensState::default()
     };
     app_state::publish_lens_state(&app, state)?;
-    ui::show_lens_window(&app, &target).map_err(|error| error.to_string())?;
+    ui::show_lens_window(&app, &target_set).map_err(|error| error.to_string())?;
     let validation_app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

@@ -1,4 +1,7 @@
-use crate::{app_state::AppState, ui::LENS_WINDOW_LABEL};
+use crate::{
+    app_state::AppState,
+    ui::{LENS_WINDOW_LABEL, TARGET_SELECTION_WINDOW_LABEL},
+};
 use base64::prelude::*;
 use tauri::{
     http::{header, Method, Request, Response, StatusCode, Uri},
@@ -26,7 +29,13 @@ fn response(
     method: &Method,
     uri: &Uri,
 ) -> Response<Vec<u8>> {
-    if webview_label != LENS_WINDOW_LABEL {
+    let uri = uri.to_string();
+    let authorized_namespace = match webview_label {
+        LENS_WINDOW_LABEL => "lens://context/",
+        TARGET_SELECTION_WINDOW_LABEL => "lens://selection/",
+        _ => "",
+    };
+    if authorized_namespace.is_empty() || !uri.starts_with(authorized_namespace) {
         return error_response(
             StatusCode::FORBIDDEN,
             "Lens media preview is not available here",
@@ -43,7 +52,7 @@ fn response(
             .expect("static Lens media response must be valid");
     }
 
-    let payload = match state.lens_media.payload_for_uri(&uri.to_string()) {
+    let payload = match state.lens_media.payload_for_uri(&uri) {
         Ok(Some(payload)) => payload,
         Ok(None) => {
             return error_response(
@@ -150,6 +159,47 @@ mod tests {
                 .expect("valid URI"),
         );
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn serves_selection_previews_only_to_the_selection_webview() {
+        let uri = "lens://selection/00000000-0000-0000-0000-000000000001/window/417";
+        let state = active_state(uri, "image/png", "iVBORw0KGgo=");
+
+        assert_eq!(
+            response(
+                &state,
+                TARGET_SELECTION_WINDOW_LABEL,
+                &Method::GET,
+                &uri.parse().expect("valid URI"),
+            )
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            response(
+                &state,
+                LENS_WINDOW_LABEL,
+                &Method::GET,
+                &uri.parse().expect("valid URI"),
+            )
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let context_uri =
+            "lens://context/00000000-0000-0000-0000-000000000001/1/media/media-node-000001";
+        let context = active_state(context_uri, "image/png", "iVBORw0KGgo=");
+        assert_eq!(
+            response(
+                &context,
+                TARGET_SELECTION_WINDOW_LABEL,
+                &Method::GET,
+                &context_uri.parse().expect("valid URI"),
+            )
+            .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[test]
