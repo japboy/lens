@@ -25,6 +25,34 @@ const snapshot: AppSnapshot = {
   lens: {
     operation_id: operationId,
     stage: "completed",
+    target_set: {
+      schema_version: 1,
+      selection_id: operationId,
+      targets: [
+        {
+          id: "macos:com.apple.Safari:417",
+          window: {
+            window_id: 417,
+            title: "Fixture",
+            application_name: "Safari",
+            bundle_id: "com.apple.Safari",
+            pid: 417,
+            frame: { x: 0, y: 0, width: 800, height: 600 },
+          },
+        },
+        {
+          id: "macos:com.apple.TextEdit:512",
+          window: {
+            window_id: 512,
+            title: "Notes",
+            application_name: "TextEdit",
+            bundle_id: "com.apple.TextEdit",
+            pid: 512,
+            frame: { x: 80, y: 80, width: 600, height: 500 },
+          },
+        },
+      ],
+    },
     input: {
       schema_version: 3,
       context_id: operationId,
@@ -64,6 +92,7 @@ const snapshot: AppSnapshot = {
       media: [
         {
           id: "media-node-000001",
+          target_id: "macos:com.apple.Safari:417",
           uri: `lens://context/${operationId}/1/media/media-node-000001`,
           scope: "ax_element_region",
           source_node_id: "node-000001",
@@ -78,6 +107,7 @@ const snapshot: AppSnapshot = {
         },
         {
           id: "media-node-000002",
+          target_id: "macos:com.apple.Safari:417",
           uri: `lens://context/${operationId}/1/media/media-node-000002`,
           scope: "ax_element_region",
           source_node_id: "node-000002",
@@ -106,6 +136,7 @@ const snapshot: AppSnapshot = {
     ],
   },
 };
+const completedLens = snapshot.lens;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn<(command: string) => Promise<unknown>>(async (command: string) => {
@@ -140,6 +171,102 @@ beforeAll(() => {
 afterEach(() => {
   document.body.replaceChildren();
   window.history.replaceState({}, "", "/?view=overlay&platform=macos");
+  snapshot.revision = 1;
+  snapshot.lens = completedLens;
+  vi.clearAllMocks();
+});
+
+describe("Lens target selection preview", () => {
+  it("shows only the vertical preview cards and icon actions, then invokes finite edit commands", async () => {
+    snapshot.lens = {
+      operation_id: operationId,
+      stage: "selecting",
+      selection: {
+        selection_id: operationId,
+        stage: "reviewing",
+        maximum_targets: 4,
+        anchor: { x: 0, y: 0, width: 800, height: 600 },
+        items: [
+          {
+            id: "macos:com.apple.Safari:417",
+            window: completedLens.target_set?.targets[0]?.window ?? {
+              window_id: 417,
+              title: "Fixture",
+              application_name: "Safari",
+              bundle_id: "com.apple.Safari",
+              pid: 417,
+              frame: { x: 0, y: 0, width: 800, height: 600 },
+            },
+            preview_uri: `lens://selection/${operationId}/window/417`,
+          },
+          {
+            id: "macos:com.apple.TextEdit:512",
+            window: completedLens.target_set?.targets[1]?.window ?? {
+              window_id: 512,
+              title: "Notes",
+              application_name: "TextEdit",
+              bundle_id: "com.apple.TextEdit",
+              pid: 512,
+              frame: { x: 80, y: 80, width: 600, height: 500 },
+            },
+            preview_uri: `lens://selection/${operationId}/window/512`,
+          },
+        ],
+      },
+      output_blocks: [],
+    };
+    window.history.replaceState({}, "", "/?view=target-selection&platform=macos");
+    await import("./lens-app");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const element = document.createElement("lens-app") as HTMLElement & {
+      updateComplete: Promise<boolean>;
+    };
+    document.body.append(element);
+    await element.updateComplete;
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelectorAll(".target-selection-card")).toHaveLength(2);
+    });
+
+    const images = Array.from(
+      element.shadowRoot?.querySelectorAll<HTMLImageElement>(".target-selection-image > img") ?? [],
+    );
+    expect(images.map((image) => image.getAttribute("src"))).toEqual([
+      `lens://selection/${operationId}/window/417`,
+      `lens://selection/${operationId}/window/512`,
+    ]);
+    expect(element.shadowRoot?.querySelector(".overlay-header")).toBeNull();
+    expect(element.shadowRoot?.querySelector("[data-tauri-drag-region]")).toBeNull();
+    expect(element.shadowRoot?.querySelector('[aria-label="Close Lens"]')).toBeNull();
+    expect(element.shadowRoot?.querySelector(".target-selection-count")?.textContent).toContain(
+      "2 / 4",
+    );
+
+    element.shadowRoot
+      ?.querySelector<HTMLButtonElement>('[aria-label="Add another window"]')
+      ?.click();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("add_lens_target", { operationId });
+    });
+    const removeButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[aria-label^="Remove Safari"]',
+    );
+    await vi.waitFor(() => expect(removeButton?.disabled).toBe(false));
+    removeButton?.click();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("remove_lens_target", {
+        operationId,
+        targetId: "macos:com.apple.Safari:417",
+      });
+    });
+    const confirmButton = element.shadowRoot?.querySelector<HTMLButtonElement>(
+      '[aria-label="Use selected windows"]',
+    );
+    await vi.waitFor(() => expect(confirmButton?.disabled).toBe(false));
+    confirmButton?.click();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("confirm_lens_targets", { operationId });
+    });
+  });
 });
 
 describe("Lens rich Agent output", () => {
@@ -150,6 +277,11 @@ describe("Lens rich Agent output", () => {
     };
     document.body.append(element);
     await element.updateComplete;
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelector(".overlay-title")?.textContent).toContain(
+        "2 Windows",
+      );
+    });
 
     expect(
       element.shadowRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
@@ -157,6 +289,9 @@ describe("Lens rich Agent output", () => {
     expect(
       element.shadowRoot?.querySelector(".close-button")?.getAttribute("data-tauri-drag-region"),
     ).toBe("false");
+    expect(element.shadowRoot?.querySelector(".overlay-title")?.getAttribute("title")).toContain(
+      "TextEdit — Notes",
+    );
   });
 
   it("renders ACP image data inline and preserves surrounding block order", async () => {

@@ -55,6 +55,35 @@ export interface SelectedWindow {
   frame: Bounds;
 }
 
+export interface LensTarget {
+  id: string;
+  window: SelectedWindow;
+}
+
+export interface LensTargetSet {
+  schema_version: number;
+  selection_id: string;
+  targets: LensTarget[];
+}
+
+export type LensTargetSelectionStage = "picking" | "reviewing";
+
+export interface LensTargetSelectionItem {
+  id: string;
+  window: SelectedWindow;
+  preview_uri?: string;
+  preview_error?: string;
+}
+
+export interface LensTargetSelection {
+  selection_id: string;
+  stage: LensTargetSelectionStage;
+  maximum_targets: number;
+  anchor?: Bounds;
+  items: LensTargetSelectionItem[];
+  notice?: string;
+}
+
 export interface ExtractedNode {
   id: string;
   parent_id?: string;
@@ -153,6 +182,7 @@ export type LensMediaCoverage = "full_region" | "visible_subregion";
 
 export interface LensMediaAttachment {
   id: string;
+  target_id: string;
   uri: string;
   scope: LensMediaScope;
   source_node_id?: string;
@@ -167,6 +197,7 @@ export interface LensMediaAttachment {
 }
 
 export interface LensMediaOmission {
+  target_id: string;
   attachment_id?: string;
   source_node_id?: string;
   reason:
@@ -189,13 +220,14 @@ export interface LensAccessibilitySource {
   source: LensSource;
   capture: ExtractionResult;
   document?: LensDocument;
+  quality: ExtractionQuality;
 }
 
 export interface LensContext {
   schema_version: number;
   context_id: string;
   revision: number;
-  accessibility: LensAccessibilitySource;
+  sources: LensAccessibilitySource[];
   media: LensMediaAttachment[];
   media_omissions: LensMediaOmission[];
   quality: ExtractionQuality;
@@ -317,7 +349,8 @@ export type LensOutputBlock =
 export interface LensState {
   operation_id?: string;
   stage: LensStage;
-  target?: SelectedWindow;
+  selection?: LensTargetSelection;
+  target_set?: LensTargetSet;
   context?: LensContext;
   input?: LensInput;
   output_blocks: LensOutputBlock[];

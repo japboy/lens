@@ -16,6 +16,15 @@ pub struct ImageCaptureLimits {
     pub max_total_bytes: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ExtractionLimits {
+    pub max_nodes: u32,
+    pub max_text_bytes: u32,
+    pub max_resource_refs: u32,
+    pub max_resource_uri_bytes: u32,
+    pub max_total_resource_uri_bytes: u32,
+}
+
 #[derive(Debug, Error)]
 pub enum PlatformError {
     #[error("native picker is already active")]
@@ -40,8 +49,11 @@ pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError>
     macos::present_window_picker().await
 }
 
-pub fn extract_window(target: &SelectedWindow) -> Result<ExtractionResult, PlatformError> {
-    macos::extract_window(target)
+pub fn extract_window(
+    target: &SelectedWindow,
+    limits: ExtractionLimits,
+) -> Result<ExtractionResult, PlatformError> {
+    macos::extract_window(target, limits)
 }
 
 pub fn capture_window_media(

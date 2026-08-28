@@ -1,9 +1,8 @@
-use super::{ImageCaptureLimits, PlatformError};
+use super::{ExtractionLimits, ImageCaptureLimits, PlatformError};
 use crate::{
     lens::{
-        LensCoordinateSpace, LensMediaAttachment, LensMediaCapture, LensMediaCoverage,
+        target_id, LensCoordinateSpace, LensMediaAttachment, LensMediaCapture, LensMediaCoverage,
         LensMediaOmission, LensMediaOmissionReason, LensMediaPayload, LensMediaPlan,
-        MAX_AX_RESOURCE_REFERENCES, MAX_AX_RESOURCE_URI_BYTES, MAX_AX_TOTAL_RESOURCE_URI_BYTES,
     },
     model::{Bounds, ExtractionResult, SelectedWindow, WindowPickerReply},
 };
@@ -102,7 +101,10 @@ pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError>
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }
 
-pub fn extract_window(target: &SelectedWindow) -> Result<ExtractionResult, PlatformError> {
+pub fn extract_window(
+    target: &SelectedWindow,
+    limits: ExtractionLimits,
+) -> Result<ExtractionResult, PlatformError> {
     let title = CString::new(target.title.as_str())
         .map_err(|_| PlatformError::Operation("window title contains an interior NUL".into()))?;
     // SAFETY: All pointer arguments are valid for the duration of the call. The native bridge
@@ -115,11 +117,11 @@ pub fn extract_window(target: &SelectedWindow) -> Result<ExtractionResult, Platf
             target.frame.y,
             target.frame.width,
             target.frame.height,
-            30_000,
-            1_000_000,
-            MAX_AX_RESOURCE_REFERENCES as u32,
-            MAX_AX_RESOURCE_URI_BYTES as u32,
-            MAX_AX_TOTAL_RESOURCE_URI_BYTES as u32,
+            limits.max_nodes,
+            limits.max_text_bytes,
+            limits.max_resource_refs,
+            limits.max_resource_uri_bytes,
+            limits.max_total_resource_uri_bytes,
         )
     };
     if raw.is_null() {
@@ -174,6 +176,7 @@ pub fn capture_window_media(
     plan: LensMediaPlan,
     limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
+    let target_id = target_id(target);
     if plan.requests.is_empty() {
         return Ok(LensMediaCapture {
             omissions: plan.omissions,
@@ -284,6 +287,7 @@ pub fn capture_window_media(
         );
         result.attachments.push(LensMediaAttachment {
             id: capture.attachment_id.clone(),
+            target_id: target_id.clone(),
             uri: uri.clone(),
             scope: request.scope,
             source_node_id: request.source_node_id.clone(),
@@ -317,6 +321,7 @@ pub fn capture_window_media(
             )));
         }
         result.omissions.push(LensMediaOmission {
+            target_id: target_id.clone(),
             attachment_id: Some(omission.attachment_id),
             source_node_id: request.source_node_id.clone(),
             reason: omission.reason,
@@ -329,6 +334,7 @@ pub fn capture_window_media(
     for request in &plan.requests {
         if !resolved.contains(&request.id) {
             result.omissions.push(LensMediaOmission {
+                target_id: target_id.clone(),
                 attachment_id: Some(request.id.clone()),
                 source_node_id: request.source_node_id.clone(),
                 reason: LensMediaOmissionReason::CaptureFailed,

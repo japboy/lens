@@ -35,38 +35,15 @@ pub struct SelectedWindow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WindowPickerReply {
-    Selected {
-        window_id: u32,
-        title: String,
-        application_name: String,
-        bundle_id: String,
-        pid: i32,
-        frame: Bounds,
-    },
+    Selected { windows: Vec<SelectedWindow> },
     Cancelled,
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 impl WindowPickerReply {
-    pub fn into_selected(self) -> Result<Option<SelectedWindow>, String> {
+    pub fn into_selected(self) -> Result<Option<Vec<SelectedWindow>>, String> {
         match self {
-            Self::Selected {
-                window_id,
-                title,
-                application_name,
-                bundle_id,
-                pid,
-                frame,
-            } => Ok(Some(SelectedWindow {
-                window_id,
-                title,
-                application_name,
-                bundle_id,
-                pid,
-                frame,
-            })),
+            Self::Selected { windows } => Ok(Some(windows)),
             Self::Cancelled => Ok(None),
             Self::Error { message } => Err(message),
         }
@@ -318,6 +295,36 @@ pub enum LensStage {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensTargetSelectionStage {
+    Picking,
+    Reviewing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LensTargetSelectionItem {
+    pub id: String,
+    pub window: SelectedWindow,
+    #[serde(default)]
+    pub preview_uri: Option<String>,
+    #[serde(default)]
+    pub preview_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LensTargetSelection {
+    pub selection_id: Uuid,
+    pub stage: LensTargetSelectionStage,
+    pub maximum_targets: usize,
+    #[serde(default)]
+    pub anchor: Option<Bounds>,
+    #[serde(default)]
+    pub items: Vec<LensTargetSelectionItem>,
+    #[serde(default)]
+    pub notice: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LensOutputBlock {
@@ -347,7 +354,9 @@ pub struct LensState {
     pub operation_id: Option<Uuid>,
     pub stage: LensStage,
     #[serde(default)]
-    pub target: Option<SelectedWindow>,
+    pub selection: Option<LensTargetSelection>,
+    #[serde(default)]
+    pub target_set: Option<crate::lens::LensTargetSet>,
     #[serde(default)]
     pub context: Option<crate::lens::LensContext>,
     #[serde(default)]
@@ -365,7 +374,8 @@ impl Default for LensState {
         Self {
             operation_id: None,
             stage: LensStage::Idle,
-            target: None,
+            selection: None,
+            target_set: None,
             context: None,
             input: None,
             output_blocks: Vec::new(),
@@ -427,6 +437,28 @@ impl AppSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_reply_preserves_every_serialized_window() {
+        let reply: WindowPickerReply = serde_json::from_str(
+            r#"{
+                "status":"selected",
+                "windows":[
+                    {"window_id":9,"title":"Nine","application_name":"App Z","bundle_id":"z.example","pid":90,"frame":{"x":0.0,"y":0.0,"width":900.0,"height":700.0}},
+                    {"window_id":7,"title":"Seven","application_name":"App A","bundle_id":"a.example","pid":70,"frame":{"x":10.0,"y":20.0,"width":800.0,"height":600.0}}
+                ]
+            }"#,
+        )
+        .expect("valid native multi-window reply");
+        let windows = reply
+            .into_selected()
+            .expect("selected reply")
+            .expect("selected windows");
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].window_id, 9);
+        assert_eq!(windows[1].window_id, 7);
+    }
 
     #[test]
     fn only_an_authenticated_selection_enables_lens_target_selection() {
