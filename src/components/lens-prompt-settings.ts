@@ -1,11 +1,15 @@
 import { LitElement, html, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import type { PromptSynchronization } from "../application/view-models";
 import { dispatchComponentEvent, PROMPT_INTENT_EVENT, type PromptIntent } from "./events";
 
 @customElement("lens-prompt-settings")
 export class LensPromptSettings extends LitElement {
   @property({ attribute: false })
   responsePrompt: string | undefined;
+
+  @property({ attribute: false })
+  synchronization: PromptSynchronization = "preserve-local-draft";
 
   @property({ type: Boolean })
   disabled = false;
@@ -22,7 +26,11 @@ export class LensPromptSettings extends LitElement {
 
   protected willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("responsePrompt")) return;
-    if (!this.dirty || this.responsePrompt === this.draft) {
+    if (
+      this.synchronization === "accept-parent-value" ||
+      !this.dirty ||
+      this.responsePrompt === this.draft
+    ) {
       this.draft = this.responsePrompt ?? "";
       this.dirty = false;
     }

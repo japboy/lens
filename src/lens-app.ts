@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import { AccessibilityPermissionController } from "./application/accessibility-permission-controller";
 import { AppSnapshotController } from "./application/app-snapshot-controller";
 import {
+  canStartCommand,
   IDLE_COMMAND_STATE,
   type CommandIdentity,
   type CommandState,
@@ -37,6 +38,8 @@ export class LensApp extends LitElement {
 
   @state()
   private command: CommandState = IDLE_COMMAND_STATE;
+
+  private commandGeneration = 0;
 
   private readonly port = tauriWebviewPort;
   private readonly snapshots = new AppSnapshotController(this, this.port);
@@ -217,6 +220,7 @@ export class LensApp extends LitElement {
         await this.runCommand(identity, () => this.port.openExternalUrl(intent.url));
         return;
       case "report-error":
+        this.commandGeneration += 1;
         this.command = { stage: "failed", command: identity, message: intent.message };
         return;
     }
@@ -249,14 +253,17 @@ export class LensApp extends LitElement {
     action: () => Promise<void>,
     successMessage = "",
   ): Promise<void> {
-    if (this.command.stage === "pending") return;
+    if (!canStartCommand(this.command, command)) return;
+    const generation = ++this.commandGeneration;
     this.command = { stage: "pending", command };
     try {
       await action();
+      if (generation !== this.commandGeneration) return;
       this.command = successMessage
         ? { stage: "succeeded", command, message: successMessage }
         : IDLE_COMMAND_STATE;
     } catch (error) {
+      if (generation !== this.commandGeneration) return;
       this.command = { stage: "failed", command, message: String(error) };
     }
   }

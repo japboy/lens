@@ -52,6 +52,7 @@ export class LensSettingsView extends LitElement {
 
         <lens-prompt-settings
           .responsePrompt=${model.config?.response_prompt}
+          .synchronization=${model.promptSynchronization}
           .disabled=${model.pending}
         ></lens-prompt-settings>
 

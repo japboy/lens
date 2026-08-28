@@ -8,7 +8,9 @@ import type {
 } from "../types";
 import { STAGE_LABEL } from "../view-model";
 import type { AccessibilityPermissionState } from "./accessibility-permission-controller";
-import { commandMessage, type CommandState } from "./command-state";
+import { commandMessage, isPendingCommand, type CommandState } from "./command-state";
+
+export type PromptSynchronization = "preserve-local-draft" | "accept-parent-value";
 
 const DEFAULT_AGENT_SELECTION: AgentSelectionState = {
   stage: "unselected",
@@ -27,6 +29,7 @@ export interface SettingsViewModel {
   agentRuntime: AgentRuntimeState;
   permission: AccessibilityPermissionState;
   pending: boolean;
+  promptSynchronization: PromptSynchronization;
   message: string;
   lensStageLabel: string;
 }
@@ -42,6 +45,7 @@ export interface OverlayViewModel {
   platform: DesktopPlatform;
   lens: LensState;
   pending: boolean;
+  cancelPending: boolean;
   message: string;
 }
 
@@ -64,6 +68,13 @@ export function settingsViewModel(
     agentRuntime: snapshot?.agent_runtime ?? DEFAULT_AGENT_RUNTIME,
     permission,
     pending: command.stage === "pending",
+    promptSynchronization:
+      command.stage !== "idle" &&
+      command.command.scope === "settings" &&
+      command.command.type === "reset-response-prompt" &&
+      command.stage !== "failed"
+        ? "accept-parent-value"
+        : "preserve-local-draft",
     message: presentationMessage(command, connectionMessage),
     lensStageLabel: STAGE_LABEL[lens.stage],
   };
@@ -93,6 +104,7 @@ export function overlayViewModel(
     platform,
     lens: snapshot?.lens ?? DEFAULT_LENS,
     pending: command.stage === "pending",
+    cancelPending: isPendingCommand(command, "overlay", "cancel"),
     message: presentationMessage(command, connectionMessage),
   };
 }

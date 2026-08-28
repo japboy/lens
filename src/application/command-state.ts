@@ -13,6 +13,22 @@ export type CommandState =
 
 export const IDLE_COMMAND_STATE: CommandState = { stage: "idle" };
 
+export function canStartCommand(state: CommandState, next: CommandIdentity): boolean {
+  if (state.stage !== "pending") return true;
+  if (next.scope !== "overlay") return false;
+  if (next.type === "close" || next.type === "open-external-url") return true;
+  if (next.type !== "cancel" || state.command.scope !== "overlay") return false;
+  return state.command.type === "authenticate" || state.command.type === "transform";
+}
+
+export function isPendingCommand(
+  state: CommandState,
+  scope: CommandIdentity["scope"],
+  type: CommandIdentity["type"],
+): boolean {
+  return state.stage === "pending" && state.command.scope === scope && state.command.type === type;
+}
+
 export function commandMessage(state: CommandState): string {
   return state.stage === "succeeded" || state.stage === "failed" ? state.message : "";
 }

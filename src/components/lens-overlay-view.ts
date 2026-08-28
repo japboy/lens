@@ -75,7 +75,6 @@ export class LensOverlayView extends LitElement {
             class="close-button"
             data-tauri-drag-region="false"
             aria-label="Close Lens"
-            ?disabled=${model.pending}
             @click=${() => this.emit({ type: "close" })}
           >
             <span class="close-icon" aria-hidden="true"></span>
@@ -130,7 +129,10 @@ export class LensOverlayView extends LitElement {
           ${
             lens.stage === "connecting" || lens.stage === "transforming"
               ? html`<div class="overlay-actions">
-                  <button ?disabled=${model.pending} @click=${() => this.emit({ type: "cancel" })}>
+                  <button
+                    ?disabled=${model.cancelPending}
+                    @click=${() => this.emit({ type: "cancel" })}
+                  >
                     Cancel
                   </button>
                 </div>`
