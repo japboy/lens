@@ -21,6 +21,40 @@ afterEach(() => {
 });
 
 describe("component property and event contracts", () => {
+  it("declares one right-side entrance and preserves its shell across selection updates", async () => {
+    const model: TargetSelectionViewModel = {
+      platform: "macos",
+      lens: {
+        operation_id: "operation",
+        stage: "selecting",
+        selection: {
+          selection_id: "operation",
+          stage: "reviewing",
+          maximum_targets: 4,
+          items: [],
+        },
+        output_blocks: [],
+      },
+      pending: false,
+      message: "",
+    };
+    const element = document.createElement("lens-target-selection-view") as HTMLElement & {
+      model: TargetSelectionViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = model;
+    document.body.append(element);
+    await element.updateComplete;
+
+    const entranceShell = element.shadowRoot?.querySelector<HTMLElement>(".target-selection-shell");
+    expect(entranceShell?.dataset.entrance).toBe("slide-in-from-right");
+
+    element.model = { ...model, pending: true };
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector(".target-selection-shell")).toBe(entranceShell);
+  });
+
   it("keeps the prompt draft local and emits a composed semantic save intent", async () => {
     const element = document.createElement("lens-prompt-settings") as HTMLElement & {
       responsePrompt: string;

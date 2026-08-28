@@ -35,6 +35,7 @@ export class LensTargetSelectionView extends LitElement {
     return html`
       <section
         class="target-selection-shell"
+        data-entrance="slide-in-from-right"
         aria-label="Selected windows"
         @lens-target-remove=${this.removeTarget}
       >

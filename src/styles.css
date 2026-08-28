@@ -250,6 +250,20 @@ fieldset {
   box-shadow: 0 14px 38px color-mix(in srgb, CanvasText 24%, transparent);
 }
 
+.target-selection-shell[data-entrance="slide-in-from-right"] {
+  animation: 280ms ease-out both target-selection-slide-in-from-right;
+}
+
+@keyframes target-selection-slide-in-from-right {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
 .target-selection-toolbar {
   flex: 0 0 48px;
   display: flex;
@@ -1211,6 +1225,10 @@ fieldset {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .target-selection-shell[data-entrance="slide-in-from-right"] {
+    animation: none;
+  }
+
   *,
   *::before,
   *::after {
