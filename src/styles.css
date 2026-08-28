@@ -12,10 +12,13 @@
 }
 
 html[data-view="settings"][data-platform="macos"] {
-  /* WebKit maps Window to AppKit's dynamic NSColor.windowBackgroundColor on macOS. */
+  /*
+   * WebKit maps Window and Canvas to AppKit's dynamic window and text-background colors.
+   * Keep grouped surfaces one subtle tonal step from the window instead of using Canvas whole.
+   */
   --settings-backdrop: Window;
-  --settings-group-background: Canvas;
-  --settings-group-border: -apple-system-separator;
+  --settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);
+  --settings-group-border: color-mix(in srgb, -apple-system-separator 50%, transparent 50%);
 }
 
 * {
