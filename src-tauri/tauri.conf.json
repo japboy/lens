@@ -19,7 +19,8 @@
   "bundle": {
     "active": true,
     "category": "Productivity",
-    "copyright": "Copyright © 2026 Lens contributors",
+    "copyright": "Copyright © 2026 Yu Inao",
+    "icon": ["icons/icon.icns"],
     "targets": ["app"],
     "macOS": {
       "minimumSystemVersion": "15.2",
