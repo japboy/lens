@@ -45,6 +45,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(app_state::AppState::load())
+        .manage(ui::LensWindowPresentationState::default())
         .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
         .setup(move |app| {
             #[cfg(target_os = "macos")]

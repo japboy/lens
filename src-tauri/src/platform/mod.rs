@@ -45,6 +45,35 @@ pub fn request_accessibility_trust() -> bool {
     macos::request_accessibility_trust()
 }
 
+pub fn present_window_from_screen_right(
+    window: &tauri::WebviewWindow,
+) -> Result<(), PlatformError> {
+    macos::present_window_from_screen_right(window)
+}
+
+pub async fn dismiss_window_to_screen_right(
+    window: &tauri::WebviewWindow,
+) -> Result<(), PlatformError> {
+    macos::dismiss_window_to_screen_right(window).await
+}
+
+pub async fn transition_window_frame(
+    window: &tauri::WebviewWindow,
+    target_x: f64,
+    target_y: f64,
+    target_content_width: f64,
+    target_content_height: f64,
+) -> Result<(), PlatformError> {
+    macos::transition_window_frame(
+        window,
+        target_x,
+        target_y,
+        target_content_width,
+        target_content_height,
+    )
+    .await
+}
+
 pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError> {
     macos::present_window_picker().await
 }
