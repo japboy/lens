@@ -23,6 +23,7 @@
     "icon": ["icons/icon.icns"],
     "targets": ["app"],
     "macOS": {
+      "signingIdentity": "-",
       "minimumSystemVersion": "15.2",
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
