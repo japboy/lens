@@ -59,7 +59,8 @@ jobs:
           cache: false
           install: true
 
-      - run: pnpm run verify:native
+      - name: Run native verification without JavaScript dependencies
+        run: pnpm --config.verify-deps-before-run=false run verify:native
 
   code-quality:
     name: code-quality
