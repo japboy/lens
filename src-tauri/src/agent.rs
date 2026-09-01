@@ -65,6 +65,7 @@ struct AgentTransformInput {
 enum AgentTransformAdmission {
     InitialOrRetry,
     LiveProjectionUpdate,
+    RecoveryCheckpoint,
 }
 
 impl AgentTransformAdmission {
@@ -77,6 +78,16 @@ impl AgentTransformAdmission {
             Self::LiveProjectionUpdate => {
                 matches!(stage, LensStage::Ready | LensStage::Transforming)
             }
+            Self::RecoveryCheckpoint => {
+                matches!(stage, LensStage::Ready | LensStage::Completed)
+            }
+        }
+    }
+
+    fn requires_watching(self) -> bool {
+        match self {
+            Self::InitialOrRetry => false,
+            Self::LiveProjectionUpdate | Self::RecoveryCheckpoint => true,
         }
     }
 }
@@ -757,6 +768,18 @@ pub(crate) async fn transform_live_projection(
     .await
 }
 
+pub(crate) async fn transform_recovery_projection(
+    app: AppHandle,
+    expected_operation_id: Uuid,
+) -> Result<LensState, String> {
+    submit_current_projection(
+        app,
+        expected_operation_id,
+        AgentTransformAdmission::RecoveryCheckpoint,
+    )
+    .await
+}
+
 async fn submit_current_projection(
     app: AppHandle,
     expected_operation_id: Uuid,
@@ -1342,6 +1365,15 @@ fn current_transform_input(
     }
     if !admission.accepts(snapshot.lens.stage) {
         return Err("the current Lens operation does not admit this transformation request".into());
+    }
+    if admission.requires_watching()
+        && snapshot
+            .lens
+            .live
+            .as_ref()
+            .is_none_or(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
+    {
+        return Err("live Agent transformation is not allowed while monitoring is paused".into());
     }
     let material = state.lens_prompt_material(operation_id)?;
     let projection =
@@ -2578,7 +2610,15 @@ mod tests {
                 matches!(stage, LensStage::Ready | LensStage::Transforming),
                 "unexpected live projection admission for {stage:?}"
             );
+            assert_eq!(
+                AgentTransformAdmission::RecoveryCheckpoint.accepts(stage),
+                matches!(stage, LensStage::Ready | LensStage::Completed),
+                "unexpected recovery checkpoint admission for {stage:?}"
+            );
         }
+        assert!(!AgentTransformAdmission::InitialOrRetry.requires_watching());
+        assert!(AgentTransformAdmission::LiveProjectionUpdate.requires_watching());
+        assert!(AgentTransformAdmission::RecoveryCheckpoint.requires_watching());
     }
 
     #[tokio::test]

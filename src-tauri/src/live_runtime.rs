@@ -1,7 +1,7 @@
 use crate::{
     agent,
-    app_state::{update_lens_state, AppState},
-    commands::{refresh_lens_context, LensContextRefreshOutcome},
+    app_state::{update_lens_state, AppState, LensContextRefreshOutcome},
+    commands::refresh_lens_context,
     lens::LensTargetSet,
     model::{LensFreshness, LensMonitoringLifecycle, LensSourceHealth, LensStage, LensState},
     platform::{
@@ -61,12 +61,62 @@ enum LiveSignal {
     PeriodicReconciliation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservationStart {
+    Initial,
+    Resume,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentSubmissionDirective {
+    None,
+    LiveProjectionUpdate,
+    RecoveryCheckpoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RefreshSchedulingState {
+    recovery_checkpoint_pending: bool,
+}
+
+impl RefreshSchedulingState {
+    fn new(start: ObservationStart) -> Self {
+        Self {
+            recovery_checkpoint_pending: start == ObservationStart::Resume,
+        }
+    }
+
+    fn completed_refresh(
+        &mut self,
+        outcome: LensContextRefreshOutcome,
+    ) -> AgentSubmissionDirective {
+        if self.recovery_checkpoint_pending {
+            self.recovery_checkpoint_pending = false;
+            AgentSubmissionDirective::RecoveryCheckpoint
+        } else if outcome == LensContextRefreshOutcome::Updated {
+            AgentSubmissionDirective::LiveProjectionUpdate
+        } else {
+            AgentSubmissionDirective::None
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ObservationCoverage {
     expected_sources: usize,
     observing_sources: usize,
     has_registration_diagnostics: bool,
     failures: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ObservationSchedulerContext {
+    operation_id: Uuid,
+    context_id: Uuid,
+    observer_epoch: NonZeroU64,
+    source_window_authority: BTreeMap<Uuid, u32>,
+    coverage: ObservationCoverage,
+    start: ObservationStart,
 }
 
 impl ObservationCoverage {
@@ -95,7 +145,7 @@ impl LensLiveControl {
         operation_id: Uuid,
         context_id: Uuid,
         target_set: &LensTargetSet,
-        resume: bool,
+        start: ObservationStart,
     ) -> Result<ObservationCoverage, String> {
         let mut inner = self
             .inner
@@ -109,7 +159,7 @@ impl LensLiveControl {
                 if operation.active.is_some() {
                     return Err("Lens monitoring is already active".into());
                 }
-                if !resume {
+                if start != ObservationStart::Resume {
                     return Err("Lens monitoring was already initialized for this operation".into());
                 }
                 let next = operation
@@ -124,13 +174,20 @@ impl LensLiveControl {
             Some(_) => {
                 return Err("another Lens monitoring operation is still registered".into());
             }
-            None if resume => {
+            None if start == ObservationStart::Resume => {
                 return Err("the paused Lens monitoring operation is unavailable".into());
             }
             None => NonZeroU64::new(1).expect("initial observer epoch is non-zero"),
         };
 
-        let setup = build_observation(app, operation_id, context_id, observer_epoch, target_set);
+        let setup = build_observation(
+            app,
+            operation_id,
+            context_id,
+            observer_epoch,
+            target_set,
+            start,
+        );
         let coverage = setup.coverage.clone();
         match inner.operation.as_mut() {
             Some(operation) => operation.active = setup.active,
@@ -223,7 +280,7 @@ pub fn start(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
         operation_id,
         context.context_id,
         target_set,
-        false,
+        ObservationStart::Initial,
     )?;
     apply_observation_coverage(app, operation_id, &coverage)?;
     Ok(())
@@ -274,7 +331,7 @@ pub fn resume(app: &AppHandle, operation_id: Uuid) -> Result<LensState, String> 
         operation_id,
         context.context_id,
         target_set,
-        true,
+        ObservationStart::Resume,
     )?;
     if !coverage.is_usable() {
         apply_observation_coverage(app, operation_id, &coverage)?;
@@ -338,6 +395,7 @@ fn build_observation(
     context_id: Uuid,
     observer_epoch: NonZeroU64,
     target_set: &LensTargetSet,
+    start: ObservationStart,
 ) -> ObservationSetup {
     let (signal, receiver) = mpsc::channel(1);
     let mut registrations = Vec::with_capacity(target_set.targets.len());
@@ -376,14 +434,16 @@ fn build_observation(
         has_registration_diagnostics,
         failures,
     };
-    let scheduler_coverage = coverage.clone();
     let scheduler = tauri::async_runtime::spawn(run_scheduler(
         app,
-        operation_id,
-        context_id,
-        observer_epoch,
-        authority,
-        scheduler_coverage,
+        ObservationSchedulerContext {
+            operation_id,
+            context_id,
+            observer_epoch,
+            source_window_authority: authority,
+            coverage: coverage.clone(),
+            start,
+        },
         receiver,
     ));
     let forwarders = source_receivers
@@ -434,13 +494,18 @@ fn spawn_source_forwarder(
 
 async fn run_scheduler(
     app: AppHandle,
-    operation_id: Uuid,
-    context_id: Uuid,
-    observer_epoch: NonZeroU64,
-    authority: BTreeMap<Uuid, u32>,
-    coverage: ObservationCoverage,
+    context: ObservationSchedulerContext,
     mut receiver: mpsc::Receiver<LiveSignal>,
 ) {
+    let ObservationSchedulerContext {
+        operation_id,
+        context_id,
+        observer_epoch,
+        source_window_authority,
+        coverage,
+        start,
+    } = context;
+    let mut scheduling = RefreshSchedulingState::new(start);
     while let Some(signal) = receiver.recv().await {
         let immediate = matches!(
             signal,
@@ -452,7 +517,7 @@ async fn run_scheduler(
                 operation_id,
                 context_id,
                 observer_epoch,
-                &authority,
+                &source_window_authority,
             )
         {
             continue;
@@ -473,7 +538,7 @@ async fn run_scheduler(
                             operation_id,
                             context_id,
                             observer_epoch,
-                            &authority,
+                            &source_window_authority,
                         ) => {}
                         Some(_) => {}
                         None => return,
@@ -502,15 +567,32 @@ async fn run_scheduler(
         match refresh_lens_context(app.clone(), operation_id, expected_revision).await {
             Ok(outcome) => {
                 let _ = apply_observation_coverage(&app, operation_id, &coverage);
-                if outcome == LensContextRefreshOutcome::Updated {
-                    let transform_app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) =
-                            agent::transform_live_projection(transform_app, operation_id).await
-                        {
-                            eprintln!("Unable to update the live Lens representation: {error}");
-                        }
-                    });
+                let directive = scheduling.completed_refresh(outcome);
+                match directive {
+                    AgentSubmissionDirective::None => {}
+                    AgentSubmissionDirective::LiveProjectionUpdate => {
+                        let transform_app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(error) =
+                                agent::transform_live_projection(transform_app, operation_id).await
+                            {
+                                eprintln!("Unable to update the live Lens representation: {error}");
+                            }
+                        });
+                    }
+                    AgentSubmissionDirective::RecoveryCheckpoint => {
+                        let transform_app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(error) =
+                                agent::transform_recovery_projection(transform_app, operation_id)
+                                    .await
+                            {
+                                eprintln!(
+                                    "Unable to recover the live Lens representation: {error}"
+                                );
+                            }
+                        });
+                    }
                 }
             }
             Err(error) => {
@@ -589,5 +671,33 @@ mod tests {
             NonZeroU64::new(1).expect("epoch"),
             &BTreeMap::new(),
         ));
+    }
+
+    #[test]
+    fn resume_requires_one_recovery_checkpoint_even_for_an_unchanged_projection() {
+        let mut initial = RefreshSchedulingState::new(ObservationStart::Initial);
+        assert_eq!(
+            initial.completed_refresh(LensContextRefreshOutcome::Unchanged),
+            AgentSubmissionDirective::None
+        );
+        assert_eq!(
+            initial.completed_refresh(LensContextRefreshOutcome::Updated),
+            AgentSubmissionDirective::LiveProjectionUpdate
+        );
+
+        for outcome in [
+            LensContextRefreshOutcome::Unchanged,
+            LensContextRefreshOutcome::Updated,
+        ] {
+            let mut resumed = RefreshSchedulingState::new(ObservationStart::Resume);
+            assert_eq!(
+                resumed.completed_refresh(outcome),
+                AgentSubmissionDirective::RecoveryCheckpoint
+            );
+            assert_eq!(
+                resumed.completed_refresh(LensContextRefreshOutcome::Unchanged),
+                AgentSubmissionDirective::None
+            );
+        }
     }
 }
