@@ -268,6 +268,24 @@ describe("component property and event contracts", () => {
       (button) => button.textContent?.trim() === "Cancel",
     );
     expect(cancel?.disabled).toBe(false);
+    const progressRegion = element.shadowRoot?.querySelector(".lens-progress-region");
+    expect(progressRegion?.getAttribute("role")).toBe("status");
+    expect(progressRegion?.parentElement?.classList.contains("overlay-footer")).toBe(true);
+    expect(element.shadowRoot?.querySelector(".overlay-main .lens-progress-region")).toBeNull();
+    expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
+      "Transforming content",
+    );
+    expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
+      "Translation updates",
+    );
+    const output = element.shadowRoot?.querySelector<
+      HTMLElement & { updateComplete: Promise<boolean> }
+    >("lens-agent-output");
+    await output?.updateComplete;
+    expect(output?.querySelector(".loading-state")).toBeNull();
+    expect(output?.querySelector(".empty-state")?.textContent).toContain(
+      "translation will appear here",
+    );
 
     element.model = { ...model, cancelPending: true };
     await element.updateComplete;

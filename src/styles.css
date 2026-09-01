@@ -470,48 +470,122 @@ fieldset {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  min-height: 36px;
-  padding: 6px 14px;
-  border-bottom: 1px solid Separator;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 7px 10px 7px 14px;
 }
 
-.overlay-header .close-button {
-  flex: 0 0 auto;
-}
-
-.overlay-title,
-.overlay-footer-status,
-.overlay-stage {
+.overlay-brand,
+.overlay-header-actions {
+  display: flex;
+  align-items: center;
   min-width: 0;
 }
 
-.overlay-title,
-.overlay-stage {
+.overlay-brand {
+  flex: 1 1 auto;
+}
+
+.overlay-app-icon {
+  flex: 0 0 auto;
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  object-fit: cover;
+  box-shadow: 0 1px 3px color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.overlay-header-actions {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.overlay-header-action {
+  appearance: none;
+  min-height: 26px;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: CanvasText;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+}
+
+.overlay-header-action:hover {
+  background: color-mix(in srgb, CanvasText 8%, transparent);
+}
+
+.overlay-header-action:disabled {
+  color: GrayText;
+  cursor: default;
+}
+
+.overlay-header-action:focus-visible,
+.close-button:focus-visible {
+  outline: 2px solid AccentColor;
+  outline-offset: 1px;
+}
+
+.overlay-source-summary {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 14px;
+  border-block: 1px solid color-mix(in srgb, Separator 82%, transparent);
+  background: color-mix(in srgb, AccentColor 8%, transparent);
+}
+
+.overlay-source-summary::before {
+  position: absolute;
+  inset-block: 7px;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 0 999px 999px 0;
+  background: AccentColor;
+  content: "";
+}
+
+.overlay-source-icon {
+  flex: 0 0 auto;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  color: AccentColor;
+  background: color-mix(in srgb, AccentColor 12%, transparent);
+  font-size: 12px;
+}
+
+.overlay-source-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.overlay-source-count,
+.overlay-source-targets {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.overlay-title {
-  flex: 1 1 auto;
-  margin: 0;
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 1.2;
-}
-
-.overlay-title span {
-  color: GrayText;
-}
-
-.overlay-footer-status {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  color: GrayText;
+.overlay-source-count {
+  color: CanvasText;
   font-size: 12px;
+  font-weight: 650;
+}
+
+.overlay-source-targets {
+  color: GrayText;
+  font-size: 11px;
 }
 
 .overlay-main {
@@ -522,20 +596,119 @@ fieldset {
   overflow: hidden;
 }
 
+.overlay-main[data-progress="true"] .lens-content {
+  padding-block-end: 88px;
+}
+
+.lens-progress-region {
+  position: absolute;
+  z-index: 4;
+  inset-inline: 14px;
+  bottom: calc(100% + 14px);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.lens-progress-snackbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 420px);
+  min-height: 48px;
+  padding: 9px 12px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, Separator 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, Canvas 82%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow:
+    0 10px 30px color-mix(in srgb, CanvasText 18%, transparent),
+    0 1px 3px color-mix(in srgb, CanvasText 10%, transparent);
+  animation: lens-progress-snackbar-enter 160ms ease-out both;
+}
+
+.lens-progress-snackbar .fa-spinner {
+  --fa-animation-duration: 1.2s;
+  width: 20px;
+  color: AccentColor;
+  font-size: 18px;
+  text-align: center;
+}
+
+.lens-progress-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.lens-progress-copy strong,
+.lens-progress-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lens-progress-copy strong {
+  color: CanvasText;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.lens-progress-copy span {
+  color: GrayText;
+  font-size: 11px;
+}
+
+@keyframes lens-progress-snackbar-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .overlay-footer {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 0 8px 6px 14px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 5px 14px;
   border-top: 1px solid Separator;
 }
 
-.overlay-footer-meta {
+.overlay-footer-status {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
+  min-width: 0;
+  gap: 7px;
+  color: GrayText;
+  font-size: 12px;
+}
+
+.overlay-stage-indicator {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: AccentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, AccentColor 14%, transparent);
+}
+
+.overlay-stage {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .close-button {
@@ -605,37 +778,54 @@ fieldset {
 }
 
 .lens-tabs {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow-x: auto;
+  margin: 0;
+  padding: 0 14px;
+  border-bottom: 1px solid Separator;
+  scrollbar-width: none;
+}
+
+.lens-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.lens-tabs > [role="tablist"] {
   display: flex;
   align-items: center;
-  gap: 2px;
-  min-width: 0;
-  margin: 0;
-  padding: 2px;
-  border: 1px solid Separator;
-  border-radius: 7px;
-  background: color-mix(in srgb, CanvasText 5%, transparent);
+  gap: 20px;
+  min-width: max-content;
 }
 
 .lens-tab {
   appearance: none;
-  flex: 1 1 0;
-  min-height: 26px;
-  padding: 3px 12px;
+  flex: 0 0 auto;
+  min-height: 36px;
+  margin-bottom: -1px;
+  padding: 1px 0 0;
   border: 0;
-  border-radius: 5px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
-  color: CanvasText;
+  color: GrayText;
+  font: inherit;
+  font-size: 12px;
 }
 
 .lens-tab[aria-selected="true"] {
-  background: Canvas;
-  box-shadow: 0 1px 3px color-mix(in srgb, CanvasText 18%, transparent);
+  border-bottom-color: AccentColor;
+  color: CanvasText;
   font-weight: 600;
+}
+
+.lens-tab:hover {
+  color: CanvasText;
 }
 
 .lens-tab:focus-visible {
   outline: 2px solid AccentColor;
-  outline-offset: 1px;
+  outline-offset: -3px;
 }
 
 .lens-panel {
@@ -1055,7 +1245,6 @@ fieldset {
   }
 }
 
-.loading-state,
 .empty-state {
   flex: 1 1 auto;
   min-height: 0;
@@ -1065,29 +1254,6 @@ fieldset {
   align-items: center;
   justify-content: center;
   text-align: center;
-}
-
-.loading-state {
-  flex-direction: column;
-  gap: 10px;
-  color: GrayText;
-}
-
-.loading-state .fa-spinner {
-  --fa-animation-duration: 1.2s;
-  display: block;
-  width: 32px;
-  color: CanvasText;
-  font-size: 32px;
-}
-
-.loading-state strong {
-  color: CanvasText;
-  font-size: 14px;
-}
-.loading-state p {
-  max-width: 34em;
-  margin: 0;
 }
 .empty-state {
   color: GrayText;
@@ -1121,38 +1287,43 @@ fieldset {
 }
 
 .extraction-diagnostics {
-  flex: 0 1 auto;
-  max-height: min(42%, 280px);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
-  margin: 0 14px 10px;
+  margin: 10px 14px 16px;
   border: 1px solid Separator;
-  border-radius: 8px;
-  padding: 8px;
+  border-radius: 10px;
+  padding: 10px;
   color: GrayText;
   font-size: 11px;
   background: color-mix(in srgb, CanvasText 3%, transparent);
 }
 
-.extraction-diagnostics summary {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+.diagnostics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
   border: 1px solid Separator;
-  border-radius: 6px;
-  padding: 6px 8px;
-  cursor: pointer;
+  border-radius: 7px;
+  padding: 7px 9px;
   color: CanvasText;
   background: color-mix(in srgb, Canvas 78%, transparent);
-  font-weight: 600;
 }
 
-.extraction-diagnostics[open] summary {
-  margin-bottom: 8px;
+.diagnostics-header h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .diagnostic-count {
-  float: right;
-  margin-inline-start: 12px;
+  flex: 0 0 auto;
   border: 1px solid Separator;
   border-radius: 999px;
   padding: 1px 7px;
@@ -1165,10 +1336,6 @@ fieldset {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
   gap: 12px;
-}
-
-.extraction-diagnostics:not([open]) > .diagnostics-layout {
-  display: none;
 }
 
 .diagnostic-group {
@@ -1330,5 +1497,11 @@ fieldset {
   .overlay-shell {
     border-width: 2px;
     background: Canvas;
+  }
+
+  .lens-progress-snackbar {
+    background: Canvas;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }

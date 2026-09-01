@@ -290,8 +290,8 @@ describe("Lens rich Agent output", () => {
     const element = await createLensApp("overlay");
     await vi.waitFor(() => {
       expect(
-        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-title")?.textContent,
-      ).toContain("2 Windows");
+        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-source-count")?.textContent,
+      ).toContain("2 selected windows");
     });
     const overlayRoot = viewRoot(element, "lens-overlay-view");
 
@@ -301,9 +301,58 @@ describe("Lens rich Agent output", () => {
     expect(
       overlayRoot?.querySelector(".close-button")?.getAttribute("data-tauri-drag-region"),
     ).toBe("false");
-    expect(overlayRoot?.querySelector(".overlay-title")?.getAttribute("title")).toContain(
+    expect(overlayRoot?.querySelector(".overlay-app-icon")?.getAttribute("src")).toBeTruthy();
+    expect(overlayRoot?.querySelector(".overlay-app-mark")).toBeNull();
+    expect(
+      overlayRoot?.querySelector(".overlay-title")?.classList.contains("visually-hidden"),
+    ).toBe(true);
+    expect(overlayRoot?.querySelector(".overlay-source-count")?.textContent).toContain(
+      "2 selected windows",
+    );
+    expect(overlayRoot?.querySelector(".overlay-source-targets")?.getAttribute("title")).toContain(
       "TextEdit — Notes",
     );
+  });
+
+  it("exposes Source and Diagnostics as ordered keyboard tabs", async () => {
+    const element = await createLensApp("overlay");
+    await vi.waitFor(() => {
+      expect(
+        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-source-count")?.textContent,
+      ).toContain("2 selected windows");
+    });
+    const overlayView = element.shadowRoot?.querySelector<
+      HTMLElement & { updateComplete: Promise<boolean> }
+    >("lens-overlay-view");
+    const overlayRoot = overlayView?.shadowRoot;
+    const tabs = Array.from(overlayRoot?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
+
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
+      "Translation",
+      "Source",
+      "Diagnostics",
+    ]);
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+
+    tabs[1]?.click();
+    await overlayView?.updateComplete;
+    expect(overlayRoot?.querySelector("#source-panel")).not.toBeNull();
+    expect(overlayRoot?.querySelector("#diagnostics-panel")).toBeNull();
+
+    tabs[2]?.click();
+    await overlayView?.updateComplete;
+    expect(overlayRoot?.querySelector("#diagnostics-panel .empty-state")?.textContent).toContain(
+      "No extraction diagnostics are available.",
+    );
+    expect(overlayRoot?.querySelector("#source-panel")).toBeNull();
+
+    tabs[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await overlayView?.updateComplete;
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+
+    tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    await overlayView?.updateComplete;
+    expect(tabs[2]?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("renders ACP image data inline and preserves surrounding block order", async () => {
@@ -332,8 +381,8 @@ describe("Lens rich Agent output", () => {
     const element = await createLensApp("overlay");
     await vi.waitFor(() => {
       expect(
-        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-title")?.textContent,
-      ).toContain("2 Windows");
+        viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-source-count")?.textContent,
+      ).toContain("2 selected windows");
     });
     const overlayView = element.shadowRoot?.querySelector<
       HTMLElement & { updateComplete: Promise<boolean> }

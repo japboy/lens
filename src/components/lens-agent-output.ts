@@ -4,7 +4,7 @@ import { externalMarkdownUrl } from "../markdown";
 import "../streaming-markdown";
 import type { StreamingMarkdownState } from "../streaming-markdown";
 import type { LensOutputBlock, LensState } from "../types";
-import { imageDataUrl, lensOutputBlocks, showsLensProgress, STAGE_LABEL } from "../view-model";
+import { imageDataUrl, lensOutputBlocks } from "../view-model";
 import {
   AGENT_OUTPUT_INTENT_EVENT,
   dispatchComponentEvent,
@@ -32,7 +32,7 @@ export class LensAgentOutput extends LitElement {
         ${blocks.map((block, index) => this.renderBlock(block, index === blocks.length - 1))}
       </div>`;
     }
-    return showsLensProgress(this.lens.stage) ? this.renderLoading() : this.renderEmpty();
+    return this.renderEmpty();
   }
 
   private renderBlock(block: LensOutputBlock, isLastBlock: boolean) {
@@ -69,16 +69,6 @@ export class LensAgentOutput extends LitElement {
     </p>`;
   }
 
-  private renderLoading() {
-    return html`
-      <div class="loading-state" role="status" aria-live="polite">
-        <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
-        <strong>${STAGE_LABEL[this.lens.stage]}</strong>
-        <p>The source remains available in its own tab while Lens prepares the result.</p>
-      </div>
-    `;
-  }
-
   private renderEmpty() {
     const message = (() => {
       switch (this.lens.stage) {
@@ -94,10 +84,11 @@ export class LensAgentOutput extends LitElement {
           return "The Agent completed without returning displayable content.";
         case "selecting":
         case "extracting":
-        case "ready":
         case "connecting":
         case "transforming":
-          return "Preparing the Agent translation.";
+          return "The Agent translation will appear here.";
+        case "ready":
+          return "Transform the selected content with the configured Agent.";
       }
     })();
     return html`<p class="empty-state">${message}</p>`;
