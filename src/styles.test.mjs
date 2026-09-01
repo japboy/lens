@@ -21,6 +21,14 @@ describe("macOS Settings surface colors", () => {
 });
 
 describe("Lens overlay presentation", () => {
+  it("reserves snackbar clearance in every scrollable panel", () => {
+    const progressClearance = componentStyles.match(
+      /\.overlay-main\[data-progress="true"\] \.lens-content,\s*\.overlay-main\[data-progress="true"\] \.extraction-diagnostics \{(?<declarations>.*?)\n\}/s,
+    )?.groups?.declarations;
+
+    expect(progressClearance).toContain("padding-block-end: 88px;");
+  });
+
   it("keeps the WebView surface transparent with an opaque accessibility fallback", () => {
     const overlayShell = componentStyles.match(/\.overlay-shell \{(?<declarations>.*?)\n\}/s)
       ?.groups?.declarations;

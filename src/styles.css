@@ -596,7 +596,8 @@ fieldset {
   overflow: hidden;
 }
 
-.overlay-main[data-progress="true"] .lens-content {
+.overlay-main[data-progress="true"] .lens-content,
+.overlay-main[data-progress="true"] .extraction-diagnostics {
   padding-block-end: 88px;
 }
 
