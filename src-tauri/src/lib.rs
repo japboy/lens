@@ -390,6 +390,41 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         encoded_bytes: second_input_image.len(),
     };
     let source = lens::LensSource::from(&target);
+    let context = lens::LensContext {
+        schema_version: lens::LENS_CONTEXT_SCHEMA_VERSION,
+        context_id: operation_id,
+        revision: 1,
+        sources: vec![lens::LensAccessibilitySource {
+            source_id: format!(
+                "macos:{}:{}:accessibility",
+                target.bundle_id, target.window_id
+            ),
+            target_id: target_id.clone(),
+            revision: 1,
+            source: source.clone(),
+            capture: model::ExtractionResult {
+                quality: model::ExtractionQuality::Full,
+                resolved_window: None,
+                nodes: Vec::new(),
+                text: "Rich output validation fixture".into(),
+                metrics: model::ExtractionMetrics {
+                    visited_nodes: 48,
+                    text_bytes: 1_024,
+                    offscreen_text_nodes: 6,
+                    resource_ref_count: 2,
+                    resource_uri_bytes: 84,
+                    ..model::ExtractionMetrics::default()
+                },
+                diagnostics: Vec::new(),
+            },
+            document: None,
+            quality: model::ExtractionQuality::Full,
+        }],
+        media: vec![first_attachment.clone(), second_attachment.clone()],
+        media_omissions: Vec::new(),
+        quality: model::ExtractionQuality::Full,
+        diagnostics: Vec::new(),
+    };
     let input = lens::LensInput {
         schema_version: lens::LENS_INPUT_SCHEMA_VERSION,
         context_id: operation_id,
@@ -464,10 +499,11 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     )? {
         return Err("rich-output validation media operation was superseded".into());
     }
-    let state = model::LensState {
+    let completed_state = model::LensState {
         operation_id: Some(operation_id),
         stage: model::LensStage::Completed,
         target_set: Some(target_set.clone()),
+        context: Some(context),
         input: Some(input),
         output_blocks: vec![
             model::LensOutputBlock::Markdown {
@@ -488,25 +524,48 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         ],
         ..model::LensState::default()
     };
-    app_state::publish_lens_state(&app, state)?;
+    let mut progress_state = completed_state.clone();
+    progress_state.stage = model::LensStage::Transforming;
+    app_state::publish_lens_state(&app, progress_state)?;
     ui::show_lens_window(&app, &target_set).map_err(|error| error.to_string())?;
     let validation_app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let Some(window) = validation_app.get_webview_window(ui::LENS_WINDOW_LABEL) else {
-            eprintln!("Unable to inspect Source input-media validation window");
-            return;
-        };
-        let script = r#"
+        if let Some(window) = validation_app.get_webview_window(ui::LENS_WINDOW_LABEL) {
+            let script = r#"
           (() => {
-            const root = document.querySelector('lens-app')?.shadowRoot;
+            const overlayRoot = () => document
+              .querySelector('lens-app')
+              ?.shadowRoot
+              ?.querySelector('lens-overlay-view')
+              ?.shadowRoot;
+            const root = overlayRoot();
+            const snackbar = root?.querySelector('.lens-progress-snackbar');
+            const progressRegion = root?.querySelector('.lens-progress-region');
+            const footer = root?.querySelector('.overlay-footer');
+            const snackbarBounds = snackbar?.getBoundingClientRect();
+            const footerBounds = footer?.getBoundingClientRect();
+            const appIcon = root?.querySelector('.overlay-app-icon');
+            console.warn('LENS_SNACKBAR_RESULT=' + JSON.stringify({
+              displayed: Boolean(snackbar),
+              role: progressRegion?.getAttribute('role') ?? null,
+              text: snackbar?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+              region_parent: progressRegion?.parentElement?.className ?? null,
+              main_contains_region: Boolean(root?.querySelector('.overlay-main .lens-progress-region')),
+              snackbar_bottom: snackbarBounds?.bottom ?? null,
+              footer_top: footerBounds?.top ?? null,
+              footer_overflow: footer ? getComputedStyle(footer).overflow : null,
+              app_icon_displayed: Boolean(appIcon?.complete && appIcon?.naturalWidth > 0),
+              app_icon_source: appIcon?.getAttribute('src') ?? null,
+              visible_app_title: Boolean(root?.querySelector('.overlay-title:not(.visually-hidden)'))
+            }));
             root?.querySelector('#source-tab')?.click();
             window.setTimeout(() => {
-              const currentRoot = document.querySelector('lens-app')?.shadowRoot;
+              const currentRoot = overlayRoot();
               const thumbnails = currentRoot?.querySelectorAll('.input-media-thumbnail') ?? [];
               thumbnails[1]?.click();
               window.setTimeout(() => {
-              const selectedRoot = document.querySelector('lens-app')?.shadowRoot;
+              const selectedRoot = overlayRoot();
               const image = selectedRoot?.querySelector('.input-media-preview figure > img');
               const source = currentRoot?.querySelector('.source-content code')?.textContent ?? '';
               console.warn('LENS_SOURCE_PREVIEW_RESULT=' + JSON.stringify({
@@ -520,12 +579,30 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
                 source_contains_data_url: source.includes('data:image'),
                 source_contains_base64_payload: source.includes('iVBORw0KGgo')
               }));
+              selectedRoot?.querySelector('#diagnostics-tab')?.click();
+              window.setTimeout(() => {
+                const diagnosticsRoot = overlayRoot();
+                console.warn('LENS_DIAGNOSTICS_RESULT=' + JSON.stringify({
+                  displayed: Boolean(diagnosticsRoot?.querySelector('.diagnostics-header')),
+                  selected: diagnosticsRoot?.querySelector('#diagnostics-tab')?.getAttribute('aria-selected') === 'true',
+                  metric_count: diagnosticsRoot?.querySelectorAll('.metrics > div').length ?? 0,
+                  quality: diagnosticsRoot?.querySelector('.quality')?.textContent?.trim() ?? null
+                }));
+                diagnosticsRoot?.querySelector('#translation-tab')?.click();
+              }, 250);
               }, 500);
             }, 1000);
           })();
         "#;
-        if let Err(error) = window.eval(script) {
-            eprintln!("Unable to inspect Source input-media validation DOM: {error}");
+            if let Err(error) = window.eval(script) {
+                eprintln!("Unable to inspect rich-output validation DOM: {error}");
+            }
+        } else {
+            eprintln!("Unable to inspect Source input-media validation window");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(19)).await;
+        if let Err(error) = app_state::publish_lens_state(&validation_app, completed_state) {
+            eprintln!("Unable to complete rich-output validation state: {error}");
         }
     });
     println!("LENS_RICH_OUTPUT_RESULT=displayed");

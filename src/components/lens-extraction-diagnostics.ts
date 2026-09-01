@@ -39,9 +39,9 @@ export class LensExtractionDiagnostics extends LitElement {
     const diagnosticCount = context.diagnostics.length;
 
     return html`
-      <details class="extraction-diagnostics">
-        <summary>
-          Diagnostics
+      <section class="extraction-diagnostics" aria-labelledby="diagnostics-heading">
+        <header class="diagnostics-header">
+          <h2 id="diagnostics-heading">Extraction diagnostics</h2>
           <span class="diagnostic-count">
             ${
               diagnosticCount === 0
@@ -49,7 +49,7 @@ export class LensExtractionDiagnostics extends LitElement {
                 : `${diagnosticCount} ${diagnosticCount === 1 ? "message" : "messages"}`
             }
           </span>
-        </summary>
+        </header>
         <div class="diagnostics-layout">
           ${context.sources.map((source, index) => {
             const accessibility = source.capture;
@@ -104,7 +104,7 @@ export class LensExtractionDiagnostics extends LitElement {
             }
           </section>
         </div>
-      </details>
+      </section>
     `;
   }
 

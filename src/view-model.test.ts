@@ -6,10 +6,10 @@ import {
   imageDataUrl,
   inputMediaPreviewUrl,
   isAgentRuntimeActive,
+  lensProgressSnackbar,
   lensOutputBlocks,
   lensSourceJson,
   selectedAgent,
-  showsLensProgress,
   shouldApplySnapshot,
   STAGE_LABEL,
   supportedAuthMethods,
@@ -253,17 +253,24 @@ describe("Lens view model", () => {
     expect(supportedAuthMethods(lens).map((method) => method.id)).toEqual(["terminal"]);
   });
 
-  it("shows progress only while an operation can still advance without user input", () => {
-    expect(
-      ["selecting", "extracting", "ready", "connecting", "transforming"].every((stage) =>
-        showsLensProgress(stage as LensStage),
-      ),
-    ).toBe(true);
-    expect(
-      ["idle", "authentication_required", "completed", "cancelled", "failed"].every(
-        (stage) => !showsLensProgress(stage as LensStage),
-      ),
-    ).toBe(true);
+  it("describes a snackbar only while Lens is changing state", () => {
+    const changingStages: LensStage[] = ["selecting", "extracting", "connecting", "transforming"];
+    const stableStages: LensStage[] = [
+      "idle",
+      "ready",
+      "authentication_required",
+      "completed",
+      "cancelled",
+      "failed",
+    ];
+
+    for (const stage of changingStages) {
+      expect(lensProgressSnackbar(stage)).toMatchObject({ title: STAGE_LABEL[stage] });
+      expect(lensProgressSnackbar(stage)?.detail.length).toBeGreaterThan(0);
+    }
+    for (const stage of stableStages) {
+      expect(lensProgressSnackbar(stage)).toBeUndefined();
+    }
   });
 
   it("accepts only a strictly newer finite application snapshot", () => {

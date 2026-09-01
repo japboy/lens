@@ -62,6 +62,43 @@ export const STAGE_LABEL: Record<LensStage, string> = {
   failed: "Unable to complete the operation",
 };
 
+export interface LensProgressSnackbar {
+  readonly title: string;
+  readonly detail: string;
+}
+
+export function lensProgressSnackbar(stage: LensStage): LensProgressSnackbar | undefined {
+  switch (stage) {
+    case "selecting":
+      return {
+        title: STAGE_LABEL[stage],
+        detail: "Choose the windows Lens should use.",
+      };
+    case "extracting":
+      return {
+        title: STAGE_LABEL[stage],
+        detail: "Reading content from the selected windows.",
+      };
+    case "connecting":
+      return {
+        title: STAGE_LABEL[stage],
+        detail: "Preparing the Agent session.",
+      };
+    case "transforming":
+      return {
+        title: STAGE_LABEL[stage],
+        detail: "Translation updates appear as Agent output arrives.",
+      };
+    case "idle":
+    case "ready":
+    case "authentication_required":
+    case "completed":
+    case "cancelled":
+    case "failed":
+      return undefined;
+  }
+}
+
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -107,21 +144,4 @@ export function supportedAuthMethods(lens: LensState): AgentAuthMethod[] {
 
 export function shouldApplySnapshot(currentRevision: number, nextRevision: number): boolean {
   return Number.isSafeInteger(nextRevision) && nextRevision >= 0 && nextRevision > currentRevision;
-}
-
-export function showsLensProgress(stage: LensStage): boolean {
-  switch (stage) {
-    case "selecting":
-    case "extracting":
-    case "ready":
-    case "connecting":
-    case "transforming":
-      return true;
-    case "idle":
-    case "authentication_required":
-    case "completed":
-    case "cancelled":
-    case "failed":
-      return false;
-  }
 }
