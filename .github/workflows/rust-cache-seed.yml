@@ -1,0 +1,34 @@
+name: Rust Cache Seed
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .cargo/config.toml
+      - .github/workflows/code-quality.yml
+      - .github/workflows/native-quality.yml
+      - .github/workflows/rust-cache-seed.yml
+      - mise.lock
+      - mise.toml
+      - package.json
+      - rust-toolchain
+      - rust-toolchain.toml
+      - src-tauri/**/.cargo/config.toml
+      - src-tauri/**/Cargo.toml
+      - src-tauri/Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-cache-seed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-quality:
+    name: native-dependency-cache-seed
+    uses: ./.github/workflows/native-quality.yml
+    with:
+      save_cache: true

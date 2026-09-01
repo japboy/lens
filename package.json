@@ -15,7 +15,9 @@
     "check:dependencies": "mise exec -- cargo deny --manifest-path src-tauri/Cargo.toml check",
     "check": "pnpm run build && pnpm run check:rust",
     "fix": "mise exec -- hk fix --all",
-    "verify": "pnpm run check:identity && pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run check && pnpm test && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
+    "verify": "pnpm run verify:portable && pnpm run verify:native",
+    "verify:native": "pnpm run check:rust && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
+    "verify:portable": "pnpm run check:identity && pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run build && pnpm test",
     "tauri": "tauri",
     "test": "vitest run"
   },
