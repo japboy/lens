@@ -38,3 +38,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
