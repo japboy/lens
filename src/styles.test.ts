@@ -21,6 +21,18 @@ describe("macOS Settings surface colors", () => {
 });
 
 describe("Lens overlay presentation", () => {
+  it("uses equal header edge spacing around the app icon and close control", () => {
+    const overlayHeader = componentStyles.match(/\.overlay-header \{(?<declarations>.*?)\n\}/s)
+      ?.groups?.declarations;
+    const closeButton = componentStyles.match(/\.close-button \{(?<declarations>.*?)\n\}/s)?.groups
+      ?.declarations;
+
+    expect(overlayHeader).toContain("padding: 7px 14px;");
+    expect(overlayHeader).not.toMatch(/padding:\s*7px\s+\d+px\s+7px\s+\d+px;/);
+    expect(closeButton).toContain("width: 24px;");
+    expect(closeButton).toContain("height: 24px;");
+  });
+
   it("reserves snackbar clearance in every scrollable panel", () => {
     const progressClearance = componentStyles.match(
       /\.overlay-main\[data-progress="true"\] \.lens-content,\s*\.overlay-main\[data-progress="true"\] \.extraction-diagnostics \{(?<declarations>.*?)\n\}/s,

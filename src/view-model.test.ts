@@ -6,8 +6,10 @@ import {
   imageDataUrl,
   inputMediaPreviewUrl,
   isAgentRuntimeActive,
+  lensLiveStatus,
   lensProgressSnackbar,
   lensOutputBlocks,
+  lensOutputPresentation,
   lensSourceJson,
   selectedAgent,
   shouldApplySnapshot,
@@ -128,6 +130,34 @@ describe("Lens view model", () => {
     if (imageBlock?.type !== "image") throw new Error("expected image output block");
     expect(imageDataUrl(imageBlock)).toBe("data:image/png;base64,iVBORw0KGgo=");
     expect(lensOutputBlocks({ ...lens, output_blocks: [] })).toEqual([]);
+  });
+
+  it("renders an atomic representation ahead of the compatibility stream", () => {
+    const lens = {
+      operation_id: "operation",
+      stage: "transforming",
+      output_blocks: [{ type: "markdown", text: "Private replacement stream" }],
+      representation: {
+        representation_id: "representation-2",
+        context_id: "operation",
+        context_revision: 2,
+        projection: { revision: 2, digest: "sha256:projection-2" },
+        run_id: "run-2",
+        output_blocks: [{ type: "markdown", text: "Published translation" }],
+      },
+    } satisfies LensState;
+
+    expect(lensOutputBlocks(lens)).toEqual(lens.representation.output_blocks);
+    expect(lensOutputPresentation(lens)).toEqual({
+      blocks: lens.representation.output_blocks,
+      identity: "representation-2",
+      mode: "settled",
+    });
+    expect(lensOutputPresentation({ ...lens, representation: undefined })).toMatchObject({
+      blocks: lens.output_blocks,
+      identity: "operation",
+      mode: "initial-stream",
+    });
   });
 
   it("rejects image MIME types outside the renderer allowlist", () => {
@@ -257,7 +287,6 @@ describe("Lens view model", () => {
     const changingStages: LensStage[] = ["selecting", "extracting", "connecting", "transforming"];
     const stableStages: LensStage[] = [
       "idle",
-      "ready",
       "authentication_required",
       "completed",
       "cancelled",
@@ -271,6 +300,90 @@ describe("Lens view model", () => {
     for (const stage of stableStages) {
       expect(lensProgressSnackbar(stage)).toBeUndefined();
     }
+    expect(lensProgressSnackbar("ready")).toEqual({
+      title: "Preparing Agent…",
+      detail: "The initial transformation starts automatically.",
+    });
+  });
+
+  it("derives every monitoring status from orthogonal lifecycle, health, and freshness", () => {
+    expect(
+      lensLiveStatus({
+        lifecycle: "watching",
+        health: "healthy",
+        freshness: "current",
+        agent_refresh_interval_seconds: 180,
+      }),
+    ).toMatchObject({ title: "Watching", busy: false, prominent: false });
+    expect(
+      lensLiveStatus({
+        lifecycle: "watching",
+        health: "degraded",
+        freshness: "current",
+        agent_refresh_interval_seconds: 180,
+      }),
+    ).toMatchObject({ title: "Watching", busy: false, prominent: true });
+    expect(
+      lensLiveStatus({
+        lifecycle: "watching",
+        health: "healthy",
+        freshness: "current",
+        agent_refresh_interval_seconds: 180,
+        last_outcome: "updated",
+      }),
+    ).toMatchObject({ title: "Updated", busy: false, prominent: false });
+    expect(
+      lensLiveStatus({
+        lifecycle: "watching",
+        health: "healthy",
+        freshness: "checking",
+        agent_refresh_interval_seconds: 180,
+      }),
+    ).toMatchObject({ title: "Updating", busy: true, prominent: true });
+    expect(
+      lensLiveStatus({
+        lifecycle: "watching",
+        health: "healthy",
+        freshness: "stale",
+        agent_refresh_interval_seconds: 180,
+      }),
+    ).toMatchObject({
+      title: "Update queued",
+      detail: expect.stringContaining("3 minutes"),
+      busy: false,
+      prominent: true,
+    });
+    expect(
+      lensLiveStatus({
+        lifecycle: "watching",
+        health: "unavailable",
+        freshness: "unverified",
+        agent_refresh_interval_seconds: 180,
+        error: "Observer permission was revoked.",
+      }),
+    ).toEqual({
+      title: "Needs Attention",
+      detail: "Observer permission was revoked.",
+      busy: false,
+      prominent: true,
+    });
+    expect(
+      lensLiveStatus({
+        lifecycle: "paused",
+        health: "healthy",
+        freshness: "unverified",
+        agent_refresh_interval_seconds: 180,
+      }),
+    ).toMatchObject({ title: "Paused", busy: false });
+    expect(
+      lensLiveStatus({
+        lifecycle: "stopped",
+        health: "healthy",
+        freshness: "none",
+        agent_refresh_interval_seconds: 180,
+      }),
+    ).toMatchObject({ title: "Stopped", busy: false });
+    expect(lensLiveStatus(undefined)).toBeUndefined();
   });
 
   it("accepts only a strictly newer finite application snapshot", () => {

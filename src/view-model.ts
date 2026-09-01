@@ -5,6 +5,7 @@ import type {
   AgentSelectionStage,
   AgentSelectionState,
   LensImageOutputBlock,
+  LensLiveState,
   LensMediaAttachment,
   LensOutputBlock,
   LensStage,
@@ -89,8 +90,12 @@ export function lensProgressSnackbar(stage: LensStage): LensProgressSnackbar | u
         title: STAGE_LABEL[stage],
         detail: "Translation updates appear as Agent output arrives.",
       };
-    case "idle":
     case "ready":
+      return {
+        title: "Preparing Agent…",
+        detail: "The initial transformation starts automatically.",
+      };
+    case "idle":
     case "authentication_required":
     case "completed":
     case "cancelled":
@@ -108,7 +113,133 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
 ]);
 
 export function lensOutputBlocks(lens: LensState): LensOutputBlock[] {
-  return lens.output_blocks;
+  return lens.representation?.output_blocks ?? lens.output_blocks;
+}
+
+export type LensOutputMode = "empty" | "initial-stream" | "settled";
+
+export interface LensOutputPresentation {
+  readonly blocks: LensOutputBlock[];
+  readonly identity?: string;
+  readonly mode: LensOutputMode;
+}
+
+export function lensOutputPresentation(lens: LensState): LensOutputPresentation {
+  const representation = lens.representation;
+  if (representation) {
+    return {
+      blocks: representation.output_blocks,
+      identity: representation.representation_id,
+      mode: representation.output_blocks.length ? "settled" : "empty",
+    };
+  }
+  if (!lens.output_blocks.length) {
+    return { blocks: [], identity: lens.operation_id, mode: "empty" };
+  }
+  return {
+    blocks: lens.output_blocks,
+    identity: lens.operation_id,
+    mode: lens.stage === "transforming" ? "initial-stream" : "settled",
+  };
+}
+
+export interface LensLiveStatus {
+  readonly title:
+    | "Watching"
+    | "Update queued"
+    | "Updating"
+    | "Updated"
+    | "Paused"
+    | "Stopped"
+    | "Needs Attention";
+  readonly detail: string;
+  readonly busy: boolean;
+  readonly prominent: boolean;
+}
+
+function agentRefreshIntervalLabel(seconds: number): string {
+  const minutes = seconds / 60;
+  return Number.isInteger(minutes)
+    ? `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
+    : `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+}
+
+export function lensLiveStatus(live: LensLiveState | undefined): LensLiveStatus | undefined {
+  if (!live) return undefined;
+  switch (live.lifecycle) {
+    case "paused":
+      return {
+        title: "Paused",
+        detail:
+          live.freshness === "unverified"
+            ? "Automatic updates are paused. The displayed translation is retained and unverified."
+            : "Automatic updates are paused. The displayed translation remains available.",
+        busy: false,
+        prominent: false,
+      };
+    case "stopped":
+      return {
+        title: "Stopped",
+        detail: "Automatic updates have stopped.",
+        busy: false,
+        prominent: false,
+      };
+    case "watching":
+      break;
+  }
+
+  if (
+    live.health === "unavailable" ||
+    live.freshness === "unverified" ||
+    live.last_outcome === "failed"
+  ) {
+    return {
+      title: "Needs Attention",
+      detail:
+        live.error ??
+        (live.health === "unavailable"
+          ? "Automatic monitoring is unavailable."
+          : "The displayed translation could not be verified against the latest content."),
+      busy: false,
+      prominent: true,
+    };
+  }
+
+  switch (live.freshness) {
+    case "checking":
+      return {
+        title: "Updating",
+        detail: "Checking the selected windows for meaningful changes.",
+        busy: true,
+        prominent: true,
+      };
+    case "stale":
+      return {
+        title: "Update queued",
+        detail: `The latest source change will be applied automatically. Agent updates start at most once every ${agentRefreshIntervalLabel(live.agent_refresh_interval_seconds)}.`,
+        busy: false,
+        prominent: true,
+      };
+    case "none":
+    case "current":
+      if (live.last_outcome === "updated") {
+        return {
+          title: "Updated",
+          detail: "The latest translation was applied automatically.",
+          busy: false,
+          prominent: false,
+        };
+      }
+      return {
+        title: "Watching",
+        detail:
+          live.health === "degraded"
+            ? "Watching for content changes. Updates may be delayed because monitoring coverage is degraded."
+            : "Watching for content changes that may be sent to the selected Agent.",
+        busy: false,
+        prominent: live.health === "degraded",
+      };
+  }
 }
 
 export function imageDataUrl(block: LensImageOutputBlock): string | undefined {

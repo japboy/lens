@@ -37,8 +37,10 @@ export type AgentOutputIntent =
 
 export type OverlayIntent =
   | { type: "authenticate"; methodId: string }
-  | { type: "transform" }
+  | { type: "retry" }
   | { type: "cancel" }
+  | { type: "pause" }
+  | { type: "resume" }
   | { type: "close" }
   | { type: "open-external-url"; url: string }
   | { type: "report-error"; message: string };

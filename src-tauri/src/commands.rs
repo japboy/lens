@@ -1,7 +1,8 @@
 use crate::{
     agent,
     app_state::{
-        emit_app_snapshot, next_revision, publish_lens_state, update_lens_state, AgentRunKey,
+        clear_lens_operation, commit_lens_context, emit_app_snapshot, next_revision,
+        publish_lens_state, update_lens_state, update_lens_state_for_context, AgentRunKey,
         AppState,
     },
     lens::{
@@ -13,15 +14,18 @@ use crate::{
         MAX_LENS_MEDIA_PIXELS, MAX_LENS_MEDIA_TOTAL_BYTES, MAX_LENS_SOURCE_NODES,
         MAX_LENS_SOURCE_TEXT_BYTES, MAX_LENS_TARGETS,
     },
+    live_runtime,
+    live_sync::LensAgentProjection,
     model::{
-        AgentKind, AgentSelectionState, AppConfig, AppSnapshot, LensStage, LensState,
-        LensTargetSelection, LensTargetSelectionItem, LensTargetSelectionStage, SelectedWindow,
-        BUILT_IN_RESPONSE_PROMPT,
+        AgentKind, AgentSelectionState, AppConfig, AppSnapshot, ExtractionQuality, LensFreshness,
+        LensLiveState, LensMonitoringLifecycle, LensRefreshOutcome, LensSourceHealth, LensStage,
+        LensState, LensTargetSelection, LensTargetSelectionItem, LensTargetSelectionStage,
+        SelectedWindow, BUILT_IN_RESPONSE_PROMPT, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
     },
     platform::{self, ExtractionLimits, ImageCaptureLimits},
     ui,
 };
-use std::path::PathBuf;
+use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
@@ -91,6 +95,7 @@ fn update_config(
     update: impl FnOnce(&mut AppConfig),
 ) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
+    let _ = state.agent_control.cancel_active()?;
     let snapshot = {
         let mut snapshot = state
             .runtime
@@ -119,10 +124,13 @@ pub fn request_accessibility_permission() -> bool {
     platform::request_accessibility_trust()
 }
 
-async fn select_single_window(app: &AppHandle) -> Result<Option<SelectedWindow>, String> {
+async fn select_single_window(
+    app: &AppHandle,
+    operation_id: Uuid,
+) -> Result<Option<SelectedWindow>, String> {
     let state = app.state::<AppState>();
     let _picker_lease = state.picker_control.try_begin()?;
-    let reply = platform::present_window_picker()
+    let reply = platform::present_window_picker_for_operation(operation_id)
         .await
         .map_err(|error| error.to_string())?;
     let Some(mut windows) = reply.into_selected()? else {
@@ -165,7 +173,7 @@ pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
     let requested_windows = validation_window_count();
     let mut windows = Vec::with_capacity(requested_windows);
     for _ in 0..requested_windows {
-        match select_single_window(&app).await {
+        match select_single_window(&app, operation_id).await {
             Ok(Some(window)) => windows.push(window),
             Ok(None) => {
                 let cancelled = LensState {
@@ -210,7 +218,8 @@ pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
     if !replace_operation_state(&app, operation_id, extracting)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
-    extract_target_set_for_operation(app, operation_id, target_set).await
+    extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Registered)
+        .await
 }
 
 pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<LensState, String> {
@@ -229,7 +238,7 @@ pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<Le
             ..LensState::default()
         },
     )?;
-    extract_target_set_for_operation(app, operation_id, target_set).await
+    extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Legacy).await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -237,6 +246,12 @@ struct SourceExtractionBudget {
     max_nodes: usize,
     max_text_bytes: usize,
     limits: ExtractionLimits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowAccessMode {
+    Registered,
+    Legacy,
 }
 
 fn source_extraction_budget(
@@ -270,7 +285,356 @@ async fn extract_target_set_for_operation(
     app: AppHandle,
     operation_id: Uuid,
     target_set: LensTargetSet,
+    access_mode: WindowAccessMode,
 ) -> Result<LensState, String> {
+    let context_revision = 1;
+    let source_revisions = target_set
+        .targets
+        .iter()
+        .map(|target| (target.id.clone(), 1))
+        .collect::<BTreeMap<_, _>>();
+    let BuiltContext { context, payloads } = match build_context(
+        operation_id,
+        context_revision,
+        source_revisions,
+        &target_set,
+        access_mode,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(message) => {
+            replace_operation_state(
+                &app,
+                operation_id,
+                failed_state(operation_id, Some(target_set), message.clone()),
+            )?;
+            return Err(message);
+        }
+    };
+    let input = LensInput::from_context(&context);
+    let error = input.is_none().then(|| {
+        if context.diagnostics.is_empty() {
+            "Selected-window extraction did not yield usable structured content or media.".into()
+        } else {
+            context.diagnostics.join("; ")
+        }
+    });
+    let projection = input
+        .as_ref()
+        .map(|input| LensAgentProjection::from_input(input, &target_set, &payloads))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let projection_ref = projection.as_ref().map(|projection| {
+        projection.projection_ref(NonZeroU64::new(1).expect("initial revision is non-zero"))
+    });
+    let has_input = input.is_some();
+    let live = (access_mode == WindowAccessMode::Registered).then_some(LensLiveState {
+        lifecycle: LensMonitoringLifecycle::Watching,
+        health: source_health(context.quality),
+        freshness: LensFreshness::None,
+        agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+        last_outcome: None,
+        error: None,
+    });
+    let next = LensState {
+        operation_id: Some(operation_id),
+        stage: if input.is_some() {
+            LensStage::Ready
+        } else {
+            LensStage::Failed
+        },
+        selection: None,
+        target_set: Some(target_set.clone()),
+        context: Some(context),
+        input,
+        projection: projection_ref,
+        output_blocks: Vec::new(),
+        representation: None,
+        pending_representation: None,
+        live,
+        agent: None,
+        error,
+    };
+    if has_input {
+        if !commit_lens_context(&app, operation_id, None, next.clone(), payloads)? {
+            return Err(OPERATION_SUPERSEDED.into());
+        }
+    } else if !app.state::<AppState>().lens_media.replace_context(
+        operation_id,
+        context_revision,
+        payloads,
+    )? || !replace_operation_state(&app, operation_id, next.clone())?
+    {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    if let Err(error) = ui::show_lens_window(&app, &target_set) {
+        let message = format!("unable to show Lens window: {error}");
+        if !update_lens_state(&app, operation_id, |lens| {
+            lens.stage = LensStage::Failed;
+            lens.error = Some(message.clone());
+        })? {
+            return Err(OPERATION_SUPERSEDED.into());
+        }
+        return Err(message);
+    }
+    Ok(next)
+}
+
+struct BuiltContext {
+    context: LensContext,
+    payloads: Vec<LensMediaPayload>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LensContextRefreshOutcome {
+    Unchanged,
+    Updated,
+}
+
+pub(crate) async fn refresh_lens_context(
+    app: AppHandle,
+    operation_id: Uuid,
+    expected_context_revision: u64,
+) -> Result<LensContextRefreshOutcome, String> {
+    let current = app.state::<AppState>().lens()?;
+    let context = current
+        .context
+        .as_ref()
+        .filter(|context| {
+            current.operation_id == Some(operation_id)
+                && context.revision == expected_context_revision
+        })
+        .ok_or_else(|| "Lens context refresh was superseded before it started".to_string())?;
+    let context_id = context.context_id;
+    if current
+        .live
+        .as_ref()
+        .is_none_or(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
+    {
+        return Err(
+            "Lens context refresh is not allowed while monitoring is paused or stopped".into(),
+        );
+    }
+    let target_set = current
+        .target_set
+        .clone()
+        .ok_or_else(|| "the current Lens operation has no fixed target set".to_string())?;
+    let next_context_revision = expected_context_revision
+        .checked_add(1)
+        .ok_or_else(|| "Lens context revision is exhausted".to_string())?;
+    let source_revisions = context
+        .sources
+        .iter()
+        .map(|source| {
+            source
+                .revision
+                .checked_add(1)
+                .map(|revision| (source.target_id.clone(), revision))
+                .ok_or_else(|| {
+                    format!("Lens source revision is exhausted for {}", source.target_id)
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+    if !update_lens_state_for_context(
+        &app,
+        operation_id,
+        context_id,
+        expected_context_revision,
+        |lens| {
+            if let Some(live) = lens.live.as_mut() {
+                live.freshness = if live.health == LensSourceHealth::Unavailable {
+                    LensFreshness::Unverified
+                } else {
+                    LensFreshness::Checking
+                };
+                live.last_outcome = None;
+                live.error = None;
+            }
+        },
+    )? {
+        return Err("Lens context refresh was superseded before extraction".into());
+    }
+
+    let BuiltContext {
+        context: next_context,
+        payloads,
+    } = match build_context(
+        operation_id,
+        next_context_revision,
+        source_revisions,
+        &target_set,
+        WindowAccessMode::Registered,
+    )
+    .await
+    {
+        Ok(built) => built,
+        Err(error) => {
+            mark_refresh_failed(
+                &app,
+                operation_id,
+                context_id,
+                expected_context_revision,
+                error.clone(),
+            )?;
+            return Err(error);
+        }
+    };
+    let Some(next_input) = LensInput::from_context(&next_context) else {
+        let error = if next_context.diagnostics.is_empty() {
+            "Selected-window refresh did not yield usable structured content or media.".into()
+        } else {
+            next_context.diagnostics.join("; ")
+        };
+        mark_refresh_failed(
+            &app,
+            operation_id,
+            context_id,
+            expected_context_revision,
+            error.clone(),
+        )?;
+        return Err(error);
+    };
+    let candidate = match LensAgentProjection::from_input(&next_input, &target_set, &payloads) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            let error = error.to_string();
+            mark_refresh_failed(
+                &app,
+                operation_id,
+                context_id,
+                expected_context_revision,
+                error.clone(),
+            )?;
+            return Err(error);
+        }
+    };
+    let previous_projection = current
+        .projection
+        .as_ref()
+        .ok_or_else(|| "the current Lens operation has no Agent projection".to_string())?;
+    let changed = candidate.digest() != &previous_projection.digest;
+    let next_projection = if changed {
+        let revision = previous_projection
+            .revision
+            .get()
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .ok_or_else(|| "Lens Agent projection revision is exhausted".to_string())?;
+        candidate.projection_ref(revision)
+    } else {
+        previous_projection.clone()
+    };
+
+    let mut next = current;
+    next.context = Some(next_context);
+    next.input = Some(next_input);
+    next.projection = Some(next_projection);
+    next.error = None;
+    {
+        let live = next
+            .live
+            .as_mut()
+            .expect("a watching operation has explicit live state");
+        live.health = source_health(
+            next.context
+                .as_ref()
+                .expect("next context was assigned")
+                .quality,
+        );
+        live.error = None;
+    }
+    if changed {
+        apply_changed_projection_state(&mut next);
+    } else {
+        let live = next
+            .live
+            .as_mut()
+            .expect("a watching operation has explicit live state");
+        let replacement_is_pending = next.pending_representation.is_some()
+            && matches!(next.stage, LensStage::Connecting | LensStage::Transforming);
+        if let Some(representation) = next.representation.as_mut() {
+            representation.context_revision = next_context_revision;
+        }
+        next.stage = if matches!(next.stage, LensStage::Connecting | LensStage::Transforming) {
+            next.stage
+        } else if next.representation.is_some() {
+            LensStage::Completed
+        } else {
+            LensStage::Ready
+        };
+        live.freshness = if replacement_is_pending {
+            LensFreshness::Checking
+        } else if next.representation.is_some() {
+            LensFreshness::Current
+        } else {
+            LensFreshness::None
+        };
+        live.last_outcome = (!replacement_is_pending).then_some(LensRefreshOutcome::Unchanged);
+    }
+
+    if !commit_lens_context(
+        &app,
+        operation_id,
+        Some(expected_context_revision),
+        next,
+        payloads,
+    )? {
+        return Err("Lens context refresh was superseded before canonical commit".into());
+    }
+    Ok(if changed {
+        LensContextRefreshOutcome::Updated
+    } else {
+        LensContextRefreshOutcome::Unchanged
+    })
+}
+
+fn apply_changed_projection_state(lens: &mut LensState) {
+    let agent_work_is_active =
+        matches!(lens.stage, LensStage::Connecting | LensStage::Transforming);
+    if !agent_work_is_active {
+        lens.pending_representation = None;
+        lens.stage = LensStage::Ready;
+    }
+    let freshness = if lens.representation.is_some() {
+        LensFreshness::Stale
+    } else {
+        LensFreshness::Checking
+    };
+    let live = lens
+        .live
+        .as_mut()
+        .expect("a watching operation has explicit live state");
+    live.freshness = freshness;
+    live.last_outcome = None;
+}
+
+fn mark_refresh_failed(
+    app: &AppHandle,
+    operation_id: Uuid,
+    context_id: Uuid,
+    context_revision: u64,
+    error: String,
+) -> Result<(), String> {
+    update_lens_state_for_context(app, operation_id, context_id, context_revision, |lens| {
+        if let Some(live) = lens.live.as_mut() {
+            live.health = LensSourceHealth::Unavailable;
+            live.freshness = LensFreshness::Unverified;
+            live.last_outcome = Some(LensRefreshOutcome::Failed);
+            live.error = Some(error);
+        }
+    })?;
+    Ok(())
+}
+
+async fn build_context(
+    operation_id: Uuid,
+    context_revision: u64,
+    source_revisions: BTreeMap<String, u64>,
+    target_set: &LensTargetSet,
+    access_mode: WindowAccessMode,
+) -> Result<BuiltContext, String> {
     let mut remaining_nodes = MAX_LENS_CONTEXT_NODES;
     let mut remaining_text_bytes = MAX_LENS_CONTEXT_TEXT_BYTES;
     let mut remaining_resource_refs = MAX_AX_RESOURCE_REFERENCES;
@@ -292,15 +656,23 @@ async fn extract_target_set_for_operation(
             let max_text_bytes = extraction_budget.max_text_bytes;
             let limits = extraction_budget.limits;
             let extraction_target = target.window.clone();
-            let mut extraction = match tauri::async_runtime::spawn_blocking(move || {
-                platform::extract_window(&extraction_target, limits)
-            })
-            .await
-            {
-                Ok(Ok(extraction)) => extraction,
-                Ok(Err(error)) => LensContext::unavailable_accessibility(error.to_string()),
-                Err(error) => LensContext::unavailable_accessibility(error.to_string()),
-            };
+            let mut extraction =
+                match tauri::async_runtime::spawn_blocking(move || match access_mode {
+                    WindowAccessMode::Registered => platform::extract_registered_window(
+                        operation_id,
+                        &extraction_target,
+                        limits,
+                    ),
+                    WindowAccessMode::Legacy => {
+                        platform::extract_window(&extraction_target, limits)
+                    }
+                })
+                .await
+                {
+                    Ok(Ok(extraction)) => extraction,
+                    Ok(Err(error)) => LensContext::unavailable_accessibility(error.to_string()),
+                    Err(error) => LensContext::unavailable_accessibility(error.to_string()),
+                };
             if extraction.metrics.truncated_nodes && max_nodes < MAX_LENS_SOURCE_NODES {
                 extraction.diagnostics.push(format!(
                     "{} reached the version 1 group traversal-node budget",
@@ -335,10 +707,12 @@ async fn extract_target_set_for_operation(
         );
         let mut media = capture_target_media(
             operation_id,
+            context_revision,
             target.id.clone(),
             target.window.clone(),
             plan,
             remaining_media_bytes,
+            access_mode,
         )
         .await;
         remaining_media_attachments =
@@ -357,70 +731,25 @@ async fn extract_target_set_for_operation(
         });
     }
 
-    let context = match LensContext::from_captures(operation_id, &target_set, captures) {
-        Ok(context) => context,
-        Err(error) => {
-            let message = error.to_string();
-            replace_operation_state(
-                &app,
-                operation_id,
-                failed_state(operation_id, Some(target_set), message.clone()),
-            )?;
-            return Err(message);
-        }
-    };
-    let input = LensInput::from_context(&context);
-    let error = input.is_none().then(|| {
-        if context.diagnostics.is_empty() {
-            "Selected-window extraction did not yield usable structured content or media.".into()
-        } else {
-            context.diagnostics.join("; ")
-        }
-    });
-    let next = LensState {
-        operation_id: Some(operation_id),
-        stage: if input.is_some() {
-            LensStage::Ready
-        } else {
-            LensStage::Failed
-        },
-        selection: None,
-        target_set: Some(target_set.clone()),
-        context: Some(context),
-        input,
-        output_blocks: Vec::new(),
-        agent: None,
-        error,
-    };
-    if !app
-        .state::<AppState>()
-        .lens_media
-        .replace(operation_id, payloads)?
-    {
-        return Err(OPERATION_SUPERSEDED.into());
-    }
-    if !replace_operation_state(&app, operation_id, next.clone())? {
-        return Err(OPERATION_SUPERSEDED.into());
-    }
-    if let Err(error) = ui::show_lens_window(&app, &target_set) {
-        let message = format!("unable to show Lens window: {error}");
-        if !update_lens_state(&app, operation_id, |lens| {
-            lens.stage = LensStage::Failed;
-            lens.error = Some(message.clone());
-        })? {
-            return Err(OPERATION_SUPERSEDED.into());
-        }
-        return Err(message);
-    }
-    Ok(next)
+    let context = LensContext::from_captures_at_revision(
+        operation_id,
+        context_revision,
+        source_revisions,
+        target_set,
+        captures,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(BuiltContext { context, payloads })
 }
 
 async fn capture_target_media(
     operation_id: Uuid,
+    context_revision: u64,
     target_id: String,
     target: SelectedWindow,
     plan: LensMediaPlan,
     remaining_total_bytes: usize,
+    access_mode: WindowAccessMode,
 ) -> LensMediaCapture {
     if plan.requests.is_empty() {
         return LensMediaCapture {
@@ -443,14 +772,43 @@ async fn capture_target_media(
         max_total_bytes: u32::try_from(remaining_total_bytes)
             .expect("versioned media total-byte budget fits u32"),
     };
-    match tauri::async_runtime::spawn_blocking(move || {
-        platform::capture_window_media(&target, operation_id, capture_plan, limits)
+    let mut result = match tauri::async_runtime::spawn_blocking(move || match access_mode {
+        WindowAccessMode::Registered => platform::capture_registered_window_media(
+            operation_id,
+            &target,
+            operation_id,
+            context_revision,
+            capture_plan,
+            limits,
+        ),
+        WindowAccessMode::Legacy => {
+            platform::capture_window_media(&target, operation_id, capture_plan, limits)
+        }
     })
     .await
     {
         Ok(Ok(capture)) => capture,
         Ok(Err(error)) => failed_media_capture(target_id, plan, error.to_string()),
         Err(error) => failed_media_capture(target_id, plan, error.to_string()),
+    };
+    if context_revision != 1 {
+        let prefix = format!("lens://context/{operation_id}/1/media/");
+        let replacement = format!("lens://context/{operation_id}/{context_revision}/media/");
+        for attachment in &mut result.attachments {
+            attachment.uri = attachment.uri.replacen(&prefix, &replacement, 1);
+        }
+        for payload in &mut result.payloads {
+            payload.uri = payload.uri.replacen(&prefix, &replacement, 1);
+        }
+    }
+    result
+}
+
+fn source_health(quality: ExtractionQuality) -> LensSourceHealth {
+    match quality {
+        ExtractionQuality::Full => LensSourceHealth::Healthy,
+        ExtractionQuality::Partial => LensSourceHealth::Degraded,
+        ExtractionQuality::Unavailable => LensSourceHealth::Unavailable,
     }
 }
 
@@ -513,9 +871,11 @@ async fn build_target_selection_item(
     };
     let capture_window = window.clone();
     let capture = tauri::async_runtime::spawn_blocking(move || {
-        platform::capture_window_media(
+        platform::capture_registered_window_media(
+            operation_id,
             &capture_window,
             operation_id,
+            1,
             plan,
             ImageCaptureLimits {
                 max_long_edge: MAX_SELECTION_PREVIEW_LONG_EDGE,
@@ -585,7 +945,7 @@ fn target_selection_for_operation(
     if selection.selection_id != operation_id
         || selection.maximum_targets != MAX_LENS_TARGETS
         || selection.items.len() > selection.maximum_targets
-        || selection.anchor.is_some() != !selection.items.is_empty()
+        || selection.anchor.is_some() == selection.items.is_empty()
     {
         return Err("Lens target selection state violates its versioned invariants".into());
     }
@@ -645,6 +1005,9 @@ pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
     if !agent_selection.can_select_lens_target() {
         return Err("select and authenticate an AI Agent before selecting a Lens Target".into());
     }
+    if state.lens()?.live.is_some() {
+        return Err("stop the active Lens before selecting another target set".into());
+    }
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
     state.lens_media.begin(operation_id)?;
@@ -666,7 +1029,7 @@ pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
         },
     )?;
 
-    let window = match select_single_window(&app).await {
+    let window = match select_single_window(&app, operation_id).await {
         Ok(Some(window)) => window,
         Ok(None) => {
             let cancelled = LensState {
@@ -722,7 +1085,7 @@ pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensS
     selection.notice = None;
     publish_target_selection(&app, operation_id, selection.clone()).await?;
 
-    let selected = select_single_window(&app).await;
+    let selected = select_single_window(&app, operation_id).await;
     selection = target_selection_for_operation(&app, operation_id)?;
     match selected {
         Ok(None) => {
@@ -770,6 +1133,11 @@ pub async fn remove_lens_target(
         .iter()
         .position(|item| item.id == target_id)
         .ok_or_else(|| "Lens target selection item is unavailable".to_string())?;
+    let window_id = selection.items[index].window.window_id;
+    // Release native ownership before mutating the authoritative Rust media/state snapshot. A
+    // native teardown failure therefore leaves the reviewed item intact and retryable.
+    platform::release_registered_window(operation_id, window_id)
+        .map_err(|error| error.to_string())?;
     let removed = selection.items.remove(index);
     let state = app.state::<AppState>();
     let payloads = state
@@ -781,7 +1149,6 @@ pub async fn remove_lens_target(
     if !state.lens_media.replace(operation_id, payloads)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
-
     if selection.items.is_empty() {
         ui::dismiss_target_selection_window(&app)
             .await
@@ -825,16 +1192,79 @@ pub async fn confirm_lens_targets(app: AppHandle, operation_id: Uuid) -> Result<
     if !replace_operation_state(&app, operation_id, extracting)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
-    let ready = extract_target_set_for_operation(app.clone(), operation_id, target_set).await?;
+    let ready = extract_target_set_for_operation(
+        app.clone(),
+        operation_id,
+        target_set,
+        WindowAccessMode::Registered,
+    )
+    .await?;
     if ready.stage != LensStage::Ready {
         return Ok(ready);
+    }
+    if let Err(error) = live_runtime::start(&app, operation_id) {
+        update_lens_state(&app, operation_id, |lens| {
+            if let Some(live) = lens.live.as_mut() {
+                live.health = LensSourceHealth::Unavailable;
+                live.freshness = LensFreshness::Unverified;
+                live.error = Some(error.clone());
+            }
+        })?;
+    }
+    let transformed = agent::transform_current(app.clone(), operation_id).await?;
+    let _ = live_runtime::request_immediate_refresh(&app, operation_id);
+    Ok(transformed)
+}
+
+#[tauri::command]
+pub async fn retry_lens_transform(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+    let lens = app.state::<AppState>().lens()?;
+    if lens.operation_id != Some(operation_id) {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    if !can_retry_agent_transform(lens.stage, lens.input.is_some()) {
+        return Err("the current Lens operation is not waiting for an Agent retry".into());
     }
     agent::transform_current(app, operation_id).await
 }
 
+fn can_retry_agent_transform(stage: LensStage, has_input: bool) -> bool {
+    has_input && matches!(stage, LensStage::AuthenticationRequired | LensStage::Failed)
+}
+
 #[tauri::command]
-pub async fn transform_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
-    agent::transform_current(app, operation_id).await
+pub fn pause_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+    live_runtime::pause(&app, operation_id)
+}
+
+#[tauri::command]
+pub fn resume_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+    live_runtime::resume(&app, operation_id)
+}
+
+#[tauri::command]
+pub fn stop_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+    let current = app.state::<AppState>().lens()?;
+    if current.operation_id != Some(operation_id) {
+        return Err("Lens operation was superseded".into());
+    }
+    update_lens_state(&app, operation_id, |lens| {
+        if let Some(live) = lens.live.as_mut() {
+            live.lifecycle = LensMonitoringLifecycle::Stopped;
+            live.freshness = LensFreshness::Unverified;
+        }
+        lens.pending_representation = None;
+    })?;
+    live_runtime::stop(&app, operation_id)?;
+    if current.live.is_some() || current.selection.is_some() {
+        if let Err(error) = platform::release_window_operation(operation_id) {
+            eprintln!("Unable to release the stopped native Lens operation: {error}");
+        }
+    }
+    if !clear_lens_operation(&app, operation_id)? {
+        return Err("Lens operation was superseded before it stopped".into());
+    }
+    app.state::<AppState>().lens()
 }
 
 #[tauri::command]
@@ -968,5 +1398,55 @@ mod tests {
             MAX_AX_TOTAL_RESOURCE_URI_BYTES,
         )
         .is_none());
+    }
+
+    #[test]
+    fn changed_projection_preserves_active_agent_work_instead_of_returning_to_ready() {
+        let live_state = || LensLiveState {
+            lifecycle: LensMonitoringLifecycle::Watching,
+            health: LensSourceHealth::Healthy,
+            freshness: LensFreshness::None,
+            agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+            last_outcome: Some(LensRefreshOutcome::Updated),
+            error: None,
+        };
+
+        for stage in [LensStage::Connecting, LensStage::Transforming] {
+            let mut lens = LensState {
+                stage,
+                live: Some(live_state()),
+                ..LensState::default()
+            };
+            apply_changed_projection_state(&mut lens);
+
+            assert_eq!(lens.stage, stage);
+            assert_eq!(
+                lens.live.as_ref().map(|live| live.freshness),
+                Some(LensFreshness::Checking)
+            );
+            assert_eq!(lens.live.as_ref().and_then(|live| live.last_outcome), None);
+        }
+
+        let mut completed = LensState {
+            stage: LensStage::Completed,
+            live: Some(live_state()),
+            ..LensState::default()
+        };
+        apply_changed_projection_state(&mut completed);
+        assert_eq!(completed.stage, LensStage::Ready);
+    }
+
+    #[test]
+    fn agent_retry_is_available_only_after_an_explicit_recoverable_stop() {
+        assert!(can_retry_agent_transform(
+            LensStage::AuthenticationRequired,
+            true
+        ));
+        assert!(can_retry_agent_transform(LensStage::Failed, true));
+        assert!(!can_retry_agent_transform(LensStage::Failed, false));
+        assert!(!can_retry_agent_transform(LensStage::Ready, true));
+        assert!(!can_retry_agent_transform(LensStage::Connecting, true));
+        assert!(!can_retry_agent_transform(LensStage::Transforming, true));
+        assert!(!can_retry_agent_transform(LensStage::Completed, true));
     }
 }

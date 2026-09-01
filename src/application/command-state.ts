@@ -16,9 +16,19 @@ export const IDLE_COMMAND_STATE: CommandState = { stage: "idle" };
 export function canStartCommand(state: CommandState, next: CommandIdentity): boolean {
   if (state.stage !== "pending") return true;
   if (next.scope !== "overlay") return false;
-  if (next.type === "close" || next.type === "open-external-url") return true;
+  if (state.command.scope === next.scope && state.command.type === next.type) {
+    return false;
+  }
+  if (
+    next.type === "close" ||
+    next.type === "pause" ||
+    next.type === "resume" ||
+    next.type === "open-external-url"
+  ) {
+    return true;
+  }
   if (next.type !== "cancel" || state.command.scope !== "overlay") return false;
-  return state.command.type === "authenticate" || state.command.type === "transform";
+  return state.command.type === "authenticate" || state.command.type === "retry";
 }
 
 export function isPendingCommand(

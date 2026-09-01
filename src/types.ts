@@ -346,6 +346,34 @@ export type LensOutputBlock =
   | LensImageOutputBlock
   | LensUnsupportedOutputBlock;
 
+export interface ProjectionRef {
+  revision: number;
+  digest: string;
+}
+
+export interface LensRepresentation {
+  representation_id: string;
+  context_id: string;
+  context_revision: number;
+  projection: ProjectionRef;
+  run_id: string;
+  output_blocks: LensOutputBlock[];
+}
+
+export type LensLiveLifecycle = "watching" | "paused" | "stopped";
+export type LensLiveHealth = "healthy" | "degraded" | "unavailable";
+export type LensLiveFreshness = "none" | "checking" | "current" | "stale" | "unverified";
+export type LensLiveOutcome = "unchanged" | "updated" | "failed";
+
+export interface LensLiveState {
+  lifecycle: LensLiveLifecycle;
+  health: LensLiveHealth;
+  freshness: LensLiveFreshness;
+  agent_refresh_interval_seconds: number;
+  last_outcome?: LensLiveOutcome;
+  error?: string;
+}
+
 export interface LensState {
   operation_id?: string;
   stage: LensStage;
@@ -353,6 +381,9 @@ export interface LensState {
   target_set?: LensTargetSet;
   context?: LensContext;
   input?: LensInput;
+  projection?: ProjectionRef;
+  representation?: LensRepresentation;
+  live?: LensLiveState;
   output_blocks: LensOutputBlock[];
   agent?: AgentRunState;
   error?: string;

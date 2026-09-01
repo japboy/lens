@@ -324,6 +324,7 @@ fn lens_window_geometry(
 struct TrayMenuPresentation {
     select_target_enabled: bool,
     target_selection_active: bool,
+    live_lens_active: bool,
     agent_selection_enabled: bool,
     claude_checked: bool,
     codex_checked: bool,
@@ -334,10 +335,13 @@ impl TrayMenuPresentation {
     fn derive(agent_selection: &AgentSelectionState, config: &AppConfig, lens: &LensState) -> Self {
         let selected = agent_selection.selected_agent();
         let target_selection_active = lens.stage == LensStage::Selecting;
+        let live_lens_active = lens.live.is_some();
         Self {
             select_target_enabled: agent_selection.can_select_lens_target()
-                && !target_selection_active,
+                && !target_selection_active
+                && !live_lens_active,
             target_selection_active,
+            live_lens_active,
             agent_selection_enabled: matches!(
                 agent_selection.stage,
                 crate::model::AgentSelectionStage::Unselected
@@ -467,12 +471,17 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
         .tray_by_id("lens")
         .ok_or_else(|| "Lens tray icon is unavailable".to_string())?;
     tray.set_icon_with_as_template(
-        Some(tray_icon(presentation.select_target_enabled).map_err(|error| error.to_string())?),
+        Some(
+            tray_icon(presentation.select_target_enabled || presentation.live_lens_active)
+                .map_err(|error| error.to_string())?,
+        ),
         true,
     )
     .map_err(|error| error.to_string())?;
     let tooltip = if presentation.target_selection_active {
         "Lens — Lens Target selection is already active"
+    } else if presentation.live_lens_active {
+        "Lens — left-click to show the active Lens"
     } else if presentation.select_target_enabled {
         "Lens — left-click to select Lens Targets"
     } else {
@@ -483,14 +492,20 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
 }
 
 fn select_lens_target_from_tray(app: &AppHandle) {
-    let enabled = app
-        .state::<crate::app_state::AppState>()
-        .snapshot()
-        .map(|snapshot| {
-            snapshot.agent_selection.can_select_lens_target()
-                && snapshot.lens.stage != LensStage::Selecting
-        })
-        .unwrap_or(false);
+    let snapshot = app.state::<crate::app_state::AppState>().snapshot();
+    let Ok(snapshot) = snapshot else {
+        return;
+    };
+    if snapshot.lens.live.is_some() {
+        if let Some(target_set) = snapshot.lens.target_set.as_ref() {
+            if let Err(error) = show_lens_window(app, target_set) {
+                eprintln!("Unable to show the active Lens: {error}");
+            }
+        }
+        return;
+    }
+    let enabled = snapshot.agent_selection.can_select_lens_target()
+        && snapshot.lens.stage != LensStage::Selecting;
     if !enabled {
         return;
     }
@@ -988,6 +1003,7 @@ mod tests {
             TrayMenuPresentation {
                 select_target_enabled: true,
                 target_selection_active: false,
+                live_lens_active: false,
                 agent_selection_enabled: true,
                 claude_checked: false,
                 codex_checked: true,
@@ -1031,6 +1047,21 @@ mod tests {
         let presentation = TrayMenuPresentation::derive(&selected, &config, &selecting);
         assert!(!presentation.select_target_enabled);
         assert!(presentation.target_selection_active);
+
+        let active_lens = LensState {
+            live: Some(crate::model::LensLiveState {
+                lifecycle: crate::model::LensMonitoringLifecycle::Watching,
+                health: crate::model::LensSourceHealth::Healthy,
+                freshness: crate::model::LensFreshness::Current,
+                agent_refresh_interval_seconds: crate::model::LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+                last_outcome: None,
+                error: None,
+            }),
+            ..LensState::default()
+        };
+        let presentation = TrayMenuPresentation::derive(&selected, &config, &active_lens);
+        assert!(!presentation.select_target_enabled);
+        assert!(presentation.live_lens_active);
     }
 
     #[test]

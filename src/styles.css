@@ -473,7 +473,7 @@ fieldset {
   justify-content: space-between;
   gap: 12px;
   min-height: 44px;
-  padding: 7px 10px 7px 14px;
+  padding: 7px 14px;
 }
 
 .overlay-brand,
@@ -499,31 +499,22 @@ fieldset {
 
 .overlay-header-actions {
   flex: 0 0 auto;
-  gap: 4px;
+  gap: 6px;
 }
 
 .overlay-header-action {
-  appearance: none;
+  appearance: auto;
   min-height: 26px;
-  border: 0;
-  border-radius: 6px;
-  padding: 4px 8px;
-  color: CanvasText;
-  background: transparent;
+  padding-inline: 9px;
   font: inherit;
   font-size: 12px;
-}
-
-.overlay-header-action:hover {
-  background: color-mix(in srgb, CanvasText 8%, transparent);
+  white-space: nowrap;
 }
 
 .overlay-header-action:disabled {
-  color: GrayText;
   cursor: default;
 }
 
-.overlay-header-action:focus-visible,
 .close-button:focus-visible {
   outline: 2px solid AccentColor;
   outline-offset: 1px;
@@ -613,7 +604,7 @@ fieldset {
 
 .lens-progress-snackbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   width: min(100%, 420px);
@@ -631,7 +622,16 @@ fieldset {
   animation: lens-progress-snackbar-enter 160ms ease-out both;
 }
 
-.lens-progress-snackbar .fa-spinner {
+.lens-status-announcement {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lens-progress-snackbar .fa-spinner,
+.lens-status-icon {
   --fa-animation-duration: 1.2s;
   width: 20px;
   color: AccentColor;

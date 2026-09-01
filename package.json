@@ -19,7 +19,8 @@
     "verify:native": "pnpm run check:rust && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
     "verify:portable": "pnpm run check:identity && pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run build && pnpm test",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "validate:live-sync-native": "node scripts/validate-live-sync-native.ts"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "7.3.1",

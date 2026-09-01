@@ -2,15 +2,48 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../application/view-models";
-import type { LensTargetSelectionItem } from "../types";
+import type { LensRepresentation, LensState, LensTargetSelectionItem } from "../types";
 import {
+  OVERLAY_INTENT_EVENT,
   PROMPT_INTENT_EVENT,
   TARGET_SELECTION_INTENT_EVENT,
   type PromptIntent,
+  type OverlayIntent,
   type TargetSelectionIntent,
 } from "./events";
 
+function representation(id: string, revision: number, text: string): LensRepresentation {
+  return {
+    representation_id: id,
+    context_id: "operation",
+    context_revision: revision,
+    projection: { revision, digest: `sha256:projection-${revision}` },
+    run_id: `run-${revision}`,
+    output_blocks: [{ type: "markdown", text }],
+  };
+}
+
+function liveLens(current: LensRepresentation): LensState {
+  return {
+    operation_id: "operation",
+    stage: "completed",
+    output_blocks: [{ type: "markdown", text: "Compatibility output" }],
+    representation: current,
+    live: {
+      lifecycle: "watching",
+      health: "healthy",
+      freshness: "current",
+      agent_refresh_interval_seconds: 180,
+    },
+  };
+}
+
 beforeAll(async () => {
+  window.matchMedia ??= () => ({ matches: false }) as MediaQueryList;
+  globalThis.requestAnimationFrame ??= (callback: FrameRequestCallback) =>
+    window.setTimeout(() => callback(performance.now()), 0);
+  globalThis.cancelAnimationFrame ??= (handle: number) => window.clearTimeout(handle);
+  HTMLElement.prototype.scrollTo ??= () => undefined;
   await import("./lens-prompt-settings");
   await import("./lens-target-selection-view");
   await import("./lens-overlay-view");
@@ -269,7 +302,9 @@ describe("component property and event contracts", () => {
     );
     expect(cancel?.disabled).toBe(false);
     const progressRegion = element.shadowRoot?.querySelector(".lens-progress-region");
-    expect(progressRegion?.getAttribute("role")).toBe("status");
+    const progressStatus = progressRegion?.querySelector(".lens-status-announcement");
+    expect(progressStatus?.getAttribute("role")).toBe("status");
+    expect(progressStatus?.getAttribute("aria-live")).toBe("polite");
     expect(progressRegion?.parentElement?.classList.contains("overlay-footer")).toBe(true);
     expect(element.shadowRoot?.querySelector(".overlay-main .lens-progress-region")).toBeNull();
     expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
@@ -290,5 +325,205 @@ describe("component property and event contracts", () => {
     element.model = { ...model, cancelPending: true };
     await element.updateComplete;
     expect(cancel?.disabled).toBe(true);
+  });
+
+  it("starts the initial Agent turn automatically and exposes retry only after failure", async () => {
+    const input: NonNullable<LensState["input"]> = {
+      schema_version: 3,
+      context_id: "operation",
+      context_revision: 1,
+      sources: [],
+      media: [],
+      media_omissions: [],
+      quality: "full",
+    };
+    const readyModel: OverlayViewModel = {
+      platform: "macos",
+      lens: {
+        operation_id: "operation",
+        stage: "ready",
+        input,
+        output_blocks: [],
+        live: {
+          lifecycle: "watching",
+          health: "healthy",
+          freshness: "none",
+          agent_refresh_interval_seconds: 180,
+        },
+      },
+      pending: false,
+      cancelPending: false,
+      message: "",
+    };
+    const element = document.createElement("lens-overlay-view") as HTMLElement & {
+      model: OverlayViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = readyModel;
+    document.body.append(element);
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).not.toContain("Transform with Agent");
+    expect(element.shadowRoot?.textContent).not.toContain("Retry with Agent");
+    expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
+      "Preparing Agent",
+    );
+    expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
+      "starts automatically",
+    );
+
+    const received = vi.fn<EventListener>();
+    document.body.addEventListener(OVERLAY_INTENT_EVENT, received, { once: true });
+    element.model = {
+      ...readyModel,
+      lens: {
+        ...readyModel.lens,
+        stage: "failed",
+        error: "Agent transport failed.",
+      },
+    };
+    await element.updateComplete;
+
+    const retry = Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Retry with Agent",
+    );
+    expect(retry?.classList.contains("overlay-header-action")).toBe(true);
+    expect(retry?.parentElement?.classList.contains("overlay-header-actions")).toBe(true);
+    expect(
+      Array.from(element.shadowRoot?.querySelectorAll(".overlay-main button") ?? []).some(
+        (button) => button.textContent?.trim() === "Retry with Agent",
+      ),
+    ).toBe(false);
+    retry?.click();
+    expect(received).toHaveBeenCalledOnce();
+    const event = received.mock.calls[0]?.[0] as CustomEvent<OverlayIntent> | undefined;
+    expect(event?.detail).toEqual({ type: "retry" });
+  });
+
+  it("settles an atomic representation without making the translation a live region", async () => {
+    const element = document.createElement("lens-agent-output") as HTMLElement & {
+      lens: LensState;
+      updateComplete: Promise<boolean>;
+    };
+    element.lens = {
+      ...liveLens(representation("representation-1", 1, "Published translation")),
+      stage: "transforming",
+      output_blocks: [{ type: "markdown", text: "Unpublished stream" }],
+    };
+    document.body.append(element);
+    await element.updateComplete;
+
+    const output = element.querySelector(".lens-output");
+    const markdown = element.querySelector<
+      HTMLElement & {
+        state: { operationId?: string; phase: string };
+        updateComplete: Promise<boolean>;
+      }
+    >("lens-markdown");
+    await markdown?.updateComplete;
+
+    expect(output?.textContent).toContain("Published translation");
+    expect(output?.textContent).not.toContain("Unpublished stream");
+    expect(output?.hasAttribute("aria-live")).toBe(false);
+    expect(markdown?.state).toMatchObject({
+      operationId: "representation-1:0",
+      phase: "settled",
+    });
+  });
+
+  it("applies each complete replacement automatically while preserving Translation focus", async () => {
+    const first = representation("representation-1", 1, "Translation one");
+    const second = representation("representation-2", 2, "Translation two");
+    const third = representation("representation-3", 3, "Translation three");
+    const element = document.createElement("lens-overlay-view") as HTMLElement & {
+      model: OverlayViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = {
+      platform: "macos",
+      lens: liveLens(first),
+      pending: false,
+      cancelPending: false,
+      message: "",
+    };
+    document.body.append(element);
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
+        "Translation one",
+      );
+    });
+
+    const panel = element.shadowRoot?.querySelector<HTMLElement>("#translation-panel");
+    panel?.focus();
+    expect(element.shadowRoot?.activeElement).toBe(panel);
+
+    element.model = { ...element.model, lens: liveLens(second) };
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
+        "Translation two",
+      );
+    });
+    element.model = { ...element.model, lens: liveLens(third) };
+    await vi.waitFor(() => {
+      expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
+        "Translation three",
+      );
+    });
+    expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).not.toContain(
+      "Translation two",
+    );
+    await vi.waitFor(() => expect(element.shadowRoot?.activeElement).toBe(panel));
+    expect(element.shadowRoot?.querySelector(".lens-update-action")).toBeNull();
+  });
+
+  it("exposes finite Pause and Resume intents while monitoring status stays polite", async () => {
+    const element = document.createElement("lens-overlay-view") as HTMLElement & {
+      model: OverlayViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = {
+      platform: "macos",
+      lens: liveLens(representation("representation-1", 1, "Translation")),
+      pending: false,
+      cancelPending: false,
+      message: "",
+    };
+    const received: OverlayIntent[] = [];
+    document.body.addEventListener(OVERLAY_INTENT_EVENT, (event) => {
+      received.push((event as CustomEvent<OverlayIntent>).detail);
+    });
+    document.body.append(element);
+    await element.updateComplete;
+
+    const pause = Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Pause Updates",
+    );
+    pause?.click();
+    expect(received).toContainEqual({ type: "pause" });
+    expect(
+      element.shadowRoot?.querySelector('[role="status"][aria-live="polite"]')?.textContent,
+    ).toContain("Watching");
+
+    element.model = {
+      ...element.model,
+      lens: {
+        ...element.model.lens,
+        live: {
+          lifecycle: "paused",
+          health: "healthy",
+          freshness: "unverified",
+          agent_refresh_interval_seconds: 180,
+        },
+      },
+    };
+    await element.updateComplete;
+    const resume = Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Resume Updates",
+    );
+    resume?.click();
+    expect(received).toContainEqual({ type: "resume" });
+    expect(element.shadowRoot?.querySelector(".overlay-footer-status")?.textContent).toContain(
+      "Paused",
+    );
   });
 });

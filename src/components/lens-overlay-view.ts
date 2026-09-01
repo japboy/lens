@@ -2,12 +2,14 @@ import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import appIconUrl from "../../src-tauri/icons/icon.png?url";
 import type { OverlayViewModel } from "../application/view-models";
+import type { LensRepresentation, LensState } from "../types";
 import {
   sharedApplicationStyles,
   sharedIconStyles,
   viewHostStyles,
 } from "../styles/component-styles";
 import {
+  lensLiveStatus,
   lensProgressSnackbar,
   lensSourceJson,
   STAGE_LABEL,
@@ -31,6 +33,11 @@ const LENS_TABS = [
 
 type LensTab = (typeof LENS_TABS)[number]["id"];
 
+interface TranslationScrollPosition {
+  readonly top: number;
+  readonly wasAtBottom: boolean;
+}
+
 @customElement("lens-overlay-view")
 export class LensOverlayView extends LitElement {
   static styles = [viewHostStyles, sharedApplicationStyles, ...sharedIconStyles];
@@ -41,12 +48,21 @@ export class LensOverlayView extends LitElement {
   @state()
   private activeTab: LensTab = "translation";
 
+  @state()
+  private displayedRepresentation: LensRepresentation | undefined;
+
+  private synchronizedOperationId: string | undefined;
+  private hasSynchronizedOperation = false;
+  private pendingScrollPosition: TranslationScrollPosition | undefined;
+  private restoreTranslationFocus = false;
+
   protected willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("model")) return;
     const previous = changed.get("model");
     if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
       this.activeTab = "translation";
     }
+    if (this.model) this.synchronizeRepresentation(this.model.lens);
   }
 
   protected render() {
@@ -72,7 +88,25 @@ export class LensOverlayView extends LitElement {
       ? targetLabels.join("\n")
       : "No source context is available.";
     const canCancel = lens.stage === "connecting" || lens.stage === "transforming";
+    const canRetry =
+      Boolean(lens.input) && (lens.stage === "authentication_required" || lens.stage === "failed");
     const progressSnackbar = lensProgressSnackbar(lens.stage);
+    const liveStatus = lensLiveStatus(lens.live);
+    const displayLens = this.translationLens(lens);
+    const hasSettledRepresentation = Boolean(displayLens.representation);
+    const initialProgressStatus = progressSnackbar
+      ? {
+          title: progressSnackbar.title,
+          detail: progressSnackbar.detail,
+          busy: true,
+          prominent: true,
+        }
+      : undefined;
+    const announcedStatus = hasSettledRepresentation
+      ? liveStatus
+      : (initialProgressStatus ?? liveStatus);
+    const showStatusSnackbar = Boolean(announcedStatus?.prominent);
+    const persistentStatus = liveStatus;
 
     return html`
       <div class="overlay-shell" @lens-agent-output-intent=${this.forwardOutputIntent}>
@@ -95,11 +129,46 @@ export class LensOverlayView extends LitElement {
                   </button>`
                 : nothing
             }
+            ${
+              canRetry
+                ? html`<button
+                    type="button"
+                    class="overlay-header-action"
+                    data-tauri-drag-region="false"
+                    ?disabled=${model.pending}
+                    @click=${() => this.emit({ type: "retry" })}
+                  >
+                    Retry with Agent
+                  </button>`
+                : nothing
+            }
+            ${
+              lens.live?.lifecycle === "watching"
+                ? html`<button
+                    type="button"
+                    class="overlay-header-action"
+                    data-tauri-drag-region="false"
+                    @click=${() => this.emit({ type: "pause" })}
+                  >
+                    Pause Updates
+                  </button>`
+                : lens.live?.lifecycle === "paused"
+                  ? html`<button
+                      type="button"
+                      class="overlay-header-action"
+                      data-tauri-drag-region="false"
+                      @click=${() => this.emit({ type: "resume" })}
+                    >
+                      Resume Updates
+                    </button>`
+                  : nothing
+            }
             <button
               type="button"
               class="close-button"
               data-tauri-drag-region="false"
-              aria-label="Close Lens"
+              aria-label=${lens.operation_id ? "Stop Lens and close" : "Close Lens"}
+              title=${lens.operation_id ? "Stop Lens and close" : "Close Lens"}
               @click=${() => this.emit({ type: "close" })}
             >
               <span class="close-icon" aria-hidden="true"></span>
@@ -123,7 +192,7 @@ export class LensOverlayView extends LitElement {
           </div>
         </nav>
 
-        <main class="overlay-main" data-progress=${progressSnackbar ? "true" : "false"}>
+        <main class="overlay-main" data-progress=${showStatusSnackbar ? "true" : "false"}>
           ${model.message ? html`<p class="error" role="alert">${model.message}</p>` : nothing}
           ${lens.error ? html`<p class="error" role="alert">${lens.error}</p>` : nothing}
           ${
@@ -146,48 +215,54 @@ export class LensOverlayView extends LitElement {
                         )
                       : html`<p>Authenticate with this agent's existing CLI, then try again.</p>`
                   }
-                  <button
-                    ?disabled=${model.pending}
-                    @click=${() => this.emit({ type: "transform" })}
-                  >
-                    Try Again
-                  </button>
                 </section>`
               : nothing
           }
-          ${
-            lens.stage === "ready" || (lens.stage === "failed" && Boolean(lens.input))
-              ? html`<div class="overlay-actions">
-                  <button
-                    class="primary"
-                    ?disabled=${model.pending}
-                    @click=${() => this.emit({ type: "transform" })}
-                  >
-                    Transform with Agent
-                  </button>
-                </div>`
-              : nothing
-          }
-          ${this.renderActivePanel(lens, sourceJson)}
+          ${this.renderActivePanel(lens, displayLens, sourceJson)}
         </main>
 
         <footer class="overlay-footer">
-          <div class="lens-progress-region" role="status" aria-live="polite" aria-atomic="true">
+          <div class="lens-progress-region">
             ${
-              progressSnackbar
+              announcedStatus && showStatusSnackbar
                 ? html`<div class="lens-progress-snackbar">
-                    <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
-                    <span class="lens-progress-copy">
-                      <strong>${progressSnackbar.title}</strong>
-                      <span>${progressSnackbar.detail}</span>
-                    </span>
+                    <div
+                      class="lens-status-announcement"
+                      role="status"
+                      aria-live="polite"
+                      aria-atomic="true"
+                    >
+                      <i
+                        class=${
+                          announcedStatus.busy
+                            ? "fa-solid fa-spinner fa-spin"
+                            : "fa-solid fa-circle-info lens-status-icon"
+                        }
+                        aria-hidden="true"
+                      ></i>
+                      <span class="lens-progress-copy">
+                        <strong>${announcedStatus.title}</strong>
+                        <span>${announcedStatus.detail}</span>
+                      </span>
+                    </div>
                   </div>`
-                : nothing
+                : announcedStatus
+                  ? html`<span
+                      class="visually-hidden"
+                      role="status"
+                      aria-live="polite"
+                      aria-atomic="true"
+                      >${announcedStatus.title}. ${announcedStatus.detail}</span
+                    >`
+                  : nothing
             }
           </div>
-          <div class="overlay-footer-status" title=${STAGE_LABEL[lens.stage]}>
+          <div
+            class="overlay-footer-status"
+            title=${persistentStatus?.detail ?? STAGE_LABEL[lens.stage]}
+          >
             <span class="overlay-stage-indicator" aria-hidden="true"></span>
-            <span class="overlay-stage">${STAGE_LABEL[lens.stage]}</span>
+            <span class="overlay-stage">${persistentStatus?.title ?? STAGE_LABEL[lens.stage]}</span>
           </div>
           ${
             context
@@ -199,7 +274,11 @@ export class LensOverlayView extends LitElement {
     `;
   }
 
-  private renderActivePanel(lens: OverlayViewModel["lens"], sourceJson: string) {
+  private renderActivePanel(
+    lens: OverlayViewModel["lens"],
+    displayLens: LensState,
+    sourceJson: string,
+  ) {
     const activeTab = this.activeTab;
     switch (activeTab) {
       case "translation":
@@ -210,7 +289,7 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="translation-tab"
           tabindex="0"
         >
-          <lens-agent-output .lens=${lens}></lens-agent-output>
+          <lens-agent-output .lens=${displayLens}></lens-agent-output>
         </section>`;
       case "source":
         return html`<section
@@ -269,9 +348,7 @@ export class LensOverlayView extends LitElement {
       aria-selected=${selected ? "true" : "false"}
       aria-controls="${tab}-panel"
       tabindex=${selected ? 0 : -1}
-      @click=${() => {
-        this.activeTab = tab;
-      }}
+      @click=${() => this.activateTab(tab)}
       @keydown=${this.handleTabKeyDown}
     >
       ${label}
@@ -298,7 +375,7 @@ export class LensOverlayView extends LitElement {
     const nextTab = LENS_TABS[nextIndex]?.id;
     if (!nextTab) return;
     event.preventDefault();
-    this.activeTab = nextTab;
+    this.activateTab(nextTab);
     void this.updateComplete.then(() => {
       this.renderRoot.querySelector<HTMLButtonElement>(`#${nextTab}-tab`)?.focus();
     });
@@ -311,5 +388,86 @@ export class LensOverlayView extends LitElement {
 
   private emit(intent: OverlayIntent): void {
     dispatchComponentEvent(this, OVERLAY_INTENT_EVENT, intent);
+  }
+
+  private activateTab(tab: LensTab): void {
+    this.activeTab = tab;
+  }
+
+  private synchronizeRepresentation(lens: LensState): void {
+    const operationId = lens.operation_id;
+    const representation = lens.representation;
+    if (!this.hasSynchronizedOperation || operationId !== this.synchronizedOperationId) {
+      this.hasSynchronizedOperation = true;
+      this.synchronizedOperationId = operationId;
+      this.displayedRepresentation = representation;
+      return;
+    }
+    if (!representation) return;
+    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
+      return;
+    }
+    this.acceptRepresentation(representation, this.translationHasFocus());
+  }
+
+  private translationLens(lens: LensState): LensState {
+    const representation = this.displayedRepresentation;
+    if (!representation || representation === lens.representation) return lens;
+    return { ...lens, representation };
+  }
+
+  private translationHasFocus(): boolean {
+    const panel = this.renderRoot.querySelector<HTMLElement>("#translation-panel");
+    if (!panel) return false;
+    const activeElement = this.shadowRoot?.activeElement;
+    return Boolean(activeElement && panel.contains(activeElement));
+  }
+
+  private acceptRepresentation(
+    representation: LensRepresentation,
+    restoreTranslationFocus = false,
+  ): void {
+    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
+      return;
+    }
+    this.pendingScrollPosition = this.captureTranslationScrollPosition();
+    this.restoreTranslationFocus ||= restoreTranslationFocus;
+    this.displayedRepresentation = representation;
+    void this.updateComplete.then(() => this.restoreTranslationPresentation());
+  }
+
+  private captureTranslationScrollPosition(): TranslationScrollPosition | undefined {
+    const output = this.renderRoot
+      .querySelector("lens-agent-output")
+      ?.querySelector<HTMLElement>(".lens-output");
+    if (!output) return undefined;
+    const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
+    return {
+      top: output.scrollTop,
+      wasAtBottom: maximum - output.scrollTop <= 36,
+    };
+  }
+
+  private async restoreTranslationPresentation(): Promise<void> {
+    const outputComponent = this.renderRoot.querySelector<
+      HTMLElement & {
+        updateComplete: Promise<boolean>;
+      }
+    >("lens-agent-output");
+    await outputComponent?.updateComplete;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const output = outputComponent?.querySelector<HTMLElement>(".lens-output");
+    const position = this.pendingScrollPosition;
+    this.pendingScrollPosition = undefined;
+    if (output && position) {
+      const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
+      output.scrollTop = position.wasAtBottom ? maximum : Math.min(position.top, maximum);
+    }
+    if (this.restoreTranslationFocus) {
+      this.restoreTranslationFocus = false;
+      this.renderRoot
+        .querySelector<HTMLElement>("#translation-panel")
+        ?.focus({ preventScroll: true });
+    }
   }
 }
