@@ -3,6 +3,8 @@ mod agent_runtime;
 mod app_state;
 mod commands;
 mod lens;
+mod live_runtime;
+pub mod live_sync;
 mod media_protocol;
 mod model;
 mod platform;
@@ -108,7 +110,10 @@ pub fn run() {
             commands::add_lens_target,
             commands::remove_lens_target,
             commands::confirm_lens_targets,
-            commands::transform_lens,
+            commands::retry_lens_transform,
+            commands::pause_lens,
+            commands::resume_lens,
+            commands::stop_lens,
             commands::authenticate_agent,
             commands::authenticate_agent_selection,
             commands::reauthenticate_agent_selection,
@@ -206,17 +211,19 @@ pub fn run() {
                     };
                     match result {
                         Ok(state) => {
-                            let transformed_text = state
-                                .output_blocks
+                            let authoritative_output = state
+                                .representation
+                                .as_ref()
+                                .map(|representation| representation.output_blocks.as_slice())
+                                .unwrap_or(state.output_blocks.as_slice());
+                            let transformed_text = authoritative_output
                                 .iter()
                                 .filter_map(|block| match block {
                                     model::LensOutputBlock::Markdown { text, .. } => Some(text.as_str()),
                                     _ => None,
                                 })
                                 .collect::<String>();
-                            let output_blocks = state
-                                .output_blocks
-                                .iter()
+                            let output_blocks = authoritative_output.iter()
                                 .map(|block| match block {
                                     model::LensOutputBlock::Markdown {
                                         message_id,
@@ -296,9 +303,9 @@ pub fn run() {
                                     println!("LENS_E2E_RESULT={json}")
                                 }
                                 Ok(json) => println!("LENS_A11Y_RESULT={json}"),
-                            Err(error) => {
-                                eprintln!("Unable to serialize A11y validation result: {error}")
-                            }
+                                Err(error) => {
+                                    eprintln!("Unable to serialize A11y validation result: {error}")
+                                }
                             }
                         }
                         Err(error) => eprintln!("Lens A11y validation failed: {error}"),

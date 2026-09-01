@@ -3,12 +3,19 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <math.h>
 
-typedef void (*LensPickerCallback)(const char *_Nullable json, void *_Nullable context);
-typedef void (*LensWindowTransitionCallback)(bool completed, void *_Nullable context);
+#import "LensNative.h"
 
 static const NSTimeInterval LensWindowFrameTransitionDuration = 0.18;
 
 static NSDictionary *LensFrameDictionary(CGRect frame);
+
+static void LensPerformSyncOnMainThread(dispatch_block_t block) {
+    if ([NSThread isMainThread]) {
+        block();
+        return;
+    }
+    dispatch_sync(dispatch_get_main_queue(), block);
+}
 
 static void LensPerformOnMainThread(dispatch_block_t block) {
     if ([NSThread isMainThread]) {
@@ -193,13 +200,126 @@ bool lens_transition_window_frame(
     return true;
 }
 
+static const float LensAccessibilityMessagingTimeoutSeconds = 1.0f;
+enum { LensMaximumObservationRegistrations = 6 };
+
+typedef NS_ENUM(NSUInteger, LensNativeObservationKind) {
+    LensNativeObservationKindWindowTitleChanged,
+    LensNativeObservationKindWindowMoved,
+    LensNativeObservationKindWindowResized,
+    LensNativeObservationKindWindowDestroyed,
+    LensNativeObservationKindApplicationChanged,
+};
+
+@class LensNativeWindowSource;
+
+typedef struct {
+    void *_Nullable owner;
+    uint64_t observerEpoch;
+    LensNativeObservationKind kind;
+    AXUIElementRef _Nullable element;
+    CFStringRef _Nullable notification;
+    BOOL registered;
+} LensNativeObservationRegistration;
+
+@interface LensNativeWindowSource : NSObject {
+    AXUIElementRef _Nullable _applicationElement;
+    AXUIElementRef _Nullable _windowElement;
+    AXObserverRef _Nullable _observer;
+    LensNativeObservationRegistration
+        _registrations[LensMaximumObservationRegistrations];
+    NSUInteger _registrationCount;
+}
+@property(nonatomic, copy) NSString *operationID;
+@property(nonatomic, assign) uint32_t windowID;
+@property(nonatomic, assign) pid_t pid;
+@property(nonatomic, copy) NSString *pickerTitle;
+@property(nonatomic, assign) CGRect pickerFrame;
+@property(nonatomic, strong, nullable) SCWindow *screenWindow;
+@property(nonatomic, copy, nullable) NSString *contextID;
+@property(nonatomic, copy, nullable) NSString *sourceRegistrationID;
+@property(nonatomic, assign) uint64_t observerEpoch;
+@property(nonatomic, assign) LensWindowObservationCallback observationCallback;
+@property(nonatomic, assign) void *observationContext;
+@property(nonatomic, assign) BOOL acceptingCallbacks;
+@property(nonatomic, assign) BOOL runLoopSourceAttached;
+@property(nonatomic, assign) double initialResolutionScore;
+- (instancetype)initWithOperationID:(NSString *)operationID window:(SCWindow *)window;
+- (BOOL)ensureResolvedWindowWithDiagnostics:(NSMutableArray<NSString *> *)diagnostics;
+- (NSDictionary *)startObservationWithContextID:(NSString *)contextID
+                           sourceRegistrationID:(NSString *)sourceRegistrationID
+                                  observerEpoch:(uint64_t)observerEpoch
+                                       callback:(LensWindowObservationCallback)callback
+                                callbackContext:(void *)callbackContext;
+- (void)stopObservationAndReleaseAXObjects;
+- (void)releaseAllRetainedObjects;
+- (AXUIElementRef _Nullable)copyResolvedWindow;
+@end
+
+static NSMutableDictionary<NSString *, LensNativeWindowSource *> *LensWindowSourceRegistry;
+static NSMutableDictionary<NSString *, LensNativeWindowSource *> *LensObservationSourceRegistry;
+
+static NSString *LensWindowRegistryKey(NSString *operationID, uint32_t windowID) {
+    return [NSString stringWithFormat:@"%@:%u", operationID, windowID];
+}
+
+static NSString *LensObservationRegistryKey(
+    NSString *operationID,
+    NSString *sourceRegistrationID
+) {
+    return [NSString stringWithFormat:@"%@:%@", operationID, sourceRegistrationID];
+}
+
+static void LensEnsureWindowRegistries(void) {
+    NSCAssert([NSThread isMainThread], @"Native selected-window registries are main-thread confined");
+    if (LensWindowSourceRegistry == nil) {
+        LensWindowSourceRegistry = [NSMutableDictionary dictionary];
+    }
+    if (LensObservationSourceRegistry == nil) {
+        LensObservationSourceRegistry = [NSMutableDictionary dictionary];
+    }
+}
+
+static LensNativeWindowSource *_Nullable LensWindowSourceForIdentity(
+    NSString *operationID,
+    uint32_t windowID
+) {
+    __block LensNativeWindowSource *source = nil;
+    LensPerformSyncOnMainThread(^{
+        LensEnsureWindowRegistries();
+        source = LensWindowSourceRegistry[LensWindowRegistryKey(operationID, windowID)];
+    });
+    return source;
+}
+
+static BOOL LensStorePickerWindow(NSString *operationID, SCWindow *window) {
+    NSCAssert([NSThread isMainThread], @"Picker-selected SCWindow storage is main-thread confined");
+    if (operationID.length == 0 || window == nil || window.windowID == 0) {
+        return NO;
+    }
+    LensEnsureWindowRegistries();
+    NSString *key = LensWindowRegistryKey(operationID, window.windowID);
+    LensNativeWindowSource *existing = LensWindowSourceRegistry[key];
+    if (existing != nil) {
+        // Never replace a retained reviewed target merely because a later object reused its ID.
+        return existing.screenWindow == window;
+    }
+    LensWindowSourceRegistry[key] = [[LensNativeWindowSource alloc]
+        initWithOperationID:operationID
+                     window:window];
+    return YES;
+}
+
 @class LensContentPickerCoordinator;
 static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinator;
 
 @interface LensContentPickerCoordinator : NSObject <SCContentSharingPickerObserver>
 @property(nonatomic, assign) LensPickerCallback callback;
 @property(nonatomic, assign) void *callbackContext;
-- (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context;
+@property(nonatomic, copy, nullable) NSString *operationID;
+- (BOOL)presentWithOperationID:(NSString *_Nullable)operationID
+                       callback:(LensPickerCallback)callback
+                        context:(void *)context;
 @end
 
 @implementation LensContentPickerCoordinator
@@ -238,6 +358,12 @@ static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinato
     NSMutableArray<NSDictionary *> *serializedWindows =
         [NSMutableArray arrayWithCapacity:windows.count];
     for (SCWindow *window in windows) {
+        if (self.operationID.length > 0 && !LensStorePickerWindow(self.operationID, window)) {
+            return @{
+                @"status": @"error",
+                @"message": @"The selected window identity conflicts with an existing retained target."
+            };
+        }
         SCRunningApplication *application = window.owningApplication;
         CGRect frame = window.frame;
         [serializedWindows addObject:@{
@@ -257,8 +383,11 @@ static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinato
     return @{ @"status": @"selected", @"windows": serializedWindows };
 }
 
-- (BOOL)presentWithCallback:(LensPickerCallback)callback context:(void *)context {
+- (BOOL)presentWithOperationID:(NSString *_Nullable)operationID
+                       callback:(LensPickerCallback)callback
+                        context:(void *)context {
     NSAssert([NSThread isMainThread], @"The ScreenCaptureKit picker must be presented on the main thread");
+    self.operationID = operationID;
     self.callback = callback;
     self.callbackContext = context;
 
@@ -328,7 +457,11 @@ bool lens_accessibility_request_trust(void) {
     return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
 
-bool lens_present_window_picker(LensPickerCallback callback, void *context) {
+static bool LensPresentWindowPicker(
+    NSString *_Nullable operationID,
+    LensPickerCallback callback,
+    void *context
+) {
     if (callback == NULL) {
         return false;
     }
@@ -340,7 +473,10 @@ bool lens_present_window_picker(LensPickerCallback callback, void *context) {
         }
         LensContentPickerCoordinator *coordinator = [[LensContentPickerCoordinator alloc] init];
         LensActiveContentPickerCoordinator = coordinator;
-        presented = [coordinator presentWithCallback:callback context:context];
+        presented = [coordinator
+            presentWithOperationID:operationID
+                          callback:callback
+                           context:context];
         if (!presented && LensActiveContentPickerCoordinator == coordinator) {
             LensActiveContentPickerCoordinator = nil;
         }
@@ -351,6 +487,25 @@ bool lens_present_window_picker(LensPickerCallback callback, void *context) {
         dispatch_sync(dispatch_get_main_queue(), presentation);
     }
     return presented;
+}
+
+bool lens_present_window_picker(LensPickerCallback callback, void *context) {
+    return LensPresentWindowPicker(nil, callback, context);
+}
+
+bool lens_present_window_picker_for_operation(
+    const char *operationIDCString,
+    LensPickerCallback callback,
+    void *context
+) {
+    if (operationIDCString == NULL) {
+        return false;
+    }
+    NSString *operationID = [NSString stringWithUTF8String:operationIDCString];
+    if (operationID.length == 0) {
+        return false;
+    }
+    return LensPresentWindowPicker(operationID, callback, context);
 }
 
 static NSDictionary *LensImageCaptureFailure(NSString *diagnostic) {
@@ -412,6 +567,253 @@ static NSData *LensPNGData(CGImageRef image) {
     return [representation representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
 }
 
+static SCWindow *_Nullable LensShareableWindowByID(
+    uint32_t windowID,
+    NSString *__autoreleasing _Nullable *diagnosticOut
+) {
+    dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+    __block SCWindow *selectedWindow = nil;
+    __block NSString *diagnostic = nil;
+    [SCShareableContent getShareableContentWithCompletionHandler:^(
+        SCShareableContent *shareableContent,
+        NSError *shareableError
+    ) {
+        if (shareableContent == nil) {
+            diagnostic = shareableError.localizedDescription
+                ?: @"ScreenCaptureKit returned no shareable content.";
+        } else {
+            for (SCWindow *window in shareableContent.windows) {
+                if (window.windowID == windowID) {
+                    selectedWindow = window;
+                    break;
+                }
+            }
+            if (selectedWindow == nil) {
+                diagnostic = @"The requested one-shot window is no longer shareable.";
+            }
+        }
+        dispatch_semaphore_signal(completion);
+    }];
+
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
+    if (dispatch_semaphore_wait(completion, timeout) != 0) {
+        diagnostic = @"ScreenCaptureKit window lookup timed out after 15 seconds.";
+        selectedWindow = nil;
+    }
+    if (diagnosticOut != NULL) {
+        *diagnosticOut = diagnostic;
+    }
+    return selectedWindow;
+}
+
+static char *LensCaptureWindowRegionsJSON(
+    SCWindow *_Nullable selectedWindow,
+    const char *requestsJSON,
+    uint32_t maxLongEdge,
+    uint32_t maxPixels,
+    uint32_t maxAttachmentBytes,
+    uint32_t maxTotalBytes,
+    NSString *_Nullable unavailableDiagnostic
+) {
+    if (selectedWindow == nil) {
+        return LensCopyJSONString(LensImageCaptureFailure(
+            unavailableDiagnostic ?: @"The retained selected window is unavailable."
+        ));
+    }
+    if (requestsJSON == NULL || maxLongEdge == 0 || maxPixels == 0 ||
+        maxAttachmentBytes == 0 || maxTotalBytes == 0) {
+        return LensCopyJSONString(LensImageCaptureFailure(
+            @"Image capture requests and limits must be present and greater than zero."
+        ));
+    }
+    NSData *requestData = [NSData dataWithBytes:requestsJSON length:strlen(requestsJSON)];
+    NSError *requestError = nil;
+    id requestObject = [NSJSONSerialization
+        JSONObjectWithData:requestData
+        options:0
+        error:&requestError];
+    if (![requestObject isKindOfClass:NSArray.class]) {
+        return LensCopyJSONString(LensImageCaptureFailure(
+            requestError.localizedDescription ?: @"Image capture requests must be a JSON array."
+        ));
+    }
+    NSArray<NSDictionary *> *requests = requestObject;
+    if (requests.count == 0) {
+        return LensCopyJSONString(@{
+            @"captures": @[],
+            @"omissions": @[],
+            @"diagnostics": @[]
+        });
+    }
+
+    CGFloat sourceWidth = MAX(selectedWindow.frame.size.width, 1.0);
+    CGFloat sourceHeight = MAX(selectedWindow.frame.size.height, 1.0);
+    CGFloat scale = MIN(2.0, MIN(4096.0 / sourceWidth, 4096.0 / sourceHeight));
+    SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
+    configuration.width = (size_t)MAX(1.0, floor(sourceWidth * scale));
+    configuration.height = (size_t)MAX(1.0, floor(sourceHeight * scale));
+    configuration.scalesToFit = YES;
+    configuration.preservesAspectRatio = YES;
+    configuration.showsCursor = NO;
+    configuration.ignoreShadowsSingleWindow = YES;
+    configuration.shouldBeOpaque = YES;
+    // `SCStream.h` defines this initializer as a filter over exactly the supplied SCWindow.
+    SCContentFilter *filter = [[SCContentFilter alloc]
+        initWithDesktopIndependentWindow:selectedWindow];
+
+    dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+    __block NSDictionary *result = nil;
+    [SCScreenshotManager
+        captureImageWithFilter:filter
+        configuration:configuration
+        completionHandler:^(CGImageRef image, NSError *captureError) {
+            if (image == NULL) {
+                result = LensImageCaptureFailure(
+                    captureError.localizedDescription
+                        ?: @"ScreenCaptureKit returned no window image."
+                );
+                dispatch_semaphore_signal(completion);
+                return;
+            }
+
+            CGRect windowFrame = selectedWindow.frame;
+            CGFloat pixelScaleX = (CGFloat)CGImageGetWidth(image) / sourceWidth;
+            CGFloat pixelScaleY = (CGFloat)CGImageGetHeight(image) / sourceHeight;
+            NSUInteger totalBytes = 0;
+            NSMutableArray<NSDictionary *> *captures = [NSMutableArray array];
+            NSMutableArray<NSDictionary *> *omissions = [NSMutableArray array];
+            for (NSDictionary *request in requests) {
+                NSString *attachmentID = request[@"id"];
+                NSString *scope = request[@"scope"];
+                if (attachmentID.length == 0 || scope.length == 0) {
+                    [omissions addObject:@{
+                        @"attachment_id": attachmentID ?: @"",
+                        @"reason": @"capture_failed",
+                        @"detail": @"Image capture request is missing its id or scope."
+                    }];
+                    continue;
+                }
+                CGRect requestedBounds = windowFrame;
+                if (![scope isEqualToString:@"window_fallback"]) {
+                    NSDictionary *bounds = request[@"bounds"];
+                    if (![bounds isKindOfClass:NSDictionary.class]) {
+                        [omissions addObject:@{
+                            @"attachment_id": attachmentID,
+                            @"reason": @"capture_failed",
+                            @"detail": @"AX image-region request has no bounds."
+                        }];
+                        continue;
+                    }
+                    requestedBounds = CGRectMake(
+                        [bounds[@"x"] doubleValue],
+                        [bounds[@"y"] doubleValue],
+                        [bounds[@"width"] doubleValue],
+                        [bounds[@"height"] doubleValue]
+                    );
+                }
+                CGRect capturedBounds = CGRectIntersection(windowFrame, requestedBounds);
+                if (CGRectIsNull(capturedBounds) || CGRectIsEmpty(capturedBounds)) {
+                    [omissions addObject:@{
+                        @"attachment_id": attachmentID,
+                        @"reason": @"outside_window",
+                        @"detail": @"AX image region does not intersect the current selected-window frame."
+                    }];
+                    continue;
+                }
+
+                CGFloat localMinX =
+                    (CGRectGetMinX(capturedBounds) - CGRectGetMinX(windowFrame)) * pixelScaleX;
+                CGFloat localMinY =
+                    (CGRectGetMinY(capturedBounds) - CGRectGetMinY(windowFrame)) * pixelScaleY;
+                CGFloat localMaxX =
+                    (CGRectGetMaxX(capturedBounds) - CGRectGetMinX(windowFrame)) * pixelScaleX;
+                CGFloat localMaxY =
+                    (CGRectGetMaxY(capturedBounds) - CGRectGetMinY(windowFrame)) * pixelScaleY;
+                CGFloat pixelMinX = MAX(0.0, floor(localMinX));
+                CGFloat pixelMinY = MAX(0.0, floor(localMinY));
+                CGRect pixelRect = CGRectMake(
+                    pixelMinX,
+                    pixelMinY,
+                    MIN((CGFloat)CGImageGetWidth(image), ceil(localMaxX)) - pixelMinX,
+                    MIN((CGFloat)CGImageGetHeight(image), ceil(localMaxY)) - pixelMinY
+                );
+                if (CGRectIsEmpty(pixelRect)) {
+                    [omissions addObject:@{
+                        @"attachment_id": attachmentID,
+                        @"reason": @"outside_window",
+                        @"detail": @"AX image region produced an empty pixel intersection."
+                    }];
+                    continue;
+                }
+
+                CGImageRef cropped = CGImageCreateWithImageInRect(image, pixelRect);
+                CGImageRef bounded = cropped == NULL
+                    ? NULL
+                    : LensCopyScaledImage(cropped, maxLongEdge, maxPixels);
+                if (cropped != NULL) CGImageRelease(cropped);
+                if (bounded == NULL) {
+                    [omissions addObject:@{
+                        @"attachment_id": attachmentID,
+                        @"reason": @"capture_failed",
+                        @"detail": @"Unable to create the bounded image-region bitmap."
+                    }];
+                    continue;
+                }
+                NSData *png = LensPNGData(bounded);
+                size_t pixelWidth = CGImageGetWidth(bounded);
+                size_t pixelHeight = CGImageGetHeight(bounded);
+                CGImageRelease(bounded);
+                if (png == nil) {
+                    [omissions addObject:@{
+                        @"attachment_id": attachmentID,
+                        @"reason": @"capture_failed",
+                        @"detail": @"Unable to encode the image-region bitmap as PNG."
+                    }];
+                    continue;
+                }
+                if (png.length > maxAttachmentBytes ||
+                    png.length > maxTotalBytes - MIN(totalBytes, maxTotalBytes)) {
+                    [omissions addObject:@{
+                        @"attachment_id": attachmentID,
+                        @"reason": @"byte_budget",
+                        @"detail": @"Encoded PNG exceeded the versioned per-attachment or total media byte budget."
+                    }];
+                    continue;
+                }
+                totalBytes += png.length;
+                BOOL capturedFullRegion = CGRectEqualToRect(capturedBounds, requestedBounds);
+                [captures addObject:@{
+                    @"attachment_id": attachmentID,
+                    @"source_bounds": LensFrameDictionary(requestedBounds),
+                    @"captured_bounds": LensFrameDictionary(capturedBounds),
+                    @"window_bounds": LensFrameDictionary(windowFrame),
+                    @"coverage": capturedFullRegion ? @"full_region" : @"visible_subregion",
+                    @"mime_type": @"image/png",
+                    @"pixel_width": @(pixelWidth),
+                    @"pixel_height": @(pixelHeight),
+                    @"encoded_bytes": @(png.length),
+                    @"data": [png base64EncodedStringWithOptions:0]
+                }];
+            }
+            result = @{
+                @"captures": captures,
+                @"omissions": omissions,
+                @"diagnostics": @[]
+            };
+            dispatch_semaphore_signal(completion);
+        }];
+
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
+    if (dispatch_semaphore_wait(completion, timeout) != 0) {
+        return LensCopyJSONString(LensImageCaptureFailure(
+            @"ScreenCaptureKit image-region capture timed out after 15 seconds."
+        ));
+    }
+    return LensCopyJSONString(
+        result ?: LensImageCaptureFailure(@"Image-region capture produced no result.")
+    );
+}
+
 char *lens_capture_window_regions_json(
     uint32_t windowID,
     const char *requestsJSON,
@@ -421,224 +823,44 @@ char *lens_capture_window_regions_json(
     uint32_t maxTotalBytes
 ) {
     @autoreleasepool {
-        if (requestsJSON == NULL || maxLongEdge == 0 || maxPixels == 0 ||
-            maxAttachmentBytes == 0 || maxTotalBytes == 0) {
-            return LensCopyJSONString(LensImageCaptureFailure(
-                @"Image capture requests and limits must be present and greater than zero."
-            ));
-        }
-        NSData *requestData = [NSData dataWithBytes:requestsJSON length:strlen(requestsJSON)];
-        NSError *requestError = nil;
-        id requestObject = [NSJSONSerialization
-            JSONObjectWithData:requestData
-            options:0
-            error:&requestError];
-        if (![requestObject isKindOfClass:NSArray.class]) {
-            return LensCopyJSONString(LensImageCaptureFailure(
-                requestError.localizedDescription
-                    ?: @"Image capture requests must be a JSON array."
-            ));
-        }
-        NSArray<NSDictionary *> *requests = requestObject;
-        if (requests.count == 0) {
-            return LensCopyJSONString(@{
-                @"captures": @[],
-                @"omissions": @[],
-                @"diagnostics": @[]
-            });
-        }
+        NSString *diagnostic = nil;
+        SCWindow *selectedWindow = LensShareableWindowByID(windowID, &diagnostic);
+        return LensCaptureWindowRegionsJSON(
+            selectedWindow,
+            requestsJSON,
+            maxLongEdge,
+            maxPixels,
+            maxAttachmentBytes,
+            maxTotalBytes,
+            diagnostic
+        );
+    }
+}
 
-        dispatch_semaphore_t completion = dispatch_semaphore_create(0);
-        __block NSDictionary *result = nil;
-        [SCShareableContent getShareableContentWithCompletionHandler:^(
-            SCShareableContent *shareableContent,
-            NSError *shareableError
-        ) {
-            if (shareableContent == nil) {
-                result = LensImageCaptureFailure(
-                    shareableError.localizedDescription
-                        ?: @"ScreenCaptureKit returned no shareable content."
-                );
-                dispatch_semaphore_signal(completion);
-                return;
-            }
-
-            SCWindow *selectedWindow = nil;
-            for (SCWindow *window in shareableContent.windows) {
-                if (window.windowID == windowID) {
-                    selectedWindow = window;
-                    break;
-                }
-            }
-            if (selectedWindow == nil) {
-                result = LensImageCaptureFailure(
-                    @"The picker-authoritative window is no longer available to ScreenCaptureKit."
-                );
-                dispatch_semaphore_signal(completion);
-                return;
-            }
-
-            CGFloat sourceWidth = MAX(selectedWindow.frame.size.width, 1.0);
-            CGFloat sourceHeight = MAX(selectedWindow.frame.size.height, 1.0);
-            CGFloat scale = MIN(2.0, MIN(4096.0 / sourceWidth, 4096.0 / sourceHeight));
-            SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
-            configuration.width = (size_t)MAX(1.0, floor(sourceWidth * scale));
-            configuration.height = (size_t)MAX(1.0, floor(sourceHeight * scale));
-            configuration.scalesToFit = YES;
-            configuration.preservesAspectRatio = YES;
-            configuration.showsCursor = NO;
-            configuration.ignoreShadowsSingleWindow = YES;
-            configuration.shouldBeOpaque = YES;
-            SCContentFilter *filter = [[SCContentFilter alloc]
-                initWithDesktopIndependentWindow:selectedWindow];
-            [SCScreenshotManager
-                captureImageWithFilter:filter
-                configuration:configuration
-                completionHandler:^(CGImageRef image, NSError *captureError) {
-                    if (image == NULL) {
-                        result = LensImageCaptureFailure(
-                            captureError.localizedDescription
-                                ?: @"ScreenCaptureKit returned no window image."
-                        );
-                        dispatch_semaphore_signal(completion);
-                        return;
-                    }
-
-                    CGRect windowFrame = selectedWindow.frame;
-                    CGFloat pixelScaleX = (CGFloat)CGImageGetWidth(image) / sourceWidth;
-                    CGFloat pixelScaleY = (CGFloat)CGImageGetHeight(image) / sourceHeight;
-                    NSUInteger totalBytes = 0;
-                    NSMutableArray<NSDictionary *> *captures = [NSMutableArray array];
-                    NSMutableArray<NSDictionary *> *omissions = [NSMutableArray array];
-                    for (NSDictionary *request in requests) {
-                        NSString *attachmentID = request[@"id"];
-                        NSString *scope = request[@"scope"];
-                        if (attachmentID.length == 0 || scope.length == 0) {
-                            [omissions addObject:@{
-                                @"reason": @"capture_failed",
-                                @"detail": @"Image capture request is missing its id or scope."
-                            }];
-                            continue;
-                        }
-                        CGRect requestedBounds = windowFrame;
-                        if (![scope isEqualToString:@"window_fallback"]) {
-                            NSDictionary *bounds = request[@"bounds"];
-                            if (![bounds isKindOfClass:NSDictionary.class]) {
-                                [omissions addObject:@{
-                                    @"attachment_id": attachmentID,
-                                    @"reason": @"capture_failed",
-                                    @"detail": @"AX image-region request has no bounds."
-                                }];
-                                continue;
-                            }
-                            requestedBounds = CGRectMake(
-                                [bounds[@"x"] doubleValue],
-                                [bounds[@"y"] doubleValue],
-                                [bounds[@"width"] doubleValue],
-                                [bounds[@"height"] doubleValue]
-                            );
-                        }
-                        CGRect capturedBounds = CGRectIntersection(windowFrame, requestedBounds);
-                        if (CGRectIsNull(capturedBounds) || CGRectIsEmpty(capturedBounds)) {
-                            [omissions addObject:@{
-                                @"attachment_id": attachmentID,
-                                @"reason": @"outside_window",
-                                @"detail": @"AX image region does not intersect the current selected-window frame."
-                            }];
-                            continue;
-                        }
-
-                        CGFloat localMinX =
-                            (CGRectGetMinX(capturedBounds) - CGRectGetMinX(windowFrame)) * pixelScaleX;
-                        CGFloat localMinY =
-                            (CGRectGetMinY(capturedBounds) - CGRectGetMinY(windowFrame)) * pixelScaleY;
-                        CGFloat localMaxX =
-                            (CGRectGetMaxX(capturedBounds) - CGRectGetMinX(windowFrame)) * pixelScaleX;
-                        CGFloat localMaxY =
-                            (CGRectGetMaxY(capturedBounds) - CGRectGetMinY(windowFrame)) * pixelScaleY;
-                        CGFloat pixelMinX = MAX(0.0, floor(localMinX));
-                        CGFloat pixelMinY = MAX(0.0, floor(localMinY));
-                        CGRect pixelRect = CGRectMake(
-                            pixelMinX,
-                            pixelMinY,
-                            MIN((CGFloat)CGImageGetWidth(image), ceil(localMaxX)) - pixelMinX,
-                            MIN((CGFloat)CGImageGetHeight(image), ceil(localMaxY)) - pixelMinY
-                        );
-                        if (CGRectIsEmpty(pixelRect)) {
-                            [omissions addObject:@{
-                                @"attachment_id": attachmentID,
-                                @"reason": @"outside_window",
-                                @"detail": @"AX image region produced an empty pixel intersection."
-                            }];
-                            continue;
-                        }
-
-                        CGImageRef cropped = CGImageCreateWithImageInRect(image, pixelRect);
-                        CGImageRef bounded = cropped == NULL
-                            ? NULL
-                            : LensCopyScaledImage(cropped, maxLongEdge, maxPixels);
-                        if (cropped != NULL) CGImageRelease(cropped);
-                        if (bounded == NULL) {
-                            [omissions addObject:@{
-                                @"attachment_id": attachmentID,
-                                @"reason": @"capture_failed",
-                                @"detail": @"Unable to create the bounded image-region bitmap."
-                            }];
-                            continue;
-                        }
-                        NSData *png = LensPNGData(bounded);
-                        size_t pixelWidth = CGImageGetWidth(bounded);
-                        size_t pixelHeight = CGImageGetHeight(bounded);
-                        CGImageRelease(bounded);
-                        if (png == nil) {
-                            [omissions addObject:@{
-                                @"attachment_id": attachmentID,
-                                @"reason": @"capture_failed",
-                                @"detail": @"Unable to encode the image-region bitmap as PNG."
-                            }];
-                            continue;
-                        }
-                        if (png.length > maxAttachmentBytes ||
-                            totalBytes + png.length > maxTotalBytes) {
-                            [omissions addObject:@{
-                                @"attachment_id": attachmentID,
-                                @"reason": @"byte_budget",
-                                @"detail": @"Encoded PNG exceeded the versioned per-attachment or total media byte budget."
-                            }];
-                            continue;
-                        }
-                        totalBytes += png.length;
-                        BOOL capturedFullRegion = CGRectEqualToRect(capturedBounds, requestedBounds);
-                        [captures addObject:@{
-                            @"attachment_id": attachmentID,
-                            @"source_bounds": LensFrameDictionary(requestedBounds),
-                            @"captured_bounds": LensFrameDictionary(capturedBounds),
-                            @"window_bounds": LensFrameDictionary(windowFrame),
-                            @"coverage": capturedFullRegion ? @"full_region" : @"visible_subregion",
-                            @"mime_type": @"image/png",
-                            @"pixel_width": @(pixelWidth),
-                            @"pixel_height": @(pixelHeight),
-                            @"encoded_bytes": @(png.length),
-                            @"data": [png base64EncodedStringWithOptions:0]
-                        }];
-                    }
-                    result = @{
-                        @"captures": captures,
-                        @"omissions": omissions,
-                        @"diagnostics": @[]
-                    };
-                    dispatch_semaphore_signal(completion);
-                }];
-        }];
-
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
-        if (dispatch_semaphore_wait(completion, timeout) != 0) {
-            return LensCopyJSONString(LensImageCaptureFailure(
-                @"ScreenCaptureKit image-region capture timed out after 15 seconds."
-            ));
-        }
-        return LensCopyJSONString(
-            result ?: LensImageCaptureFailure(@"Image-region capture produced no result.")
+char *lens_capture_registered_window_regions_json(
+    const char *operationIDCString,
+    uint32_t windowID,
+    const char *requestsJSON,
+    uint32_t maxLongEdge,
+    uint32_t maxPixels,
+    uint32_t maxAttachmentBytes,
+    uint32_t maxTotalBytes
+) {
+    @autoreleasepool {
+        NSString *operationID = operationIDCString == NULL
+            ? nil
+            : [NSString stringWithUTF8String:operationIDCString];
+        LensNativeWindowSource *source = operationID.length == 0
+            ? nil
+            : LensWindowSourceForIdentity(operationID, windowID);
+        return LensCaptureWindowRegionsJSON(
+            source.screenWindow,
+            requestsJSON,
+            maxLongEdge,
+            maxPixels,
+            maxAttachmentBytes,
+            maxTotalBytes,
+            @"The exact operation-scoped selected window is unavailable."
         );
     }
 }
@@ -930,8 +1152,8 @@ static double LensWindowResolutionScore(
     return score;
 }
 
-static AXUIElementRef LensCopyResolvedAXWindow(
-    int32_t pid,
+static AXUIElementRef LensCopyResolvedAXWindowForApplication(
+    AXUIElementRef application,
     NSString *selectedTitle,
     CGRect selectedFrame,
     NSString *__autoreleasing _Nullable *resolvedTitleOut,
@@ -939,7 +1161,6 @@ static AXUIElementRef LensCopyResolvedAXWindow(
     double *resolutionScoreOut,
     NSMutableArray<NSString *> *_Nullable diagnostics
 ) {
-    AXUIElementRef application = AXUIElementCreateApplication(pid);
     // Firefox lazily enables its macOS accessibility service when the application AXRole is read.
     // Keep this standard read before AXWindows so extraction does not depend on another assistive
     // technology having activated the target first.
@@ -959,7 +1180,6 @@ static AXUIElementRef LensCopyResolvedAXWindow(
                 windowsError
             ]];
         }
-        CFRelease(application);
         return NULL;
     }
     if (preparation.state != LensAXApplicationPreparationStateReady && diagnostics != nil) {
@@ -1008,15 +1228,382 @@ static AXUIElementRef LensCopyResolvedAXWindow(
                 bestScore
             ]];
         }
-        CFRelease(application);
         return NULL;
     }
     CFRetain(resolvedWindow);
-    CFRelease(application);
     if (resolvedTitleOut != NULL) *resolvedTitleOut = resolvedTitle;
     if (resolvedFrameOut != NULL) *resolvedFrameOut = resolvedFrame;
     if (resolutionScoreOut != NULL) *resolutionScoreOut = bestScore;
     return resolvedWindow;
+}
+
+static AXUIElementRef LensCopyResolvedAXWindow(
+    int32_t pid,
+    NSString *selectedTitle,
+    CGRect selectedFrame,
+    NSString *__autoreleasing _Nullable *resolvedTitleOut,
+    CGRect *resolvedFrameOut,
+    double *resolutionScoreOut,
+    NSMutableArray<NSString *> *_Nullable diagnostics
+) {
+    AXUIElementRef application = AXUIElementCreateApplication(pid);
+    if (application == NULL) {
+        if (diagnostics != nil) {
+            [diagnostics addObject:@"Unable to create the target application AXUIElement."];
+        }
+        return NULL;
+    }
+    AXUIElementRef resolvedWindow = LensCopyResolvedAXWindowForApplication(
+        application,
+        selectedTitle,
+        selectedFrame,
+        resolvedTitleOut,
+        resolvedFrameOut,
+        resolutionScoreOut,
+        diagnostics
+    );
+    CFRelease(application);
+    return resolvedWindow;
+}
+
+static NSString *LensNativeObservationKindName(LensNativeObservationKind kind) {
+    switch (kind) {
+        case LensNativeObservationKindWindowTitleChanged:
+            return @"window_title_changed";
+        case LensNativeObservationKindWindowMoved:
+            return @"window_moved";
+        case LensNativeObservationKindWindowResized:
+            return @"window_resized";
+        case LensNativeObservationKindWindowDestroyed:
+            return @"window_destroyed";
+        case LensNativeObservationKindApplicationChanged:
+            return @"application_changed";
+    }
+    return @"application_changed";
+}
+
+static void LensNativeAXObserverCallback(
+    AXObserverRef observer,
+    AXUIElementRef element,
+    CFStringRef notification,
+    void *_Nullable context
+);
+
+@implementation LensNativeWindowSource
+
+- (instancetype)initWithOperationID:(NSString *)operationID window:(SCWindow *)window {
+    self = [super init];
+    if (self != nil) {
+        _operationID = [operationID copy];
+        _windowID = window.windowID;
+        _screenWindow = window;
+        _pid = window.owningApplication.processID;
+        _pickerTitle = [LensStringOrEmpty(window.title) copy];
+        _pickerFrame = window.frame;
+        _initialResolutionScore = -1.0;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_observer != NULL) {
+        CFRelease(_observer);
+    }
+    if (_windowElement != NULL) {
+        CFRelease(_windowElement);
+    }
+    if (_applicationElement != NULL) {
+        CFRelease(_applicationElement);
+    }
+}
+
+- (BOOL)ensureResolvedWindowWithDiagnostics:(NSMutableArray<NSString *> *)diagnostics {
+    @synchronized(self) {
+        if (_windowElement != NULL && _applicationElement != NULL) {
+            return YES;
+        }
+        if (self.screenWindow == nil || self.pid <= 0) {
+            [diagnostics addObject:@"The exact picker-retained SCWindow is unavailable."];
+            return NO;
+        }
+        if (!AXIsProcessTrusted()) {
+            [diagnostics addObject:@"Accessibility permission is not granted to Lens."];
+            return NO;
+        }
+
+        AXUIElementRef application = AXUIElementCreateApplication(self.pid);
+        if (application == NULL) {
+            [diagnostics addObject:@"Unable to create the retained target's application AXUIElement."];
+            return NO;
+        }
+        // AXUIElement.h defines this as the finite messaging boundary for the supplied object.
+        AXError timeoutError = AXUIElementSetMessagingTimeout(
+            application,
+            LensAccessibilityMessagingTimeoutSeconds
+        );
+        if (timeoutError != kAXErrorSuccess) {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"Unable to establish the Accessibility messaging timeout (%@ (%d)).",
+                LensAXErrorName(timeoutError),
+                timeoutError
+            ]];
+            CFRelease(application);
+            return NO;
+        }
+
+        NSString *resolvedTitle = @"";
+        CGRect resolvedFrame = CGRectZero;
+        double resolutionScore = -1.0;
+        AXUIElementRef window = LensCopyResolvedAXWindowForApplication(
+            application,
+            self.pickerTitle,
+            self.pickerFrame,
+            &resolvedTitle,
+            &resolvedFrame,
+            &resolutionScore,
+            diagnostics
+        );
+        if (window == NULL) {
+            CFRelease(application);
+            return NO;
+        }
+        _applicationElement = application;
+        _windowElement = window;
+        self.initialResolutionScore = resolutionScore;
+        return YES;
+    }
+}
+
+- (AXUIElementRef _Nullable)copyResolvedWindow {
+    @synchronized(self) {
+        return _windowElement == NULL
+            ? NULL
+            : (AXUIElementRef)CFRetain(_windowElement);
+    }
+}
+
+- (AXError)addObservationForElement:(AXUIElementRef)element
+                        notification:(CFStringRef)notification
+                                 kind:(LensNativeObservationKind)kind {
+    if (_observer == NULL || _registrationCount >= LensMaximumObservationRegistrations) {
+        return kAXErrorFailure;
+    }
+    LensNativeObservationRegistration *registration = &_registrations[_registrationCount];
+    *registration = (LensNativeObservationRegistration){
+        .owner = (__bridge void *)self,
+        .observerEpoch = self.observerEpoch,
+        .kind = kind,
+        .element = element,
+        .notification = notification,
+        .registered = NO,
+    };
+    AXError error = AXObserverAddNotification(
+        _observer,
+        element,
+        notification,
+        registration
+    );
+    if (error == kAXErrorSuccess) {
+        registration->registered = YES;
+        _registrationCount += 1;
+    } else {
+        *registration = (LensNativeObservationRegistration){0};
+    }
+    return error;
+}
+
+- (NSDictionary *)startObservationWithContextID:(NSString *)contextID
+                           sourceRegistrationID:(NSString *)sourceRegistrationID
+                                  observerEpoch:(uint64_t)observerEpoch
+                                       callback:(LensWindowObservationCallback)callback
+                                callbackContext:(void *)callbackContext {
+    NSAssert([NSThread isMainThread], @"AXObserver lifecycle is main-run-loop confined");
+    if (_observer != NULL || self.acceptingCallbacks) {
+        return @{
+            @"status": @"error",
+            @"message": @"The native source already owns an active observer."
+        };
+    }
+    if (_applicationElement == NULL || _windowElement == NULL || callback == NULL ||
+        contextID.length == 0 || sourceRegistrationID.length == 0 || observerEpoch == 0) {
+        return @{
+            @"status": @"error",
+            @"message": @"The native source observation authority is incomplete."
+        };
+    }
+
+    self.contextID = contextID;
+    self.sourceRegistrationID = sourceRegistrationID;
+    self.observerEpoch = observerEpoch;
+    self.observationCallback = callback;
+    self.observationContext = callbackContext;
+    self.acceptingCallbacks = YES;
+    _registrationCount = 0;
+
+    AXError createError = AXObserverCreate(self.pid, LensNativeAXObserverCallback, &_observer);
+    if (createError != kAXErrorSuccess || _observer == NULL) {
+        self.acceptingCallbacks = NO;
+        return @{
+            @"status": @"error",
+            @"message": [NSString stringWithFormat:
+                @"Unable to create AXObserver (%@ (%d)).",
+                LensAXErrorName(createError),
+                createError
+            ]
+        };
+    }
+
+    // AXUIElement.h requires this source to be attached before notifications can arrive.
+    CFRunLoopSourceRef source = AXObserverGetRunLoopSource(_observer);
+    if (source == NULL) {
+        [self stopObservationAndReleaseAXObjects];
+        return @{
+            @"status": @"error",
+            @"message": @"AXObserver returned no run-loop source."
+        };
+    }
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+    self.runLoopSourceAttached = YES;
+
+    NSMutableArray<NSString *> *registered = [NSMutableArray array];
+    NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
+    struct {
+        AXUIElementRef element;
+        CFStringRef notification;
+        LensNativeObservationKind kind;
+    } plan[] = {
+        {_windowElement, kAXTitleChangedNotification, LensNativeObservationKindWindowTitleChanged},
+        {_windowElement, kAXMovedNotification, LensNativeObservationKindWindowMoved},
+        {_windowElement, kAXResizedNotification, LensNativeObservationKindWindowResized},
+        {_windowElement, kAXUIElementDestroyedNotification, LensNativeObservationKindWindowDestroyed},
+        {_applicationElement, kAXFocusedUIElementChangedNotification, LensNativeObservationKindApplicationChanged},
+        {_applicationElement, kAXWindowCreatedNotification, LensNativeObservationKindApplicationChanged},
+    };
+    for (NSUInteger index = 0; index < sizeof(plan) / sizeof(plan[0]); index += 1) {
+        AXError error = [self
+            addObservationForElement:plan[index].element
+                         notification:plan[index].notification
+                                  kind:plan[index].kind];
+        NSString *kindName = LensNativeObservationKindName(plan[index].kind);
+        if (error == kAXErrorSuccess) {
+            [registered addObject:kindName];
+        } else {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"%@ registration failed with %@ (%d).",
+                kindName,
+                LensAXErrorName(error),
+                error
+            ]];
+        }
+    }
+    if (_registrationCount == 0) {
+        [self stopObservationAndReleaseAXObjects];
+        return @{
+            @"status": @"error",
+            @"message": @"The fixed target supports none of the bounded observation plan."
+        };
+    }
+    return @{
+        @"status": @"started",
+        @"registered_notifications": registered,
+        @"diagnostics": diagnostics
+    };
+}
+
+- (void)receiveObservationRegistration:(LensNativeObservationRegistration *)registration {
+    NSAssert([NSThread isMainThread], @"AXObserver callbacks are handled on the main run loop");
+    if (!self.acceptingCallbacks || registration == NULL || !registration->registered ||
+        registration->owner != (__bridge void *)self ||
+        registration->observerEpoch != self.observerEpoch ||
+        self.observationCallback == NULL) {
+        return;
+    }
+    NSDictionary *event = @{
+        @"operation_id": self.operationID,
+        @"context_id": self.contextID,
+        @"source_registration_id": self.sourceRegistrationID,
+        @"observer_epoch": @(registration->observerEpoch),
+        @"window_id": @(self.windowID),
+        @"notification": LensNativeObservationKindName(registration->kind)
+    };
+    char *json = LensCopyJSONString(event);
+    if (json != NULL) {
+        self.observationCallback(json, self.observationContext);
+        free(json);
+    }
+}
+
+- (void)stopObservationAndReleaseAXObjects {
+    NSAssert([NSThread isMainThread], @"AXObserver teardown is main-run-loop confined");
+    @synchronized(self) {
+        self.acceptingCallbacks = NO;
+        self.observationCallback = NULL;
+        self.observationContext = NULL;
+        for (NSUInteger index = 0; index < _registrationCount; index += 1) {
+            LensNativeObservationRegistration *registration = &_registrations[index];
+            registration->owner = NULL;
+            if (_observer != NULL && registration->registered && registration->element != NULL &&
+                registration->notification != NULL) {
+                AXObserverRemoveNotification(
+                    _observer,
+                    registration->element,
+                    registration->notification
+                );
+            }
+            *registration = (LensNativeObservationRegistration){0};
+        }
+        _registrationCount = 0;
+        if (_observer != NULL && self.runLoopSourceAttached) {
+            CFRunLoopSourceRef source = AXObserverGetRunLoopSource(_observer);
+            if (source != NULL) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+            }
+        }
+        self.runLoopSourceAttached = NO;
+        if (_observer != NULL) {
+            CFRelease(_observer);
+            _observer = NULL;
+        }
+        if (_windowElement != NULL) {
+            CFRelease(_windowElement);
+            _windowElement = NULL;
+        }
+        if (_applicationElement != NULL) {
+            CFRelease(_applicationElement);
+            _applicationElement = NULL;
+        }
+        self.contextID = nil;
+        self.sourceRegistrationID = nil;
+        self.observerEpoch = 0;
+    }
+}
+
+- (void)releaseAllRetainedObjects {
+    NSAssert([NSThread isMainThread], @"Selected-source release is main-thread confined");
+    [self stopObservationAndReleaseAXObjects];
+    self.screenWindow = nil;
+}
+
+@end
+
+static void LensNativeAXObserverCallback(
+    AXObserverRef observer,
+    AXUIElementRef element,
+    CFStringRef notification,
+    void *_Nullable context
+) {
+    (void)observer;
+    (void)element;
+    (void)notification;
+    if (context == NULL) {
+        return;
+    }
+    LensNativeObservationRegistration *registration = context;
+    if (registration->owner == NULL) {
+        return;
+    }
+    LensNativeWindowSource *source = (__bridge LensNativeWindowSource *)registration->owner;
+    [source receiveObservationRegistration:registration];
 }
 
 static NSString *LensTrimmedText(NSString *text) {
@@ -1099,47 +1686,20 @@ static NSDictionary *LensExtractionUnavailable(NSString *diagnostic) {
     return LensExtractionUnavailableWithDiagnostics(@[diagnostic]);
 }
 
-char *lens_extract_window_json(
-    int32_t pid,
-    const char *selectedTitleCString,
-    double selectedX,
-    double selectedY,
-    double selectedWidth,
-    double selectedHeight,
+static NSDictionary *LensExtractResolvedWindow(
+    AXUIElementRef resolvedWindow,
+    NSString *selectedTitle,
+    CGRect selectedFrame,
+    NSString *resolvedTitle,
+    CGRect resolvedFrame,
+    double bestScore,
+    NSMutableArray<NSString *> *diagnostics,
     uint32_t maxNodes,
     uint32_t maxTextBytes,
     uint32_t maxResourceRefs,
     uint32_t maxResourceURIBytes,
     uint32_t maxTotalResourceURIBytes
 ) {
-    @autoreleasepool {
-        if (!AXIsProcessTrusted()) {
-            return LensCopyJSONString(LensExtractionUnavailable(
-                @"Accessibility permission is not granted to Lens."
-            ));
-        }
-
-        NSString *selectedTitle = selectedTitleCString == NULL
-            ? @""
-            : [NSString stringWithUTF8String:selectedTitleCString];
-        CGRect selectedFrame = CGRectMake(selectedX, selectedY, selectedWidth, selectedHeight);
-        double bestScore = -1.0;
-        NSString *resolvedTitle = @"";
-        CGRect resolvedFrame = CGRectZero;
-        NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
-        AXUIElementRef resolvedWindow = LensCopyResolvedAXWindow(
-            pid,
-            selectedTitle,
-            selectedFrame,
-            &resolvedTitle,
-            &resolvedFrame,
-            &bestScore,
-            diagnostics
-        );
-        if (resolvedWindow == NULL) {
-            return LensCopyJSONString(LensExtractionUnavailableWithDiagnostics(diagnostics));
-        }
-
         NSMutableArray *nodes = [NSMutableArray array];
         NSMutableArray<NSString *> *fragments = [NSMutableArray array];
         NSMutableArray<NSDictionary *> *queue = [NSMutableArray arrayWithObject:@{
@@ -1323,7 +1883,6 @@ char *lens_extract_window_json(
         }
 
         CFRelease(scheduled);
-        CFRelease(resolvedWindow);
 
         if (bestScore < 100.0) {
             [diagnostics addObject:[NSString stringWithFormat:
@@ -1407,9 +1966,330 @@ char *lens_extract_window_json(
             },
             @"diagnostics": diagnostics
         };
+        return result;
+}
+
+char *lens_extract_window_json(
+    int32_t pid,
+    const char *selectedTitleCString,
+    double selectedX,
+    double selectedY,
+    double selectedWidth,
+    double selectedHeight,
+    uint32_t maxNodes,
+    uint32_t maxTextBytes,
+    uint32_t maxResourceRefs,
+    uint32_t maxResourceURIBytes,
+    uint32_t maxTotalResourceURIBytes
+) {
+    @autoreleasepool {
+        if (!AXIsProcessTrusted()) {
+            return LensCopyJSONString(LensExtractionUnavailable(
+                @"Accessibility permission is not granted to Lens."
+            ));
+        }
+
+        NSString *selectedTitle = selectedTitleCString == NULL
+            ? @""
+            : [NSString stringWithUTF8String:selectedTitleCString];
+        CGRect selectedFrame = CGRectMake(selectedX, selectedY, selectedWidth, selectedHeight);
+        double bestScore = -1.0;
+        NSString *resolvedTitle = @"";
+        CGRect resolvedFrame = CGRectZero;
+        NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
+        AXUIElementRef resolvedWindow = LensCopyResolvedAXWindow(
+            pid,
+            selectedTitle,
+            selectedFrame,
+            &resolvedTitle,
+            &resolvedFrame,
+            &bestScore,
+            diagnostics
+        );
+        if (resolvedWindow == NULL) {
+            return LensCopyJSONString(LensExtractionUnavailableWithDiagnostics(diagnostics));
+        }
+        NSDictionary *result = LensExtractResolvedWindow(
+            resolvedWindow,
+            selectedTitle,
+            selectedFrame,
+            resolvedTitle,
+            resolvedFrame,
+            bestScore,
+            diagnostics,
+            maxNodes,
+            maxTextBytes,
+            maxResourceRefs,
+            maxResourceURIBytes,
+            maxTotalResourceURIBytes
+        );
+        CFRelease(resolvedWindow);
         return LensCopyJSONString(result);
     }
 }
+
+char *lens_extract_registered_window_json(
+    const char *operationIDCString,
+    uint32_t windowID,
+    uint32_t maxNodes,
+    uint32_t maxTextBytes,
+    uint32_t maxResourceRefs,
+    uint32_t maxResourceURIBytes,
+    uint32_t maxTotalResourceURIBytes
+) {
+    @autoreleasepool {
+        NSString *operationID = operationIDCString == NULL
+            ? nil
+            : [NSString stringWithUTF8String:operationIDCString];
+        LensNativeWindowSource *source = operationID.length == 0
+            ? nil
+            : LensWindowSourceForIdentity(operationID, windowID);
+        if (source == nil) {
+            return LensCopyJSONString(LensExtractionUnavailable(
+                @"The exact operation-scoped selected window is unavailable."
+            ));
+        }
+        NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
+        if (![source ensureResolvedWindowWithDiagnostics:diagnostics]) {
+            return LensCopyJSONString(LensExtractionUnavailableWithDiagnostics(diagnostics));
+        }
+        AXUIElementRef resolvedWindow = [source copyResolvedWindow];
+        if (resolvedWindow == NULL) {
+            return LensCopyJSONString(LensExtractionUnavailable(
+                @"The promoted AXWindow is unavailable."
+            ));
+        }
+        NSString *currentTitle = LensAXString(resolvedWindow, kAXTitleAttribute)
+            ?: source.pickerTitle;
+        CGRect currentFrame = CGRectZero;
+        if (!LensAXFrame(resolvedWindow, &currentFrame)) {
+            currentFrame = source.pickerFrame;
+            [diagnostics addObject:@"The promoted AXWindow did not expose a current frame; the picker frame was retained for this refresh."];
+        }
+        [diagnostics addObject:@"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
+        NSDictionary *result = LensExtractResolvedWindow(
+            resolvedWindow,
+            currentTitle,
+            currentFrame,
+            currentTitle,
+            currentFrame,
+            source.initialResolutionScore,
+            diagnostics,
+            maxNodes,
+            maxTextBytes,
+            maxResourceRefs,
+            maxResourceURIBytes,
+            maxTotalResourceURIBytes
+        );
+        CFRelease(resolvedWindow);
+        return LensCopyJSONString(result);
+    }
+}
+
+char *lens_start_window_observation_json(
+    const char *operationIDCString,
+    const char *contextIDCString,
+    const char *sourceRegistrationIDCString,
+    uint64_t observerEpoch,
+    uint32_t windowID,
+    LensWindowObservationCallback callback,
+    void *context,
+    bool *startedOut
+) {
+    @autoreleasepool {
+        if (startedOut == NULL) {
+            return LensCopyJSONString(@{
+                @"status": @"error",
+                @"message": @"The source observation ownership output is required."
+            });
+        }
+        *startedOut = false;
+        NSString *operationID = operationIDCString == NULL
+            ? nil
+            : [NSString stringWithUTF8String:operationIDCString];
+        NSString *contextID = contextIDCString == NULL
+            ? nil
+            : [NSString stringWithUTF8String:contextIDCString];
+        NSString *sourceRegistrationID = sourceRegistrationIDCString == NULL
+            ? nil
+            : [NSString stringWithUTF8String:sourceRegistrationIDCString];
+        if (operationID.length == 0 || contextID.length == 0 ||
+            sourceRegistrationID.length == 0 || observerEpoch == 0 || callback == NULL) {
+            return LensCopyJSONString(@{
+                @"status": @"error",
+                @"message": @"The source observation request has incomplete authority."
+            });
+        }
+        LensNativeWindowSource *source = LensWindowSourceForIdentity(operationID, windowID);
+        if (source == nil) {
+            return LensCopyJSONString(@{
+                @"status": @"error",
+                @"message": @"The exact operation-scoped selected window is unavailable."
+            });
+        }
+        NSMutableArray<NSString *> *diagnostics = [NSMutableArray array];
+        if (![source ensureResolvedWindowWithDiagnostics:diagnostics]) {
+            return LensCopyJSONString(@{
+                @"status": @"error",
+                @"message": diagnostics.count > 0
+                    ? [diagnostics componentsJoinedByString:@"; "]
+                    : @"The exact AXWindow could not be promoted."
+            });
+        }
+
+        __block NSDictionary *reply = nil;
+        LensPerformSyncOnMainThread(^{
+            LensEnsureWindowRegistries();
+            NSString *sourceKey = LensObservationRegistryKey(
+                operationID,
+                sourceRegistrationID
+            );
+            LensNativeWindowSource *existing = LensObservationSourceRegistry[sourceKey];
+            if (existing != nil && existing != source) {
+                reply = @{
+                    @"status": @"error",
+                    @"message": @"The source registration identity is already owned by another target."
+                };
+                return;
+            }
+            reply = [source
+                startObservationWithContextID:contextID
+                         sourceRegistrationID:sourceRegistrationID
+                                observerEpoch:observerEpoch
+                                     callback:callback
+                              callbackContext:context];
+            if ([reply[@"status"] isEqualToString:@"started"]) {
+                LensObservationSourceRegistry[sourceKey] = source;
+                *startedOut = true;
+            }
+        });
+        NSDictionary *terminalReply = reply ?: @{
+            @"status": @"error",
+            @"message": @"Native source observation produced no terminal result."
+        };
+        char *json = LensCopyJSONString(terminalReply);
+        if (json == NULL && *startedOut) {
+            // A started observer must never outlive a caller that could not receive ownership.
+            // Tear down the exact registration before returning an allocation failure.
+            LensPerformSyncOnMainThread(^{
+                LensEnsureWindowRegistries();
+                NSString *sourceKey = LensObservationRegistryKey(
+                    operationID,
+                    sourceRegistrationID
+                );
+                LensNativeWindowSource *startedSource =
+                    LensObservationSourceRegistry[sourceKey];
+                if (startedSource == source) {
+                    [startedSource stopObservationAndReleaseAXObjects];
+                    [LensObservationSourceRegistry removeObjectForKey:sourceKey];
+                }
+            });
+            *startedOut = false;
+        }
+        return json;
+    }
+}
+
+bool lens_stop_window_observation(
+    const char *operationIDCString,
+    const char *sourceRegistrationIDCString
+) {
+    NSString *operationID = operationIDCString == NULL
+        ? nil
+        : [NSString stringWithUTF8String:operationIDCString];
+    NSString *sourceRegistrationID = sourceRegistrationIDCString == NULL
+        ? nil
+        : [NSString stringWithUTF8String:sourceRegistrationIDCString];
+    if (operationID.length == 0 || sourceRegistrationID.length == 0) {
+        return false;
+    }
+    __block BOOL stopped = NO;
+    LensPerformSyncOnMainThread(^{
+        LensEnsureWindowRegistries();
+        NSString *sourceKey = LensObservationRegistryKey(operationID, sourceRegistrationID);
+        LensNativeWindowSource *source = LensObservationSourceRegistry[sourceKey];
+        if (source == nil) {
+            return;
+        }
+        [source stopObservationAndReleaseAXObjects];
+        [LensObservationSourceRegistry removeObjectForKey:sourceKey];
+        stopped = YES;
+    });
+    return stopped;
+}
+
+bool lens_release_registered_window(const char *operationIDCString, uint32_t windowID) {
+    NSString *operationID = operationIDCString == NULL
+        ? nil
+        : [NSString stringWithUTF8String:operationIDCString];
+    if (operationID.length == 0) {
+        return false;
+    }
+    __block BOOL released = NO;
+    LensPerformSyncOnMainThread(^{
+        LensEnsureWindowRegistries();
+        NSString *windowKey = LensWindowRegistryKey(operationID, windowID);
+        LensNativeWindowSource *source = LensWindowSourceRegistry[windowKey];
+        if (source == nil) {
+            return;
+        }
+        NSString *sourceRegistrationID = source.sourceRegistrationID;
+        [source releaseAllRetainedObjects];
+        if (sourceRegistrationID.length > 0) {
+            [LensObservationSourceRegistry removeObjectForKey:
+                LensObservationRegistryKey(operationID, sourceRegistrationID)];
+        }
+        [LensWindowSourceRegistry removeObjectForKey:windowKey];
+        released = YES;
+    });
+    return released;
+}
+
+bool lens_release_window_operation(const char *operationIDCString) {
+    NSString *operationID = operationIDCString == NULL
+        ? nil
+        : [NSString stringWithUTF8String:operationIDCString];
+    if (operationID.length == 0) {
+        return false;
+    }
+    __block BOOL released = NO;
+    LensPerformSyncOnMainThread(^{
+        LensEnsureWindowRegistries();
+        NSArray<NSString *> *windowKeys = [LensWindowSourceRegistry.allKeys copy];
+        for (NSString *windowKey in windowKeys) {
+            LensNativeWindowSource *source = LensWindowSourceRegistry[windowKey];
+            if (![source.operationID isEqualToString:operationID]) {
+                continue;
+            }
+            NSString *sourceRegistrationID = source.sourceRegistrationID;
+            [source releaseAllRetainedObjects];
+            if (sourceRegistrationID.length > 0) {
+                [LensObservationSourceRegistry removeObjectForKey:
+                    LensObservationRegistryKey(operationID, sourceRegistrationID)];
+            }
+            [LensWindowSourceRegistry removeObjectForKey:windowKey];
+            released = YES;
+        }
+    });
+    return released;
+}
+
+#if defined(LENS_NATIVE_TESTING)
+bool lens_test_store_picker_window(const char *operationIDCString, void *screenCaptureWindow) {
+    NSString *operationID = operationIDCString == NULL
+        ? nil
+        : [NSString stringWithUTF8String:operationIDCString];
+    if (operationID.length == 0 || screenCaptureWindow == NULL) {
+        return false;
+    }
+    __block BOOL stored = NO;
+    LensPerformSyncOnMainThread(^{
+        SCWindow *window = (__bridge SCWindow *)screenCaptureWindow;
+        stored = LensStorePickerWindow(operationID, window);
+    });
+    return stored;
+}
+#endif
 
 void lens_free_string(char *value) {
     free(value);

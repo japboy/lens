@@ -9,7 +9,7 @@ export class LensMediaGallery extends LitElement {
   lens: LensState = { stage: "idle", output_blocks: [] };
 
   @state()
-  private activeIndex = 0;
+  private activeAttachmentId: string | undefined;
 
   @state()
   private previewError = "";
@@ -21,8 +21,18 @@ export class LensMediaGallery extends LitElement {
   protected willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("lens")) return;
     const previous = changed.get("lens");
-    if (previous?.operation_id !== this.lens.operation_id) {
-      this.activeIndex = 0;
+    const media = this.lens.input?.media ?? [];
+    const selectedStillExists = media.some(({ id }) => id === this.activeAttachmentId);
+    const nextAttachmentId =
+      previous?.operation_id !== this.lens.operation_id || !selectedStillExists
+        ? media[0]?.id
+        : this.activeAttachmentId;
+    const previousUri = previous?.input?.media.find(
+      ({ id }) => id === this.activeAttachmentId,
+    )?.uri;
+    const nextUri = media.find(({ id }) => id === nextAttachmentId)?.uri;
+    if (nextAttachmentId !== this.activeAttachmentId || previousUri !== nextUri) {
+      this.activeAttachmentId = nextAttachmentId;
       this.previewError = "";
     }
   }
@@ -30,7 +40,8 @@ export class LensMediaGallery extends LitElement {
   protected render() {
     const media = this.lens.input?.media ?? [];
     if (!media.length) return nothing;
-    const index = Math.min(this.activeIndex, media.length - 1);
+    const selectedIndex = media.findIndex(({ id }) => id === this.activeAttachmentId);
+    const index = selectedIndex >= 0 ? selectedIndex : 0;
     const attachment = media[index];
     if (!attachment) return nothing;
     const source = inputMediaPreviewUrl(this.lens, attachment);
@@ -52,7 +63,7 @@ export class LensMediaGallery extends LitElement {
             type="button"
             aria-label="Previous input image"
             ?disabled=${index === 0}
-            @click=${() => this.select(index - 1, media.length)}
+            @click=${() => this.select(media[index - 1]?.id)}
           >
             <span aria-hidden="true">‹</span>
           </button>
@@ -69,7 +80,7 @@ export class LensMediaGallery extends LitElement {
                     }
                     aria-label=${`Show input image ${candidateIndex + 1} of ${media.length}`}
                     aria-current=${candidateIndex === index ? "true" : "false"}
-                    @click=${() => this.select(candidateIndex, media.length)}
+                    @click=${() => this.select(candidate.id)}
                   >
                     <img
                       src=${inputMediaPreviewUrl(this.lens, candidate) ?? ""}
@@ -86,7 +97,7 @@ export class LensMediaGallery extends LitElement {
             type="button"
             aria-label="Next input image"
             ?disabled=${index === media.length - 1}
-            @click=${() => this.select(index + 1, media.length)}
+            @click=${() => this.select(media[index + 1]?.id)}
           >
             <span aria-hidden="true">›</span>
           </button>
@@ -100,11 +111,13 @@ export class LensMediaGallery extends LitElement {
                   draggable="false"
                   ?hidden=${Boolean(this.previewError)}
                   @load=${() => {
-                    this.previewError = "";
+                    if (this.activeAttachmentId === attachment.id) this.previewError = "";
                   }}
                   @error=${() => {
-                    this.previewError =
-                      "The selected input image is no longer available for this operation.";
+                    if (this.activeAttachmentId === attachment.id) {
+                      this.previewError =
+                        "The selected input image is no longer available for this operation.";
+                    }
                   }}
                 />`
               : nothing
@@ -180,9 +193,9 @@ export class LensMediaGallery extends LitElement {
     `;
   }
 
-  private select(index: number, total: number): void {
-    if (!Number.isInteger(index) || index < 0 || index >= total) return;
-    this.activeIndex = index;
+  private select(attachmentId: string | undefined): void {
+    if (!attachmentId || !this.lens.input?.media.some(({ id }) => id === attachmentId)) return;
+    this.activeAttachmentId = attachmentId;
     this.previewError = "";
   }
 }

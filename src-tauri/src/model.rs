@@ -1,3 +1,4 @@
+use crate::live_sync::ProjectionRef;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -246,6 +247,8 @@ impl Default for AgentSelectionState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunState {
     pub run_id: Uuid,
+    #[serde(default)]
+    pub input_projection: Option<ProjectionRef>,
     pub kind: AgentKind,
     pub adapter_name: String,
     pub adapter_version: String,
@@ -293,6 +296,72 @@ pub enum LensStage {
     Completed,
     Cancelled,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensMonitoringLifecycle {
+    Watching,
+    Paused,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensSourceHealth {
+    Healthy,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensFreshness {
+    None,
+    Current,
+    Checking,
+    Stale,
+    Unverified,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensRefreshOutcome {
+    Unchanged,
+    Updated,
+    Failed,
+}
+
+pub const LIVE_AGENT_REFRESH_INTERVAL_SECONDS: u64 = 3 * 60;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensLiveState {
+    pub lifecycle: LensMonitoringLifecycle,
+    pub health: LensSourceHealth,
+    pub freshness: LensFreshness,
+    pub agent_refresh_interval_seconds: u64,
+    #[serde(default)]
+    pub last_outcome: Option<LensRefreshOutcome>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensRepresentation {
+    pub representation_id: Uuid,
+    pub context_id: Uuid,
+    pub context_revision: u64,
+    pub projection: ProjectionRef,
+    pub run_id: Uuid,
+    pub output_blocks: Vec<LensOutputBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensPendingRepresentation {
+    pub turn_id: Uuid,
+    pub target_projection: ProjectionRef,
+    #[serde(default)]
+    pub base_representation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -362,7 +431,15 @@ pub struct LensState {
     #[serde(default)]
     pub input: Option<crate::lens::LensInput>,
     #[serde(default)]
+    pub projection: Option<ProjectionRef>,
+    #[serde(default)]
     pub output_blocks: Vec<LensOutputBlock>,
+    #[serde(default)]
+    pub representation: Option<LensRepresentation>,
+    #[serde(default)]
+    pub pending_representation: Option<LensPendingRepresentation>,
+    #[serde(default)]
+    pub live: Option<LensLiveState>,
     #[serde(default)]
     pub agent: Option<AgentRunState>,
     #[serde(default)]
@@ -378,7 +455,11 @@ impl Default for LensState {
             target_set: None,
             context: None,
             input: None,
+            projection: None,
             output_blocks: Vec::new(),
+            representation: None,
+            pending_representation: None,
+            live: None,
             agent: None,
             error: None,
         }
@@ -405,6 +486,7 @@ impl LensState {
         self.output_blocks.push(block);
     }
 
+    #[cfg(test)]
     pub fn has_output(&self) -> bool {
         self.output_blocks.iter().any(|block| match block {
             LensOutputBlock::Markdown { text, .. } => !text.trim().is_empty(),

@@ -138,6 +138,7 @@ const snapshot: AppSnapshot = {
   },
 };
 const completedLens = snapshot.lens;
+const closeCurrentWindow = vi.hoisted(() => vi.fn<() => Promise<void>>(async () => undefined));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn<(command: string) => Promise<unknown>>(async (command: string) => {
@@ -150,7 +151,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn<() => Promise<() => void>>(async () => () => undefined),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ close: vi.fn<() => void>() }),
+  getCurrentWindow: () => ({ close: closeCurrentWindow }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: vi.fn<() => Promise<boolean>>(),
@@ -298,9 +299,13 @@ describe("Lens rich Agent output", () => {
     expect(
       overlayRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
     ).toBe("deep");
-    expect(
-      overlayRoot?.querySelector(".close-button")?.getAttribute("data-tauri-drag-region"),
-    ).toBe("false");
+    const closeButton = overlayRoot?.querySelector('[aria-label="Stop Lens and close"]');
+    expect(closeButton?.getAttribute("data-tauri-drag-region")).toBe("false");
+    expect(closeButton?.getAttribute("aria-label")).toBe("Stop Lens and close");
+    expect(closeButton?.getAttribute("title")).toBe("Stop Lens and close");
+    expect(closeButton?.classList.contains("close-button")).toBe(true);
+    expect(closeButton?.querySelector(".close-icon")?.getAttribute("aria-hidden")).toBe("true");
+    expect(closeButton?.textContent?.trim()).toBe("");
     expect(overlayRoot?.querySelector(".overlay-app-icon")?.getAttribute("src")).toBeTruthy();
     expect(overlayRoot?.querySelector(".overlay-app-mark")).toBeNull();
     expect(
@@ -434,6 +439,127 @@ describe("Lens rich Agent output", () => {
     expect(metadata).toContain("50, 60 · 70 × 80");
     expect(metadata).toContain("image/png");
     expect(thumbnails[1]?.getAttribute("aria-current")).toBe("true");
+
+    const selected = snapshot.lens.input?.media[1];
+    const first = snapshot.lens.input?.media[0];
+    if (!selected || !first || !snapshot.lens.input) throw new Error("Media fixture is incomplete");
+    if (!gallery) throw new Error("Media gallery is missing");
+    (gallery as typeof gallery & { lens: typeof snapshot.lens }).lens = {
+      ...snapshot.lens,
+      input: { ...snapshot.lens.input, media: [selected, first] },
+    };
+    await gallery.updateComplete;
+    expect(
+      overlayRoot
+        ?.querySelector<HTMLImageElement>(".input-media-preview figure > img")
+        ?.getAttribute("src"),
+    ).toBe(selected.uri);
+    expect(
+      overlayRoot
+        ?.querySelectorAll<HTMLButtonElement>(".input-media-thumbnail")[0]
+        ?.getAttribute("aria-current"),
+    ).toBe("true");
+  });
+
+  it("invokes finite monitoring controls and stops successfully before closing", async () => {
+    snapshot.lens = {
+      ...completedLens,
+      live: {
+        lifecycle: "watching",
+        health: "healthy",
+        freshness: "current",
+        agent_refresh_interval_seconds: 180,
+      },
+    };
+    const { invoke } = await import("@tauri-apps/api/core");
+    const element = await createLensApp("overlay");
+    await vi.waitFor(() => {
+      expect(
+        Array.from(viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? []).some(
+          (button) => button.textContent?.trim() === "Pause Updates",
+        ),
+      ).toBe(true);
+    });
+    const overlayRoot = viewRoot(element, "lens-overlay-view");
+    const pause = Array.from(overlayRoot?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Pause Updates",
+    );
+    pause?.click();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("pause_lens", { operationId });
+    });
+
+    overlayRoot?.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and close"]')?.click();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("stop_lens", { operationId });
+      expect(closeCurrentWindow).toHaveBeenCalledOnce();
+    });
+    const stopCallIndex = vi
+      .mocked(invoke)
+      .mock.calls.findIndex(([command]) => command === "stop_lens");
+    expect(stopCallIndex).toBeGreaterThanOrEqual(0);
+    expect(vi.mocked(invoke).mock.invocationCallOrder[stopCallIndex]).toBeLessThan(
+      closeCurrentWindow.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it("resumes a paused live operation", async () => {
+    snapshot.lens = {
+      ...completedLens,
+      live: {
+        lifecycle: "paused",
+        health: "healthy",
+        freshness: "unverified",
+        agent_refresh_interval_seconds: 180,
+      },
+    };
+    const { invoke } = await import("@tauri-apps/api/core");
+    const element = await createLensApp("overlay");
+    await vi.waitFor(() => {
+      expect(
+        Array.from(viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? []).some(
+          (button) => button.textContent?.trim() === "Resume Updates",
+        ),
+      ).toBe(true);
+    });
+    const resume = Array.from(
+      viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? [],
+    ).find((button) => button.textContent?.trim() === "Resume Updates");
+    resume?.click();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("resume_lens", { operationId });
+    });
+  });
+
+  it("keeps the window open when Stop fails", async () => {
+    const element = await createLensApp("overlay");
+    await vi.waitFor(() => {
+      expect(
+        viewRoot(element, "lens-overlay-view")?.querySelector('[aria-label="Stop Lens and close"]'),
+      ).not.toBeNull();
+    });
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockedInvoke = vi.mocked(invoke);
+    const previousImplementation = mockedInvoke.getMockImplementation();
+    mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+      if (command === "stop_lens") throw new Error("Stop failed");
+      return previousImplementation?.(command, ...arguments_);
+    });
+
+    try {
+      viewRoot(element, "lens-overlay-view")
+        ?.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and close"]')
+        ?.click();
+      await vi.waitFor(() => {
+        expect(mockedInvoke).toHaveBeenCalledWith("stop_lens", { operationId });
+        expect(
+          viewRoot(element, "lens-overlay-view")?.querySelector('[role="alert"]')?.textContent,
+        ).toContain("Stop failed");
+      });
+      expect(closeCurrentWindow).not.toHaveBeenCalled();
+    } finally {
+      if (previousImplementation) mockedInvoke.mockImplementation(previousImplementation);
+    }
   });
 });
 

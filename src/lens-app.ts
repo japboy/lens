@@ -200,10 +200,10 @@ export class LensApp extends LitElement {
         );
         return;
       }
-      case "transform": {
+      case "retry": {
         const operationId = lens?.operation_id;
         if (!operationId) return;
-        await this.runCommand(identity, () => this.port.transformLens(operationId));
+        await this.runCommand(identity, () => this.port.retryLensTransform(operationId));
         return;
       }
       case "cancel": {
@@ -213,9 +213,26 @@ export class LensApp extends LitElement {
         await this.runCommand(identity, () => this.port.cancelAgent(operationId, runId));
         return;
       }
-      case "close":
-        await this.runCommand(identity, () => this.port.closeCurrentWindow());
+      case "pause": {
+        const operationId = lens?.operation_id;
+        if (!operationId) return;
+        await this.runCommand(identity, () => this.port.pauseLens(operationId));
         return;
+      }
+      case "resume": {
+        const operationId = lens?.operation_id;
+        if (!operationId) return;
+        await this.runCommand(identity, () => this.port.resumeLens(operationId));
+        return;
+      }
+      case "close": {
+        const operationId = lens?.operation_id;
+        await this.runCommand(identity, async () => {
+          if (operationId) await this.port.stopLens(operationId);
+          await this.port.closeCurrentWindow();
+        });
+        return;
+      }
       case "open-external-url":
         await this.runCommand(identity, () => this.port.openExternalUrl(intent.url));
         return;

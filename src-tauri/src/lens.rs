@@ -772,6 +772,12 @@ pub enum LensContextError {
         expected_target_id: String,
         actual_target_id: String,
     },
+    #[error("context revision must be non-zero")]
+    ZeroContextRevision,
+    #[error("source revision for {target_id} must be present and non-zero")]
+    InvalidSourceRevision { target_id: String },
+    #[error("source revisions contain unknown target {target_id}")]
+    UnknownSourceRevision { target_id: String },
 }
 
 impl LensContext {
@@ -780,6 +786,24 @@ impl LensContext {
         target_set: &LensTargetSet,
         captures: Vec<LensTargetCapture>,
     ) -> Result<Self, LensContextError> {
+        let source_revisions = target_set
+            .targets
+            .iter()
+            .map(|target| (target.id.clone(), 1))
+            .collect();
+        Self::from_captures_at_revision(context_id, 1, source_revisions, target_set, captures)
+    }
+
+    pub fn from_captures_at_revision(
+        context_id: Uuid,
+        context_revision: u64,
+        source_revisions: BTreeMap<String, u64>,
+        target_set: &LensTargetSet,
+        captures: Vec<LensTargetCapture>,
+    ) -> Result<Self, LensContextError> {
+        if context_revision == 0 {
+            return Err(LensContextError::ZeroContextRevision);
+        }
         if captures.len() != target_set.targets.len() {
             return Err(LensContextError::CaptureCount {
                 expected: target_set.targets.len(),
@@ -792,6 +816,13 @@ impl LensContext {
         let mut omissions = Vec::new();
         let mut diagnostics = Vec::new();
         for (target, mut capture) in target_set.targets.iter().zip(captures) {
+            let revision = source_revisions
+                .get(&target.id)
+                .copied()
+                .filter(|revision| *revision > 0)
+                .ok_or_else(|| LensContextError::InvalidSourceRevision {
+                    target_id: target.id.clone(),
+                })?;
             for attachment in &capture.media.attachments {
                 if attachment.target_id != target.id {
                     return Err(LensContextError::MediaTargetMismatch {
@@ -896,7 +927,7 @@ impl LensContext {
             sources.push(LensAccessibilitySource {
                 source_id,
                 target_id: target.id.clone(),
-                revision: 1,
+                revision,
                 source: LensSource::from(&target.window),
                 capture: capture.accessibility,
                 document,
@@ -904,6 +935,17 @@ impl LensContext {
             });
             attachments.append(&mut capture.media.attachments);
             omissions.append(&mut capture.media.omissions);
+        }
+
+        if let Some(target_id) = source_revisions.keys().find(|target_id| {
+            !target_set
+                .targets
+                .iter()
+                .any(|target| &target.id == *target_id)
+        }) {
+            return Err(LensContextError::UnknownSourceRevision {
+                target_id: target_id.clone(),
+            });
         }
 
         let quality = if sources
@@ -923,7 +965,7 @@ impl LensContext {
         Ok(Self {
             schema_version: LENS_CONTEXT_SCHEMA_VERSION,
             context_id,
-            revision: 1,
+            revision: context_revision,
             sources,
             media: attachments,
             media_omissions: omissions,
@@ -1411,6 +1453,30 @@ mod tests {
         assert_eq!(input.sources.len(), 2);
         assert_eq!(input.sources[0].target_id, target_set.targets[0].id);
         assert_eq!(input.sources[1].target_id, target_set.targets[1].id);
+    }
+
+    #[test]
+    fn refreshed_context_uses_explicit_nonzero_context_and_source_revisions() {
+        let target_set =
+            LensTargetSet::try_new(Uuid::nil(), vec![target()]).expect("valid target set");
+        let target_id = target_set.targets[0].id.clone();
+        let context = LensContext::from_captures_at_revision(
+            Uuid::nil(),
+            8,
+            BTreeMap::from([(target_id, 5)]),
+            &target_set,
+            vec![LensTargetCapture {
+                accessibility: accessibility(ExtractionQuality::Full),
+                media: LensMediaCapture::default(),
+            }],
+        )
+        .expect("refreshed context");
+        let input = LensInput::from_context(&context).expect("usable input");
+
+        assert_eq!(context.revision, 8);
+        assert_eq!(context.sources[0].revision, 5);
+        assert_eq!(input.context_revision, 8);
+        assert_eq!(input.sources[0].source_revision, 5);
     }
 
     #[test]

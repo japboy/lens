@@ -4,7 +4,7 @@ import { externalMarkdownUrl } from "../markdown";
 import "../streaming-markdown";
 import type { StreamingMarkdownState } from "../streaming-markdown";
 import type { LensOutputBlock, LensState } from "../types";
-import { imageDataUrl, lensOutputBlocks } from "../view-model";
+import { imageDataUrl, lensOutputPresentation, type LensOutputMode } from "../view-model";
 import {
   AGENT_OUTPUT_INTENT_EVENT,
   dispatchComponentEvent,
@@ -21,30 +21,34 @@ export class LensAgentOutput extends LitElement {
   }
 
   protected render() {
-    const blocks = lensOutputBlocks(this.lens);
+    const output = lensOutputPresentation(this.lens);
+    const blocks = output.blocks;
     if (blocks.length) {
-      return html`<div
-        class="lens-content lens-output"
-        data-auto-scroll-container
-        role="document"
-        aria-live="polite"
-      >
-        ${blocks.map((block, index) => this.renderBlock(block, index === blocks.length - 1))}
+      return html`<div class="lens-content lens-output" data-auto-scroll-container role="document">
+        ${blocks.map((block, index) =>
+          this.renderBlock(block, index, output.identity, output.mode, index === blocks.length - 1),
+        )}
       </div>`;
     }
     return this.renderEmpty();
   }
 
-  private renderBlock(block: LensOutputBlock, isLastBlock: boolean) {
+  private renderBlock(
+    block: LensOutputBlock,
+    index: number,
+    identity: string | undefined,
+    mode: LensOutputMode,
+    isLastBlock: boolean,
+  ) {
     switch (block.type) {
       case "markdown":
         return html`<lens-markdown
           class="markdown-body"
           .state=${
             {
-              operationId: this.lens.operation_id,
+              operationId: identity ? `${identity}:${index}` : undefined,
               markdown: block.text,
-              phase: this.lens.stage === "transforming" && isLastBlock ? "streaming" : "settled",
+              phase: mode === "initial-stream" && isLastBlock ? "streaming" : "settled",
             } satisfies StreamingMarkdownState
           }
           @click=${this.openMarkdownLink}

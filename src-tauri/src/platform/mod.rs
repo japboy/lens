@@ -1,10 +1,19 @@
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(target_os = "macos")]
+#[allow(unused_imports)]
+// Public source-observation boundary; consumers live above this module.
+pub use macos::{
+    WindowObservationEvent, WindowObservationNotification, WindowObservationReceiver,
+    WindowObservationRegistration, WindowObservationStart,
+};
+
 use crate::{
     lens::{LensMediaCapture, LensMediaPlan},
     model::{ExtractionResult, SelectedWindow, WindowPickerReply},
 };
+use std::num::NonZeroU64;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -74,8 +83,10 @@ pub async fn transition_window_frame(
     .await
 }
 
-pub async fn present_window_picker() -> Result<WindowPickerReply, PlatformError> {
-    macos::present_window_picker().await
+pub async fn present_window_picker_for_operation(
+    operation_id: Uuid,
+) -> Result<WindowPickerReply, PlatformError> {
+    macos::present_window_picker_for_operation(operation_id).await
 }
 
 pub fn extract_window(
@@ -85,6 +96,37 @@ pub fn extract_window(
     macos::extract_window(target, limits)
 }
 
+pub fn extract_registered_window(
+    operation_id: Uuid,
+    target: &SelectedWindow,
+    limits: ExtractionLimits,
+) -> Result<ExtractionResult, PlatformError> {
+    macos::extract_registered_window(operation_id, target, limits)
+}
+
+pub fn start_window_observation(
+    operation_id: Uuid,
+    context_id: Uuid,
+    source_registration_id: Uuid,
+    observer_epoch: NonZeroU64,
+    target: &SelectedWindow,
+) -> Result<
+    (
+        WindowObservationRegistration,
+        WindowObservationReceiver,
+        WindowObservationStart,
+    ),
+    PlatformError,
+> {
+    macos::start_window_observation(
+        operation_id,
+        context_id,
+        source_registration_id,
+        observer_epoch,
+        target,
+    )
+}
+
 pub fn capture_window_media(
     target: &SelectedWindow,
     context_id: Uuid,
@@ -92,4 +134,30 @@ pub fn capture_window_media(
     limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
     macos::capture_window_media(target, context_id, plan, limits)
+}
+
+pub fn capture_registered_window_media(
+    operation_id: Uuid,
+    target: &SelectedWindow,
+    context_id: Uuid,
+    context_revision: u64,
+    plan: LensMediaPlan,
+    limits: ImageCaptureLimits,
+) -> Result<LensMediaCapture, PlatformError> {
+    macos::capture_registered_window_media(
+        operation_id,
+        target,
+        context_id,
+        context_revision,
+        plan,
+        limits,
+    )
+}
+
+pub fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
+    macos::release_registered_window(operation_id, window_id)
+}
+
+pub fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
+    macos::release_window_operation(operation_id)
 }

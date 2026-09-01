@@ -23,9 +23,12 @@ export interface WebviewPort {
   addLensTarget(operationId: string): Promise<void>;
   removeLensTarget(operationId: string, targetId: string): Promise<void>;
   confirmLensTargets(operationId: string): Promise<void>;
-  transformLens(operationId: string): Promise<void>;
+  retryLensTransform(operationId: string): Promise<void>;
   authenticateAgent(operationId: string, methodId: string): Promise<void>;
   cancelAgent(operationId: string, runId: string): Promise<void>;
+  pauseLens(operationId: string): Promise<void>;
+  resumeLens(operationId: string): Promise<void>;
+  stopLens(operationId: string): Promise<void>;
   confirmAction(message: string, title: string): Promise<boolean>;
   openExternalUrl(url: string): Promise<void>;
   closeCurrentWindow(): Promise<void>;
@@ -77,14 +80,23 @@ export const tauriWebviewPort: WebviewPort = {
   async confirmLensTargets(operationId) {
     await invoke("confirm_lens_targets", { operationId });
   },
-  async transformLens(operationId) {
-    await invoke("transform_lens", { operationId });
+  async retryLensTransform(operationId) {
+    await invoke("retry_lens_transform", { operationId });
   },
   async authenticateAgent(operationId, methodId) {
     await invoke("authenticate_agent", { operationId, methodId });
   },
   async cancelAgent(operationId, runId) {
     await invoke("cancel_agent", { operationId, runId });
+  },
+  async pauseLens(operationId) {
+    await invoke("pause_lens", { operationId });
+  },
+  async resumeLens(operationId) {
+    await invoke("resume_lens", { operationId });
+  },
+  async stopLens(operationId) {
+    await invoke("stop_lens", { operationId });
   },
   confirmAction: (message, title) => confirm(message, { title, kind: "warning" }),
   openExternalUrl: (url) => openUrl(url),
