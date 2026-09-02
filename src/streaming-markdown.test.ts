@@ -25,6 +25,23 @@ function mountedRenderer(): StreamingMarkdownElement {
 }
 
 describe("streaming Agent Markdown", () => {
+  it("keeps Mermaid source inert while the Agent response is streaming", () => {
+    const element = mountedRenderer();
+    element.state = {
+      operationId: "operation-mermaid-stream",
+      markdown:
+        '```mermaid\nflowchart LR\n  A["<b>Bold</b> <em>emphasis</em> <code>code</code> plain"]\n```\n',
+      phase: "streaming",
+    };
+    element.flush();
+
+    expect(element.querySelector("pre > code")?.textContent).toContain(
+      "<b>Bold</b> <em>emphasis</em> <code>code</code> plain",
+    );
+    expect(element.querySelector("figure.mermaid-diagram")).toBeNull();
+    expect(element.getAttribute("aria-busy")).toBe("true");
+  });
+
   it("appends ACP deltas without replacing already committed blocks", () => {
     const element = mountedRenderer();
     element.state = {
