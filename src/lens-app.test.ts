@@ -27,28 +27,34 @@ const snapshot: AppSnapshot = {
     operation_id: operationId,
     stage: "completed",
     target_set: {
-      schema_version: 1,
+      schema_version: 2,
       selection_id: operationId,
       targets: [
         {
           id: "macos:com.apple.Safari:417",
-          window: {
+          identity: {
             window_id: 417,
-            title: "Fixture",
-            application_name: "Safari",
             bundle_id: "com.apple.Safari",
             pid: 417,
+          },
+          facts_revision: 1,
+          facts: {
+            title: "Fixture",
+            application_name: "Safari",
             frame: { x: 0, y: 0, width: 800, height: 600 },
           },
         },
         {
           id: "macos:com.apple.TextEdit:512",
-          window: {
+          identity: {
             window_id: 512,
-            title: "Notes",
-            application_name: "TextEdit",
             bundle_id: "com.apple.TextEdit",
             pid: 512,
+          },
+          facts_revision: 1,
+          facts: {
+            title: "Notes",
+            application_name: "TextEdit",
             frame: { x: 80, y: 80, width: 600, height: 500 },
           },
         },
@@ -210,7 +216,7 @@ describe("Lens target selection preview", () => {
         items: [
           {
             id: "macos:com.apple.Safari:417",
-            window: completedLens.target_set?.targets[0]?.window ?? {
+            window: {
               window_id: 417,
               title: "Fixture",
               application_name: "Safari",
@@ -222,7 +228,7 @@ describe("Lens target selection preview", () => {
           },
           {
             id: "macos:com.apple.TextEdit:512",
-            window: completedLens.target_set?.targets[1]?.window ?? {
+            window: {
               window_id: 512,
               title: "Notes",
               application_name: "TextEdit",

@@ -407,20 +407,20 @@ fn build_observation(
     for target in &target_set.targets {
         // Window IDs are unique inside LensTargetSet. Adding one avoids the nil UUID while keeping
         // the registration identity deterministic across Pause/Resume epochs.
-        let source_registration_id = Uuid::from_u128(u128::from(target.window.window_id) + 1);
+        let source_registration_id = Uuid::from_u128(u128::from(target.identity.window_id) + 1);
         match platform::start_window_observation(
             operation_id,
             context_id,
             source_registration_id,
             observer_epoch,
-            &target.window,
+            &target.identity,
         ) {
             Ok((registration, receiver, start)) => {
                 has_registration_diagnostics |= !start.diagnostics.is_empty();
                 for diagnostic in start.diagnostics {
                     eprintln!("Lens observer diagnostic for {}: {diagnostic}", target.id);
                 }
-                authority.insert(source_registration_id, target.window.window_id);
+                authority.insert(source_registration_id, target.identity.window_id);
                 registrations.push(registration);
                 source_receivers.push(receiver);
             }

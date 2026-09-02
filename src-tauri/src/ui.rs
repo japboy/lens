@@ -294,7 +294,7 @@ fn lens_window_geometry(
             std::io::ErrorKind::InvalidInput,
             "Lens target set is empty",
         ))),
-        [target] => LensWindowGeometry::from_target(target.window.frame).ok_or_else(|| {
+        [target] => LensWindowGeometry::from_target(target.facts.frame).ok_or_else(|| {
             tauri::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "selected window has invalid bounds",

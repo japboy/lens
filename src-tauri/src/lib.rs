@@ -327,16 +327,20 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     let first_input_image = include_bytes!("../icons/128x128@2x.png");
     let second_input_image = include_bytes!("../icons/128x128.png");
     let target = model::SelectedWindow {
-        window_id: 0,
-        title: "Rich output validation".into(),
-        application_name: "Lens Fixture".into(),
-        bundle_id: "com.github.japboy.lens.fixture".into(),
-        pid: std::process::id() as i32,
-        frame: model::Bounds {
-            x: 120.0,
-            y: 100.0,
-            width: 1_200.0,
-            height: 800.0,
+        identity: model::WindowIdentity {
+            window_id: 0,
+            bundle_id: "com.github.japboy.lens.fixture".into(),
+            pid: std::process::id() as i32,
+        },
+        facts: model::WindowObservableFacts {
+            title: "Rich output validation".into(),
+            application_name: "Lens Fixture".into(),
+            frame: model::Bounds {
+                x: 120.0,
+                y: 100.0,
+                width: 1_200.0,
+                height: 800.0,
+            },
         },
     };
     let target_id = lens::target_id(&target);
@@ -396,7 +400,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         pixel_height: 128,
         encoded_bytes: second_input_image.len(),
     };
-    let source = lens::LensSource::from(&target);
+    let source = lens::LensSource::from(&target_set.targets[0]);
     let context = lens::LensContext {
         schema_version: lens::LENS_CONTEXT_SCHEMA_VERSION,
         context_id: operation_id,
@@ -404,7 +408,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         sources: vec![lens::LensAccessibilitySource {
             source_id: format!(
                 "macos:{}:{}:accessibility",
-                target.bundle_id, target.window_id
+                target.identity.bundle_id, target.identity.window_id
             ),
             target_id: target_id.clone(),
             revision: 1,
@@ -439,7 +443,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         sources: vec![lens::LensInputSource {
             source_id: format!(
                 "macos:{}:{}:accessibility",
-                target.bundle_id, target.window_id
+                target.identity.bundle_id, target.identity.window_id
             ),
             target_id,
             source_revision: 1,

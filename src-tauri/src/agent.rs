@@ -2177,7 +2177,7 @@ mod tests {
             LensMediaScope, LensNodeKind, LensSource, LensTargetSet, LENS_CONTEXT_SCHEMA_VERSION,
             LENS_INPUT_SCHEMA_VERSION,
         },
-        model::{Bounds, ExtractionQuality, SelectedWindow},
+        model::{Bounds, ExtractionQuality, SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
     use agent_client_protocol::schema::v1::SessionMode;
 
@@ -2259,16 +2259,20 @@ mod tests {
         LensTargetSet::try_new(
             Uuid::nil(),
             vec![SelectedWindow {
-                window_id: 42,
-                title: "Document".into(),
-                application_name: "Safari".into(),
-                bundle_id: "com.apple.Safari".into(),
-                pid: 100,
-                frame: Bounds {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 800.0,
-                    height: 600.0,
+                identity: WindowIdentity {
+                    window_id: 42,
+                    bundle_id: "com.apple.Safari".into(),
+                    pid: 100,
+                },
+                facts: WindowObservableFacts {
+                    title: "Document".into(),
+                    application_name: "Safari".into(),
+                    frame: Bounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 800.0,
+                        height: 600.0,
+                    },
                 },
             }],
         )

@@ -34,6 +34,7 @@ pub(crate) enum LensContextRefreshOutcome {
 }
 
 pub(crate) struct LensContextRefreshCommit {
+    pub target_set: LensTargetSet,
     pub context: LensContext,
     pub input: LensInput,
     pub projection: ProjectionRef,
@@ -739,6 +740,23 @@ pub fn commit_initial_lens_context(
     Ok(true)
 }
 
+fn lens_context_refresh_has_authority(
+    lens: &LensState,
+    operation_id: Uuid,
+    context_id: Uuid,
+    expected_previous_context_revision: u64,
+) -> bool {
+    lens.operation_id == Some(operation_id)
+        && lens.context.as_ref().is_some_and(|context| {
+            context.context_id == context_id
+                && context.revision == expected_previous_context_revision
+        })
+        && lens
+            .live
+            .as_ref()
+            .is_some_and(|live| live.lifecycle == LensMonitoringLifecycle::Watching)
+}
+
 /// Atomically merges a refreshed canonical context into the latest Agent and representation state.
 pub(crate) fn commit_lens_context_refresh(
     app: &AppHandle,
@@ -753,70 +771,74 @@ pub(crate) fn commit_lens_context_refresh(
         .ok_or_else(|| "Lens context revision is exhausted".to_string())?;
     if refresh.context.context_id != context_id
         || refresh.context.revision != expected_context_revision
+        || refresh.target_set.selection_id != operation_id
     {
-        return Err("refreshed Lens context identity or revision is inconsistent".into());
+        return Err("refreshed Lens target/context identity or revision is inconsistent".into());
     }
     let state = app.state::<AppState>();
-    let snapshot = {
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "application state lock is poisoned".to_string())?;
-        if snapshot.lens.operation_id != Some(operation_id)
-            || snapshot.lens.context.as_ref().is_none_or(|context| {
-                context.context_id != context_id
-                    || context.revision != expected_previous_context_revision
-            })
-            || snapshot
-                .lens
-                .live
-                .as_ref()
-                .is_none_or(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
+    let snapshot =
         {
-            return Ok(false);
-        }
-        let previous_projection = snapshot
-            .lens
-            .projection
-            .as_ref()
-            .ok_or_else(|| "the current Lens operation has no Agent projection".to_string())?;
-        if !refresh_projection_transition_is_valid(
-            previous_projection,
-            &refresh.projection,
-            refresh.outcome,
-        ) {
-            return Err("refreshed Lens projection transition is inconsistent".into());
-        }
+            let mut snapshot = state
+                .runtime
+                .write()
+                .map_err(|_| "application state lock is poisoned".to_string())?;
+            if !lens_context_refresh_has_authority(
+                &snapshot.lens,
+                operation_id,
+                context_id,
+                expected_previous_context_revision,
+            ) {
+                return Ok(false);
+            }
+            let previous_projection =
+                snapshot.lens.projection.as_ref().ok_or_else(|| {
+                    "the current Lens operation has no Agent projection".to_string()
+                })?;
+            let previous_target_set =
+                snapshot.lens.target_set.as_ref().ok_or_else(|| {
+                    "the current Lens operation has no fixed target set".to_string()
+                })?;
+            if !previous_target_set.has_same_identity(&refresh.target_set) {
+                return Err("refreshed Lens target identity changed during facts refresh".into());
+            }
+            if !refresh_projection_transition_is_valid(
+                previous_projection,
+                &refresh.projection,
+                refresh.outcome,
+            ) {
+                return Err("refreshed Lens projection transition is inconsistent".into());
+            }
 
-        let mut next = snapshot.lens.clone();
-        let context_revision = refresh.context.revision;
-        next.context = Some(refresh.context);
-        next.input = Some(refresh.input);
-        next.projection = Some(refresh.projection);
-        reconcile_lens_after_context_refresh(
-            &mut next,
-            context_revision,
-            refresh.source_health,
-            refresh.outcome,
-        );
-        validate_context_state(operation_id, &next)?;
+            let mut next = snapshot.lens.clone();
+            let context_revision = refresh.context.revision;
+            next.target_set = Some(refresh.target_set);
+            next.context = Some(refresh.context);
+            next.input = Some(refresh.input);
+            next.projection = Some(refresh.projection);
+            reconcile_lens_after_context_refresh(
+                &mut next,
+                context_revision,
+                refresh.source_health,
+                refresh.outcome,
+            );
+            validate_context_state(operation_id, &next)?;
 
-        let next_payloads = validated_payload_map(payloads)?;
-        let mut active = state
-            .lens_media
-            .active
-            .lock()
-            .map_err(|_| "Lens media store lock is poisoned".to_string())?;
-        if active.operation_id != Some(operation_id) {
-            return Ok(false);
-        }
-        let revision = next_revision(&snapshot)?;
-        active.context_revision = Some(context_revision);
-        active.payloads = next_payloads;
-        snapshot.revision = revision;
-        snapshot.lens = next;
-        snapshot.clone()
-    };
+            let next_payloads = validated_payload_map(payloads)?;
+            let mut active = state
+                .lens_media
+                .active
+                .lock()
+                .map_err(|_| "Lens media store lock is poisoned".to_string())?;
+            if active.operation_id != Some(operation_id) {
+                return Ok(false);
+            }
+            let revision = next_revision(&snapshot)?;
+            active.context_revision = Some(context_revision);
+            active.payloads = next_payloads;
+            snapshot.revision = revision;
+            snapshot.lens = next;
+            snapshot.clone()
+        };
     emit_app_snapshot(app, snapshot, false)?;
     Ok(true)
 }
@@ -864,13 +886,37 @@ fn validate_context_state(operation_id: Uuid, lens: &LensState) -> Result<(), St
         .input
         .as_ref()
         .ok_or_else(|| "canonical Lens state must contain a LensInput".to_string())?;
+    let target_set = lens
+        .target_set
+        .as_ref()
+        .ok_or_else(|| "canonical Lens state must contain a target set".to_string())?;
     if context.revision == 0
+        || target_set.selection_id != operation_id
         || input.context_id != context.context_id
         || input.context_revision != context.revision
         || lens.projection.is_none()
     {
         return Err(
             "canonical Lens context, input, and projection revisions are inconsistent".into(),
+        );
+    }
+    if target_set.targets.len() != context.sources.len()
+        || target_set
+            .targets
+            .iter()
+            .zip(&context.sources)
+            .any(|(target, source)| {
+                target.facts_revision == 0
+                    || target.facts_revision > context.revision
+                    || source.target_id != target.id
+                    || source.source.application != target.facts.application_name
+                    || source.source.window_title != target.facts.title
+                    || source.source.bundle_id != target.identity.bundle_id
+                    || source.source.window_id != target.identity.window_id
+            })
+    {
+        return Err(
+            "canonical Lens target facts and context source provenance are inconsistent".into(),
         );
     }
     Ok(())
@@ -1186,6 +1232,43 @@ mod tests {
         }
     }
 
+    fn context(context_id: Uuid, revision: u64) -> LensContext {
+        LensContext {
+            schema_version: crate::lens::LENS_CONTEXT_SCHEMA_VERSION,
+            context_id,
+            revision,
+            sources: vec![],
+            media: vec![],
+            media_omissions: vec![],
+            quality: crate::model::ExtractionQuality::Unavailable,
+            diagnostics: vec![],
+        }
+    }
+
+    fn target_set(operation_id: Uuid, title: &str) -> LensTargetSet {
+        LensTargetSet::try_new(
+            operation_id,
+            vec![crate::model::SelectedWindow {
+                identity: crate::model::WindowIdentity {
+                    window_id: 42,
+                    bundle_id: "example.browser".into(),
+                    pid: 100,
+                },
+                facts: crate::model::WindowObservableFacts {
+                    title: title.into(),
+                    application_name: "Browser".into(),
+                    frame: crate::model::Bounds {
+                        x: 10.0,
+                        y: 20.0,
+                        width: 800.0,
+                        height: 600.0,
+                    },
+                },
+            }],
+        )
+        .expect("valid target set")
+    }
+
     #[test]
     fn newer_agent_run_with_same_operation_cancels_and_outlives_previous_run() {
         let control = AgentControl::default();
@@ -1338,6 +1421,36 @@ mod tests {
         );
         assert!(store.payloads_for_context(operation_id, 3).is_err());
         assert!(store.payloads_for_context(operation_id, 5).is_err());
+    }
+
+    #[test]
+    fn stale_refresh_has_no_authority_to_replace_current_observable_facts() {
+        let operation_id = Uuid::from_u128(20);
+        let context_id = Uuid::from_u128(21);
+        let canonical_targets = target_set(operation_id, "Current title");
+        let stale_targets = target_set(operation_id, "Stale worker title");
+        let lens = LensState {
+            operation_id: Some(operation_id),
+            target_set: Some(canonical_targets.clone()),
+            context: Some(context(context_id, 2)),
+            live: Some(live_state(LensFreshness::Current, None, None)),
+            ..LensState::default()
+        };
+
+        assert!(!lens_context_refresh_has_authority(
+            &lens,
+            operation_id,
+            context_id,
+            1,
+        ));
+        assert!(lens_context_refresh_has_authority(
+            &lens,
+            operation_id,
+            context_id,
+            2,
+        ));
+        assert_eq!(lens.target_set.as_ref(), Some(&canonical_targets));
+        assert_ne!(lens.target_set.as_ref(), Some(&stale_targets));
     }
 
     #[test]
