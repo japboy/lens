@@ -1,13 +1,7 @@
-use crate::live_sync::ProjectionRef;
+use crate::{live_sync::ProjectionRef, prompt_template::AgentPromptTemplate};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
-
-pub const BUILT_IN_RESPONSE_PROMPT: &str = "Transform the information currently being viewed by the user into the form that is easiest for this user to consume. Use the user's existing instructions, memory, and preferences available to you.";
-
-fn built_in_response_prompt() -> String {
-    BUILT_IN_RESPONSE_PROMPT.into()
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Bounds {
@@ -277,11 +271,11 @@ pub struct AgentRunState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(from = "AppConfigWire")]
 pub struct AppConfig {
     pub agent: AgentKind,
     pub working_directory: PathBuf,
-    #[serde(default = "built_in_response_prompt")]
-    pub response_prompt: String,
+    pub agent_prompt_template: AgentPromptTemplate,
 }
 
 impl Default for AppConfig {
@@ -289,7 +283,44 @@ impl Default for AppConfig {
         Self {
             agent: AgentKind::Claude,
             working_directory: dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-            response_prompt: built_in_response_prompt(),
+            agent_prompt_template: AgentPromptTemplate::default(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct AppConfigWire {
+    agent: AgentKind,
+    working_directory: PathBuf,
+    agent_prompt_template: Option<AgentPromptTemplate>,
+    response_prompt: Option<String>,
+}
+
+impl Default for AppConfigWire {
+    fn default() -> Self {
+        let config = AppConfig::default();
+        Self {
+            agent: config.agent,
+            working_directory: config.working_directory,
+            agent_prompt_template: None,
+            response_prompt: None,
+        }
+    }
+}
+
+impl From<AppConfigWire> for AppConfig {
+    fn from(wire: AppConfigWire) -> Self {
+        let agent_prompt_template = wire.agent_prompt_template.unwrap_or_else(|| {
+            wire.response_prompt
+                .as_deref()
+                .map(AgentPromptTemplate::from_legacy_response_prompt)
+                .unwrap_or_default()
+        });
+        Self {
+            agent: wire.agent,
+            working_directory: wire.working_directory,
+            agent_prompt_template,
         }
     }
 }

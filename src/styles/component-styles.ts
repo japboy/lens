@@ -13,12 +13,19 @@ export const viewHostStyles = css`
   }
 
   lens-agent-settings,
-  lens-prompt-settings,
   lens-target-card,
   lens-agent-output,
   lens-media-gallery,
   lens-extraction-diagnostics {
     display: contents;
+  }
+
+  lens-prompt-settings {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
   }
 `;
 

@@ -1,4 +1,4 @@
-import type { AgentKind } from "../types";
+import type { AgentKind, AgentPromptTemplate } from "../types";
 
 export const AGENT_INTENT_EVENT = "lens-agent-intent";
 export const PROMPT_INTENT_EVENT = "lens-prompt-intent";
@@ -14,15 +14,17 @@ export type AgentIntent =
   | { type: "reauthenticate" }
   | { type: "sign-out" };
 
-export type PromptIntent = { type: "save"; responsePrompt: string } | { type: "reset" };
+export type PromptIntent =
+  | { type: "save"; agentPromptTemplate: AgentPromptTemplate }
+  | { type: "reset" };
 
 export type SettingsIntent =
   | { type: "select-agent"; agent: AgentKind }
   | { type: "authenticate-agent-selection"; methodId: string }
   | { type: "reauthenticate-agent-selection" }
   | { type: "sign-out-agent-selection" }
-  | { type: "save-response-prompt"; responsePrompt: string }
-  | { type: "reset-response-prompt" }
+  | { type: "save-agent-prompt-template"; agentPromptTemplate: AgentPromptTemplate }
+  | { type: "reset-agent-prompt-template" }
   | { type: "choose-directory" }
   | { type: "request-accessibility-permission" };
 

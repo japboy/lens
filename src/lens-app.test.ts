@@ -10,8 +10,14 @@ const snapshot: AppSnapshot = {
   revision: 1,
   config: {
     agent: "codex",
-    response_prompt: "Transform the selected content.",
     working_directory: "/tmp",
+    agent_prompt_template: {
+      schema_version: 1,
+      common: "Transform the selected content.\n\n{turn_instruction}",
+      full_projection: "Use the initial projection.",
+      source_checkpoint: "Replace revision {base_revision} with {target_revision}.",
+      current_projection_retry: "Retry revision {applied_revision}.",
+    },
   },
   agent_selection: {
     stage: "selected",
@@ -570,24 +576,91 @@ describe("Lens rich Agent output", () => {
 });
 
 describe("Lens Settings", () => {
-  it("starts with explicitly named setting groups instead of a redundant visible header", async () => {
+  it("uses one System Settings-style navigation authority and one detail destination", async () => {
     const element = await createLensApp("settings");
     const settingsRoot = viewRoot(element, "lens-settings-view");
 
     const main = settingsRoot?.querySelector("main");
-    const groups = Array.from(main?.querySelectorAll(".settings-group") ?? []);
+    const sidebar = settingsRoot?.querySelector(".settings-sidebar");
+    const navigation = settingsRoot?.querySelector('nav[aria-label="Settings sections"]');
+    const globalStatus = settingsRoot?.querySelector(".settings-sidebar-status [role='status']");
+    const items = Array.from(navigation?.querySelectorAll<HTMLButtonElement>("button") ?? []);
 
     expect(main?.getAttribute("aria-label")).toBe("Settings");
-    expect(main?.querySelector("header")).toBeNull();
-    expect(groups.map((group) => group.querySelector("h2")?.textContent)).toEqual([
-      "AI Agent",
-      "Agent Prompt",
-      "Working Directory",
-      "Accessibility",
-    ]);
+    expect(sidebar?.contains(globalStatus ?? null)).toBe(true);
+    await vi.waitFor(() => {
+      expect(globalStatus?.textContent?.trim()).toBe("Transformation complete");
+    });
+    expect(globalStatus?.getAttribute("aria-labelledby")).toBe("lens-status-label");
+    expect(settingsRoot?.querySelector(".settings-footer")).toBeNull();
+    expect(settingsRoot?.querySelector(".settings-compact-navigation")).toBeNull();
+    expect(settingsRoot?.querySelector("#settings-destination")).toBeNull();
+    expect(items.map((item) => item.textContent?.trim())).toEqual(["General", "Agent Prompt"]);
+    expect(items[0]?.getAttribute("aria-current")).toBe("page");
+    expect(
+      settingsRoot?.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent,
+    ).toBe("General");
+
+    items.find((item) => item.textContent?.trim() === "Agent Prompt")?.click();
+    await vi.waitFor(() => {
+      expect(
+        settingsRoot?.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent?.trim(),
+      ).toBe("Agent Prompt");
+    });
+    expect(
+      items
+        .find((item) => item.textContent?.trim() === "Agent Prompt")
+        ?.getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      settingsRoot?.querySelector(".prompt-composition-result strong")?.textContent?.trim(),
+    ).toBe("Rendered Prompt");
   });
 
-  it("preserves native HTML behavior on the platform presentation targets", async () => {
+  it("keeps actionable Settings failures in their owning detail pane", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockedInvoke = vi.mocked(invoke);
+    const previousImplementation = mockedInvoke.getMockImplementation();
+    mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+      if (command === "set_agent") throw new Error("Agent update failed");
+      return previousImplementation?.(command, ...arguments_);
+    });
+
+    try {
+      const element = await createLensApp("settings");
+      const settingsRoot = viewRoot(element, "lens-settings-view");
+      await vi.waitFor(() => {
+        expect(
+          settingsRoot?.querySelector<HTMLInputElement>('input[value="claude"]'),
+        ).not.toBeNull();
+      });
+
+      settingsRoot?.querySelector<HTMLInputElement>('input[value="claude"]')?.click();
+
+      await vi.waitFor(() => {
+        const feedback = settingsRoot?.querySelector(
+          ".settings-detail-panel:not([hidden]) .settings-context-feedback[role='alert']",
+        );
+        expect(feedback?.textContent).toContain("Agent update failed");
+      });
+      expect(settingsRoot?.querySelector(".settings-sidebar-status")?.textContent).not.toContain(
+        "Agent update failed",
+      );
+
+      Array.from(settingsRoot?.querySelectorAll<HTMLButtonElement>(".settings-nav-item") ?? [])
+        .find((button) => button.textContent?.trim() === "Agent Prompt")
+        ?.click();
+      await vi.waitFor(() => {
+        const visiblePanel = settingsRoot?.querySelector(".settings-detail-panel:not([hidden])");
+        expect(visiblePanel?.querySelector("h1")?.textContent?.trim()).toBe("Agent Prompt");
+        expect(visiblePanel?.querySelector(".settings-context-feedback[role='alert']")).toBeNull();
+      });
+    } finally {
+      if (previousImplementation) mockedInvoke.mockImplementation(previousImplementation);
+    }
+  });
+
+  it("preserves native controls and saves the complete prompt template atomically", async () => {
     const element = await createLensApp("settings");
     await vi.waitFor(() => {
       expect(
@@ -596,6 +669,13 @@ describe("Lens Settings", () => {
       ).toBe("/tmp");
     });
     const settingsRoot = viewRoot(element, "lens-settings-view");
+    const agentPrompt = Array.from(
+      settingsRoot?.querySelectorAll<HTMLButtonElement>(".settings-nav-item") ?? [],
+    ).find((button) => button.textContent?.trim() === "Agent Prompt");
+    agentPrompt?.click();
+    await vi.waitFor(() => {
+      expect(settingsRoot?.querySelector(".prompt-editor")).not.toBeNull();
+    });
 
     const directory = settingsRoot?.querySelector<HTMLInputElement>(".directory-field");
     const prompt = settingsRoot?.querySelector<HTMLTextAreaElement>(".prompt-editor");
@@ -606,5 +686,29 @@ describe("Lens Settings", () => {
     expect(prompt).toBeInstanceOf(HTMLTextAreaElement);
     expect(prompt?.required).toBe(true);
     expect(prompt?.disabled).toBe(false);
+    if (!prompt) throw new Error("Prompt editor is missing");
+    prompt.value = "Updated instruction.\n\n{turn_instruction}";
+    prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    await element.updateComplete;
+    settingsRoot?.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("set_agent_prompt_template", {
+        agentPromptTemplate: {
+          ...snapshot.config.agent_prompt_template,
+          common: "Updated instruction.\n\n{turn_instruction}",
+        },
+      });
+    });
+    await vi.waitFor(() => {
+      const feedback = settingsRoot?.querySelector(
+        "lens-prompt-settings .settings-context-feedback[role='status']",
+      );
+      expect(feedback?.textContent).toContain("Agent prompt template updated.");
+    });
+    expect(
+      settingsRoot?.querySelector(".settings-sidebar-status [role='status']")?.textContent?.trim(),
+    ).toBe("Transformation complete");
   });
 });

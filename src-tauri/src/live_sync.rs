@@ -406,10 +406,6 @@ impl LensAgentProjection {
             .expect("serde_json canonicalization emits UTF-8")
     }
 
-    pub fn to_markdown(&self) -> String {
-        format!("## Lens context\n\n```json\n{}\n```", self.json())
-    }
-
     pub fn prompt_media(&self) -> &[LensMediaPayload] {
         &self.prompt_media
     }

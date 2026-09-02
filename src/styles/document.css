@@ -9,12 +9,29 @@
   --settings-backdrop: Canvas;
   --settings-group-background: Canvas;
   --settings-group-border: ButtonBorder;
+  --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+  --settings-selection-background: SelectedItem;
+  --settings-selection-foreground: SelectedItemText;
+  --settings-selection-unemphasized-background: color-mix(in srgb, CanvasText 12%, Canvas);
+  --settings-selection-unemphasized-foreground: CanvasText;
+  --settings-focus-ring: Highlight;
 }
 
 html[data-view="settings"][data-platform="macos"] {
   --settings-backdrop: Window;
   --settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);
   --settings-group-border: color-mix(in srgb, -apple-system-separator 50%, transparent 50%);
+  --settings-sidebar-background: color-mix(in srgb, Window 92%, CanvasText 8%);
+}
+
+@supports (color: -apple-system-selected-content-background) {
+  html[data-view="settings"][data-platform="macos"] {
+    --settings-selection-background: -apple-system-selected-content-background;
+    --settings-selection-foreground: -apple-system-alternate-selected-text;
+    --settings-selection-unemphasized-background: -apple-system-unemphasized-selected-content-background;
+    --settings-selection-unemphasized-foreground: CanvasText;
+    --settings-focus-ring: -webkit-focus-ring-color;
+  }
 }
 
 * {

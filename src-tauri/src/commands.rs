@@ -21,9 +21,10 @@ use crate::{
         AgentKind, AgentSelectionState, AppConfig, AppSnapshot, ExtractionQuality, LensFreshness,
         LensLiveState, LensMonitoringLifecycle, LensRefreshOutcome, LensSourceHealth, LensStage,
         LensState, LensTargetSelection, LensTargetSelectionItem, LensTargetSelectionStage,
-        SelectedWindow, BUILT_IN_RESPONSE_PROMPT, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+        SelectedWindow, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
     },
     platform::{self, ExtractionLimits, ImageCaptureLimits},
+    prompt_template::AgentPromptTemplate,
     ui,
 };
 use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
@@ -31,7 +32,6 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
-const MAX_RESPONSE_PROMPT_CHARS: usize = 16_384;
 const MAX_SELECTION_PREVIEW_LONG_EDGE: u32 = 480;
 const MAX_SELECTION_PREVIEW_PIXELS: u32 = 230_400;
 const MAX_SELECTION_PREVIEW_BYTES: u32 = 1024 * 1024;
@@ -59,28 +59,20 @@ pub fn set_working_directory(path: String, app: AppHandle) -> Result<AppConfig, 
 }
 
 #[tauri::command]
-pub fn set_response_prompt(response_prompt: String, app: AppHandle) -> Result<AppConfig, String> {
-    let response_prompt = normalize_response_prompt(response_prompt)?;
-    update_config(&app, |config| config.response_prompt = response_prompt)
-}
-
-fn normalize_response_prompt(response_prompt: String) -> Result<String, String> {
-    let response_prompt = response_prompt.replace("\r\n", "\n").replace('\r', "\n");
-    if response_prompt.trim().is_empty() {
-        return Err("response prompt must not be empty".into());
-    }
-    if response_prompt.chars().count() > MAX_RESPONSE_PROMPT_CHARS {
-        return Err(format!(
-            "response prompt must not exceed {MAX_RESPONSE_PROMPT_CHARS} characters"
-        ));
-    }
-    Ok(response_prompt)
+pub fn set_agent_prompt_template(
+    agent_prompt_template: AgentPromptTemplate,
+    app: AppHandle,
+) -> Result<AppConfig, String> {
+    let agent_prompt_template = agent_prompt_template.normalize()?;
+    update_config(&app, |config| {
+        config.agent_prompt_template = agent_prompt_template
+    })
 }
 
 #[tauri::command]
-pub fn reset_response_prompt(app: AppHandle) -> Result<AppConfig, String> {
+pub fn reset_agent_prompt_template(app: AppHandle) -> Result<AppConfig, String> {
     update_config(&app, |config| {
-        config.response_prompt = BUILT_IN_RESPONSE_PROMPT.into();
+        config.agent_prompt_template = AgentPromptTemplate::default();
     })
 }
 
@@ -1307,24 +1299,41 @@ fn replace_operation_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompt_template::MAX_AGENT_PROMPT_TEMPLATE_SECTION_CHARS;
 
     #[test]
-    fn response_prompt_is_non_empty_and_has_deterministic_line_endings() {
-        assert_eq!(
-            normalize_response_prompt("First\r\nSecond\rThird".into()),
-            Ok("First\nSecond\nThird".into())
-        );
-        assert_eq!(
-            normalize_response_prompt(" \n\t".into()),
-            Err("response prompt must not be empty".into())
-        );
-        assert!(normalize_response_prompt("x".repeat(MAX_RESPONSE_PROMPT_CHARS)).is_ok());
-        assert_eq!(
-            normalize_response_prompt("x".repeat(MAX_RESPONSE_PROMPT_CHARS + 1)),
-            Err(format!(
-                "response prompt must not exceed {MAX_RESPONSE_PROMPT_CHARS} characters"
-            ))
-        );
+    fn agent_prompt_template_is_complete_bounded_and_has_deterministic_line_endings() {
+        let normalized = AgentPromptTemplate {
+            common: "First\r\n{turn_instruction}\rLast".into(),
+            ..AgentPromptTemplate::default()
+        }
+        .normalize()
+        .expect("valid template");
+        assert_eq!(normalized.common, "First\n{turn_instruction}\nLast");
+
+        let empty = AgentPromptTemplate {
+            full_projection: " \n\t".into(),
+            ..AgentPromptTemplate::default()
+        };
+        assert!(empty
+            .normalize()
+            .expect_err("empty section")
+            .contains("must not be empty"));
+
+        let maximum = AgentPromptTemplate {
+            full_projection: "x".repeat(MAX_AGENT_PROMPT_TEMPLATE_SECTION_CHARS),
+            ..AgentPromptTemplate::default()
+        };
+        assert!(maximum.normalize().is_ok());
+
+        let oversized = AgentPromptTemplate {
+            full_projection: "x".repeat(MAX_AGENT_PROMPT_TEMPLATE_SECTION_CHARS + 1),
+            ..AgentPromptTemplate::default()
+        };
+        assert!(oversized
+            .normalize()
+            .expect_err("oversized section")
+            .contains("must not exceed"));
     }
 
     #[test]

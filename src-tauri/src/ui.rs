@@ -12,12 +12,19 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     utils::{config::WindowEffectsConfig, WindowEffect, WindowEffectState},
-    App, AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+    App, AppHandle, LogicalPosition, LogicalSize, LogicalUnit, Manager, WebviewUrl,
+    WebviewWindowBuilder, WindowSizeConstraints,
 };
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 const SETTINGS_LABEL: &str = "settings";
+const SETTINGS_WINDOW_MIN_WIDTH: f64 = 715.0;
+const SETTINGS_SIDEBAR_WIDTH: f64 = 188.0;
+const SETTINGS_DETAIL_HORIZONTAL_PADDING: f64 = 52.0;
+const SETTINGS_CONTENT_MAX_WIDTH: f64 = 680.0;
+const SETTINGS_WINDOW_MAX_WIDTH: f64 =
+    SETTINGS_SIDEBAR_WIDTH + SETTINGS_DETAIL_HORIZONTAL_PADDING + SETTINGS_CONTENT_MAX_WIDTH;
 pub(crate) const LENS_WINDOW_LABEL: &str = "lens-overlay";
 pub(crate) const TARGET_SELECTION_WINDOW_LABEL: &str = "target-selection-preview";
 const LENS_SINGLE_TARGET_SIZE_RATIO: f64 = 0.8;
@@ -71,8 +78,10 @@ fn webview_url(view: WebviewView) -> WebviewUrl {
 
 const SETTINGS_WINDOW_SIZE_POLICY: WindowSizePolicy = WindowSizePolicy {
     preferred: WindowSize::new(720.0, 800.0),
-    minimum: WindowSize::new(420.0, 360.0),
+    minimum: WindowSize::new(SETTINGS_WINDOW_MIN_WIDTH, 360.0),
+    maximum_width: SETTINGS_WINDOW_MAX_WIDTH,
     work_area_inset: WindowSize::new(32.0, 48.0),
+    maximizable: true,
 };
 
 fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
@@ -113,11 +122,14 @@ impl WindowSize {
 struct WindowSizePolicy {
     preferred: WindowSize,
     minimum: WindowSize,
+    maximum_width: f64,
     work_area_inset: WindowSize,
+    maximizable: bool,
 }
 
 impl WindowSizePolicy {
     fn initial_size(self, work_area: LogicalSize<f64>) -> WindowSize {
+        debug_assert!(self.resizable_width_range_is_valid());
         let width = if work_area.width.is_finite() {
             (work_area.width - self.work_area_inset.width).max(self.minimum.width)
         } else {
@@ -129,9 +141,22 @@ impl WindowSizePolicy {
             self.preferred.height
         };
         WindowSize {
-            width: width.min(self.preferred.width),
+            width: width.min(self.preferred.width).min(self.maximum_width),
             height: height.min(self.preferred.height),
         }
+    }
+
+    fn constraints(self) -> WindowSizeConstraints {
+        WindowSizeConstraints {
+            min_width: Some(LogicalUnit::new(self.minimum.width).into()),
+            min_height: Some(LogicalUnit::new(self.minimum.height).into()),
+            max_width: Some(LogicalUnit::new(self.maximum_width).into()),
+            max_height: None,
+        }
+    }
+
+    fn resizable_width_range_is_valid(self) -> bool {
+        self.minimum.width <= self.preferred.width && self.preferred.width <= self.maximum_width
     }
 }
 
@@ -594,11 +619,9 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
         .title("Lens Settings")
         .inner_size(size.width, size.height)
-        .min_inner_size(
-            SETTINGS_WINDOW_SIZE_POLICY.minimum.width,
-            SETTINGS_WINDOW_SIZE_POLICY.minimum.height,
-        )
+        .inner_size_constraints(SETTINGS_WINDOW_SIZE_POLICY.constraints())
         .resizable(true)
+        .maximizable(SETTINGS_WINDOW_SIZE_POLICY.maximizable)
         .center()
         .build()?;
     Ok(())
@@ -775,6 +798,17 @@ mod tests {
             SETTINGS_WINDOW_SIZE_POLICY.initial_size(LogicalSize::new(400.0, 300.0)),
             SETTINGS_WINDOW_SIZE_POLICY.minimum
         );
+    }
+
+    #[test]
+    fn settings_width_constraints_keep_the_sidebar_and_bound_unused_space() {
+        let constraints = SETTINGS_WINDOW_SIZE_POLICY.constraints();
+
+        assert_eq!(constraints.min_width, Some(LogicalUnit::new(715.0).into()));
+        assert_eq!(constraints.min_height, Some(LogicalUnit::new(360.0).into()));
+        assert_eq!(constraints.max_width, Some(LogicalUnit::new(920.0).into()));
+        assert_eq!(constraints.max_height, None);
+        assert!(SETTINGS_WINDOW_SIZE_POLICY.resizable_width_range_is_valid());
     }
 
     #[test]
@@ -990,7 +1024,7 @@ mod tests {
         let config = AppConfig {
             agent: AgentKind::Codex,
             working_directory: PathBuf::from("/Users/example/Work"),
-            response_prompt: AppConfig::default().response_prompt,
+            agent_prompt_template: AppConfig::default().agent_prompt_template,
         };
         let selected = AgentSelectionState {
             stage: AgentSelectionStage::Selected,

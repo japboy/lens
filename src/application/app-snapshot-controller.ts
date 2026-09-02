@@ -9,6 +9,19 @@ export type SnapshotConnectionState =
   | { stage: "ready" }
   | { stage: "failed"; message: string };
 
+export function snapshotConnectionMessage(connection: SnapshotConnectionState): string {
+  switch (connection.stage) {
+    case "subscribing":
+      return "Subscribing to application state…";
+    case "loading":
+      return "Loading application state…";
+    case "ready":
+      return "";
+    case "failed":
+      return connection.message;
+  }
+}
+
 export class AppSnapshotController implements ReactiveController {
   snapshot: AppSnapshot | undefined;
   connection: SnapshotConnectionState = { stage: "subscribing" };
@@ -36,16 +49,7 @@ export class AppSnapshotController implements ReactiveController {
   }
 
   message(): string {
-    switch (this.connection.stage) {
-      case "subscribing":
-        return "Subscribing to application state…";
-      case "loading":
-        return "Loading application state…";
-      case "ready":
-        return "";
-      case "failed":
-        return this.connection.message;
-    }
+    return snapshotConnectionMessage(this.connection);
   }
 
   private async load(generation: number): Promise<void> {

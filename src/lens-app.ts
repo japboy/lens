@@ -65,7 +65,7 @@ export class LensApp extends LitElement {
             snapshot,
             this.accessibility.state,
             this.command,
-            connectionMessage,
+            this.snapshots.connection,
           )}
           @lens-settings-intent=${this.handleSettingsIntent}
         ></lens-settings-view>`;
@@ -130,23 +130,23 @@ export class LensApp extends LitElement {
         await this.runCommand(identity, () => this.port.signOutAgentSelection());
         return;
       }
-      case "save-response-prompt":
+      case "save-agent-prompt-template":
         await this.runCommand(
           identity,
-          () => this.port.setResponsePrompt(intent.responsePrompt),
-          "Agent prompt updated.",
+          () => this.port.setAgentPromptTemplate(intent.agentPromptTemplate),
+          "Agent prompt template updated.",
         );
         return;
-      case "reset-response-prompt": {
+      case "reset-agent-prompt-template": {
         const approved = await this.port.confirmAction(
-          "Reset the Agent Prompt to the built-in default?",
-          "Reset Agent Prompt",
+          "Reset every Agent Prompt section to the built-in defaults?",
+          "Reset Agent Prompt Template",
         );
         if (!approved) return;
         await this.runCommand(
           identity,
-          () => this.port.resetResponsePrompt(),
-          "Agent prompt reset to the built-in default.",
+          () => this.port.resetAgentPromptTemplate(),
+          "Agent prompt template reset to the built-in defaults.",
         );
         return;
       }

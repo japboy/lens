@@ -2,7 +2,12 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../application/view-models";
-import type { LensRepresentation, LensState, LensTargetSelectionItem } from "../types";
+import type {
+  AgentPromptTemplate,
+  LensRepresentation,
+  LensState,
+  LensTargetSelectionItem,
+} from "../types";
 import {
   OVERLAY_INTENT_EVENT,
   PROMPT_INTENT_EVENT,
@@ -35,6 +40,16 @@ function liveLens(current: LensRepresentation): LensState {
       freshness: "current",
       agent_refresh_interval_seconds: 180,
     },
+  };
+}
+
+function promptTemplate(common: string): AgentPromptTemplate {
+  return {
+    schema_version: 1,
+    common,
+    full_projection: "Use the initial projection.",
+    source_checkpoint: "Replace revision {base_revision} with {target_revision}.",
+    current_projection_retry: "Retry revision {applied_revision}.",
   };
 }
 
@@ -84,52 +99,132 @@ describe("component property and event contracts", () => {
 
   it("keeps the prompt draft local and emits a composed semantic save intent", async () => {
     const element = document.createElement("lens-prompt-settings") as HTMLElement & {
-      responsePrompt: string;
+      agentPromptTemplate: AgentPromptTemplate;
       updateComplete: Promise<boolean>;
     };
-    element.responsePrompt = "Original prompt";
+    element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
     const received = vi.fn<EventListener>();
     document.body.addEventListener(PROMPT_INTENT_EVENT, received, { once: true });
     document.body.append(element);
     await element.updateComplete;
 
     const textarea = element.querySelector<HTMLTextAreaElement>("textarea");
-    expect(textarea?.value).toBe("Original prompt");
+    expect(textarea?.value).toBe("Original prompt\n\n{turn_instruction}");
     if (!textarea) throw new Error("Prompt textarea is missing");
-    textarea.value = "Updated prompt";
+    textarea.value = "Updated prompt\n\n{turn_instruction}";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await element.updateComplete;
+    element.querySelector<HTMLInputElement>('input[value="request"]')?.click();
+    await element.updateComplete;
+    expect(textarea.value).toBe("Use the initial projection.");
+    element.querySelector<HTMLInputElement>('input[value="shared"]')?.click();
+    await element.updateComplete;
+    expect(textarea.value).toBe("Updated prompt\n\n{turn_instruction}");
     element.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
 
     expect(received).toHaveBeenCalledOnce();
     const event = received.mock.calls[0]?.[0] as CustomEvent<PromptIntent> | undefined;
-    expect(event?.detail).toEqual({ type: "save", responsePrompt: "Updated prompt" });
+    expect(event?.detail).toEqual({
+      type: "save",
+      agentPromptTemplate: promptTemplate("Updated prompt\n\n{turn_instruction}"),
+    });
     expect(event?.bubbles).toBe(true);
     expect(event?.composed).toBe(true);
   });
 
-  it("accepts the authoritative prompt value during an explicit reset", async () => {
+  it("exposes the rendered prompt as one always-visible labeled section", async () => {
     const element = document.createElement("lens-prompt-settings") as HTMLElement & {
-      responsePrompt: string;
-      synchronization: "preserve-local-draft" | "accept-parent-value";
+      agentPromptTemplate: AgentPromptTemplate;
       updateComplete: Promise<boolean>;
     };
-    element.responsePrompt = "Original prompt";
+    element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
+    document.body.append(element);
+    await element.updateComplete;
+
+    const preview = element.querySelector<HTMLElement>(".prompt-preview-section");
+    const heading = preview?.querySelector("#prompt-preview-heading");
+    expect(preview?.getAttribute("aria-labelledby")).toBe("prompt-preview-heading");
+    expect(heading?.textContent).toBe("Rendered Prompt");
+    expect(preview?.textContent).toContain("Shared Instructions + Initial Request");
+    expect(preview?.querySelector('[aria-label="Rendered Agent instruction"]')).not.toBeNull();
+    expect(preview?.querySelector("details, summary")).toBeNull();
+  });
+
+  it("inserts a declared prompt variable at the textarea caret and selects an existing one", async () => {
+    const element = document.createElement("lens-prompt-settings") as HTMLElement & {
+      agentPromptTemplate: AgentPromptTemplate;
+      updateComplete: Promise<boolean>;
+    };
+    element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
     document.body.append(element);
     await element.updateComplete;
 
     const textarea = element.querySelector<HTMLTextAreaElement>("textarea");
     if (!textarea) throw new Error("Prompt textarea is missing");
-    textarea.value = "Unsaved edit";
+    textarea.value = "Prefix suffix";
+    textarea.setSelectionRange(7, 7);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await element.updateComplete;
+
+    const variable = element.querySelector<HTMLButtonElement>('[data-variable="turn_instruction"]');
+    expect(variable?.dataset.state).toBe("available");
+    variable?.click();
+    await element.updateComplete;
+    await Promise.resolve();
+
+    expect(textarea.value).toBe("Prefix {turn_instruction}suffix");
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.selectionStart).toBe("Prefix {turn_instruction}".length);
+    expect(textarea.selectionEnd).toBe("Prefix {turn_instruction}".length);
+
+    const inserted = element.querySelector<HTMLButtonElement>('[data-variable="turn_instruction"]');
+    expect(inserted?.dataset.state).toBe("inserted");
+    inserted?.click();
+    await element.updateComplete;
+    await Promise.resolve();
+
+    expect(textarea.value).toBe("Prefix {turn_instruction}suffix");
+    expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe(
+      "{turn_instruction}",
+    );
+  });
+
+  it("accepts the authoritative prompt value during an explicit reset", async () => {
+    const element = document.createElement("lens-prompt-settings") as HTMLElement & {
+      agentPromptTemplate: AgentPromptTemplate;
+      synchronization: "preserve-local-draft" | "accept-parent-value";
+      updateComplete: Promise<boolean>;
+    };
+    element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
+    document.body.append(element);
+    await element.updateComplete;
+
+    const textarea = element.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Prompt textarea is missing");
+    textarea.value = "Unsaved edit\n\n{turn_instruction}";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await element.updateComplete;
 
     element.synchronization = "accept-parent-value";
-    element.responsePrompt = "Built-in prompt";
+    await element.updateComplete;
+    expect(textarea.value).toBe("Original prompt\n\n{turn_instruction}");
+
+    textarea.value = "Edit before the reset snapshot\n\n{turn_instruction}";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await element.updateComplete;
+    element.agentPromptTemplate = promptTemplate("Built-in prompt\n\n{turn_instruction}");
     await element.updateComplete;
 
-    expect(textarea.value).toBe("Built-in prompt");
+    expect(textarea.value).toBe("Built-in prompt\n\n{turn_instruction}");
     expect(element.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+
+    textarea.value = "New unsaved edit\n\n{turn_instruction}";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await element.updateComplete;
+    element.agentPromptTemplate = promptTemplate("Built-in prompt\n\n{turn_instruction}");
+    await element.updateComplete;
+
+    expect(textarea.value).toBe("New unsaved edit\n\n{turn_instruction}");
   });
 
   it("starts remove intent immediately and retains the departing card through its motion", async () => {

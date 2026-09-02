@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentKind, AppSnapshot } from "../types";
+import type { AgentKind, AgentPromptTemplate, AppSnapshot } from "../types";
 
 export type Unlisten = () => void;
 
@@ -16,8 +16,8 @@ export interface WebviewPort {
   authenticateAgentSelection(methodId: string): Promise<void>;
   reauthenticateAgentSelection(): Promise<void>;
   signOutAgentSelection(): Promise<void>;
-  setResponsePrompt(responsePrompt: string): Promise<void>;
-  resetResponsePrompt(): Promise<void>;
+  setAgentPromptTemplate(agentPromptTemplate: AgentPromptTemplate): Promise<void>;
+  resetAgentPromptTemplate(): Promise<void>;
   chooseDirectory(defaultPath?: string): Promise<string | undefined>;
   setWorkingDirectory(path: string): Promise<void>;
   addLensTarget(operationId: string): Promise<void>;
@@ -53,11 +53,11 @@ export const tauriWebviewPort: WebviewPort = {
   async signOutAgentSelection() {
     await invoke("sign_out_agent_selection");
   },
-  async setResponsePrompt(responsePrompt) {
-    await invoke("set_response_prompt", { responsePrompt });
+  async setAgentPromptTemplate(agentPromptTemplate) {
+    await invoke("set_agent_prompt_template", { agentPromptTemplate });
   },
-  async resetResponsePrompt() {
-    await invoke("reset_response_prompt");
+  async resetAgentPromptTemplate() {
+    await invoke("reset_agent_prompt_template");
   },
   async chooseDirectory(defaultPath) {
     const selected = await open({

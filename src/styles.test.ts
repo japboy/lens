@@ -2,11 +2,15 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const componentStyles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const documentStyles = readFileSync(new URL("./styles/document.css", import.meta.url), "utf8");
 
 describe("macOS Settings surface colors", () => {
   it("derives low-contrast groups from AppKit's dynamic window and content colors", () => {
     const macosSettingsColors = componentStyles.match(
       /html\[data-view="settings"\]\[data-platform="macos"\] \{(?<declarations>.*?)\n\}/s,
+    )?.groups?.declarations;
+    const macosSelectionColors = componentStyles.match(
+      /@supports \(color: -apple-system-selected-content-background\) \{[\s\S]*?html\[data-view="settings"\]\[data-platform="macos"\] \{(?<declarations>.*?)\n  \}/s,
     )?.groups?.declarations;
 
     expect(macosSettingsColors).toBeDefined();
@@ -17,6 +21,67 @@ describe("macOS Settings surface colors", () => {
     expect(macosSettingsColors).not.toMatch(/--settings-group-background:\s*Canvas;/);
     expect(macosSettingsColors).not.toContain("-apple-system-grouped-background");
     expect(macosSettingsColors).not.toContain("-apple-system-secondary-grouped-background");
+    expect(macosSelectionColors).toContain(
+      "--settings-selection-background: -apple-system-selected-content-background;",
+    );
+    expect(macosSelectionColors).toContain(
+      "--settings-selection-unemphasized-background: -apple-system-unemphasized-selected-content-background;",
+    );
+    expect(macosSelectionColors).toContain("--settings-focus-ring: -webkit-focus-ring-color;");
+  });
+
+  it("uses one persistent sidebar throughout the native window width range", () => {
+    const shell = componentStyles.match(/\.settings-shell \{(?<declarations>.*?)\n\}/s)?.groups
+      ?.declarations;
+    const sidebar = componentStyles.match(/\.settings-sidebar \{(?<declarations>.*?)\n\}/s)?.groups
+      ?.declarations;
+    const sidebarNavigation = componentStyles.match(
+      /\.settings-sidebar nav \{(?<declarations>.*?)\n\}/s,
+    )?.groups?.declarations;
+    const selectedNavigation = componentStyles.match(
+      /\.settings-nav-item\[aria-current="page"\] \{(?<declarations>.*?)\n\}/s,
+    )?.groups?.declarations;
+
+    expect(shell).toContain("grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);");
+    expect(shell).toContain("--settings-sidebar-width: 188px;");
+    expect(shell).toContain("--settings-detail-inline-padding: 26px;");
+    expect(shell).toContain("--settings-content-max-width: 680px;");
+    expect(shell).toContain("grid-template-rows: minmax(0, 1fr);");
+    expect(sidebar).toContain("grid-template-rows: minmax(0, 1fr) auto;");
+    expect(sidebar).toContain("overflow: hidden;");
+    expect(sidebarNavigation).toContain("overflow-y: auto;");
+    expect(componentStyles).toContain(".settings-sidebar-status {");
+    expect(componentStyles).not.toContain(".settings-footer");
+    expect(selectedNavigation).toContain("background: var(--settings-selection-background);");
+    expect(selectedNavigation).toContain("color: var(--settings-selection-foreground);");
+    expect(documentStyles).toContain("--settings-sidebar-background:");
+    expect(documentStyles).toContain(
+      "--settings-selection-background: -apple-system-selected-content-background;",
+    );
+    expect(componentStyles).toContain(
+      '.settings-shell[data-window-emphasis="unemphasized"] .settings-nav-item[aria-current="page"]',
+    );
+    expect(componentStyles).toContain(
+      '.settings-nav-item:hover:not(:disabled):not([aria-current="page"])',
+    );
+    expect(componentStyles).not.toContain(".settings-compact-navigation");
+    expect(componentStyles).not.toMatch(/\.settings-sidebar \{[^}]*display: none;/s);
+  });
+
+  it("keeps the rendered prompt visible in a bounded static section", () => {
+    const header = componentStyles.match(/\.prompt-preview-header \{(?<declarations>.*?)\n\}/s)
+      ?.groups?.declarations;
+    const output = componentStyles.match(/\.prompt-preview-output \{(?<declarations>.*?)\n\}/s)
+      ?.groups?.declarations;
+
+    expect(header).toContain("display: flex;");
+    expect(header).toContain("padding: 11px 14px;");
+    expect(header).toContain("border-bottom: 1px solid var(--settings-group-border);");
+    expect(output).toContain("min-height: 180px;");
+    expect(output).toContain("max-height: 420px;");
+    expect(output).toContain("overflow: auto;");
+    expect(componentStyles).not.toContain("prompt-preview-disclosure");
+    expect(componentStyles).not.toContain("prompt-preview-disclosure-icon");
   });
 });
 
