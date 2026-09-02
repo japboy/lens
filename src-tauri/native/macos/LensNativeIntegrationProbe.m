@@ -2,6 +2,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#include <math.h>
 #include <signal.h>
 #include <string.h>
 
@@ -53,6 +54,34 @@ static BOOL LensPNGHasGreenCenterPixel(NSData *png, NSArray<NSNumber *> **rgbaOu
     return green >= 100 && green > red + 30 && green > blue + 30 && alpha >= 200;
 }
 
+static CGRect LensIntegrationFrame(NSDictionary *_Nullable value, BOOL *validOut) {
+    BOOL valid = [value isKindOfClass:NSDictionary.class]
+        && [value[@"x"] isKindOfClass:NSNumber.class]
+        && [value[@"y"] isKindOfClass:NSNumber.class]
+        && [value[@"width"] isKindOfClass:NSNumber.class]
+        && [value[@"height"] isKindOfClass:NSNumber.class];
+    if (validOut != NULL) {
+        *validOut = valid;
+    }
+    return valid
+        ? CGRectMake(
+            [value[@"x"] doubleValue],
+            [value[@"y"] doubleValue],
+            [value[@"width"] doubleValue],
+            [value[@"height"] doubleValue]
+        )
+        : CGRectNull;
+}
+
+static BOOL LensIntegrationFramesEqual(CGRect left, CGRect right) {
+    return !CGRectIsNull(left)
+        && !CGRectIsNull(right)
+        && fabs(left.origin.x - right.origin.x) <= 1.0
+        && fabs(left.origin.y - right.origin.y) <= 1.0
+        && fabs(left.size.width - right.size.width) <= 1.0
+        && fabs(left.size.height - right.size.height) <= 1.0;
+}
+
 static void LensNativeIntegrationObservationCallback(
     const char *json,
     void *_Nullable context
@@ -62,6 +91,7 @@ static void LensNativeIntegrationObservationCallback(
 @property(nonatomic, strong) NSTask *targetTask;
 @property(nonatomic, strong) SCWindow *selectedWindow;
 @property(nonatomic, assign) CGWindowID selectedWindowID;
+@property(nonatomic, assign) CGRect selectedFrame;
 @property(nonatomic, assign) NSUInteger selectionAttempts;
 @property(nonatomic, assign) NSUInteger promotionAttempts;
 @property(nonatomic, assign) NSUInteger callbacksBeforeStop;
@@ -72,12 +102,17 @@ static void LensNativeIntegrationObservationCallback(
 @property(nonatomic, assign) BOOL initialPromotionSucceeded;
 @property(nonatomic, assign) BOOL observationStarted;
 @property(nonatomic, assign) BOOL registeredRefreshSucceeded;
+@property(nonatomic, assign) BOOL registeredTitleCurrent;
+@property(nonatomic, assign) BOOL registeredFrameCurrent;
 @property(nonatomic, assign) BOOL registeredCaptureSucceeded;
+@property(nonatomic, assign) BOOL captureWindowBoundsCurrent;
+@property(nonatomic, assign) BOOL captureRegionGeometryCurrent;
 @property(nonatomic, assign) BOOL captureCenterPixelGreen;
 @property(nonatomic, assign) BOOL stopSucceeded;
 @property(nonatomic, assign) BOOL retainedSourceAvailableAfterStop;
 @property(nonatomic, assign) BOOL resumeStarted;
 @property(nonatomic, assign) BOOL resumeCallbackReceived;
+@property(nonatomic, assign) BOOL resumeFactsCurrent;
 @property(nonatomic, assign) BOOL finalStopSucceeded;
 @property(nonatomic, assign) BOOL registrationUnavailableAfterRelease;
 @property(nonatomic, assign) BOOL paused;
@@ -93,6 +128,7 @@ static void LensNativeIntegrationObservationCallback(
 @property(nonatomic, assign) uint64_t expectedObserverEpoch;
 - (void)start;
 - (void)receiveObservationJSON:(const char *)json;
+- (void)verifyResumeFactsThenStop;
 @end
 
 @implementation LensNativeIntegrationProbe
@@ -184,6 +220,7 @@ static void LensNativeIntegrationObservationCallback(
                 return;
             }
             self.selectedWindowID = self.selectedWindow.windowID;
+            self.selectedFrame = self.selectedWindow.frame;
             BOOL stored = lens_test_store_picker_window(
                 LensIntegrationOperationID.UTF8String,
                 (__bridge void *)self.selectedWindow
@@ -334,9 +371,13 @@ static void LensNativeIntegrationObservationCallback(
         && [event[@"observer_epoch"] unsignedLongLongValue]
             == LensIntegrationResumeObserverEpoch) {
         self.resumeCallbackReceived = YES;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self stopAfterResumeAndVerifyNoLateCallback];
-        });
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(),
+            ^{
+                [self verifyResumeFactsThenStop];
+            }
+        );
     }
 }
 
@@ -354,19 +395,54 @@ static void LensNativeIntegrationObservationCallback(
             )
         );
         NSDictionary *resolvedWindow = extraction[@"resolved_window"];
+        NSDictionary *facts = resolvedWindow[@"facts"];
+        BOOL observedFrameValid = NO;
+        CGRect observedFrame = LensIntegrationFrame(facts[@"frame"], &observedFrameValid);
         NSArray<NSString *> *diagnostics = extraction[@"diagnostics"];
         BOOL exactDiagnostic = [diagnostics containsObject:
             @"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
+        self.registeredTitleCurrent = [facts[@"title"]
+            isEqualToString:LensIntegrationChangedTitle];
+        self.registeredFrameCurrent = observedFrameValid
+            && fabs(observedFrame.size.width - self.selectedFrame.size.width - 120.0) <= 1.0
+            && fabs(observedFrame.size.height - self.selectedFrame.size.height - 80.0) <= 1.0
+            && (fabs(observedFrame.origin.x - self.selectedFrame.origin.x) > 1.0
+                || fabs(observedFrame.origin.y - self.selectedFrame.origin.y) > 1.0);
         self.registeredRefreshSucceeded =
-            [resolvedWindow isKindOfClass:NSDictionary.class] && exactDiagnostic;
+            [resolvedWindow isKindOfClass:NSDictionary.class]
+            && exactDiagnostic
+            && self.registeredTitleCurrent
+            && self.registeredFrameCurrent;
 
-        const char *requests =
-            "[{\"id\":\"probe-window\",\"scope\":\"window_fallback\"}]";
+        CGRect requestedRegion = CGRectMake(
+            observedFrame.origin.x + 80.0,
+            observedFrame.origin.y + 70.0,
+            120.0,
+            90.0
+        );
+        NSArray *requests = @[@{
+            @"id": @"probe-region",
+            @"scope": @"ax_element_region",
+            @"source_node_id": @"probe-node",
+            @"bounds": @{
+                @"x": @(requestedRegion.origin.x),
+                @"y": @(requestedRegion.origin.y),
+                @"width": @(requestedRegion.size.width),
+                @"height": @(requestedRegion.size.height),
+            },
+        }];
+        NSData *requestsData = [NSJSONSerialization
+            dataWithJSONObject:requests
+            options:0
+            error:NULL];
+        NSString *requestsJSON = [[NSString alloc]
+            initWithData:requestsData
+            encoding:NSUTF8StringEncoding];
         NSDictionary *capture = LensJSONObjectFromOwnedCString(
             lens_capture_registered_window_regions_json(
                 LensIntegrationOperationID.UTF8String,
                 self.selectedWindowID,
-                requests,
+                requestsJSON.UTF8String,
                 2048,
                 4194304,
                 4194304,
@@ -375,13 +451,37 @@ static void LensNativeIntegrationObservationCallback(
         );
         NSArray<NSDictionary *> *captures = capture[@"captures"];
         NSDictionary *firstCapture = captures.firstObject;
+        BOOL captureWindowFrameValid = NO;
+        CGRect captureWindowFrame = LensIntegrationFrame(
+            capture[@"window_bounds"],
+            &captureWindowFrameValid
+        );
+        BOOL sourceBoundsValid = NO;
+        CGRect sourceBounds = LensIntegrationFrame(
+            firstCapture[@"source_bounds"],
+            &sourceBoundsValid
+        );
+        BOOL capturedBoundsValid = NO;
+        CGRect capturedBounds = LensIntegrationFrame(
+            firstCapture[@"captured_bounds"],
+            &capturedBoundsValid
+        );
+        self.captureWindowBoundsCurrent = captureWindowFrameValid
+            && LensIntegrationFramesEqual(captureWindowFrame, observedFrame);
+        self.captureRegionGeometryCurrent = sourceBoundsValid
+            && capturedBoundsValid
+            && LensIntegrationFramesEqual(sourceBounds, requestedRegion)
+            && LensIntegrationFramesEqual(capturedBounds, requestedRegion)
+            && [firstCapture[@"coverage"] isEqualToString:@"full_region"];
         NSData *png = [[NSData alloc]
             initWithBase64EncodedString:firstCapture[@"data"] ?: @""
                              options:0];
         self.registeredCaptureSucceeded =
             captures.count == 1
-            && [firstCapture[@"attachment_id"] isEqualToString:@"probe-window"]
+            && [firstCapture[@"attachment_id"] isEqualToString:@"probe-region"]
             && [firstCapture[@"mime_type"] isEqualToString:@"image/png"]
+            && self.captureWindowBoundsCurrent
+            && self.captureRegionGeometryCurrent
             && png.length > 0;
         if (self.registeredCaptureSucceeded) {
             NSArray<NSNumber *> *rgba = nil;
@@ -440,8 +540,10 @@ static void LensNativeIntegrationObservationCallback(
             )
         );
         NSDictionary *resolvedWindow = afterStop[@"resolved_window"];
+        NSDictionary *facts = resolvedWindow[@"facts"];
         NSArray<NSString *> *diagnostics = afterStop[@"diagnostics"];
         BOOL retained = [resolvedWindow isKindOfClass:NSDictionary.class]
+            && [facts[@"title"] isEqualToString:LensIntegrationAfterStopTitle]
             && [diagnostics containsObject:
                 @"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -488,6 +590,37 @@ static void LensNativeIntegrationObservationCallback(
                 self.failure = @"Unable to request the controlled target's resume mutation.";
                 [self finish];
             }
+        });
+    });
+}
+
+- (void)verifyResumeFactsThenStop {
+    if (self.finished || self.finalStopped) {
+        return;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary *refresh = LensJSONObjectFromOwnedCString(
+            lens_extract_registered_window_json(
+                LensIntegrationOperationID.UTF8String,
+                self.selectedWindowID,
+                32,
+                4096,
+                4,
+                1024,
+                4096
+            )
+        );
+        NSDictionary *facts = refresh[@"resolved_window"][@"facts"];
+        NSArray<NSString *> *diagnostics = refresh[@"diagnostics"];
+        BOOL current = [facts[@"title"] isEqualToString:LensIntegrationResumeTitle]
+            && [diagnostics containsObject:
+                @"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.finished) {
+                return;
+            }
+            self.resumeFactsCurrent = current;
+            [self stopAfterResumeAndVerifyNoLateCallback];
         });
     });
 }
@@ -568,13 +701,18 @@ static void LensNativeIntegrationObservationCallback(
         && self.callbacksBeforeStop >= 1
         && self.authorityValid
         && self.registeredRefreshSucceeded
+        && self.registeredTitleCurrent
+        && self.registeredFrameCurrent
         && self.registeredCaptureSucceeded
+        && self.captureWindowBoundsCurrent
+        && self.captureRegionGeometryCurrent
         && self.captureCenterPixelGreen
         && self.stopSucceeded
         && self.retainedSourceAvailableAfterStop
         && self.callbacksAfterFirstStop == 0
         && self.resumeStarted
         && self.resumeCallbackReceived
+        && self.resumeFactsCurrent
         && self.finalStopSucceeded
         && self.registrationUnavailableAfterRelease
         && self.callbacksAfterFinalStop == 0
@@ -594,7 +732,11 @@ static void LensNativeIntegrationObservationCallback(
         @"authority_valid": @(self.authorityValid),
         @"title_callback_received": @(self.titleCallbackReceived),
         @"registered_refresh_succeeded": @(self.registeredRefreshSucceeded),
+        @"registered_title_current": @(self.registeredTitleCurrent),
+        @"registered_frame_current": @(self.registeredFrameCurrent),
         @"registered_capture_succeeded": @(self.registeredCaptureSucceeded),
+        @"capture_window_bounds_current": @(self.captureWindowBoundsCurrent),
+        @"capture_region_geometry_current": @(self.captureRegionGeometryCurrent),
         @"capture_center_pixel_green": @(self.captureCenterPixelGreen),
         @"center_pixel_rgba": self.centerPixelRGBA,
         @"stop_succeeded": @(self.stopSucceeded),
@@ -602,6 +744,7 @@ static void LensNativeIntegrationObservationCallback(
             @(self.retainedSourceAvailableAfterStop),
         @"resume_started": @(self.resumeStarted),
         @"resume_callback_received": @(self.resumeCallbackReceived),
+        @"resume_facts_current": @(self.resumeFactsCurrent),
         @"final_stop_succeeded": @(self.finalStopSucceeded),
         @"registration_unavailable_after_release":
             @(self.registrationUnavailableAfterRelease),
@@ -664,12 +807,19 @@ static int LensRunControlledTarget(void) {
     dispatch_source_set_event_handler(LensControlledTargetSignalSource, ^{
         mutation += 1;
         switch (mutation) {
-            case 1:
+            case 1: {
                 LensControlledTargetWindow.title = LensIntegrationChangedTitle;
+                NSRect frame = LensControlledTargetWindow.frame;
+                frame.origin.x += 64.0;
+                frame.origin.y += 48.0;
+                frame.size.width += 120.0;
+                frame.size.height += 80.0;
+                [LensControlledTargetWindow setFrame:frame display:YES];
                 LensControlledTargetWindow.contentView.layer.backgroundColor =
                     NSColor.systemGreenColor.CGColor;
                 [LensControlledTargetWindow.contentView setNeedsDisplay:YES];
                 break;
+            }
             case 2:
                 LensControlledTargetWindow.title = LensIntegrationAfterStopTitle;
                 break;

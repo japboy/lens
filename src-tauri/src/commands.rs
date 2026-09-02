@@ -9,11 +9,11 @@ use crate::{
     lens::{
         target_id, LensContext, LensInput, LensMediaCapture, LensMediaOmission,
         LensMediaOmissionReason, LensMediaPayload, LensMediaPlan, LensMediaRequest, LensMediaScope,
-        LensTargetCapture, LensTargetSet, MAX_AX_RESOURCE_REFERENCES, MAX_AX_RESOURCE_URI_BYTES,
-        MAX_AX_TOTAL_RESOURCE_URI_BYTES, MAX_LENS_CONTEXT_NODES, MAX_LENS_CONTEXT_TEXT_BYTES,
-        MAX_LENS_MEDIA_ATTACHMENTS, MAX_LENS_MEDIA_ATTACHMENT_BYTES, MAX_LENS_MEDIA_LONG_EDGE,
-        MAX_LENS_MEDIA_PIXELS, MAX_LENS_MEDIA_TOTAL_BYTES, MAX_LENS_SOURCE_NODES,
-        MAX_LENS_SOURCE_TEXT_BYTES, MAX_LENS_TARGETS,
+        LensTarget, LensTargetCapture, LensTargetSet, MAX_AX_RESOURCE_REFERENCES,
+        MAX_AX_RESOURCE_URI_BYTES, MAX_AX_TOTAL_RESOURCE_URI_BYTES, MAX_LENS_CONTEXT_NODES,
+        MAX_LENS_CONTEXT_TEXT_BYTES, MAX_LENS_MEDIA_ATTACHMENTS, MAX_LENS_MEDIA_ATTACHMENT_BYTES,
+        MAX_LENS_MEDIA_LONG_EDGE, MAX_LENS_MEDIA_PIXELS, MAX_LENS_MEDIA_TOTAL_BYTES,
+        MAX_LENS_SOURCE_NODES, MAX_LENS_SOURCE_TEXT_BYTES, MAX_LENS_TARGETS,
     },
     live_runtime,
     live_sync::LensAgentProjection,
@@ -294,7 +294,11 @@ async fn extract_target_set_for_operation(
         .iter()
         .map(|target| (target.id.clone(), 1))
         .collect::<BTreeMap<_, _>>();
-    let BuiltContext { context, payloads } = match build_context(
+    let BuiltContext {
+        target_set: refreshed_target_set,
+        context,
+        payloads,
+    } = match build_context(
         operation_id,
         context_revision,
         source_revisions,
@@ -323,7 +327,7 @@ async fn extract_target_set_for_operation(
     });
     let projection = input
         .as_ref()
-        .map(|input| LensAgentProjection::from_input(input, &target_set, &payloads))
+        .map(|input| LensAgentProjection::from_input(input, &refreshed_target_set, &payloads))
         .transpose()
         .map_err(|error| error.to_string())?;
     let projection_ref = projection.as_ref().map(|projection| {
@@ -346,7 +350,7 @@ async fn extract_target_set_for_operation(
             LensStage::Failed
         },
         selection: None,
-        target_set: Some(target_set.clone()),
+        target_set: Some(refreshed_target_set.clone()),
         context: Some(context),
         input,
         projection: projection_ref,
@@ -369,7 +373,7 @@ async fn extract_target_set_for_operation(
     {
         return Err(OPERATION_SUPERSEDED.into());
     }
-    if let Err(error) = ui::show_lens_window(&app, &target_set) {
+    if let Err(error) = ui::show_lens_window(&app, &refreshed_target_set) {
         let message = format!("unable to show Lens window: {error}");
         if !update_lens_state(&app, operation_id, |lens| {
             lens.stage = LensStage::Failed;
@@ -383,6 +387,7 @@ async fn extract_target_set_for_operation(
 }
 
 struct BuiltContext {
+    target_set: LensTargetSet,
     context: LensContext,
     payloads: Vec<LensMediaPayload>,
 }
@@ -443,6 +448,7 @@ pub(crate) async fn refresh_lens_context(
     }
 
     let BuiltContext {
+        target_set: next_target_set,
         context: next_context,
         payloads,
     } = match build_context(
@@ -481,7 +487,8 @@ pub(crate) async fn refresh_lens_context(
         )?;
         return Err(error);
     };
-    let candidate = match LensAgentProjection::from_input(&next_input, &target_set, &payloads) {
+    let candidate = match LensAgentProjection::from_input(&next_input, &next_target_set, &payloads)
+    {
         Ok(candidate) => candidate,
         Err(error) => {
             let error = error.to_string();
@@ -524,6 +531,7 @@ pub(crate) async fn refresh_lens_context(
         context_id,
         expected_context_revision,
         LensContextRefreshCommit {
+            target_set: next_target_set,
             context: next_context,
             input: next_input,
             projection: next_projection,
@@ -588,6 +596,7 @@ async fn build_context(
     let mut remaining_media_bytes = MAX_LENS_MEDIA_TOTAL_BYTES;
     let mut captures = Vec::with_capacity(target_set.targets.len());
     let mut payloads = Vec::new();
+    let mut observed_facts = BTreeMap::new();
 
     for target in &target_set.targets {
         let extraction_budget = source_extraction_budget(
@@ -600,16 +609,17 @@ async fn build_context(
             let max_nodes = extraction_budget.max_nodes;
             let max_text_bytes = extraction_budget.max_text_bytes;
             let limits = extraction_budget.limits;
-            let extraction_target = target.window.clone();
+            let extraction_identity = target.identity.clone();
+            let extraction_window = target.selected_window();
             let mut extraction =
                 match tauri::async_runtime::spawn_blocking(move || match access_mode {
                     WindowAccessMode::Registered => platform::extract_registered_window(
                         operation_id,
-                        &extraction_target,
+                        &extraction_identity,
                         limits,
                     ),
                     WindowAccessMode::Legacy => {
-                        platform::extract_window(&extraction_target, limits)
+                        platform::extract_window(&extraction_window, limits)
                     }
                 })
                 .await
@@ -645,21 +655,29 @@ async fn build_context(
             ))
         };
 
+        let mut current_target = target.clone();
+        if let Some(resolved_window) = &accessibility.resolved_window {
+            current_target.facts = resolved_window.facts.clone();
+            observed_facts.insert(target.id.clone(), current_target.facts.clone());
+        }
         let plan = LensMediaPlan::from_accessibility(
-            &target.window,
+            &current_target,
             &accessibility,
             remaining_media_attachments,
         );
         let mut media = capture_target_media(
             operation_id,
             context_revision,
-            target.id.clone(),
-            target.window.clone(),
+            current_target.clone(),
             plan,
             remaining_media_bytes,
             access_mode,
         )
         .await;
+        if let Some(observed_frame) = media.observed_window_frame {
+            current_target.facts.frame = observed_frame;
+            observed_facts.insert(target.id.clone(), current_target.facts.clone());
+        }
         remaining_media_attachments =
             remaining_media_attachments.saturating_sub(media.attachments.len());
         remaining_media_bytes = remaining_media_bytes.saturating_sub(
@@ -676,22 +694,28 @@ async fn build_context(
         });
     }
 
+    let refreshed_target_set = target_set
+        .refresh_observable_facts(context_revision, observed_facts)
+        .map_err(|error| error.to_string())?;
     let context = LensContext::from_captures_at_revision(
         operation_id,
         context_revision,
         source_revisions,
-        target_set,
+        &refreshed_target_set,
         captures,
     )
     .map_err(|error| error.to_string())?;
-    Ok(BuiltContext { context, payloads })
+    Ok(BuiltContext {
+        target_set: refreshed_target_set,
+        context,
+        payloads,
+    })
 }
 
 async fn capture_target_media(
     operation_id: Uuid,
     context_revision: u64,
-    target_id: String,
-    target: SelectedWindow,
+    target: LensTarget,
     plan: LensMediaPlan,
     remaining_total_bytes: usize,
     access_mode: WindowAccessMode,
@@ -703,9 +727,10 @@ async fn capture_target_media(
         };
     }
     if remaining_total_bytes == 0 {
-        return byte_budget_media_capture(target_id, plan);
+        return byte_budget_media_capture(target.id, plan);
     }
 
+    let target_id = target.id.clone();
     let capture_plan = plan.clone();
     let limits = ImageCaptureLimits {
         max_long_edge: u32::try_from(MAX_LENS_MEDIA_LONG_EDGE)
@@ -720,15 +745,19 @@ async fn capture_target_media(
     let mut result = match tauri::async_runtime::spawn_blocking(move || match access_mode {
         WindowAccessMode::Registered => platform::capture_registered_window_media(
             operation_id,
-            &target,
+            &target.id,
+            &target.identity,
             operation_id,
             context_revision,
             capture_plan,
             limits,
         ),
-        WindowAccessMode::Legacy => {
-            platform::capture_window_media(&target, operation_id, capture_plan, limits)
-        }
+        WindowAccessMode::Legacy => platform::capture_window_media(
+            &target.selected_window(),
+            operation_id,
+            capture_plan,
+            limits,
+        ),
     })
     .await
     {
@@ -804,7 +833,7 @@ async fn build_target_selection_item(
     window: SelectedWindow,
 ) -> (LensTargetSelectionItem, Option<LensMediaPayload>) {
     let id = target_id(&window);
-    let attachment_id = format!("selection-preview-window-{}", window.window_id);
+    let attachment_id = format!("selection-preview-window-{}", window.identity.window_id);
     let plan = LensMediaPlan {
         requests: vec![LensMediaRequest {
             id: attachment_id,
@@ -815,10 +844,12 @@ async fn build_target_selection_item(
         omissions: Vec::new(),
     };
     let capture_window = window.clone();
+    let capture_target_id = id.clone();
     let capture = tauri::async_runtime::spawn_blocking(move || {
         platform::capture_registered_window_media(
             operation_id,
-            &capture_window,
+            &capture_target_id,
+            &capture_window.identity,
             operation_id,
             1,
             plan,
@@ -837,7 +868,7 @@ async fn build_target_selection_item(
             let mut payload = capture.payloads.remove(0);
             let uri = format!(
                 "lens://selection/{operation_id}/window/{}",
-                window.window_id
+                window.identity.window_id
             );
             payload.uri = uri.clone();
             (Some(uri), None, Some(payload))
@@ -996,7 +1027,7 @@ pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
             return Err(message);
         }
     };
-    let anchor = window.frame;
+    let anchor = window.facts.frame;
     let (item, payload) = build_target_selection_item(operation_id, window).await;
     store_target_selection_payload(&app, operation_id, payload)?;
     publish_target_selection(
@@ -1047,7 +1078,7 @@ pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensS
             if selection
                 .items
                 .iter()
-                .any(|item| item.window.window_id == window.window_id)
+                .any(|item| item.window.identity.window_id == window.identity.window_id)
             {
                 selection.stage = LensTargetSelectionStage::Reviewing;
                 selection.notice = Some("That window is already selected.".into());
@@ -1078,7 +1109,7 @@ pub async fn remove_lens_target(
         .iter()
         .position(|item| item.id == target_id)
         .ok_or_else(|| "Lens target selection item is unavailable".to_string())?;
-    let window_id = selection.items[index].window.window_id;
+    let window_id = selection.items[index].window.identity.window_id;
     // Release native ownership before mutating the authoritative Rust media/state snapshot. A
     // native teardown failure therefore leaves the reviewed item intact and retryable.
     platform::release_registered_window(operation_id, window_id)
@@ -1300,16 +1331,20 @@ mod tests {
     fn failed_operation_preserves_identity_and_target() {
         let operation_id = Uuid::new_v4();
         let target = SelectedWindow {
-            window_id: 42,
-            title: "Document".into(),
-            application_name: "Browser".into(),
-            bundle_id: "example.browser".into(),
-            pid: 100,
-            frame: crate::model::Bounds {
-                x: 1.0,
-                y: 2.0,
-                width: 3.0,
-                height: 4.0,
+            identity: crate::model::WindowIdentity {
+                window_id: 42,
+                bundle_id: "example.browser".into(),
+                pid: 100,
+            },
+            facts: crate::model::WindowObservableFacts {
+                title: "Document".into(),
+                application_name: "Browser".into(),
+                frame: crate::model::Bounds {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 3.0,
+                    height: 4.0,
+                },
             },
         };
 

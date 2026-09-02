@@ -1,9 +1,14 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#include <math.h>
 
 static NSString *const LensCaptureProbeInitialTitle = @"Lens Retained SCWindow Probe Initial";
 static NSString *const LensCaptureProbeChangedTitle = @"Lens Retained SCWindow Probe Changed";
+
+static BOOL LensCaptureProbeScalarEqual(CGFloat left, CGFloat right) {
+    return fabs(left - right) <= 1.0;
+}
 
 static BOOL LensCopyCenterPixel(CGImageRef image, uint8_t pixel[4]) {
     size_t width = CGImageGetWidth(image);
@@ -47,6 +52,7 @@ static int LensWindowCaptureProbeExitCode = 1;
 @property(nonatomic, assign) CGWindowID selectedWindowID;
 @property(nonatomic, assign) CGRect selectedFrame;
 @property(nonatomic, assign) CGRect changedFrame;
+@property(nonatomic, assign) CGRect captureContentRect;
 @property(nonatomic, assign) size_t capturedPixelWidth;
 @property(nonatomic, assign) size_t capturedPixelHeight;
 @property(nonatomic, assign) CFTimeInterval captureStartedAt;
@@ -152,6 +158,8 @@ static int LensWindowCaptureProbeExitCode = 1;
     NSRect frame = self.window.frame;
     frame.origin.x += 64.0;
     frame.origin.y += 48.0;
+    frame.size.width += 120.0;
+    frame.size.height += 80.0;
     [self.window setFrame:frame display:YES];
     self.changedFrame = self.window.frame;
     self.window.contentView.layer.backgroundColor = NSColor.systemGreenColor.CGColor;
@@ -170,16 +178,17 @@ static int LensWindowCaptureProbeExitCode = 1;
     uint64_t generation = self.captureGeneration;
     self.captureStartedAt = CFAbsoluteTimeGetCurrent();
 
+    SCContentFilter *filter = [[SCContentFilter alloc]
+        initWithDesktopIndependentWindow:self.selectedWindow];
+    self.captureContentRect = filter.contentRect;
     SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
-    configuration.width = 1040;
-    configuration.height = 560;
+    configuration.width = (size_t)llround(self.changedFrame.size.width * 2.0);
+    configuration.height = (size_t)llround(self.changedFrame.size.height * 2.0);
     configuration.scalesToFit = YES;
     configuration.preservesAspectRatio = YES;
     configuration.showsCursor = NO;
     configuration.ignoreShadowsSingleWindow = YES;
     configuration.shouldBeOpaque = YES;
-    SCContentFilter *filter = [[SCContentFilter alloc]
-        initWithDesktopIndependentWindow:self.selectedWindow];
     [SCScreenshotManager
         captureImageWithFilter:filter
         configuration:configuration
@@ -245,6 +254,31 @@ static int LensWindowCaptureProbeExitCode = 1;
     self.finished = YES;
     self.probeDuration = CFAbsoluteTimeGetCurrent() - self.probeStartedAt;
     BOOL frameChanged = !CGRectEqualToRect(self.selectedFrame, self.changedFrame);
+    BOOL originChanged = !LensCaptureProbeScalarEqual(
+        self.selectedFrame.origin.x,
+        self.changedFrame.origin.x
+    ) || !LensCaptureProbeScalarEqual(
+        self.selectedFrame.origin.y,
+        self.changedFrame.origin.y
+    );
+    BOOL sizeChanged = !LensCaptureProbeScalarEqual(
+        self.selectedFrame.size.width,
+        self.changedFrame.size.width
+    ) || !LensCaptureProbeScalarEqual(
+        self.selectedFrame.size.height,
+        self.changedFrame.size.height
+    );
+    BOOL filterRetainsSelectedSize = LensCaptureProbeScalarEqual(
+        self.captureContentRect.size.width,
+        self.selectedFrame.size.width
+    ) && LensCaptureProbeScalarEqual(
+        self.captureContentRect.size.height,
+        self.selectedFrame.size.height
+    );
+    BOOL captureUsesCurrentSize = self.capturedPixelWidth
+            == (size_t)llround(self.changedFrame.size.width * 2.0)
+        && self.capturedPixelHeight
+            == (size_t)llround(self.changedFrame.size.height * 2.0);
     BOOL titleChanged = [self.window.title isEqualToString:LensCaptureProbeChangedTitle];
     BOOL passed = self.failure == nil
         && self.selectedWindow != nil
@@ -252,6 +286,9 @@ static int LensWindowCaptureProbeExitCode = 1;
         && self.selectedWindow.windowID == self.selectedWindowID
         && titleChanged
         && frameChanged
+        && originChanged
+        && sizeChanged
+        && captureUsesCurrentSize
         && self.completionWon
         && !self.timeoutWon
         && !self.probeTimeoutWon
@@ -265,6 +302,28 @@ static int LensWindowCaptureProbeExitCode = 1;
         @"retained_window_id_after_mutation": @(self.selectedWindow.windowID),
         @"title_changed_without_requery": @(titleChanged),
         @"frame_changed_without_requery": @(frameChanged),
+        @"frame_origin_changed_without_requery": @(originChanged),
+        @"frame_size_changed_without_requery": @(sizeChanged),
+        @"retained_filter_matches_picker_size": @(filterRetainsSelectedSize),
+        @"capture_uses_current_size": @(captureUsesCurrentSize),
+        @"selected_frame": @{
+            @"x": @(self.selectedFrame.origin.x),
+            @"y": @(self.selectedFrame.origin.y),
+            @"width": @(self.selectedFrame.size.width),
+            @"height": @(self.selectedFrame.size.height),
+        },
+        @"changed_frame": @{
+            @"x": @(self.changedFrame.origin.x),
+            @"y": @(self.changedFrame.origin.y),
+            @"width": @(self.changedFrame.size.width),
+            @"height": @(self.changedFrame.size.height),
+        },
+        @"capture_filter_content_rect": @{
+            @"x": @(self.captureContentRect.origin.x),
+            @"y": @(self.captureContentRect.origin.y),
+            @"width": @(self.captureContentRect.size.width),
+            @"height": @(self.captureContentRect.size.height),
+        },
         @"completion_won": @(self.completionWon),
         @"timeout_won": @(self.timeoutWon),
         @"probe_timeout_won": @(self.probeTimeoutWon),

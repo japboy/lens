@@ -69,6 +69,7 @@ char *lens_capture_registered_window_regions_json(
 char *lens_extract_window_json(
     int32_t pid,
     const char *selectedTitle,
+    const char *applicationName,
     double selectedX,
     double selectedY,
     double selectedWidth,

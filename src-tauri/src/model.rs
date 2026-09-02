@@ -23,14 +23,26 @@ pub struct ResourceReference {
     pub source_attribute: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SelectedWindow {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WindowIdentity {
     pub window_id: u32,
-    pub title: String,
-    pub application_name: String,
     pub bundle_id: String,
     pub pid: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WindowObservableFacts {
+    pub title: String,
+    pub application_name: String,
     pub frame: Bounds,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SelectedWindow {
+    #[serde(flatten)]
+    pub identity: WindowIdentity,
+    #[serde(flatten)]
+    pub facts: WindowObservableFacts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,8 +98,7 @@ pub struct ExtractedNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResolvedWindow {
-    pub title: String,
-    pub bounds: Bounds,
+    pub facts: WindowObservableFacts,
     pub resolution_score: f64,
 }
 
@@ -538,8 +549,8 @@ mod tests {
             .expect("selected windows");
 
         assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0].window_id, 9);
-        assert_eq!(windows[1].window_id, 7);
+        assert_eq!(windows[0].identity.window_id, 9);
+        assert_eq!(windows[1].identity.window_id, 7);
     }
 
     #[test]

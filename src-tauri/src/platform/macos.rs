@@ -4,7 +4,7 @@ use crate::{
         target_id, LensCoordinateSpace, LensMediaAttachment, LensMediaCapture, LensMediaCoverage,
         LensMediaOmission, LensMediaOmissionReason, LensMediaPayload, LensMediaPlan,
     },
-    model::{Bounds, ExtractionResult, SelectedWindow, WindowPickerReply},
+    model::{Bounds, ExtractionResult, SelectedWindow, WindowIdentity, WindowPickerReply},
 };
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,7 @@ unsafe extern "C" {
     fn lens_extract_window_json(
         pid: i32,
         selected_title: *const c_char,
+        application_name: *const c_char,
         selected_x: f64,
         selected_y: f64,
         selected_width: f64,
@@ -418,18 +419,22 @@ pub fn extract_window(
     target: &SelectedWindow,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
-    let title = CString::new(target.title.as_str())
+    let title = CString::new(target.facts.title.as_str())
         .map_err(|_| PlatformError::Operation("window title contains an interior NUL".into()))?;
+    let application_name = CString::new(target.facts.application_name.as_str()).map_err(|_| {
+        PlatformError::Operation("application name contains an interior NUL".into())
+    })?;
     // SAFETY: All pointer arguments are valid for the duration of the call. The native bridge
     // returns a malloc-owned NUL-terminated buffer, released with its matching free function.
     let raw = unsafe {
         lens_extract_window_json(
-            target.pid,
+            target.identity.pid,
             title.as_ptr(),
-            target.frame.x,
-            target.frame.y,
-            target.frame.width,
-            target.frame.height,
+            application_name.as_ptr(),
+            target.facts.frame.x,
+            target.facts.frame.y,
+            target.facts.frame.width,
+            target.facts.frame.height,
             limits.max_nodes,
             limits.max_text_bytes,
             limits.max_resource_refs,
@@ -454,7 +459,7 @@ pub fn extract_window(
 
 pub fn extract_registered_window(
     operation_id: Uuid,
-    target: &SelectedWindow,
+    identity: &WindowIdentity,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
     let operation_id =
@@ -464,7 +469,7 @@ pub fn extract_registered_window(
     let raw = unsafe {
         lens_extract_registered_window_json(
             operation_id.as_ptr(),
-            target.window_id,
+            identity.window_id,
             limits.max_nodes,
             limits.max_text_bytes,
             limits.max_resource_refs,
@@ -492,7 +497,7 @@ pub fn start_window_observation(
     context_id: Uuid,
     source_registration_id: Uuid,
     observer_epoch: NonZeroU64,
-    target: &SelectedWindow,
+    identity: &WindowIdentity,
 ) -> Result<
     (
         WindowObservationRegistration,
@@ -513,7 +518,7 @@ pub fn start_window_observation(
         context_id,
         source_registration_id,
         observer_epoch,
-        window_id: target.window_id,
+        window_id: identity.window_id,
         sender,
     });
     let raw_context = (&mut *callback_context as *mut WindowObservationCallbackContext).cast();
@@ -526,7 +531,7 @@ pub fn start_window_observation(
             context_id_text.as_ptr(),
             source_registration_id_text.as_ptr(),
             observer_epoch.get(),
-            target.window_id,
+            identity.window_id,
             window_observation_callback,
             raw_context,
             &mut started,
@@ -615,6 +620,8 @@ pub fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError>
 #[derive(Debug, Deserialize)]
 struct NativeImageCaptureBatch {
     #[serde(default)]
+    window_bounds: Option<Bounds>,
+    #[serde(default)]
     captures: Vec<NativeImageCapture>,
     #[serde(default)]
     omissions: Vec<NativeImageOmission>,
@@ -649,12 +656,21 @@ pub fn capture_window_media(
     plan: LensMediaPlan,
     limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
-    capture_window_media_impl(None, target, context_id, 1, plan, limits)
+    capture_window_media_impl(
+        None,
+        target_id(target),
+        target.identity.window_id,
+        context_id,
+        1,
+        plan,
+        limits,
+    )
 }
 
 pub fn capture_registered_window_media(
     operation_id: Uuid,
-    target: &SelectedWindow,
+    target_id: &str,
+    identity: &WindowIdentity,
     context_id: Uuid,
     context_revision: u64,
     plan: LensMediaPlan,
@@ -667,7 +683,8 @@ pub fn capture_registered_window_media(
     }
     capture_window_media_impl(
         Some(operation_id),
-        target,
+        target_id.to_owned(),
+        identity.window_id,
         context_id,
         context_revision,
         plan,
@@ -677,13 +694,13 @@ pub fn capture_registered_window_media(
 
 fn capture_window_media_impl(
     operation_id: Option<Uuid>,
-    target: &SelectedWindow,
+    target_id: String,
+    window_id: u32,
     context_id: Uuid,
     context_revision: u64,
     plan: LensMediaPlan,
     limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
-    let target_id = target_id(target);
     if plan.requests.is_empty() {
         return Ok(LensMediaCapture {
             omissions: plan.omissions,
@@ -717,7 +734,7 @@ fn capture_window_media_impl(
         unsafe {
             lens_capture_registered_window_regions_json(
                 operation_id.as_ptr(),
-                target.window_id,
+                window_id,
                 requests_json.as_ptr(),
                 limits.max_long_edge,
                 limits.max_pixels,
@@ -728,7 +745,7 @@ fn capture_window_media_impl(
     } else {
         unsafe {
             lens_capture_window_regions_json(
-                target.window_id,
+                window_id,
                 requests_json.as_ptr(),
                 limits.max_long_edge,
                 limits.max_pixels,
@@ -755,6 +772,7 @@ fn capture_window_media_impl(
     })?;
 
     let mut result = LensMediaCapture {
+        observed_window_frame: native.window_bounds,
         omissions: plan.omissions,
         diagnostics: native.diagnostics,
         ..LensMediaCapture::default()

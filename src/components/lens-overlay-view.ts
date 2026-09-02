@@ -74,8 +74,8 @@ export class LensOverlayView extends LitElement {
     const sourceJson = lensSourceJson(lens);
     const activeAgent = lens.agent;
     const authenticationMethods = supportedAuthMethods(lens);
-    const targetLabels = targets.map(({ window }) =>
-      window.title ? `${window.application_name} — ${window.title}` : window.application_name,
+    const targetLabels = targets.map(({ facts }) =>
+      facts.title ? `${facts.application_name} — ${facts.title}` : facts.application_name,
     );
     const sourceCountLabel =
       targets.length === 0

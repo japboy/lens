@@ -305,8 +305,8 @@ impl LensAgentProjection {
                 uri: projection_uri.clone(),
                 scope: attachment.scope,
                 source_node_id,
-                source_bounds: relative_bounds(attachment.source_bounds, target.window.frame),
-                captured_bounds: relative_bounds(attachment.captured_bounds, target.window.frame),
+                source_bounds: relative_bounds(attachment.source_bounds, target.facts.frame),
+                captured_bounds: relative_bounds(attachment.captured_bounds, target.facts.frame),
                 coverage: attachment.coverage,
                 coordinate_space: "window_relative_points",
                 mime_type: attachment.mime_type.clone(),
@@ -1621,7 +1621,7 @@ mod tests {
             target_id, LensCoordinateSpace, LensInputSource, LensMediaAttachment,
             LensMediaCoverage, LensNodeKind, LensSource, LENS_INPUT_SCHEMA_VERSION,
         },
-        model::SelectedWindow,
+        model::{SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
     use serde_json::json;
 
@@ -1639,16 +1639,20 @@ mod tests {
         media_data: &str,
     ) -> (LensInput, LensTargetSet, Vec<LensMediaPayload>) {
         let window = SelectedWindow {
-            window_id,
-            title: "Document".into(),
-            application_name: "Browser".into(),
-            bundle_id: "example.browser".into(),
-            pid: 42,
-            frame: Bounds {
-                x: window_origin.0,
-                y: window_origin.1,
-                width: 400.0,
-                height: 300.0,
+            identity: WindowIdentity {
+                window_id,
+                bundle_id: "example.browser".into(),
+                pid: 42,
+            },
+            facts: WindowObservableFacts {
+                title: "Document".into(),
+                application_name: "Browser".into(),
+                frame: Bounds {
+                    x: window_origin.0,
+                    y: window_origin.1,
+                    width: 400.0,
+                    height: 300.0,
+                },
             },
         };
         let target_id = target_id(&window);
@@ -1799,6 +1803,82 @@ mod tests {
 
         assert_ne!(base.digest(), text.digest());
         assert_ne!(base.digest(), image.digest());
+    }
+
+    #[test]
+    fn title_only_refresh_changes_the_agent_projection_without_retargeting() {
+        let context = Uuid::from_u128(2);
+        let (input, targets, media) =
+            agent_projection_fixture(context, 1, 1, 7, (0.0, 0.0), "Revenue rose", "aGVsbG8=");
+        let base = LensAgentProjection::from_input(&input, &targets, &media).expect("base");
+        let mut renamed_input = input.clone();
+        renamed_input.context_revision = 2;
+        renamed_input.sources[0].source_revision = 2;
+        renamed_input.sources[0].source.window_title = "Renamed document".into();
+        let target_id = targets.targets[0].id.clone();
+        let mut renamed_facts = targets.targets[0].facts.clone();
+        renamed_facts.title = "Renamed document".into();
+        let renamed_targets = targets
+            .refresh_observable_facts(2, BTreeMap::from([(target_id, renamed_facts)]))
+            .expect("renamed facts");
+        let renamed = LensAgentProjection::from_input(&renamed_input, &renamed_targets, &media)
+            .expect("renamed projection");
+
+        assert!(targets.has_same_identity(&renamed_targets));
+        assert_eq!(renamed_targets.targets[0].facts_revision, 2);
+        assert_ne!(base.digest(), renamed.digest());
+        assert!(renamed.json().contains("Renamed document"));
+    }
+
+    #[test]
+    fn frame_only_resize_advances_facts_but_preserves_the_semantic_digest() {
+        let context = Uuid::from_u128(3);
+        let (input, targets, media) =
+            agent_projection_fixture(context, 1, 1, 7, (0.0, 0.0), "Revenue rose", "aGVsbG8=");
+        let base = LensAgentProjection::from_input(&input, &targets, &media).expect("base");
+        let target_id = targets.targets[0].id.clone();
+        let mut resized_facts = targets.targets[0].facts.clone();
+        resized_facts.frame.width = 640.0;
+        resized_facts.frame.height = 360.0;
+        let resized_targets = targets
+            .refresh_observable_facts(2, BTreeMap::from([(target_id, resized_facts)]))
+            .expect("resized facts");
+        let resized = LensAgentProjection::from_input(&input, &resized_targets, &media)
+            .expect("resized projection");
+
+        assert!(targets.has_same_identity(&resized_targets));
+        assert_eq!(resized_targets.targets[0].facts_revision, 2);
+        assert_eq!(resized_targets.targets[0].facts.frame.width, 640.0);
+        assert_eq!(base.bytes(), resized.bytes());
+        assert_eq!(base.digest(), resized.digest());
+    }
+
+    #[test]
+    fn moving_the_same_window_and_media_preserves_window_relative_projection() {
+        let context = Uuid::from_u128(4);
+        let (first_input, first_targets, first_media) =
+            agent_projection_fixture(context, 1, 1, 7, (100.0, 200.0), "Revenue rose", "aGVsbG8=");
+        let (moved_input, moved_targets, moved_media) = agent_projection_fixture(
+            context,
+            2,
+            2,
+            7,
+            (900.0, 1200.0),
+            "Revenue rose",
+            "aGVsbG8=",
+        );
+        let first = LensAgentProjection::from_input(&first_input, &first_targets, &first_media)
+            .expect("first projection");
+        let moved = LensAgentProjection::from_input(&moved_input, &moved_targets, &moved_media)
+            .expect("moved projection");
+
+        assert!(first_targets.has_same_identity(&moved_targets));
+        assert_ne!(
+            first_targets.targets[0].facts.frame,
+            moved_targets.targets[0].facts.frame
+        );
+        assert_eq!(first.bytes(), moved.bytes());
+        assert_eq!(first.digest(), moved.digest());
     }
 
     #[test]

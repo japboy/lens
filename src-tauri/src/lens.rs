@@ -1,6 +1,6 @@
 use crate::model::{
     Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult,
-    ResourceReference, SelectedWindow,
+    ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,7 +8,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 2;
-pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 1;
+pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 2;
 pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 4;
 pub const LENS_INPUT_SCHEMA_VERSION: u32 = 3;
 pub const MAX_LENS_TARGETS: usize = 4;
@@ -30,14 +30,25 @@ const MAX_LENS_INPUT_FIELD_BYTES: usize = 16 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensTarget {
     pub id: String,
-    pub window: SelectedWindow,
+    pub identity: WindowIdentity,
+    pub facts_revision: u64,
+    pub facts: WindowObservableFacts,
 }
 
 impl LensTarget {
     fn from_window(window: SelectedWindow) -> Self {
         Self {
             id: target_id(&window),
-            window,
+            identity: window.identity,
+            facts_revision: 1,
+            facts: window.facts,
+        }
+    }
+
+    pub fn selected_window(&self) -> SelectedWindow {
+        SelectedWindow {
+            identity: self.identity.clone(),
+            facts: self.facts.clone(),
         }
     }
 }
@@ -53,10 +64,14 @@ pub struct LensTargetSet {
 pub enum LensTargetSetError {
     #[error("the native picker returned no selected windows")]
     Empty,
-    #[error("selected {actual} windows; the version 1 limit is {maximum}")]
+    #[error("selected {actual} windows; the version 2 limit is {maximum}")]
     TooMany { actual: usize, maximum: usize },
     #[error("the native picker returned duplicate window identity {0}")]
     DuplicateWindow(u32),
+    #[error("observable facts referenced unknown target {0}")]
+    UnknownTarget(String),
+    #[error("observable facts revision must be non-zero")]
+    ZeroFactsRevision,
 }
 
 impl LensTargetSet {
@@ -77,16 +92,18 @@ impl LensTargetSet {
         let mut window_ids = BTreeSet::new();
         let mut targets = Vec::with_capacity(windows.len());
         for window in windows {
-            if !window_ids.insert(window.window_id) {
-                return Err(LensTargetSetError::DuplicateWindow(window.window_id));
+            if !window_ids.insert(window.identity.window_id) {
+                return Err(LensTargetSetError::DuplicateWindow(
+                    window.identity.window_id,
+                ));
             }
             targets.push(LensTarget::from_window(window));
         }
         targets.sort_by(|left, right| {
-            left.window
+            left.identity
                 .bundle_id
-                .cmp(&right.window.bundle_id)
-                .then(left.window.window_id.cmp(&right.window.window_id))
+                .cmp(&right.identity.bundle_id)
+                .then(left.identity.window_id.cmp(&right.identity.window_id))
         });
 
         Ok(Self {
@@ -94,6 +111,41 @@ impl LensTargetSet {
             selection_id,
             targets,
         })
+    }
+
+    pub fn refresh_observable_facts(
+        &self,
+        facts_revision: u64,
+        observed: BTreeMap<String, WindowObservableFacts>,
+    ) -> Result<Self, LensTargetSetError> {
+        if facts_revision == 0 {
+            return Err(LensTargetSetError::ZeroFactsRevision);
+        }
+        if let Some(target_id) = observed
+            .keys()
+            .find(|target_id| !self.targets.iter().any(|target| &target.id == *target_id))
+        {
+            return Err(LensTargetSetError::UnknownTarget(target_id.clone()));
+        }
+        let mut refreshed = self.clone();
+        for target in &mut refreshed.targets {
+            if let Some(facts) = observed.get(&target.id) {
+                target.facts_revision = facts_revision;
+                target.facts = facts.clone();
+            }
+        }
+        Ok(refreshed)
+    }
+
+    pub fn has_same_identity(&self, other: &Self) -> bool {
+        self.schema_version == other.schema_version
+            && self.selection_id == other.selection_id
+            && self.targets.len() == other.targets.len()
+            && self
+                .targets
+                .iter()
+                .zip(&other.targets)
+                .all(|(left, right)| left.id == right.id && left.identity == right.identity)
     }
 }
 
@@ -105,13 +157,13 @@ pub struct LensSource {
     pub window_id: u32,
 }
 
-impl From<&SelectedWindow> for LensSource {
-    fn from(target: &SelectedWindow) -> Self {
+impl From<&LensTarget> for LensSource {
+    fn from(target: &LensTarget) -> Self {
         Self {
-            application: target.application_name.clone(),
-            window_title: target.title.clone(),
-            bundle_id: target.bundle_id.clone(),
-            window_id: target.window_id,
+            application: target.facts.application_name.clone(),
+            window_title: target.facts.title.clone(),
+            bundle_id: target.identity.bundle_id.clone(),
+            window_id: target.identity.window_id,
         }
     }
 }
@@ -209,7 +261,7 @@ pub enum LensDocumentError {
 
 impl LensDocument {
     pub fn from_accessibility(
-        target: &SelectedWindow,
+        target: &LensTarget,
         extraction: &ExtractionResult,
     ) -> Result<Option<Self>, LensDocumentError> {
         if extraction.quality == ExtractionQuality::Unavailable {
@@ -564,18 +616,18 @@ pub struct LensMediaPlan {
 
 impl LensMediaPlan {
     pub fn from_accessibility(
-        target: &SelectedWindow,
+        target: &LensTarget,
         extraction: &ExtractionResult,
         max_attachments: usize,
     ) -> Self {
-        let target_id = target_id(target);
+        let target_id = target.id.clone();
         if extraction.quality == ExtractionQuality::Unavailable
             || !matches!(
                 LensDocument::from_accessibility(target, extraction),
                 Ok(Some(_))
             )
         {
-            let id = format!("media-window-{}-fallback", target.window_id);
+            let id = format!("media-window-{}-fallback", target.identity.window_id);
             return if max_attachments == 0 {
                 Self {
                     requests: Vec::new(),
@@ -618,7 +670,7 @@ impl LensMediaPlan {
         let mut plan = Self::default();
         let mut planning_omissions = BTreeMap::new();
         for node in image_nodes {
-            let attachment_id = format!("media-window-{}-{}", target.window_id, node.id);
+            let attachment_id = format!("media-window-{}-{}", target.identity.window_id, node.id);
             let Some(bounds) = node.bounds else {
                 record_planning_omission(
                     &mut planning_omissions,
@@ -635,7 +687,7 @@ impl LensMediaPlan {
                 );
                 continue;
             }
-            if !bounds_intersect(bounds, target.frame) {
+            if !bounds_intersect(bounds, target.facts.frame) {
                 record_planning_omission(
                     &mut planning_omissions,
                     LensMediaOmissionReason::OutsideWindow,
@@ -726,6 +778,7 @@ fn valid_bounds(bounds: Bounds) -> bool {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LensMediaCapture {
+    pub observed_window_frame: Option<Bounds>,
     pub attachments: Vec<LensMediaAttachment>,
     pub payloads: Vec<LensMediaPayload>,
     pub omissions: Vec<LensMediaOmission>,
@@ -847,7 +900,7 @@ impl LensContext {
 
             let source_id = format!("{}:accessibility", target.id);
             let mut document =
-                match LensDocument::from_accessibility(&target.window, &capture.accessibility) {
+                match LensDocument::from_accessibility(target, &capture.accessibility) {
                     Ok(document) => document,
                     Err(error) => {
                         capture.accessibility.diagnostics.push(format!(
@@ -928,7 +981,7 @@ impl LensContext {
                 source_id,
                 target_id: target.id.clone(),
                 revision,
-                source: LensSource::from(&target.window),
+                source: LensSource::from(target),
                 capture: capture.accessibility,
                 document,
                 quality: source_quality,
@@ -987,7 +1040,10 @@ impl LensContext {
 }
 
 pub fn target_id(target: &SelectedWindow) -> String {
-    format!("macos:{}:{}", target.bundle_id, target.window_id)
+    format!(
+        "macos:{}:{}",
+        target.identity.bundle_id, target.identity.window_id
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1238,26 +1294,38 @@ mod tests {
 
     fn target() -> SelectedWindow {
         SelectedWindow {
-            window_id: 7,
-            title: "Document".into(),
-            application_name: "Browser".into(),
-            bundle_id: "example.browser".into(),
-            pid: 42,
-            frame: Bounds {
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 100.0,
+            identity: WindowIdentity {
+                window_id: 7,
+                bundle_id: "example.browser".into(),
+                pid: 42,
+            },
+            facts: WindowObservableFacts {
+                title: "Document".into(),
+                application_name: "Browser".into(),
+                frame: Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 100.0,
+                },
             },
         }
     }
 
     fn target_with(window_id: u32, bundle_id: &str) -> SelectedWindow {
-        SelectedWindow {
-            window_id,
-            bundle_id: bundle_id.into(),
-            ..target()
-        }
+        let mut target = target();
+        target.identity.window_id = window_id;
+        target.identity.bundle_id = bundle_id.into();
+        target
+    }
+
+    fn lens_target() -> LensTarget {
+        LensTargetSet::try_new(Uuid::nil(), vec![target()])
+            .expect("valid target set")
+            .targets
+            .into_iter()
+            .next()
+            .expect("one target")
     }
 
     fn accessibility(quality: ExtractionQuality) -> ExtractionResult {
@@ -1275,7 +1343,7 @@ mod tests {
                     title: Some("Document".into()),
                     value: None,
                     description: None,
-                    bounds: Some(target().frame),
+                    bounds: Some(target().facts.frame),
                     resource_refs: vec![],
                     children: vec!["node-000001".into(), "node-000002".into()],
                 },
@@ -1377,10 +1445,12 @@ mod tests {
 
     #[test]
     fn accessibility_normalization_preserves_graph_and_maps_ax_image() {
-        let document =
-            LensDocument::from_accessibility(&target(), &accessibility(ExtractionQuality::Full))
-                .expect("valid graph")
-                .expect("usable document");
+        let document = LensDocument::from_accessibility(
+            &lens_target(),
+            &accessibility(ExtractionQuality::Full),
+        )
+        .expect("valid graph")
+        .expect("usable document");
 
         assert_eq!(document.roots, vec!["node-000000"]);
         assert_eq!(document.nodes["node-000001"].kind, LensNodeKind::Text);
@@ -1400,8 +1470,8 @@ mod tests {
         )
         .expect("valid target set");
 
-        assert_eq!(target_set.targets[0].window.bundle_id, "a.example");
-        assert_eq!(target_set.targets[1].window.bundle_id, "z.example");
+        assert_eq!(target_set.targets[0].identity.bundle_id, "a.example");
+        assert_eq!(target_set.targets[1].identity.bundle_id, "z.example");
         assert_eq!(
             LensTargetSet::try_new(selection_id, Vec::new()),
             Err(LensTargetSetError::Empty)
@@ -1425,6 +1495,35 @@ mod tests {
                 maximum: MAX_LENS_TARGETS,
             })
         );
+    }
+
+    #[test]
+    fn observable_fact_refresh_advances_facts_without_retargeting_identity() {
+        let original =
+            LensTargetSet::try_new(Uuid::nil(), vec![target()]).expect("valid target set");
+        let target_id = original.targets[0].id.clone();
+        let identity = original.targets[0].identity.clone();
+        let facts = WindowObservableFacts {
+            title: "Renamed document".into(),
+            application_name: "Browser".into(),
+            frame: Bounds {
+                x: 40.0,
+                y: 50.0,
+                width: 180.0,
+                height: 140.0,
+            },
+        };
+
+        let refreshed = original
+            .refresh_observable_facts(8, BTreeMap::from([(target_id, facts.clone())]))
+            .expect("observable facts refresh");
+
+        assert!(original.has_same_identity(&refreshed));
+        assert_eq!(refreshed.targets[0].identity, identity);
+        assert_eq!(refreshed.targets[0].facts_revision, 8);
+        assert_eq!(refreshed.targets[0].facts, facts);
+        assert_eq!(original.targets[0].facts_revision, 1);
+        assert_eq!(original.targets[0].facts.title, "Document");
     }
 
     #[test]
@@ -1491,7 +1590,7 @@ mod tests {
         extraction.nodes[0].children.clear();
 
         assert_eq!(
-            LensDocument::from_accessibility(&target(), &extraction),
+            LensDocument::from_accessibility(&lens_target(), &extraction),
             Err(LensDocumentError::InconsistentEdge {
                 parent_id: "node-000000".into(),
                 child_id: "node-000001".into(),
@@ -1502,7 +1601,7 @@ mod tests {
     #[test]
     fn usable_ax_requests_only_ax_image_regions() {
         let plan = LensMediaPlan::from_accessibility(
-            &target(),
+            &lens_target(),
             &accessibility(ExtractionQuality::Full),
             MAX_LENS_MEDIA_ATTACHMENTS,
         );
@@ -1524,11 +1623,14 @@ mod tests {
         extraction.metrics.text_bytes = 0;
         extraction.metrics.truncated_text = true;
 
-        let document = LensDocument::from_accessibility(&target(), &extraction)
+        let document = LensDocument::from_accessibility(&lens_target(), &extraction)
             .expect("valid graph")
             .expect("structured document remains usable");
-        let plan =
-            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
+        let plan = LensMediaPlan::from_accessibility(
+            &lens_target(),
+            &extraction,
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
 
         assert_eq!(document.nodes.len(), 3);
         assert_eq!(plan.requests.len(), 1);
@@ -1542,7 +1644,7 @@ mod tests {
     #[test]
     fn unavailable_ax_requests_one_whole_window_fallback() {
         let plan = LensMediaPlan::from_accessibility(
-            &target(),
+            &lens_target(),
             &LensContext::unavailable_accessibility("AX unavailable"),
             MAX_LENS_MEDIA_ATTACHMENTS,
         );
@@ -1562,8 +1664,11 @@ mod tests {
             height: 40.0,
         });
 
-        let plan =
-            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
+        let plan = LensMediaPlan::from_accessibility(
+            &lens_target(),
+            &extraction,
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
 
         assert!(plan.requests.is_empty());
         assert_eq!(plan.omissions.len(), 1);
@@ -1571,6 +1676,51 @@ mod tests {
         assert_eq!(
             plan.omissions[0].reason,
             LensMediaOmissionReason::OutsideWindow
+        );
+    }
+
+    #[test]
+    fn resized_window_facts_admit_an_image_region_outside_the_picker_frame() {
+        let mut extraction = accessibility(ExtractionQuality::Full);
+        extraction.nodes[2].bounds = Some(Bounds {
+            x: 120.0,
+            y: 20.0,
+            width: 60.0,
+            height: 40.0,
+        });
+        let picker_frame_plan = LensMediaPlan::from_accessibility(
+            &lens_target(),
+            &extraction,
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
+        let mut resized = target();
+        resized.facts.frame.width = 200.0;
+        let resized_target = LensTargetSet::try_new(Uuid::nil(), vec![resized])
+            .expect("resized target set")
+            .targets
+            .into_iter()
+            .next()
+            .expect("one resized target");
+        let resized_plan = LensMediaPlan::from_accessibility(
+            &resized_target,
+            &extraction,
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
+
+        assert!(picker_frame_plan.requests.is_empty());
+        assert_eq!(
+            picker_frame_plan.omissions[0].reason,
+            LensMediaOmissionReason::OutsideWindow
+        );
+        assert_eq!(resized_plan.requests.len(), 1);
+        assert_eq!(
+            resized_plan.requests[0].bounds,
+            Some(Bounds {
+                x: 120.0,
+                y: 20.0,
+                width: 60.0,
+                height: 40.0,
+            })
         );
     }
 
@@ -1603,8 +1753,11 @@ mod tests {
             });
         }
 
-        let plan =
-            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
+        let plan = LensMediaPlan::from_accessibility(
+            &lens_target(),
+            &extraction,
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
 
         assert_eq!(plan.requests.len(), MAX_LENS_MEDIA_ATTACHMENTS);
         assert_eq!(plan.omissions.len(), 1);
@@ -1622,8 +1775,11 @@ mod tests {
         let mut extraction = accessibility(ExtractionQuality::Full);
         extraction.nodes[0].children.clear();
 
-        let plan =
-            LensMediaPlan::from_accessibility(&target(), &extraction, MAX_LENS_MEDIA_ATTACHMENTS);
+        let plan = LensMediaPlan::from_accessibility(
+            &lens_target(),
+            &extraction,
+            MAX_LENS_MEDIA_ATTACHMENTS,
+        );
 
         assert_eq!(plan.requests.len(), 1);
         assert_eq!(plan.requests[0].scope, LensMediaScope::WindowFallback);

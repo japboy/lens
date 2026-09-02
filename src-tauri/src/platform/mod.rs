@@ -11,7 +11,7 @@ pub use macos::{
 
 use crate::{
     lens::{LensMediaCapture, LensMediaPlan},
-    model::{ExtractionResult, SelectedWindow, WindowPickerReply},
+    model::{ExtractionResult, SelectedWindow, WindowIdentity, WindowPickerReply},
 };
 use std::num::NonZeroU64;
 use thiserror::Error;
@@ -98,10 +98,10 @@ pub fn extract_window(
 
 pub fn extract_registered_window(
     operation_id: Uuid,
-    target: &SelectedWindow,
+    identity: &WindowIdentity,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
-    macos::extract_registered_window(operation_id, target, limits)
+    macos::extract_registered_window(operation_id, identity, limits)
 }
 
 pub fn start_window_observation(
@@ -109,7 +109,7 @@ pub fn start_window_observation(
     context_id: Uuid,
     source_registration_id: Uuid,
     observer_epoch: NonZeroU64,
-    target: &SelectedWindow,
+    identity: &WindowIdentity,
 ) -> Result<
     (
         WindowObservationRegistration,
@@ -123,7 +123,7 @@ pub fn start_window_observation(
         context_id,
         source_registration_id,
         observer_epoch,
-        target,
+        identity,
     )
 }
 
@@ -138,7 +138,8 @@ pub fn capture_window_media(
 
 pub fn capture_registered_window_media(
     operation_id: Uuid,
-    target: &SelectedWindow,
+    target_id: &str,
+    identity: &WindowIdentity,
     context_id: Uuid,
     context_revision: u64,
     plan: LensMediaPlan,
@@ -146,7 +147,8 @@ pub fn capture_registered_window_media(
 ) -> Result<LensMediaCapture, PlatformError> {
     macos::capture_registered_window_media(
         operation_id,
-        target,
+        target_id,
+        identity,
         context_id,
         context_revision,
         plan,

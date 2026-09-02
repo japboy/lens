@@ -46,18 +46,25 @@ export interface ResourceReference {
   source_attribute: string;
 }
 
-export interface SelectedWindow {
+export interface WindowIdentity {
   window_id: number;
-  title: string;
-  application_name: string;
   bundle_id: string;
   pid: number;
+}
+
+export interface WindowObservableFacts {
+  title: string;
+  application_name: string;
   frame: Bounds;
 }
 
+export type SelectedWindow = WindowIdentity & WindowObservableFacts;
+
 export interface LensTarget {
   id: string;
-  window: SelectedWindow;
+  identity: WindowIdentity;
+  facts_revision: number;
+  facts: WindowObservableFacts;
 }
 
 export interface LensTargetSet {
@@ -102,8 +109,7 @@ export interface ExtractedNode {
 export interface ExtractionResult {
   quality: ExtractionQuality;
   resolved_window?: {
-    title: string;
-    bounds: Bounds;
+    facts: WindowObservableFacts;
     resolution_score: number;
   };
   nodes: ExtractedNode[];

@@ -431,6 +431,67 @@ describe("component property and event contracts", () => {
     });
   });
 
+  it("renders the latest title facts without changing the selected target identity", async () => {
+    const target = {
+      id: "macos:com.apple.Safari:417",
+      identity: {
+        window_id: 417,
+        bundle_id: "com.apple.Safari",
+        pid: 417,
+      },
+      facts_revision: 1,
+      facts: {
+        title: "Picker title",
+        application_name: "Safari",
+        frame: { x: 0, y: 0, width: 800, height: 600 },
+      },
+    };
+    const element = document.createElement("lens-overlay-view") as HTMLElement & {
+      model: OverlayViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = {
+      platform: "macos",
+      lens: {
+        ...liveLens(representation("representation-1", 1, "Translation")),
+        target_set: {
+          schema_version: 2,
+          selection_id: "operation",
+          targets: [target],
+        },
+      },
+      pending: false,
+      cancelPending: false,
+      message: "",
+    };
+    document.body.append(element);
+    await element.updateComplete;
+
+    const sourceTargets = element.shadowRoot?.querySelector(".overlay-source-targets");
+    expect(sourceTargets?.getAttribute("title")).toBe("Safari — Picker title");
+
+    element.model = {
+      ...element.model,
+      lens: {
+        ...element.model.lens,
+        target_set: {
+          ...element.model.lens.target_set!,
+          targets: [
+            {
+              ...target,
+              facts_revision: 2,
+              facts: { ...target.facts, title: "Current title" },
+            },
+          ],
+        },
+      },
+    };
+    await element.updateComplete;
+
+    expect(sourceTargets?.getAttribute("title")).toBe("Safari — Current title");
+    expect(element.model.lens.target_set?.targets[0]?.id).toBe(target.id);
+  });
+
   it("applies each complete replacement automatically while preserving Translation focus", async () => {
     const first = representation("representation-1", 1, "Translation one");
     const second = representation("representation-2", 2, "Translation two");
