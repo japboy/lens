@@ -8,6 +8,7 @@ pub mod live_sync;
 mod media_protocol;
 mod model;
 mod platform;
+mod prompt_template;
 mod store;
 mod ui;
 
@@ -102,8 +103,8 @@ pub fn run() {
             commands::get_app_snapshot,
             commands::set_agent,
             commands::set_working_directory,
-            commands::set_response_prompt,
-            commands::reset_response_prompt,
+            commands::set_agent_prompt_template,
+            commands::reset_agent_prompt_template,
             commands::accessibility_permission,
             commands::request_accessibility_permission,
             commands::select_lens_target,

@@ -1,0 +1,92 @@
+import { describe, expect, it } from "vitest";
+import type { SettingsIntent } from "../components/events";
+import type { AccessibilityPermissionState } from "./accessibility-permission-controller";
+import type { SnapshotConnectionState } from "./app-snapshot-controller";
+import type { CommandState } from "./command-state";
+import { settingsViewModel } from "./view-models";
+
+const PERMISSION: AccessibilityPermissionState = { stage: "allowed" };
+const READY_CONNECTION: SnapshotConnectionState = { stage: "ready" };
+
+function model(
+  command: CommandState = { stage: "idle" },
+  connection: SnapshotConnectionState = READY_CONNECTION,
+) {
+  return settingsViewModel("macos", undefined, PERMISSION, command, connection);
+}
+
+function succeeded(type: SettingsIntent["type"]): CommandState {
+  return {
+    stage: "succeeded",
+    command: { scope: "settings", type },
+    message: `${type} completed`,
+  };
+}
+
+describe("Settings view model", () => {
+  it("keeps the application-global Lens stage independent from contextual feedback", () => {
+    expect(model()).toMatchObject({
+      lensStageLabel: "Idle",
+      feedback: { stage: "none" },
+    });
+  });
+
+  it("maps every General command result to the General destination", () => {
+    const generalCommands = [
+      "select-agent",
+      "authenticate-agent-selection",
+      "reauthenticate-agent-selection",
+      "sign-out-agent-selection",
+      "choose-directory",
+      "request-accessibility-permission",
+    ] as const satisfies readonly SettingsIntent["type"][];
+
+    for (const type of generalCommands) {
+      expect(model(succeeded(type)).feedback).toEqual({
+        stage: "status",
+        target: "general",
+        message: `${type} completed`,
+      });
+    }
+  });
+
+  it("maps every Agent Prompt command result to the Agent Prompt destination", () => {
+    const promptCommands = [
+      "save-agent-prompt-template",
+      "reset-agent-prompt-template",
+    ] as const satisfies readonly SettingsIntent["type"][];
+
+    for (const type of promptCommands) {
+      expect(model(succeeded(type)).feedback).toEqual({
+        stage: "status",
+        target: "agent-prompt",
+        message: `${type} completed`,
+      });
+    }
+  });
+
+  it("keeps connection progress advisory and connection failures explicit", () => {
+    expect(model({ stage: "idle" }, { stage: "loading" }).feedback).toEqual({
+      stage: "status",
+      target: "application",
+      message: "Loading application state…",
+    });
+    expect(
+      model({ stage: "idle" }, { stage: "failed", message: "Connection failed" }).feedback,
+    ).toEqual({
+      stage: "error",
+      target: "application",
+      message: "Connection failed",
+    });
+  });
+
+  it("does not leak command feedback from another window into Settings", () => {
+    expect(
+      model({
+        stage: "failed",
+        command: { scope: "overlay", type: "retry" },
+        message: "Overlay retry failed",
+      }).feedback,
+    ).toEqual({ stage: "none" });
+  });
+});

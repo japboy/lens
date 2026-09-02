@@ -9,6 +9,12 @@
   --settings-backdrop: Canvas;
   --settings-group-background: Canvas;
   --settings-group-border: ButtonBorder;
+  --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+  --settings-selection-background: SelectedItem;
+  --settings-selection-foreground: SelectedItemText;
+  --settings-selection-unemphasized-background: color-mix(in srgb, CanvasText 12%, Canvas);
+  --settings-selection-unemphasized-foreground: CanvasText;
+  --settings-focus-ring: Highlight;
 }
 
 html[data-view="settings"][data-platform="macos"] {
@@ -19,6 +25,17 @@ html[data-view="settings"][data-platform="macos"] {
   --settings-backdrop: Window;
   --settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);
   --settings-group-border: color-mix(in srgb, -apple-system-separator 50%, transparent 50%);
+  --settings-sidebar-background: color-mix(in srgb, Window 92%, CanvasText 8%);
+}
+
+@supports (color: -apple-system-selected-content-background) {
+  html[data-view="settings"][data-platform="macos"] {
+    --settings-selection-background: -apple-system-selected-content-background;
+    --settings-selection-foreground: -apple-system-alternate-selected-text;
+    --settings-selection-unemphasized-background: -apple-system-unemphasized-selected-content-background;
+    --settings-selection-unemphasized-foreground: CanvasText;
+    --settings-focus-ring: -webkit-focus-ring-color;
+  }
 }
 
 * {
@@ -45,7 +62,9 @@ body[data-view="target-selection"] {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -73,22 +92,180 @@ p {
 }
 
 .settings-shell {
+  --settings-sidebar-width: 188px;
+  --settings-detail-inline-padding: 26px;
+  --settings-content-max-width: 680px;
   width: 100%;
   height: 100dvh;
   min-width: 0;
   min-height: 0;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  overflow: auto;
-  overscroll-behavior: contain;
+  display: grid;
+  grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
   background: var(--settings-backdrop);
 }
 
 .settings-shell > *,
 .settings-group {
   min-width: 0;
+}
+
+.settings-sidebar {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding: 18px 10px;
+  overflow: hidden;
+  border-right: 1px solid var(--settings-group-border);
+  background: var(--settings-sidebar-background);
+}
+
+.settings-sidebar nav {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-nav-group {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-nav-group-label {
+  margin: 0;
+  padding: 0 8px 4px;
+  color: GrayText;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.settings-nav-item {
+  appearance: none;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 9px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  color: CanvasText;
+  background: transparent;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-item:hover:not(:disabled):not([aria-current="page"]) {
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+}
+
+.settings-nav-item[aria-current="page"] {
+  color: var(--settings-selection-foreground);
+  background: var(--settings-selection-background);
+  font-weight: 600;
+}
+
+.settings-shell[data-window-emphasis="unemphasized"] .settings-nav-item[aria-current="page"] {
+  color: var(--settings-selection-unemphasized-foreground);
+  background: var(--settings-selection-unemphasized-background);
+}
+
+.settings-nav-item:focus-visible {
+  outline: 3px solid var(--settings-focus-ring);
+  outline-offset: 1px;
+}
+
+.settings-sidebar-status {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 10px 8px 0;
+  border-top: 1px solid var(--settings-group-border);
+  color: GrayText;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.settings-sidebar-status-label {
+  font-weight: 650;
+}
+
+.settings-sidebar-status-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-detail {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px var(--settings-detail-inline-padding);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-detail-panel {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+}
+
+.settings-detail-panel[hidden] {
+  display: none;
+}
+
+.settings-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.settings-detail-header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.settings-detail-header p {
+  max-width: 54rem;
+  margin: 5px 0 0;
+  color: GrayText;
+  font-size: 12px;
+}
+
+.settings-detail-groups {
+  display: grid;
+  gap: 16px;
+  max-width: var(--settings-content-max-width);
+}
+
+.settings-context-feedback {
+  max-width: var(--settings-content-max-width);
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: GrayText;
+  background: color-mix(in srgb, CanvasText 5%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.settings-detail-panel > .settings-context-feedback {
+  margin-bottom: 16px;
 }
 
 :host([data-platform="macos"]) .settings-group {
@@ -126,11 +303,12 @@ fieldset {
 }
 
 .prompt-editor {
-  box-sizing: border-box;
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 9rem;
+  min-height: 220px;
   font: inherit;
   line-height: 1.45;
+  tab-size: 2;
 }
 
 :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-editor) {
@@ -143,8 +321,8 @@ fieldset {
 }
 
 :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-editor):focus-visible {
-  border-color: AccentColor;
-  outline: 3px solid color-mix(in srgb, AccentColor 45%, transparent);
+  border-color: var(--settings-focus-ring);
+  outline: 3px solid var(--settings-focus-ring);
   outline-offset: 1px;
 }
 
@@ -170,9 +348,13 @@ fieldset {
 .prompt-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
+}
+
+.prompt-action-spacer {
+  flex: 1 1 auto;
 }
 
 .help {
@@ -217,20 +399,333 @@ fieldset {
   color: GrayText;
 }
 
-.settings-shell footer {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
+.prompt-workspace {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  display: grid;
+  align-content: start;
   gap: 16px;
-  margin-top: auto;
-  border-top: 1px solid var(--settings-group-border);
-  padding-top: 16px;
+  max-width: var(--settings-content-max-width);
 }
 
-.settings-shell footer span {
+.prompt-detail-header {
+  margin-bottom: 0;
+}
+
+.prompt-draft-status {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
   color: GrayText;
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.prompt-draft-status[data-dirty="true"] {
+  color: MarkText;
+  background: Mark;
+}
+
+.prompt-composition,
+.prompt-editor-section,
+.prompt-preview-section {
   min-width: 0;
+  border: 1px solid var(--settings-group-border);
+  border-radius: 10px;
+  background: var(--settings-group-background);
+}
+
+.prompt-composition,
+.prompt-editor-section {
+  padding: 14px;
+}
+
+.prompt-composition-heading-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+}
+
+.prompt-composition-heading-row h2,
+.prompt-editor-header h2 {
+  margin: 0;
+}
+
+.prompt-composition-heading-row p,
+.prompt-editor-header p {
+  margin: 4px 0 0;
+  color: GrayText;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.prompt-request-mode {
+  display: grid;
+  gap: 4px;
+  min-width: min(100%, 190px);
+  color: CanvasText;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.prompt-request-mode select {
+  width: 100%;
+  min-width: 0;
+}
+
+.prompt-composition-flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 6px;
+}
+
+.prompt-composition-part,
+.prompt-composition-result {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid var(--settings-group-border);
+  border-radius: 7px;
+  color: CanvasText;
+  background: color-mix(in srgb, CanvasText 3%, transparent);
+}
+
+.prompt-composition-part {
+  cursor: default;
+}
+
+.prompt-composition-part[data-active="true"] {
+  border-color: color-mix(in srgb, AccentColor 62%, var(--settings-group-border));
+  background: color-mix(in srgb, AccentColor 8%, var(--settings-group-background));
+}
+
+.prompt-composition-part:has(input:focus-visible) {
+  outline: 3px solid var(--settings-focus-ring);
+  outline-offset: 1px;
+}
+
+.prompt-composition-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.prompt-composition-title input {
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+}
+
+.prompt-composition-part > span:last-child,
+.prompt-composition-result > span {
+  color: GrayText;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.prompt-composition-operator {
+  align-self: center;
+  color: GrayText;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.prompt-editor-header {
+  margin-bottom: 10px;
+}
+
+.prompt-editor-header > div > span:first-child {
+  display: block;
+  margin-bottom: 3px;
+  color: GrayText;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.prompt-variable-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: GrayText;
+  font-size: 12px;
+}
+
+.prompt-variable-token {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--settings-group-border);
+  border-radius: 999px;
+  color: CanvasText;
+  background: var(--settings-group-background);
+  font-size: 11px;
+}
+
+.prompt-variable-token:not(:disabled):hover {
+  background: color-mix(in srgb, CanvasText 6%, var(--settings-group-background));
+}
+
+.prompt-variable-token:focus-visible {
+  outline: 3px solid var(--settings-focus-ring);
+  outline-offset: 1px;
+}
+
+.prompt-variable-token[data-state="inserted"] {
+  border-color: color-mix(in srgb, AccentColor 48%, var(--settings-group-border));
+  background: color-mix(in srgb, AccentColor 7%, var(--settings-group-background));
+}
+
+.prompt-variable-token[data-state="duplicate"] {
+  color: MarkText;
+  background: Mark;
+}
+
+.prompt-variable-token code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 11px;
+}
+
+.prompt-variable-state {
+  color: GrayText;
+  font-size: 10px;
+}
+
+.prompt-no-variables {
+  font-style: italic;
+}
+
+.prompt-form {
+  min-height: 0;
+  display: grid;
+  gap: 0;
+}
+
+.prompt-editor-meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prompt-editor-meta p {
+  margin-top: 6px;
+}
+
+.prompt-character-count {
+  flex: 0 0 auto;
+  margin-top: 7px;
+  color: GrayText;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.prompt-character-count[data-over-limit="true"] {
+  color: MarkText;
+  background: Mark;
+}
+
+.prompt-validation {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.prompt-preview-section {
+  overflow: clip;
+}
+
+.prompt-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--settings-group-border);
+}
+
+.prompt-preview-heading {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.prompt-preview-heading h2 {
+  margin: 0;
+}
+
+.prompt-preview-heading > span,
+.prompt-preview-status {
+  color: GrayText;
+  font-size: 11px;
+}
+
+.prompt-preview-content {
+  padding: 14px;
+}
+
+.prompt-preview-output {
+  max-height: 420px;
+  min-height: 180px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--settings-group-border);
+  border-radius: 6px;
+  color: FieldText;
+  background: Field;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt-preview-errors {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: MarkText;
+  background: Mark;
+  font-size: 12px;
+}
+
+.prompt-preview-errors p,
+.prompt-preview-errors ul {
+  margin: 0;
+}
+
+.prompt-preview-errors ul {
+  padding-left: 18px;
+}
+
+.prompt-transport-note {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  color: GrayText;
+  background: color-mix(in srgb, AccentColor 7%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-empty-state {
+  color: GrayText;
 }
 
 .primary {
@@ -1421,9 +1916,11 @@ fieldset {
 }
 
 @media (max-height: 700px) {
-  .settings-shell {
-    padding: 14px 20px;
-    gap: 12px;
+  .settings-sidebar {
+    padding-block: 12px;
+  }
+  .settings-detail {
+    padding: 16px 20px;
   }
   :host([data-platform="macos"]) .settings-group {
     padding: 12px;
@@ -1432,7 +1929,7 @@ fieldset {
     margin-bottom: 6px;
   }
   .settings-shell .prompt-editor {
-    min-height: 6rem;
+    min-height: 160px;
   }
   .settings-shell .help {
     margin-top: 4px;
@@ -1445,32 +1942,8 @@ fieldset {
   .settings-shell .runtime-status {
     margin: 4px 0;
   }
-  .settings-shell footer {
-    padding-top: 8px;
-  }
-}
-
-@media (max-width: 480px), (max-height: 520px) {
-  .settings-shell {
-    padding: 16px;
-    gap: 16px;
-  }
-}
-
-@media (max-width: 420px) {
-  .directory-row,
-  .permission-row {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .directory-row input {
-    width: 100%;
-  }
-  .agent-actions {
-    justify-content: stretch;
-  }
-  .agent-actions button {
-    flex: 1 1 12rem;
+  .settings-detail-header {
+    margin-bottom: 12px;
   }
 }
 

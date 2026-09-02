@@ -1241,13 +1241,6 @@ impl LensInput {
         serde_json::to_string(self)
     }
 
-    pub fn to_markdown(&self) -> Result<String, serde_json::Error> {
-        Ok(format!(
-            "## Lens context\n\n```json\n{}\n```",
-            self.to_json()?
-        ))
-    }
-
     pub fn serialized_len(&self) -> Result<usize, serde_json::Error> {
         serde_json::to_vec(self).map(|json| json.len())
     }

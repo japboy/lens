@@ -28,10 +28,18 @@ export type LensStage =
   | "cancelled"
   | "failed";
 
+export interface AgentPromptTemplate {
+  schema_version: number;
+  common: string;
+  full_projection: string;
+  source_checkpoint: string;
+  current_projection_retry: string;
+}
+
 export interface AppConfig {
   agent: AgentKind;
   working_directory: string;
-  response_prompt: string;
+  agent_prompt_template: AgentPromptTemplate;
 }
 
 export interface Bounds {

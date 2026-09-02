@@ -1,4 +1,5 @@
 import type { DesktopPlatform } from "../presentation-context";
+import type { SettingsDestination } from "../agent-prompt-template";
 import type {
   AgentRuntimeState,
   AgentSelectionState,
@@ -8,9 +9,27 @@ import type {
 } from "../types";
 import { STAGE_LABEL } from "../view-model";
 import type { AccessibilityPermissionState } from "./accessibility-permission-controller";
-import { commandMessage, isPendingCommand, type CommandState } from "./command-state";
+import { snapshotConnectionMessage, type SnapshotConnectionState } from "./app-snapshot-controller";
+import {
+  commandMessage,
+  isPendingCommand,
+  type CommandIdentity,
+  type CommandState,
+} from "./command-state";
 
 export type PromptSynchronization = "preserve-local-draft" | "accept-parent-value";
+
+export type SettingsFeedbackTarget = "application" | SettingsDestination;
+
+export type SettingsFeedback =
+  | { stage: "none" }
+  | {
+      stage: "status" | "error";
+      target: SettingsFeedbackTarget;
+      message: string;
+    };
+
+export type SettingsFeedbackMessage = Exclude<SettingsFeedback, { stage: "none" }>;
 
 const DEFAULT_AGENT_SELECTION: AgentSelectionState = {
   stage: "unselected",
@@ -30,8 +49,8 @@ export interface SettingsViewModel {
   permission: AccessibilityPermissionState;
   pending: boolean;
   promptSynchronization: PromptSynchronization;
-  message: string;
   lensStageLabel: string;
+  feedback: SettingsFeedback;
 }
 
 export interface TargetSelectionViewModel {
@@ -53,12 +72,66 @@ function presentationMessage(command: CommandState, connectionMessage: string): 
   return commandMessage(command) || connectionMessage;
 }
 
+type SettingsCommandType = Extract<CommandIdentity, { scope: "settings" }>["type"];
+
+function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestination {
+  switch (command) {
+    case "select-agent":
+    case "authenticate-agent-selection":
+    case "reauthenticate-agent-selection":
+    case "sign-out-agent-selection":
+    case "choose-directory":
+    case "request-accessibility-permission":
+      return "general";
+    case "save-agent-prompt-template":
+    case "reset-agent-prompt-template":
+      return "agent-prompt";
+  }
+}
+
+function connectionFeedback(connection: SnapshotConnectionState): SettingsFeedback {
+  switch (connection.stage) {
+    case "subscribing":
+    case "loading":
+      return {
+        stage: "status",
+        target: "application",
+        message: snapshotConnectionMessage(connection),
+      };
+    case "ready":
+      return { stage: "none" };
+    case "failed":
+      return {
+        stage: "error",
+        target: "application",
+        message: snapshotConnectionMessage(connection),
+      };
+  }
+}
+
+function settingsFeedback(
+  command: CommandState,
+  connection: SnapshotConnectionState,
+): SettingsFeedback {
+  if (
+    (command.stage === "succeeded" || command.stage === "failed") &&
+    command.command.scope === "settings"
+  ) {
+    return {
+      stage: command.stage === "failed" ? "error" : "status",
+      target: settingsFeedbackTarget(command.command.type),
+      message: command.message,
+    };
+  }
+  return connectionFeedback(connection);
+}
+
 export function settingsViewModel(
   platform: DesktopPlatform,
   snapshot: AppSnapshot | undefined,
   permission: AccessibilityPermissionState,
   command: CommandState,
-  connectionMessage: string,
+  connection: SnapshotConnectionState,
 ): SettingsViewModel {
   const lens = snapshot?.lens ?? DEFAULT_LENS;
   return {
@@ -69,14 +142,13 @@ export function settingsViewModel(
     permission,
     pending: command.stage === "pending",
     promptSynchronization:
-      command.stage !== "idle" &&
+      command.stage === "succeeded" &&
       command.command.scope === "settings" &&
-      command.command.type === "reset-response-prompt" &&
-      command.stage !== "failed"
+      command.command.type === "reset-agent-prompt-template"
         ? "accept-parent-value"
         : "preserve-local-draft",
-    message: presentationMessage(command, connectionMessage),
     lensStageLabel: STAGE_LABEL[lens.stage],
+    feedback: settingsFeedback(command, connection),
   };
 }
 
