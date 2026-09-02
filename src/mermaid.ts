@@ -1,5 +1,6 @@
+import type { Config } from "dompurify";
 import type { Mermaid, MermaidConfig, RenderResult } from "mermaid";
-import { sanitizeMermaidSvg } from "./markdown";
+import { MERMAID_HTML_LABEL_TAGS, sanitizeMermaidSvg } from "./markdown";
 
 export type MermaidTheme = "default" | "dark";
 
@@ -21,6 +22,12 @@ interface MermaidRenderOptions {
 const MERMAID_CODE_SELECTOR = "pre > code.language-mermaid";
 const MAX_MERMAID_TEXT_SIZE = 50_000;
 const MAX_MERMAID_EDGES = 500;
+const MERMAID_LABEL_INPUT_SANITIZE_OPTIONS: Config = {
+  ALLOWED_TAGS: [...MERMAID_HTML_LABEL_TAGS],
+  ALLOWED_ATTR: [],
+  ALLOW_ARIA_ATTR: false,
+  ALLOW_DATA_ATTR: false,
+};
 const SECURE_MERMAID_CONFIG_KEYS = [
   "secure",
   "securityLevel",
@@ -54,8 +61,9 @@ function renderConfiguration(theme: MermaidTheme, seed: string): MermaidConfig {
     darkMode: theme === "dark",
     deterministicIDSeed: seed,
     deterministicIds: true,
+    dompurifyConfig: MERMAID_LABEL_INPUT_SANITIZE_OPTIONS,
     handDrawnSeed: 1,
-    htmlLabels: false,
+    htmlLabels: true,
     logLevel: "fatal",
     maxEdges: MAX_MERMAID_EDGES,
     maxTextSize: MAX_MERMAID_TEXT_SIZE,
@@ -88,11 +96,13 @@ function replaceCodeBlock(code: HTMLElement, result: RenderResult): void {
   if (!(pre instanceof HTMLPreElement)) return;
 
   const svg = sanitizeMermaidSvg(result.svg);
-  if (!svg.trim()) throw new Error("Mermaid returned an empty SVG after sanitization.");
+  if (svg.querySelector("svg") === null) {
+    throw new Error("Mermaid returned an empty SVG after sanitization.");
+  }
 
   const figure = document.createElement("figure");
   figure.className = "mermaid-diagram";
-  figure.innerHTML = svg;
+  figure.replaceChildren(svg);
   pre.replaceWith(figure);
 }
 
