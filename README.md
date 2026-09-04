@@ -1,4 +1,8 @@
-# Lens
+<p align="center">
+  <img src="src-tauri/icons/icon-macos.svg" alt="Lens app icon" width="128" height="128">
+</p>
+
+<h1 align="center">Lens</h1>
 
 Lens is a menu-bar-first application that reads the Accessibility Trees of selected macOS application windows, captures AX-identified image regions when present, and transforms that structured multimodal information through an ACP agent selected by the user.
 
@@ -26,6 +30,12 @@ Interpretation is Lens's user-facing concept: understanding selected information
 macOS 15.2 is the minimum because it is the first version that provides the public `includedWindows` API needed to deterministically obtain the selected `SCWindow` from the `SCContentFilter` returned by the native picker.
 
 ## Development
+
+### Icon resources
+
+The [canonical monochrome SVG](src-tauri/icons/icon.svg) is the single source for the Lens mark. The application uses a derived smoked-glass treatment; the menu bar uses the undecorated template symbol. Run `pnpm run generate:icons` after changing the source or its generation contract. `pnpm run check:icons` verifies every generated resource and also runs in portable CI. See [icon resources](src-tauri/icons/README.md) for appearance and platform boundaries.
+
+### Build and run
 
 ```sh
 mise trust

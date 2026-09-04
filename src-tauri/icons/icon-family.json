@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "source": "icon.svg",
+  "appearances": {
+    "light": {
+      "color": "#000000"
+    },
+    "dark": {
+      "color": "#ffffff"
+    },
+    "monochrome": {
+      "color": "#000000"
+    }
+  },
+  "projections": {
+    "light": "icon-light.svg",
+    "dark": "icon-dark.svg",
+    "monochrome": "icon-monochrome.svg"
+  },
+  "outputs": {
+    "richMark": "icon-rich.svg",
+    "macos": "icon-macos.svg",
+    "ios": "icon-ios.svg",
+    "androidForeground": "android-foreground.svg",
+    "androidMonochrome": "android-monochrome.svg",
+    "androidBackground": "android-background.svg",
+    "tauriManifest": "tauri-icon-manifest.json",
+    "trayRaster": "tray-icon-template@2x.png"
+  },
+  "application": {
+    "treatment": "smoked-glass",
+    "macosScale": 84
+  },
+  "tauri": {
+    "iosBackground": "#ffffff",
+    "androidBackground": "#ffffff",
+    "androidLogoDiameter": 64
+  },
+  "tray": {
+    "appearance": "monochrome",
+    "pixels": 36,
+    "points": 18
+  }
+}

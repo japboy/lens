@@ -1132,6 +1132,38 @@ mod tests {
                 .any(|pixel| pixel[3] > 0),
             "template image must contain visible artwork"
         );
+
+        let alpha_at = |x: u32, y: u32| {
+            let alpha_index = ((y * icon.width() + x) * 4 + 3) as usize;
+            icon.rgba()[alpha_index]
+        };
+        assert_eq!(
+            alpha_at(18, 4),
+            u8::MAX,
+            "the circular frame must remain opaque"
+        );
+        assert!(
+            [alpha_at(22, 14), alpha_at(11, 19)]
+                .into_iter()
+                .all(|alpha| alpha == u8::MAX),
+            "both canonical lens surfaces must remain opaque"
+        );
+        assert_eq!(
+            alpha_at(18, 7),
+            0,
+            "the frame and lens must remain separated by transparent space"
+        );
+        assert!(
+            [
+                alpha_at(15, 14),
+                alpha_at(20, 21),
+                alpha_at(32, 24),
+                alpha_at(32, 28)
+            ]
+            .into_iter()
+            .all(|alpha| alpha == 0),
+            "the L reflection and retired chain area must remain transparent"
+        );
     }
 
     #[test]
