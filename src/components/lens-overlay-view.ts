@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel } from "../application/view-models";
 import type { LensRepresentation, LensState } from "../types";
+import { composeOutputMedia } from "../output-media";
 import {
   sharedApplicationStyles,
   sharedIconStyles,
@@ -10,6 +11,7 @@ import {
 } from "../styles/component-styles";
 import {
   lensLiveStatus,
+  lensOutputPresentation,
   lensProgressSnackbar,
   lensSourceJson,
   STAGE_LABEL,
@@ -36,6 +38,21 @@ type LensTab = (typeof LENS_TABS)[number]["id"];
 interface InterpretationScrollPosition {
   readonly top: number;
   readonly wasAtBottom: boolean;
+  readonly hadMedia: boolean;
+}
+
+interface OverlayNotification {
+  readonly title: string;
+  readonly detail: string;
+  readonly busy: boolean;
+  readonly prominent: boolean;
+}
+
+function overlayNotification(lens: LensState): OverlayNotification | undefined {
+  const liveStatus = lensLiveStatus(lens.live);
+  if (lens.representation) return liveStatus;
+  const progress = lensProgressSnackbar(lens.stage);
+  return progress ? { ...progress, busy: true, prominent: true } : liveStatus;
 }
 
 @customElement("lens-overlay-view")
@@ -55,6 +72,10 @@ export class LensOverlayView extends LitElement {
   private hasSynchronizedOperation = false;
   private pendingScrollPosition: InterpretationScrollPosition | undefined;
   private restoreInterpretationFocus = false;
+  private notificationIdentity: string | undefined;
+
+  @state()
+  private notificationVisibility: "open" | "closed" = "closed";
 
   protected willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("model")) return;
@@ -63,6 +84,22 @@ export class LensOverlayView extends LitElement {
       this.activeTab = "interpretation";
     }
     if (this.model) this.synchronizeRepresentation(this.model.lens);
+    const notification = this.model
+      ? overlayNotification(this.lensWithDisplayedRepresentation(this.model.lens))
+      : undefined;
+    const identity = notification
+      ? JSON.stringify([
+          this.model?.lens.operation_id,
+          notification.title,
+          notification.detail,
+          notification.busy,
+          notification.prominent,
+        ])
+      : undefined;
+    if (identity !== this.notificationIdentity) {
+      this.notificationIdentity = identity;
+      this.notificationVisibility = notification?.prominent ? "open" : "closed";
+    }
   }
 
   protected render() {
@@ -90,26 +127,24 @@ export class LensOverlayView extends LitElement {
     const canCancel = lens.stage === "connecting" || lens.stage === "transforming";
     const canRetry =
       Boolean(lens.input) && (lens.stage === "authentication_required" || lens.stage === "failed");
-    const progressSnackbar = lensProgressSnackbar(lens.stage);
     const liveStatus = lensLiveStatus(lens.live);
     const displayLens = this.lensWithDisplayedRepresentation(lens);
-    const hasSettledRepresentation = Boolean(displayLens.representation);
-    const initialProgressStatus = progressSnackbar
-      ? {
-          title: progressSnackbar.title,
-          detail: progressSnackbar.detail,
-          busy: true,
-          prominent: true,
-        }
-      : undefined;
-    const announcedStatus = hasSettledRepresentation
-      ? liveStatus
-      : (initialProgressStatus ?? liveStatus);
-    const showStatusSnackbar = Boolean(announcedStatus?.prominent);
+    const announcedStatus = overlayNotification(displayLens);
+    const showStatusSnackbar = Boolean(announcedStatus && this.notificationVisibility === "open");
     const persistentStatus = liveStatus;
+    const outputMedia = composeOutputMedia(lensOutputPresentation(displayLens));
+    const hasMediaCue =
+      this.activeTab === "interpretation" &&
+      outputMedia.media.length > 0 &&
+      outputMedia.narrative.length > 0;
 
     return html`
-      <div class="overlay-shell" @lens-agent-output-intent=${this.forwardOutputIntent}>
+      <div
+        class="overlay-shell"
+        data-progress=${showStatusSnackbar ? "true" : "false"}
+        data-media-cue=${hasMediaCue ? "true" : "false"}
+        @lens-agent-output-intent=${this.forwardOutputIntent}
+      >
         <header class="overlay-header" data-tauri-drag-region="deep">
           <div class="overlay-brand">
             <img class="overlay-app-icon" src=${appIconUrl} alt="" />
@@ -171,7 +206,7 @@ export class LensOverlayView extends LitElement {
               title=${lens.operation_id ? "Stop Lens and close" : "Close Lens"}
               @click=${() => this.emit({ type: "close" })}
             >
-              <span class="close-icon" aria-hidden="true"></span>
+              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
           </div>
         </header>
@@ -192,7 +227,7 @@ export class LensOverlayView extends LitElement {
           </div>
         </nav>
 
-        <main class="overlay-main" data-progress=${showStatusSnackbar ? "true" : "false"}>
+        <main class="overlay-main">
           ${model.message ? html`<p class="error" role="alert">${model.message}</p>` : nothing}
           ${lens.error ? html`<p class="error" role="alert">${lens.error}</p>` : nothing}
           ${
@@ -221,49 +256,74 @@ export class LensOverlayView extends LitElement {
           ${this.renderActivePanel(lens, displayLens, sourceJson)}
         </main>
 
+        <div id="lens-progress-notification" class="lens-progress-region">
+          ${
+            announcedStatus
+              ? html`<div
+                  class=${showStatusSnackbar ? "lens-progress-snackbar" : "visually-hidden"}
+                >
+                  <div
+                    class="lens-status-announcement"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    <i
+                      class=${
+                        announcedStatus.busy
+                          ? "fa-solid fa-spinner fa-spin"
+                          : "fa-solid fa-circle-info lens-status-icon"
+                      }
+                      aria-hidden="true"
+                    ></i>
+                    <span class="lens-progress-copy">
+                      <strong>${announcedStatus.title}</strong>
+                      <span>${announcedStatus.detail}</span>
+                    </span>
+                  </div>
+                  ${
+                    showStatusSnackbar
+                      ? html`<button
+                          type="button"
+                          class="close-button lens-progress-dismiss"
+                          aria-label="Dismiss notification"
+                          title="Dismiss notification"
+                          @click=${this.dismissNotification}
+                        >
+                          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                        </button>`
+                      : nothing
+                  }
+                </div>`
+              : nothing
+          }
+        </div>
+
         <footer class="overlay-footer">
-          <div class="lens-progress-region">
-            ${
-              announcedStatus && showStatusSnackbar
-                ? html`<div class="lens-progress-snackbar">
-                    <div
-                      class="lens-status-announcement"
-                      role="status"
-                      aria-live="polite"
-                      aria-atomic="true"
-                    >
-                      <i
-                        class=${
-                          announcedStatus.busy
-                            ? "fa-solid fa-spinner fa-spin"
-                            : "fa-solid fa-circle-info lens-status-icon"
-                        }
-                        aria-hidden="true"
-                      ></i>
-                      <span class="lens-progress-copy">
-                        <strong>${announcedStatus.title}</strong>
-                        <span>${announcedStatus.detail}</span>
-                      </span>
-                    </div>
-                  </div>`
-                : announcedStatus
-                  ? html`<span
-                      class="visually-hidden"
-                      role="status"
-                      aria-live="polite"
-                      aria-atomic="true"
-                      >${announcedStatus.title}. ${announcedStatus.detail}</span
-                    >`
-                  : nothing
-            }
-          </div>
-          <div
-            class="overlay-footer-status"
-            title=${persistentStatus?.detail ?? STAGE_LABEL[lens.stage]}
-          >
-            <span class="overlay-stage-indicator" aria-hidden="true"></span>
-            <span class="overlay-stage">${persistentStatus?.title ?? STAGE_LABEL[lens.stage]}</span>
-          </div>
+          ${
+            announcedStatus
+              ? html`<button
+                  type="button"
+                  class="overlay-footer-status overlay-status-toggle"
+                  aria-controls="lens-progress-notification"
+                  aria-expanded=${showStatusSnackbar ? "true" : "false"}
+                  aria-label="${showStatusSnackbar ? "Hide" : "Show"} status details: ${announcedStatus.title}"
+                  title=${showStatusSnackbar ? "Hide status details" : "Show status details"}
+                  @click=${this.toggleNotification}
+                >
+                  <span class="overlay-stage-indicator" aria-hidden="true"></span>
+                  <span class="overlay-stage">${announcedStatus.title}</span>
+                </button>`
+              : html`<div
+                  class="overlay-footer-status"
+                  title=${persistentStatus?.detail ?? STAGE_LABEL[lens.stage]}
+                >
+                  <span class="overlay-stage-indicator" aria-hidden="true"></span>
+                  <span class="overlay-stage"
+                    >${persistentStatus?.title ?? STAGE_LABEL[lens.stage]}</span
+                  >
+                </div>`
+          }
           ${
             context
               ? html`<span class="quality quality-${context.quality}">${context.quality}</span>`
@@ -390,6 +450,19 @@ export class LensOverlayView extends LitElement {
     dispatchComponentEvent(this, OVERLAY_INTENT_EVENT, intent);
   }
 
+  private dismissNotification = (): void => {
+    this.notificationVisibility = "closed";
+    void this.updateComplete.then(() => {
+      this.renderRoot
+        .querySelector<HTMLButtonElement>(".overlay-status-toggle")
+        ?.focus({ preventScroll: true });
+    });
+  };
+
+  private toggleNotification = (): void => {
+    this.notificationVisibility = this.notificationVisibility === "open" ? "closed" : "open";
+  };
+
   private activateTab(tab: LensTab): void {
     this.activeTab = tab;
   }
@@ -445,6 +518,7 @@ export class LensOverlayView extends LitElement {
     return {
       top: output.scrollTop,
       wasAtBottom: maximum - output.scrollTop <= 36,
+      hadMedia: output.classList.contains("has-media"),
     };
   }
 
@@ -461,7 +535,13 @@ export class LensOverlayView extends LitElement {
     this.pendingScrollPosition = undefined;
     if (output && position) {
       const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
-      output.scrollTop = position.wasAtBottom ? maximum : Math.min(position.top, maximum);
+      output.scrollTop = output.classList.contains("has-media")
+        ? position.hadMedia
+          ? Math.min(position.top, maximum)
+          : 0
+        : position.wasAtBottom
+          ? maximum
+          : Math.min(position.top, maximum);
     }
     if (this.restoreInterpretationFocus) {
       this.restoreInterpretationFocus = false;

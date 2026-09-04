@@ -22,6 +22,7 @@ export interface StreamingMarkdownState {
   operationId?: string;
   markdown: string;
   phase: MarkdownRenderPhase;
+  scrollBehavior?: "follow" | "preserve";
 }
 
 const EMPTY_STATE: StreamingMarkdownState = {
@@ -59,8 +60,6 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   connectedCallback(): void {
-    const scrollContainer = this.closest<HTMLElement>(AUTO_SCROLL_CONTAINER_SELECTOR) ?? this;
-    this.autoScroller ??= createAutoScroller(scrollContainer, { threshold: 36, smooth: false });
     this.colorScheme ??= window.matchMedia("(prefers-color-scheme: dark)");
     this.colorScheme.addEventListener?.("change", this.handleColorSchemeChange);
     this.applyState(this.pendingState);
@@ -82,6 +81,13 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   private applyState(next: StreamingMarkdownState): void {
+    if (next.scrollBehavior === "preserve") {
+      this.autoScroller?.destroy();
+      this.autoScroller = undefined;
+    } else if (!this.autoScroller) {
+      const container = this.closest<HTMLElement>(AUTO_SCROLL_CONTAINER_SELECTOR) ?? this;
+      this.autoScroller = createAutoScroller(container, { threshold: 36, smooth: false });
+    }
     const previous = this.appliedState;
     const operationChanged = previous?.operationId !== next.operationId;
     if (operationChanged) {

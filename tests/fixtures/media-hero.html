@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lens media layout fixture</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; color-scheme: light dark; }
+    body { background: Canvas; color: CanvasText; font: 13px system-ui; }
+    lens-overlay-view { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <lens-overlay-view></lens-overlay-view>
+  <script type="module">
+    import "/src/styles/document.css";
+    import "/src/components/lens-overlay-view.ts";
+    import notifications from "./acp-media-hero.json";
+    const params = new URLSearchParams(location.search);
+    const choice = params.get("media") ?? "mixed";
+    const transforming = params.get("stage") === "transforming";
+    const attention = params.get("status") === "attention";
+    const longContext = params.get("context") === "long";
+    const context = {
+      schema_version: 1, context_id: "media-hero-fixture", revision: 1,
+      sources: [], media: [], media_omissions: [], quality: "full",
+      diagnostics: Array.from({ length: 30 }, (_, index) =>
+        `Fixture diagnostic ${index + 1}: the complete message must remain readable at the scroll end.`),
+    };
+    const input = {
+      schema_version: 1, context_id: "media-hero-fixture", context_revision: 1,
+      sources: [{
+        source_id: "fixture", target_id: "fixture", source_revision: 1,
+        source: { application: "Lens Fixture", window_title: "Notification visibility", bundle_id: "fixture", window_id: 1 },
+        document: { nodes: Array.from({ length: 20 }, (_, index) => ({
+          id: `node-${index}`, kind: "paragraph", value: `Structured source paragraph ${index + 1}.`,
+        })) },
+        quality: "full", omissions: [],
+      }],
+      media: [], media_omissions: [], quality: "full",
+    };
+    const indices = { landscape: 0, portrait: 1, square: 2 };
+    const images = notifications.slice(0, 3).map(({ params }) => ({
+      type: "image", mime_type: "image/png", data: params.update.content.data,
+    }));
+    const selected = choice === "none" ? [] : choice in indices ? [images[indices[choice]]] : images;
+    const blocks = [...selected, { type: "markdown", text: notifications[3].params.update.content.text }];
+    document.querySelector("lens-overlay-view").model = {
+      platform: "macos",
+      lens: {
+        operation_id: "media-hero-fixture",
+        stage: transforming ? "transforming" : "completed",
+        output_blocks: blocks,
+        context: longContext ? context : undefined,
+        input: longContext ? input : undefined,
+        live: attention ? {
+          lifecycle: "watching", health: "unavailable", freshness: "unverified",
+          agent_refresh_interval_seconds: 180,
+        } : undefined,
+        representation: transforming ? undefined : {
+          representation_id: "media-hero-fixture:1", context_id: "fixture", context_revision: 1,
+          projection: { revision: 1, digest: "sha256:fixture" }, run_id: "fixture", output_blocks: blocks,
+        },
+      },
+      pending: false, cancelPending: false, message: "",
+    };
+  </script>
+</body>
+</html>

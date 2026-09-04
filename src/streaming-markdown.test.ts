@@ -109,6 +109,36 @@ describe("streaming Agent Markdown", () => {
     expect(element.textContent).not.toContain("Old response.");
   });
 
+  it("stops following when media takes ownership of the opening viewport", async () => {
+    const container = document.createElement("div");
+    container.setAttribute("data-auto-scroll-container", "");
+    Object.defineProperty(container, "scrollHeight", { value: 800 });
+    const scrollTo = vi.fn<HTMLElement["scrollTo"]>();
+    Object.defineProperty(container, "scrollTo", { value: scrollTo });
+    const element = document.createElement("lens-markdown") as StreamingMarkdownElement;
+    container.append(element);
+    document.body.append(container);
+    element.state = {
+      operationId: "media-stream",
+      markdown: "First paragraph.\n\n",
+      phase: "streaming",
+    };
+    element.flush();
+    await vi.waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    scrollTo.mockClear();
+    element.state = {
+      ...element.state,
+      markdown: "First paragraph.\n\nA second paragraph.\n",
+      scrollBehavior: "preserve",
+    };
+    element.flush();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    expect(element.textContent).toContain("A second paragraph.");
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
   it("auto-scrolls the declared ancestor scroll container", async () => {
     const container = document.createElement("div");
     container.setAttribute("data-auto-scroll-container", "");
