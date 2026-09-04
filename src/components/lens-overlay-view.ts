@@ -313,10 +313,7 @@ export class LensOverlayView extends LitElement {
                 >
                   <span class="overlay-stage-indicator" aria-hidden="true"></span>
                   <span class="overlay-stage">${announcedStatus.title}</span>
-                  <i
-                    class=${showStatusSnackbar ? "fa-solid fa-chevron-down" : "fa-solid fa-chevron-up"}
-                    aria-hidden="true"
-                  ></i>
+                  <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
                 </button>`
               : html`<div
                   class="overlay-footer-status"
