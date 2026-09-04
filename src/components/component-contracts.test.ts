@@ -823,3 +823,108 @@ describe("component property and event contracts", () => {
     );
   });
 });
+
+describe("progress notification visibility", () => {
+  async function mount(lens: LensState) {
+    const element = document.createElement("lens-overlay-view") as HTMLElement & {
+      model: OverlayViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = { platform: "macos", lens, pending: false, cancelPending: false, message: "" };
+    document.body.append(element);
+    await element.updateComplete;
+    return element;
+  }
+
+  it("dismisses and reopens the same notification without cancelling or moving content", async () => {
+    const element = await mount({
+      operation_id: "operation",
+      stage: "transforming",
+      output_blocks: [{ type: "markdown", text: "Continuing interpretation." }],
+    });
+    const root = element.shadowRoot!;
+    const received = vi.fn<EventListener>();
+    element.addEventListener(OVERLAY_INTENT_EVENT, received);
+    const toggle = root.querySelector<HTMLButtonElement>(".overlay-status-toggle")!;
+    const announcement = root.querySelector(".lens-status-announcement");
+    expect(toggle.getAttribute("aria-controls")).toBe("lens-progress-notification");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const output = root.querySelector<HTMLElement>(".lens-output")!;
+    output.scrollTop = 120;
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(root.activeElement).toBe(toggle);
+    expect(root.querySelector(".lens-status-announcement")).toBe(announcement);
+    expect(root.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(output.scrollTop).toBe(120);
+    element.model = { ...element.model, lens: { ...element.model.lens } };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    root.querySelector<HTMLButtonElement>("#source-tab")!.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    toggle.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    toggle.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    expect(received).not.toHaveBeenCalled();
+  });
+
+  it("opens a changed notification or a new operation after dismissal", async () => {
+    const lens = liveLens(representation("published", 1, "Retained interpretation."));
+    const element = await mount({
+      ...lens,
+      live: {
+        ...lens.live!,
+        health: "unavailable",
+        freshness: "unverified",
+        error: "Capture unavailable.",
+      },
+    });
+    const root = element.shadowRoot!;
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    element.model = {
+      ...element.model,
+      lens: {
+        ...element.model.lens,
+        live: { ...element.model.lens.live!, error: "Capture permission changed." },
+      },
+    };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")?.textContent).toContain(
+      "Capture permission changed.",
+    );
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    element.model = {
+      ...element.model,
+      lens: { ...element.model.lens, operation_id: "new-operation" },
+    };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
+  });
+
+  it("shows quiet status details only when requested from the footer", async () => {
+    const element = await mount(liveLens(representation("published", 1, "Interpretation.")));
+    const root = element.shadowRoot!;
+    const toggle = root.querySelector<HTMLButtonElement>(".overlay-status-toggle")!;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    expect(toggle.textContent).toContain("Watching");
+    toggle.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")?.textContent).toContain("Watching");
+    element.model = { ...element.model, lens: { ...element.model.lens, live: undefined } };
+    await element.updateComplete;
+    expect(root.querySelector(".overlay-status-toggle")).toBeNull();
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    expect(root.querySelector(".overlay-footer-status")?.textContent).toContain(
+      "Transformation complete",
+    );
+  });
+});
