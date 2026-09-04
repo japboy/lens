@@ -1,6 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import appIconUrl from "../../src-tauri/icons/icon.png?url";
+import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel } from "../application/view-models";
 import type { LensRepresentation, LensState } from "../types";
 import {

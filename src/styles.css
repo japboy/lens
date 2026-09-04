@@ -987,9 +987,7 @@ fieldset {
   display: block;
   width: 28px;
   height: 28px;
-  border-radius: 7px;
-  object-fit: cover;
-  box-shadow: 0 1px 3px color-mix(in srgb, CanvasText 18%, transparent);
+  object-fit: contain;
 }
 
 .overlay-header-actions {

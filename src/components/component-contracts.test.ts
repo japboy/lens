@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../application/view-models";
 import type {
   AgentPromptTemplate,
@@ -396,6 +397,9 @@ describe("component property and event contracts", () => {
       (button) => button.textContent?.trim() === "Cancel",
     );
     expect(cancel?.disabled).toBe(false);
+    const appIcon = element.shadowRoot?.querySelector<HTMLImageElement>(".overlay-app-icon");
+    expect(appIcon?.getAttribute("src")).toBe(appIconUrl);
+    expect(appIcon?.alt).toBe("");
     const progressRegion = element.shadowRoot?.querySelector(".lens-progress-region");
     const progressStatus = progressRegion?.querySelector(".lens-status-announcement");
     expect(progressStatus?.getAttribute("role")).toBe("status");

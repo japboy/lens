@@ -4,6 +4,14 @@ import { describe, expect, it } from "vitest";
 const componentStyles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const documentStyles = readFileSync(new URL("./styles/document.css", import.meta.url), "utf8");
 
+describe("canonical application icon presentation", () => {
+  it("preserves the generated composition without another mask or shadow", () => {
+    const declarations = componentStyles.match(/\.overlay-app-icon \{([^}]+)\}/u)?.[1];
+    expect(declarations).toContain("object-fit: contain;");
+    expect(declarations).not.toMatch(/border-radius|box-shadow/u);
+  });
+});
+
 describe("macOS Settings surface colors", () => {
   it("derives low-contrast groups from AppKit's dynamic window and content colors", () => {
     const macosSettingsColors = componentStyles.match(
