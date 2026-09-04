@@ -404,8 +404,8 @@ describe("component property and event contracts", () => {
     const progressStatus = progressRegion?.querySelector(".lens-status-announcement");
     expect(progressStatus?.getAttribute("role")).toBe("status");
     expect(progressStatus?.getAttribute("aria-live")).toBe("polite");
-    expect(progressRegion?.parentElement?.classList.contains("overlay-footer")).toBe(true);
-    expect(element.shadowRoot?.querySelector(".overlay-main .lens-progress-region")).toBeNull();
+    expect(progressRegion?.parentElement?.classList.contains("overlay-shell")).toBe(true);
+    expect(progressRegion?.closest(".overlay-main, .overlay-footer, .lens-panel")).toBeNull();
     expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
       "Transforming content",
     );
@@ -681,6 +681,49 @@ describe("component property and event contracts", () => {
         );
         expect(output.scrollTop).toBe(expected);
       });
+    },
+  );
+
+  it.each([
+    { top: 0, initialHeight: 400, expected: 0 },
+    { top: 600, initialHeight: 1000, expected: 600 },
+  ])(
+    "preserves media reading position on settled replacement at $top",
+    async ({ top, initialHeight, expected }) => {
+      const withMedia = (id: string, revision: number): LensRepresentation => ({
+        ...representation(id, revision, "Image explanation"),
+        output_blocks: [
+          { type: "image", mime_type: "image/png", data: "aA==" },
+          { type: "markdown", text: "Image explanation" },
+        ],
+      });
+      const element = document.createElement("lens-overlay-view") as HTMLElement & {
+        model: OverlayViewModel;
+        updateComplete: Promise<boolean>;
+      };
+      element.model = {
+        platform: "macos",
+        lens: liveLens(withMedia("media-1", 1)),
+        pending: false,
+        cancelPending: false,
+        message: "",
+      };
+      document.body.append(element);
+      await vi.waitFor(() =>
+        expect(element.shadowRoot?.querySelector(".lens-output.has-media")).not.toBeNull(),
+      );
+      const output = element.shadowRoot!.querySelector<HTMLElement>(".lens-output")!;
+      let height = initialHeight;
+      Object.defineProperties(output, {
+        clientHeight: { get: () => 400 },
+        scrollHeight: { get: () => height },
+      });
+      output.scrollTop = top;
+      element.model = { ...element.model, lens: liveLens(withMedia("media-2", 2)) };
+      await element.updateComplete;
+      height = 1400;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await vi.waitFor(() => expect(output.scrollTop).toBe(expected));
     },
   );
 

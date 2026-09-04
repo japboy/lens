@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel } from "../application/view-models";
 import type { LensRepresentation, LensState } from "../types";
+import { composeOutputMedia } from "../output-media";
 import {
   sharedApplicationStyles,
   sharedIconStyles,
@@ -10,6 +11,7 @@ import {
 } from "../styles/component-styles";
 import {
   lensLiveStatus,
+  lensOutputPresentation,
   lensProgressSnackbar,
   lensSourceJson,
   STAGE_LABEL,
@@ -36,6 +38,7 @@ type LensTab = (typeof LENS_TABS)[number]["id"];
 interface InterpretationScrollPosition {
   readonly top: number;
   readonly wasAtBottom: boolean;
+  readonly hadMedia: boolean;
 }
 
 @customElement("lens-overlay-view")
@@ -107,9 +110,19 @@ export class LensOverlayView extends LitElement {
       : (initialProgressStatus ?? liveStatus);
     const showStatusSnackbar = Boolean(announcedStatus?.prominent);
     const persistentStatus = liveStatus;
+    const outputMedia = composeOutputMedia(lensOutputPresentation(displayLens));
+    const hasMediaCue =
+      this.activeTab === "interpretation" &&
+      outputMedia.media.length > 0 &&
+      outputMedia.narrative.length > 0;
 
     return html`
-      <div class="overlay-shell" @lens-agent-output-intent=${this.forwardOutputIntent}>
+      <div
+        class="overlay-shell"
+        data-progress=${showStatusSnackbar ? "true" : "false"}
+        data-media-cue=${hasMediaCue ? "true" : "false"}
+        @lens-agent-output-intent=${this.forwardOutputIntent}
+      >
         <header class="overlay-header" data-tauri-drag-region="deep">
           <div class="overlay-brand">
             <img class="overlay-app-icon" src=${appIconUrl} alt="" />
@@ -171,7 +184,7 @@ export class LensOverlayView extends LitElement {
               title=${lens.operation_id ? "Stop Lens and close" : "Close Lens"}
               @click=${() => this.emit({ type: "close" })}
             >
-              <span class="close-icon" aria-hidden="true"></span>
+              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
           </div>
         </header>
@@ -192,7 +205,7 @@ export class LensOverlayView extends LitElement {
           </div>
         </nav>
 
-        <main class="overlay-main" data-progress=${showStatusSnackbar ? "true" : "false"}>
+        <main class="overlay-main">
           ${model.message ? html`<p class="error" role="alert">${model.message}</p>` : nothing}
           ${lens.error ? html`<p class="error" role="alert">${lens.error}</p>` : nothing}
           ${
@@ -221,42 +234,43 @@ export class LensOverlayView extends LitElement {
           ${this.renderActivePanel(lens, displayLens, sourceJson)}
         </main>
 
+        <div class="lens-progress-region">
+          ${
+            announcedStatus && showStatusSnackbar
+              ? html`<div class="lens-progress-snackbar">
+                  <div
+                    class="lens-status-announcement"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    <i
+                      class=${
+                        announcedStatus.busy
+                          ? "fa-solid fa-spinner fa-spin"
+                          : "fa-solid fa-circle-info lens-status-icon"
+                      }
+                      aria-hidden="true"
+                    ></i>
+                    <span class="lens-progress-copy">
+                      <strong>${announcedStatus.title}</strong>
+                      <span>${announcedStatus.detail}</span>
+                    </span>
+                  </div>
+                </div>`
+              : announcedStatus
+                ? html`<span
+                    class="visually-hidden"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                    >${announcedStatus.title}. ${announcedStatus.detail}</span
+                  >`
+                : nothing
+          }
+        </div>
+
         <footer class="overlay-footer">
-          <div class="lens-progress-region">
-            ${
-              announcedStatus && showStatusSnackbar
-                ? html`<div class="lens-progress-snackbar">
-                    <div
-                      class="lens-status-announcement"
-                      role="status"
-                      aria-live="polite"
-                      aria-atomic="true"
-                    >
-                      <i
-                        class=${
-                          announcedStatus.busy
-                            ? "fa-solid fa-spinner fa-spin"
-                            : "fa-solid fa-circle-info lens-status-icon"
-                        }
-                        aria-hidden="true"
-                      ></i>
-                      <span class="lens-progress-copy">
-                        <strong>${announcedStatus.title}</strong>
-                        <span>${announcedStatus.detail}</span>
-                      </span>
-                    </div>
-                  </div>`
-                : announcedStatus
-                  ? html`<span
-                      class="visually-hidden"
-                      role="status"
-                      aria-live="polite"
-                      aria-atomic="true"
-                      >${announcedStatus.title}. ${announcedStatus.detail}</span
-                    >`
-                  : nothing
-            }
-          </div>
           <div
             class="overlay-footer-status"
             title=${persistentStatus?.detail ?? STAGE_LABEL[lens.stage]}
@@ -445,6 +459,7 @@ export class LensOverlayView extends LitElement {
     return {
       top: output.scrollTop,
       wasAtBottom: maximum - output.scrollTop <= 36,
+      hadMedia: output.classList.contains("has-media"),
     };
   }
 
@@ -461,7 +476,13 @@ export class LensOverlayView extends LitElement {
     this.pendingScrollPosition = undefined;
     if (output && position) {
       const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
-      output.scrollTop = position.wasAtBottom ? maximum : Math.min(position.top, maximum);
+      output.scrollTop = output.classList.contains("has-media")
+        ? position.hadMedia
+          ? Math.min(position.top, maximum)
+          : 0
+        : position.wasAtBottom
+          ? maximum
+          : Math.min(position.top, maximum);
     }
     if (this.restoreInterpretationFocus) {
       this.restoreInterpretationFocus = false;

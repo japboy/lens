@@ -1,4 +1,6 @@
-import { LitElement, html } from "lit";
+import { LitElement, html, nothing, type PropertyValues } from "lit";
+import { composeOutputMedia } from "../output-media";
+import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
 import { externalMarkdownUrl } from "../markdown";
 import "../streaming-markdown";
@@ -20,17 +22,108 @@ export class LensAgentOutput extends LitElement {
     return this;
   }
 
+  private revealFirstMedia = false;
+
+  protected willUpdate(changed: PropertyValues<this>): void {
+    if (!changed.has("lens")) return;
+    const previous = changed.get("lens");
+    const hasMedia = composeOutputMedia(lensOutputPresentation(this.lens)).media.length > 0;
+    const hadMedia = previous
+      ? composeOutputMedia(lensOutputPresentation(previous)).media.length > 0
+      : false;
+    this.revealFirstMedia =
+      hasMedia && (!hadMedia || previous?.operation_id !== this.lens.operation_id);
+  }
+
+  protected updated(): void {
+    if (!this.revealFirstMedia) return;
+    this.revealFirstMedia = false;
+    const output = this.querySelector<HTMLElement>(".lens-output");
+    if (output) output.scrollTop = 0;
+  }
+
   protected render() {
     const output = lensOutputPresentation(this.lens);
-    const blocks = output.blocks;
-    if (blocks.length) {
-      return html`<div class="lens-content lens-output" data-auto-scroll-container role="document">
-        ${blocks.map((block, index) =>
-          this.renderBlock(block, index, output.identity, output.mode, index === blocks.length - 1),
-        )}
+    const { media, narrative } = composeOutputMedia(output);
+    if (output.blocks.length) {
+      return html`<div
+        class="lens-content lens-output ${media.length ? "has-media" : ""} ${narrative.length ? "has-narrative" : ""}"
+        data-auto-scroll-container
+        role="document"
+      >
+        ${media.length ? html`<lens-output-media .media=${media}></lens-output-media>` : nothing}
+        ${
+          media.length && narrative.length
+            ? html`
+                <button
+                  type="button"
+                  class="output-media-explanation"
+                  @click=${this.showExplanation}
+                >
+                  Explore the interpretation
+                  <i class="fa-solid fa-arrow-down" aria-hidden="true"></i>
+                </button>
+              `
+            : nothing
+        }
+        ${
+          narrative.length
+            ? html`<div class="lens-output-narrative">
+                ${
+                  media.length
+                    ? html`<button
+                        type="button"
+                        class="output-media-return"
+                        @click=${this.showMedia}
+                      >
+                        <i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to media
+                      </button>`
+                    : nothing
+                }
+                ${narrative.map(({ block, index }) =>
+                  this.renderBlock(
+                    block,
+                    index,
+                    output.identity,
+                    output.mode,
+                    index === output.blocks.length - 1,
+                    media.length > 0,
+                  ),
+                )}
+              </div>`
+            : nothing
+        }
       </div>`;
     }
     return this.renderEmpty();
+  }
+
+  private showExplanation = (): void => {
+    const output = this.querySelector<HTMLElement>(".lens-output");
+    const narrative = this.querySelector<HTMLElement>(".lens-output-narrative");
+    if (!output || !narrative) return;
+    output.scrollTo({
+      top:
+        narrative.getBoundingClientRect().top -
+        output.getBoundingClientRect().top +
+        output.scrollTop,
+      behavior: this.scrollBehavior(),
+    });
+    this.querySelector<HTMLButtonElement>(".output-media-return")?.focus({ preventScroll: true });
+  };
+
+  private showMedia = (): void => {
+    this.querySelector<HTMLElement>(".lens-output")?.scrollTo({
+      top: 0,
+      behavior: this.scrollBehavior(),
+    });
+    this.querySelector<HTMLButtonElement>(".output-media-details-toggle")?.focus({
+      preventScroll: true,
+    });
+  };
+
+  private scrollBehavior(): ScrollBehavior {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth";
   }
 
   private renderBlock(
@@ -39,6 +132,7 @@ export class LensAgentOutput extends LitElement {
     identity: string | undefined,
     mode: LensOutputMode,
     isLastBlock: boolean,
+    hasMedia: boolean,
   ) {
     switch (block.type) {
       case "markdown":
@@ -49,6 +143,7 @@ export class LensAgentOutput extends LitElement {
               operationId: identity ? `${identity}:${index}` : undefined,
               markdown: block.text,
               phase: mode === "initial-stream" && isLastBlock ? "streaming" : "settled",
+              scrollBehavior: hasMedia ? "preserve" : "follow",
             } satisfies StreamingMarkdownState
           }
           @click=${this.openMarkdownLink}

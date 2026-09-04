@@ -316,7 +316,7 @@ describe("Lens rich Agent output", () => {
     expect(closeButton?.getAttribute("aria-label")).toBe("Stop Lens and close");
     expect(closeButton?.getAttribute("title")).toBe("Stop Lens and close");
     expect(closeButton?.classList.contains("close-button")).toBe(true);
-    expect(closeButton?.querySelector(".close-icon")?.getAttribute("aria-hidden")).toBe("true");
+    expect(closeButton?.querySelector(".fa-xmark")?.getAttribute("aria-hidden")).toBe("true");
     expect(closeButton?.textContent?.trim()).toBe("");
     expect(overlayRoot?.querySelector(".overlay-app-icon")?.getAttribute("src")).toBeTruthy();
     expect(overlayRoot?.querySelector(".overlay-app-mark")).toBeNull();
@@ -407,7 +407,7 @@ describe("Lens rich Agent output", () => {
     expect(overlayRoot?.activeElement).toBe(tabs[2]);
   });
 
-  it("renders ACP image data inline and preserves surrounding block order", async () => {
+  it("presents ACP images in the Hero while preserving narrative block order", async () => {
     const element = await createLensApp("overlay");
     await vi.waitFor(() => {
       expect(
@@ -417,16 +417,20 @@ describe("Lens rich Agent output", () => {
     const overlayRoot = viewRoot(element, "lens-overlay-view");
 
     const output = overlayRoot?.querySelector(".lens-output");
-    const blocks = Array.from(output?.children ?? []);
-    const image = output?.querySelector("img");
+    const blocks = Array.from(
+      output?.querySelectorAll(".lens-output-narrative > lens-markdown") ?? [],
+    );
+    const image = output?.querySelector(".output-media-slide > img");
 
-    expect(blocks.map((block) => block.tagName.toLowerCase())).toEqual([
-      "lens-markdown",
-      "figure",
-      "lens-markdown",
+    expect(output?.firstElementChild?.tagName.toLowerCase()).toBe("lens-output-media");
+    expect(blocks.map((block) => block.textContent?.trim())).toEqual([
+      "Before image",
+      "After image",
     ]);
+    expect(output?.querySelectorAll(".output-media-slide")).toHaveLength(1);
+    expect(output?.querySelector(".lens-output-narrative img")).toBeNull();
     expect(image?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
-    expect(image?.getAttribute("alt")).toBe("Visual output from the agent");
+    expect(image?.getAttribute("alt")).toBe("Agent image 1 of 1");
   });
 
   it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {

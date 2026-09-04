@@ -106,14 +106,6 @@ describe("Lens overlay presentation", () => {
     expect(closeButton).toContain("height: 24px;");
   });
 
-  it("reserves snackbar clearance in every scrollable panel", () => {
-    const progressClearance = componentStyles.match(
-      /\.overlay-main\[data-progress="true"\] \.lens-content,\s*\.overlay-main\[data-progress="true"\] \.extraction-diagnostics \{(?<declarations>.*?)\n\}/s,
-    )?.groups?.declarations;
-
-    expect(progressClearance).toContain("padding-block-end: 88px;");
-  });
-
   it("keeps the WebView surface transparent with an opaque accessibility fallback", () => {
     const overlayShell = componentStyles.match(/\.overlay-shell \{(?<declarations>.*?)\n\}/s)
       ?.groups?.declarations;
@@ -123,9 +115,6 @@ describe("Lens overlay presentation", () => {
     const progressSnackbar = componentStyles.match(
       /\.lens-progress-snackbar \{(?<declarations>.*?)\n\}/s,
     )?.groups?.declarations;
-    const progressRegion = componentStyles.match(
-      /\.lens-progress-region \{(?<declarations>.*?)\n\}/s,
-    )?.groups?.declarations;
     const overlayFooter = componentStyles.match(/\.overlay-footer \{(?<declarations>.*?)\n\}/s)
       ?.groups?.declarations;
 
@@ -133,7 +122,6 @@ describe("Lens overlay presentation", () => {
     expect(sourceSummary).toContain("background: color-mix(in srgb, AccentColor 8%, transparent);");
     expect(progressSnackbar).toContain("background: color-mix(in srgb, Canvas 82%, transparent);");
     expect(progressSnackbar).toContain("backdrop-filter: blur(18px) saturate(150%);");
-    expect(progressRegion).toContain("bottom: calc(100% + 14px);");
     expect(overlayFooter).toContain("position: relative;");
     expect(componentStyles).toMatch(
       /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{\s*\.overlay-shell \{[^}]*background: Canvas;/s,
