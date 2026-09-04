@@ -508,35 +508,6 @@ impl Default for LensState {
     }
 }
 
-impl LensState {
-    pub fn push_output_block(&mut self, block: LensOutputBlock) {
-        if let LensOutputBlock::Markdown { message_id, text } = &block {
-            if text.is_empty() {
-                return;
-            }
-            if let Some(LensOutputBlock::Markdown {
-                message_id: previous_message_id,
-                text: previous_text,
-            }) = self.output_blocks.last_mut()
-            {
-                if previous_message_id == message_id {
-                    previous_text.push_str(text);
-                    return;
-                }
-            }
-        }
-        self.output_blocks.push(block);
-    }
-
-    #[cfg(test)]
-    pub fn has_output(&self) -> bool {
-        self.output_blocks.iter().any(|block| match block {
-            LensOutputBlock::Markdown { text, .. } => !text.trim().is_empty(),
-            LensOutputBlock::Image { .. } | LensOutputBlock::Unsupported { .. } => true,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppSnapshot {
     pub revision: u32,
@@ -613,58 +584,6 @@ mod tests {
     }
 
     #[test]
-    fn output_blocks_merge_only_adjacent_markdown_from_the_same_message() {
-        let mut lens = LensState::default();
-        lens.push_output_block(LensOutputBlock::Markdown {
-            message_id: Some("message-1".into()),
-            text: "First ".into(),
-        });
-        lens.push_output_block(LensOutputBlock::Markdown {
-            message_id: Some("message-1".into()),
-            text: "message".into(),
-        });
-        lens.push_output_block(LensOutputBlock::Image {
-            message_id: Some("message-1".into()),
-            mime_type: "image/png".into(),
-            data: "aW1hZ2U=".into(),
-            uri: None,
-        });
-        lens.push_output_block(LensOutputBlock::Markdown {
-            message_id: Some("message-1".into()),
-            text: "After image".into(),
-        });
-        lens.push_output_block(LensOutputBlock::Markdown {
-            message_id: Some("message-2".into()),
-            text: "Second message".into(),
-        });
-
-        assert_eq!(
-            lens.output_blocks,
-            vec![
-                LensOutputBlock::Markdown {
-                    message_id: Some("message-1".into()),
-                    text: "First message".into(),
-                },
-                LensOutputBlock::Image {
-                    message_id: Some("message-1".into()),
-                    mime_type: "image/png".into(),
-                    data: "aW1hZ2U=".into(),
-                    uri: None,
-                },
-                LensOutputBlock::Markdown {
-                    message_id: Some("message-1".into()),
-                    text: "After image".into(),
-                },
-                LensOutputBlock::Markdown {
-                    message_id: Some("message-2".into()),
-                    text: "Second message".into(),
-                },
-            ]
-        );
-        assert!(lens.has_output());
-    }
-
-    #[test]
     fn output_block_serialization_is_tagged_and_self_describing() {
         let block = LensOutputBlock::Image {
             message_id: None,
@@ -682,22 +601,5 @@ mod tests {
                 "uri": "urn:fixture:image"
             })
         );
-    }
-
-    #[test]
-    fn whitespace_only_markdown_is_not_displayable_output() {
-        let mut lens = LensState::default();
-        lens.push_output_block(LensOutputBlock::Markdown {
-            message_id: Some("message-1".into()),
-            text: " \n\t".into(),
-        });
-
-        assert!(!lens.has_output());
-
-        lens.push_output_block(LensOutputBlock::Unsupported {
-            message_id: Some("message-1".into()),
-            content_type: "audio (audio/wav)".into(),
-        });
-        assert!(lens.has_output());
     }
 }
