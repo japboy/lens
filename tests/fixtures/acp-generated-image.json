@@ -1,0 +1,88 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "fixture-session",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "before",
+        "content": {
+          "type": "text",
+          "text": "# Rich output validation\n\nThis Markdown was emitted before the ACP image block."
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "fixture-session",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "image-1",
+        "title": "Image generation",
+        "kind": "other",
+        "status": "in_progress"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "fixture-session",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "after",
+        "content": {
+          "type": "text",
+          "text": "The image block rendered above; this Markdown block follows it."
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "fixture-session",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "image-1",
+        "status": "completed",
+        "content": [
+          {
+            "type": "content",
+            "content": {
+              "type": "text",
+              "text": "Revised prompt: fixture-only tool detail"
+            }
+          },
+          {
+            "type": "content",
+            "content": {
+              "type": "image",
+              "mimeType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwJfHZvYzoCH8OITBAtxm7fN1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYBdT5xLTmHp/IAAAAASUVORK5CYII=",
+              "uri": "file:///agent/generated/fixture.png"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "fixture-session",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "image-1",
+        "status": "completed"
+      }
+    }
+  }
+]

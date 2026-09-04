@@ -1,4 +1,7 @@
 use crate::{
+    agent_output::{
+        is_supported_image_mime_type, is_valid_inline_image_data, AgentOutputCandidate,
+    },
     agent_runtime::{self, ResolvedAgentRuntime},
     app_state::{
         begin_agent_run, emit_app_snapshot, next_revision, publish_agent_selection,
@@ -9,7 +12,7 @@ use crate::{
     live_sync::{LensAgentProjection, ProjectionRef},
     model::{
         AgentAuthMethod, AgentAuthMethodKind, AgentKind, AgentRunState, AgentSelectionStage,
-        AgentSelectionState, AppConfig, LensFreshness, LensMonitoringLifecycle, LensOutputBlock,
+        AgentSelectionState, AppConfig, LensFreshness, LensMonitoringLifecycle,
         LensPendingRepresentation, LensRefreshOutcome, LensRepresentation, LensSourceHealth,
         LensStage, LensState, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
     },
@@ -19,11 +22,11 @@ use agent_client_protocol::{
     schema::{
         v1::{
             AuthCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest,
-            CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, EmbeddedResource,
+            CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
             EmbeddedResourceResource, ImageContent, Implementation, InitializeRequest,
             LogoutRequest, PromptCapabilities, PromptRequest, RequestPermissionOutcome,
             RequestPermissionRequest, RequestPermissionResponse, SessionModeId, SessionModeState,
-            SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason, TextContent,
+            SessionNotification, SetSessionModeRequest, StopReason, TextContent,
             TextResourceContents,
         },
         ProtocolVersion,
@@ -32,7 +35,6 @@ use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, ActiveSession, Agent, ConnectionTo, Dispatch, Error, ErrorCode,
     SessionMessage,
 };
-use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -49,8 +51,6 @@ use uuid::Uuid;
 
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_INLINE_IMAGE_DECODED_BYTES: usize = 10 * 1024 * 1024;
-const MAX_INLINE_IMAGE_ENCODED_BYTES: usize = MAX_INLINE_IMAGE_DECODED_BYTES.div_ceil(3) * 4;
 
 #[derive(Debug)]
 struct AgentTransformInput {
@@ -145,28 +145,6 @@ struct SourceCheckpoint<'a> {
     kind: &'static str,
     base_projection: &'a ProjectionRef,
     target_projection: &'a ProjectionRef,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct AgentOutputCandidate {
-    blocks: Vec<LensOutputBlock>,
-    received_updates: usize,
-}
-
-impl AgentOutputCandidate {
-    fn record_update(&mut self, block: Option<LensOutputBlock>) -> Result<(), Error> {
-        self.received_updates = self.received_updates.checked_add(1).ok_or_else(|| {
-            state_error("Agent update count exceeded the finite local limit".into())
-        })?;
-        if let Some(block) = block {
-            push_output_block(&mut self.blocks, block);
-        }
-        Ok(())
-    }
-
-    fn has_output(&self) -> bool {
-        has_output(&self.blocks)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1390,32 +1368,6 @@ fn current_lens(app: &AppHandle) -> Result<LensState, String> {
     app.state::<AppState>().lens()
 }
 
-fn push_output_block(blocks: &mut Vec<LensOutputBlock>, block: LensOutputBlock) {
-    if let LensOutputBlock::Markdown { message_id, text } = &block {
-        if text.is_empty() {
-            return;
-        }
-        if let Some(LensOutputBlock::Markdown {
-            message_id: previous_message_id,
-            text: previous_text,
-        }) = blocks.last_mut()
-        {
-            if previous_message_id == message_id {
-                previous_text.push_str(text);
-                return;
-            }
-        }
-    }
-    blocks.push(block);
-}
-
-fn has_output(blocks: &[LensOutputBlock]) -> bool {
-    blocks.iter().any(|block| match block {
-        LensOutputBlock::Markdown { text, .. } => !text.trim().is_empty(),
-        LensOutputBlock::Image { .. } | LensOutputBlock::Unsupported { .. } => true,
-    })
-}
-
 fn retained_representation_freshness(lens: &LensState) -> LensFreshness {
     if lens.live.as_ref().is_some_and(|live| {
         live.lifecycle != LensMonitoringLifecycle::Watching
@@ -1605,7 +1557,7 @@ fn finish_prompt_response(
         context_revision,
         projection: target_projection,
         run_id: key.run_id,
-        output_blocks: candidate.blocks,
+        output_blocks: candidate.blocks(),
     });
     lens.output_blocks.clear();
     lens.stage = LensStage::Completed;
@@ -1703,9 +1655,9 @@ async fn run_session_turn(
             }
             message = session.read_update() => {
                 if let SessionMessage::SessionMessage(dispatch) = message? {
-                    let output_block =
-                        match agent_output_block(dispatch, descriptor.safe_mode_id).await {
-                            Ok(output_block) => output_block,
+                    let output_changed =
+                        match record_agent_output(dispatch, &mut candidate, descriptor.safe_mode_id).await {
+                            Ok(changed) => changed,
                             Err(error) => {
                                 session_connection.send_notification(
                                     CancelNotification::new(session_id.clone()),
@@ -1713,8 +1665,7 @@ async fn run_session_turn(
                                 return Err(error);
                             }
                         };
-                    let streaming_block = initial_streaming.then(|| output_block.clone()).flatten();
-                    candidate.record_update(output_block)?;
+                    let streaming_blocks = (initial_streaming && output_changed).then(|| candidate.blocks());
                     if initial_streaming {
                         let _ = update_lens_state_for_run(
                             app,
@@ -1724,8 +1675,8 @@ async fn run_session_turn(
                                 if let Some(agent) = lens.agent.as_mut() {
                                     agent.received_updates = candidate.received_updates;
                                 }
-                                if let Some(output_block) = streaming_block {
-                                    lens.push_output_block(output_block);
+                                if let Some(blocks) = streaming_blocks {
+                                    lens.output_blocks = blocks;
                                 }
                             },
                         )
@@ -1869,89 +1820,20 @@ fn required_safe_mode(
         })
 }
 
-async fn agent_output_block(
+async fn record_agent_output(
     dispatch: Dispatch,
+    candidate: &mut AgentOutputCandidate,
     safe_mode_id: &str,
-) -> Result<Option<LensOutputBlock>, Error> {
-    let mut output_block = None;
+) -> Result<bool, Error> {
+    let mut changed = false;
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
-            match notification.update {
-                SessionUpdate::AgentMessageChunk(chunk) => {
-                    output_block = Some(lens_output_block(chunk));
-                }
-                SessionUpdate::CurrentModeUpdate(update)
-                    if update.current_mode_id.to_string() != safe_mode_id =>
-                {
-                    return Err(Error::invalid_params().data(format!(
-                        "ACP session left required safe mode {safe_mode_id}; refusing to continue"
-                    )));
-                }
-                _ => {}
-            }
+            changed = candidate.record_update(notification.update, safe_mode_id)?;
             Ok(())
         })
         .await
         .otherwise_ignore()?;
-    Ok(output_block)
-}
-
-fn lens_output_block(chunk: ContentChunk) -> LensOutputBlock {
-    let message_id = chunk.message_id.map(|message_id| message_id.to_string());
-    match chunk.content {
-        ContentBlock::Text(content) => LensOutputBlock::Markdown {
-            message_id,
-            text: content.text,
-        },
-        ContentBlock::Image(content)
-            if is_supported_image_mime_type(&content.mime_type)
-                && is_valid_inline_image_data(&content.data) =>
-        {
-            LensOutputBlock::Image {
-                message_id,
-                mime_type: content.mime_type.to_ascii_lowercase(),
-                data: content.data,
-                uri: content.uri,
-            }
-        }
-        ContentBlock::Image(content) => LensOutputBlock::Unsupported {
-            message_id,
-            content_type: format!("image ({})", content.mime_type),
-        },
-        ContentBlock::Audio(content) => LensOutputBlock::Unsupported {
-            message_id,
-            content_type: format!("audio ({})", content.mime_type),
-        },
-        ContentBlock::ResourceLink(_) => LensOutputBlock::Unsupported {
-            message_id,
-            content_type: "resource_link".into(),
-        },
-        ContentBlock::Resource(_) => LensOutputBlock::Unsupported {
-            message_id,
-            content_type: "resource".into(),
-        },
-        _ => LensOutputBlock::Unsupported {
-            message_id,
-            content_type: "unknown".into(),
-        },
-    }
-}
-
-fn is_supported_image_mime_type(mime_type: &str) -> bool {
-    matches!(
-        mime_type.to_ascii_lowercase().as_str(),
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
-    )
-}
-
-fn is_valid_inline_image_data(data: &str) -> bool {
-    if data.is_empty() || data.len() > MAX_INLINE_IMAGE_ENCODED_BYTES {
-        return false;
-    }
-
-    BASE64_STANDARD
-        .decode(data)
-        .is_ok_and(|decoded| decoded.len() <= MAX_INLINE_IMAGE_DECODED_BYTES)
+    Ok(changed)
 }
 
 fn stop_reason_text(stop_reason: StopReason) -> String {
@@ -2149,6 +2031,7 @@ fn build_prompt_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::LensOutputBlock;
     use crate::{
         lens::{
             LensContentNode, LensContext, LensCoordinateSpace, LensDocumentProjection, LensInput,
@@ -2159,6 +2042,7 @@ mod tests {
         model::{Bounds, ExtractionQuality, SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
     use agent_client_protocol::schema::v1::SessionMode;
+    use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
 
     fn sample_input(source_text: &str) -> LensInput {
         LensInput {
@@ -2725,18 +2609,28 @@ mod tests {
         };
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(Some(LensOutputBlock::Markdown {
-                message_id: Some("new".into()),
-                text: "New ".into(),
-            }))
+            .record_update(
+                SessionUpdate::AgentMessageChunk(
+                    ContentChunk::new(ContentBlock::Text(TextContent::new("New ")))
+                        .message_id("new"),
+                ),
+                "read-only",
+            )
             .expect("first update");
         candidate
-            .record_update(Some(LensOutputBlock::Markdown {
-                message_id: Some("new".into()),
-                text: "representation".into(),
-            }))
+            .record_update(
+                SessionUpdate::AgentMessageChunk(
+                    ContentChunk::new(ContentBlock::Text(TextContent::new("representation")))
+                        .message_id("new"),
+                ),
+                "read-only",
+            )
             .expect("second update");
 
+        candidate.record_update(serde_json::from_value(serde_json::json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "generated-image", "status": "completed",
+            "content": [{"type":"content", "content":{"type":"image", "mimeType":"image/png", "data":"aW1hZ2U="}}]
+        })).unwrap(), "read-only").unwrap();
         assert_eq!(lens.representation, Some(old_representation));
         assert!(lens.output_blocks.is_empty());
         finish_prompt_response(
@@ -2757,10 +2651,18 @@ mod tests {
         assert_eq!(settled.projection, target_projection);
         assert_eq!(
             settled.output_blocks,
-            vec![LensOutputBlock::Markdown {
-                message_id: Some("new".into()),
-                text: "New representation".into(),
-            }]
+            vec![
+                LensOutputBlock::Markdown {
+                    message_id: Some("new".into()),
+                    text: "New representation".into(),
+                },
+                LensOutputBlock::Image {
+                    message_id: None,
+                    mime_type: "image/png".into(),
+                    data: "aW1hZ2U=".into(),
+                    uri: None,
+                }
+            ]
         );
         assert!(lens.output_blocks.is_empty());
         assert!(lens.pending_representation.is_none());
@@ -2800,10 +2702,7 @@ mod tests {
             agent: Some(sample_run_state(run_id, target_projection.clone())),
             ..LensState::default()
         };
-        let candidate = AgentOutputCandidate {
-            blocks: streamed.clone(),
-            received_updates: 1,
-        };
+        let candidate = AgentOutputCandidate::from_blocks(streamed.clone(), 1);
 
         finish_prompt_response(
             &mut lens,
@@ -2857,13 +2756,13 @@ mod tests {
             },
             first_projection.clone(),
             1,
-            AgentOutputCandidate {
-                blocks: vec![LensOutputBlock::Markdown {
+            AgentOutputCandidate::from_blocks(
+                vec![LensOutputBlock::Markdown {
                     message_id: Some("first".into()),
                     text: "First video translation".into(),
                 }],
-                received_updates: 1,
-            },
+                1,
+            ),
             "end_turn".into(),
             false,
         );
@@ -2890,13 +2789,13 @@ mod tests {
             },
             second_projection.clone(),
             2,
-            AgentOutputCandidate {
-                blocks: vec![LensOutputBlock::Markdown {
+            AgentOutputCandidate::from_blocks(
+                vec![LensOutputBlock::Markdown {
                     message_id: Some("second".into()),
                     text: "Second video translation".into(),
                 }],
-                received_updates: 1,
-            },
+                1,
+            ),
             "end_turn".into(),
             false,
         );
@@ -2921,13 +2820,13 @@ mod tests {
             },
             first_projection,
             1,
-            AgentOutputCandidate {
-                blocks: vec![LensOutputBlock::Markdown {
+            AgentOutputCandidate::from_blocks(
+                vec![LensOutputBlock::Markdown {
                     message_id: Some("regressed".into()),
                     text: "Regressed translation".into(),
                 }],
-                received_updates: 1,
-            },
+                1,
+            ),
             "end_turn".into(),
             false,
         );
@@ -3127,93 +3026,34 @@ mod tests {
 
         assert!(matches!(event, PromptEvent::Update("final update")));
     }
-
-    #[test]
-    fn acp_text_and_image_chunks_become_typed_output_blocks() {
-        let text = lens_output_block(
-            ContentChunk::new(ContentBlock::Text(TextContent::new("Description")))
-                .message_id("message-1"),
-        );
-        let image = lens_output_block(
-            ContentChunk::new(ContentBlock::Image(
-                ImageContent::new("iVBORw0KGgo=", "IMAGE/PNG").uri("urn:fixture:image"),
-            ))
-            .message_id("message-1"),
-        );
-
-        assert_eq!(
-            text,
-            LensOutputBlock::Markdown {
-                message_id: Some("message-1".into()),
-                text: "Description".into(),
-            }
-        );
-        assert_eq!(
-            image,
-            LensOutputBlock::Image {
-                message_id: Some("message-1".into()),
-                mime_type: "image/png".into(),
-                data: "iVBORw0KGgo=".into(),
-                uri: Some("urn:fixture:image".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn image_output_uses_an_explicit_finite_mime_type_allowlist() {
-        for mime_type in [
-            "image/png",
-            "image/jpeg",
-            "image/gif",
-            "image/webp",
-            "image/avif",
-        ] {
-            assert!(is_supported_image_mime_type(mime_type));
+    #[tokio::test]
+    async fn codex_tool_image_notifications_reach_the_candidate_through_dispatch() {
+        let notifications: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/acp-generated-image.json"
+        ))
+        .unwrap();
+        let mut candidate = AgentOutputCandidate::default();
+        for notification in notifications {
+            let message = agent_client_protocol::UntypedMessage::new(
+                notification["method"].as_str().unwrap(),
+                &notification["params"],
+            )
+            .unwrap();
+            record_agent_output(Dispatch::Notification(message), &mut candidate, "read-only")
+                .await
+                .unwrap();
         }
-        assert!(!is_supported_image_mime_type("image/svg+xml"));
-
-        let unsupported = lens_output_block(ContentChunk::new(ContentBlock::Image(
-            ImageContent::new("PHN2Zz4=", "image/svg+xml"),
-        )));
-        assert_eq!(
-            unsupported,
-            LensOutputBlock::Unsupported {
-                message_id: None,
-                content_type: "image (image/svg+xml)".into(),
-            }
-        );
-
-        let invalid_data = lens_output_block(ContentChunk::new(ContentBlock::Image(
-            ImageContent::new("not base64", "image/png"),
-        )));
-        assert_eq!(
-            invalid_data,
-            LensOutputBlock::Unsupported {
-                message_id: None,
-                content_type: "image (image/png)".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn image_output_rejects_encoded_and_decoded_payloads_above_the_inline_limit() {
-        let oversized_encoded = "A".repeat(MAX_INLINE_IMAGE_ENCODED_BYTES + 1);
-        assert!(!is_valid_inline_image_data(&oversized_encoded));
-
-        let oversized_decoded =
-            BASE64_STANDARD.encode(vec![0_u8; MAX_INLINE_IMAGE_DECODED_BYTES + 1]);
-        assert_eq!(oversized_decoded.len(), MAX_INLINE_IMAGE_ENCODED_BYTES);
-        assert!(!is_valid_inline_image_data(&oversized_decoded));
-
-        let unsupported = lens_output_block(ContentChunk::new(ContentBlock::Image(
-            ImageContent::new(oversized_encoded, "image/png"),
-        )));
-        assert_eq!(
-            unsupported,
-            LensOutputBlock::Unsupported {
-                message_id: None,
-                content_type: "image (image/png)".into(),
-            }
-        );
+        assert_eq!(candidate.received_updates, 5);
+        assert!(matches!(
+            candidate.blocks().as_slice(),
+            [
+                LensOutputBlock::Markdown { .. },
+                LensOutputBlock::Image { .. },
+                LensOutputBlock::Markdown { .. }
+            ]
+        ));
+        assert!(!serde_json::to_string(&candidate.blocks())
+            .unwrap()
+            .contains("Revised prompt"));
     }
 }

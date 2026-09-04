@@ -1,4 +1,5 @@
 mod agent;
+mod agent_output;
 mod agent_runtime;
 mod app_state;
 mod commands;
@@ -517,23 +518,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
         target_set: Some(target_set.clone()),
         context: Some(context),
         input: Some(input),
-        output_blocks: vec![
-            model::LensOutputBlock::Markdown {
-                message_id: Some("validation-message".into()),
-                text: "# Rich output validation\n\nThis Markdown was emitted before the ACP image block."
-                    .into(),
-            },
-            model::LensOutputBlock::Image {
-                message_id: Some("validation-message".into()),
-                mime_type: "image/png".into(),
-                data: BASE64_STANDARD.encode(include_bytes!("../icons/128x128@2x.png")),
-                uri: Some("fixture://lens-icon".into()),
-            },
-            model::LensOutputBlock::Markdown {
-                message_id: Some("validation-message".into()),
-                text: "The image block rendered above; this Markdown block follows it.".into(),
-            },
-        ],
+        output_blocks: rich_output_validation_blocks()?,
         ..model::LensState::default()
     };
     let mut progress_state = completed_state.clone();
@@ -619,4 +604,70 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
     });
     println!("LENS_RICH_OUTPUT_RESULT=displayed");
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn rich_output_validation_blocks() -> Result<Vec<model::LensOutputBlock>, String> {
+    let json = match std::env::var_os("LENS_VALIDATE_ACP_UPDATES") {
+        Some(path) => std::fs::read_to_string(path).map_err(|error| error.to_string())?,
+        None => include_str!("../../tests/fixtures/acp-generated-image.json").into(),
+    };
+    #[derive(serde::Deserialize)]
+    struct Notification {
+        method: String,
+        params: agent_client_protocol::schema::v1::SessionNotification,
+    }
+    let notifications: Vec<Notification> =
+        serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    let mut candidate = agent_output::AgentOutputCandidate::default();
+    for notification in notifications {
+        if notification.method != "session/update" {
+            return Err(
+                "Rich output validation accepts only ACP session/update notifications".into(),
+            );
+        }
+        candidate
+            .record_update(notification.params.update, "read-only")
+            .map_err(|error| error.to_string())?;
+    }
+    if !candidate.has_output() {
+        return Err("Rich output validation produced no displayable output".into());
+    }
+    Ok(candidate.blocks())
+}
+
+#[cfg(all(test, debug_assertions))]
+mod rich_output_validation_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    #[ignore = "requires LENS_VALIDATE_ACP_UPDATES with an explicit local notification replay"]
+    fn replay_local_acp_images() {
+        assert!(
+            std::env::var_os("LENS_VALIDATE_ACP_UPDATES").is_some(),
+            "Set LENS_VALIDATE_ACP_UPDATES to a JSON array of ACP session/update notifications"
+        );
+        let blocks = rich_output_validation_blocks().expect("normalize the local ACP replay");
+        let mut image_count = 0;
+        for block in blocks {
+            if let model::LensOutputBlock::Image { data, .. } = block {
+                let bytes = BASE64_STANDARD.decode(data).expect("decode image base64");
+                let image = tauri::image::Image::from_bytes(&bytes).expect("decode image pixels");
+                assert!(image.width() > 0 && image.height() > 0);
+                image_count += 1;
+                let digest: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                println!(
+                    "ACP replay image {image_count}: {}x{}, {} bytes, SHA-256 {digest}",
+                    image.width(),
+                    image.height(),
+                    bytes.len()
+                );
+            }
+        }
+        assert!(image_count > 0, "the local replay must contain an image");
+    }
 }

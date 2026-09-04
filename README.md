@@ -76,10 +76,17 @@ LENS_VALIDATE_RUNTIME=codex pnpm run tauri dev
 
 On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, managed Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
 
-A debug-only rich-output fixture exercises the bundled Tauri WebView with ordered Markdown, an inline PNG Agent output, trailing Markdown, and an operation-scoped Source input-image preview without requiring Agent authentication, Accessibility permission, or Screen Recording permission:
+A debug-only rich-output fixture replays ACP message and tool-call notifications through the output reducer, then exercises the bundled Tauri WebView with ordered Markdown, a completed tool's inline PNG, trailing Markdown, and an operation-scoped Source input-image preview without requiring Agent authentication, Accessibility permission, or Screen Recording permission:
 
 ```sh
 LENS_VALIDATE_RICH_OUTPUT=1 pnpm exec tauri dev --no-watch
+```
+
+Set `LENS_VALIDATE_ACP_UPDATES` to an absolute path containing a JSON array of ACP `session/update` notification envelopes to replay local evidence instead of the committed synthetic fixture. The file is read only by this debug validation path. Keep private session data outside the repository. A headless PNG replay check reports the normalized images' dimensions, byte lengths, and SHA-256 hashes without printing their content:
+
+```sh
+LENS_VALIDATE_ACP_UPDATES=/absolute/path/session-updates.json \
+  cargo test --manifest-path src-tauri/Cargo.toml --locked replay_local_acp_images -- --ignored --nocapture
 ```
 
 Official references: [Tauri application identifier configuration](https://v2.tauri.app/reference/config/#identifier), [Tauri 2.11.5 application path resolver source](https://docs.rs/crate/tauri/2.11.5/source/src/path/desktop.rs), [ACP Registry](https://agentclientprotocol.com/get-started/registry), [pnpm supply-chain security settings](https://pnpm.io/settings#minimumreleaseage), [Takumi Guard npm compatibility](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).
