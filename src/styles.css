@@ -1214,12 +1214,14 @@ fieldset {
 }
 
 .overlay-status-toggle:hover,
+.overlay-status-toggle:focus-visible,
 .overlay-status-toggle[aria-expanded="true"] {
   color: CanvasText;
 }
 
-.overlay-status-toggle .fa-solid {
-  font-size: 12px;
+.overlay-status-toggle:is(:hover, :focus-visible) .overlay-stage {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .overlay-status-toggle:focus-visible,
