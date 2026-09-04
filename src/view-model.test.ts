@@ -143,7 +143,7 @@ describe("Lens view model", () => {
         context_revision: 2,
         projection: { revision: 2, digest: "sha256:projection-2" },
         run_id: "run-2",
-        output_blocks: [{ type: "markdown", text: "Published translation" }],
+        output_blocks: [{ type: "markdown", text: "Published interpretation" }],
       },
     } satisfies LensState;
 

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "pnpm run check:types && vite build",
     "check:identity": "node scripts/check-product-identity.ts",
+    "check:terminology": "node scripts/check-product-terminology.ts",
     "check:language": "node scripts/check-repository-language.ts",
     "check:publication": "node scripts/check-publication-boundary.ts",
     "check:quality": "mise exec -- hk check --all",
@@ -17,7 +18,7 @@
     "fix": "mise exec -- hk fix --all",
     "verify": "pnpm run verify:portable && pnpm run verify:native",
     "verify:native": "pnpm run check:rust && mise exec -- cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings && mise exec -- cargo test --manifest-path src-tauri/Cargo.toml --locked && pnpm run check:dependencies",
-    "verify:portable": "pnpm run check:identity && pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run build && pnpm test",
+    "verify:portable": "pnpm run check:identity && pnpm run check:terminology && pnpm run check:publication && pnpm run check:language && pnpm run check:quality && pnpm run build && pnpm test",
     "tauri": "tauri",
     "test": "vitest run",
     "validate:live-sync-native": "node scripts/validate-live-sync-native.ts"

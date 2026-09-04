@@ -331,7 +331,7 @@ describe("Lens rich Agent output", () => {
     );
   });
 
-  it("exposes Source and Diagnostics as ordered keyboard tabs", async () => {
+  it("pairs Interpretation, Source, and Diagnostics with their keyboard-selected panels", async () => {
     const element = await createLensApp("overlay");
     await vi.waitFor(() => {
       expect(
@@ -345,16 +345,37 @@ describe("Lens rich Agent output", () => {
     const tabs = Array.from(overlayRoot?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
 
     expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
-      "Translation",
+      "Interpretation",
       "Source",
       "Diagnostics",
     ]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs.map((tab) => tab.id)).toEqual([
+      "interpretation-tab",
+      "source-tab",
+      "diagnostics-tab",
+    ]);
+
+    const expectSelectedPanel = (selectedIndex: number) => {
+      const tab = tabs[selectedIndex];
+      const panel = overlayRoot?.querySelector('[role="tabpanel"]');
+      expect(panel?.id).toBe(tab?.getAttribute("aria-controls"));
+      expect(panel?.getAttribute("aria-labelledby")).toBe(tab?.id);
+      expect(overlayRoot?.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+      expect(tabs.map((item) => item.getAttribute("aria-selected"))).toEqual(
+        tabs.map((_, index) => (index === selectedIndex ? "true" : "false")),
+      );
+      expect(tabs.map((item) => item.tabIndex)).toEqual(
+        tabs.map((_, index) => (index === selectedIndex ? 0 : -1)),
+      );
+    };
+    expectSelectedPanel(0);
 
     tabs[1]?.click();
     await overlayView?.updateComplete;
     expect(overlayRoot?.querySelector("#source-panel")).not.toBeNull();
     expect(overlayRoot?.querySelector("#diagnostics-panel")).toBeNull();
+    expectSelectedPanel(1);
 
     tabs[2]?.click();
     await overlayView?.updateComplete;
@@ -362,14 +383,28 @@ describe("Lens rich Agent output", () => {
       "No extraction diagnostics are available.",
     );
     expect(overlayRoot?.querySelector("#source-panel")).toBeNull();
+    expectSelectedPanel(2);
 
     tabs[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await overlayView?.updateComplete;
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expectSelectedPanel(0);
+    expect(overlayRoot?.activeElement).toBe(tabs[0]);
 
     tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     await overlayView?.updateComplete;
     expect(tabs[2]?.getAttribute("aria-selected")).toBe("true");
+    expectSelectedPanel(2);
+
+    tabs[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    await overlayView?.updateComplete;
+    expectSelectedPanel(0);
+    expect(overlayRoot?.activeElement).toBe(tabs[0]);
+
+    tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    await overlayView?.updateComplete;
+    expectSelectedPanel(2);
+    expect(overlayRoot?.activeElement).toBe(tabs[2]);
   });
 
   it("renders ACP image data inline and preserves surrounding block order", async () => {

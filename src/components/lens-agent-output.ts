@@ -83,14 +83,14 @@ export class LensAgentOutput extends LitElement {
         case "cancelled":
           return "The Agent transformation was cancelled.";
         case "failed":
-          return "The Agent did not produce a translation.";
+          return "The Agent did not produce an interpretation.";
         case "completed":
           return "The Agent completed without returning displayable content.";
         case "selecting":
         case "extracting":
         case "connecting":
         case "transforming":
-          return "The Agent translation will appear here.";
+          return "The Agent's interpretation will appear here.";
         case "ready":
           return "Transform the selected content with the configured Agent.";
       }
