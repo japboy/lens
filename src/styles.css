@@ -70,6 +70,7 @@ textarea {
 
 button {
   appearance: auto;
+  cursor: default;
   min-height: 24px;
   max-width: 100%;
   white-space: normal;
@@ -1210,7 +1211,6 @@ fieldset {
   font: inherit;
   font-size: 12px;
   text-align: start;
-  cursor: pointer;
 }
 
 .overlay-status-toggle:hover,
@@ -1232,7 +1232,6 @@ fieldset {
 
 .lens-progress-dismiss {
   pointer-events: auto;
-  cursor: pointer;
 }
 
 .overlay-stage-indicator {
@@ -1701,7 +1700,6 @@ lens-output-media {
   font: inherit;
   font-size: 14px;
   line-height: 1;
-  cursor: pointer;
 }
 
 .output-media-tool:hover:not(:disabled),
@@ -1797,7 +1795,6 @@ lens-output-media {
   color: CanvasText;
   font: inherit;
   font-size: 12px;
-  cursor: pointer;
 }
 
 .output-media-explanation {
