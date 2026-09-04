@@ -88,7 +88,7 @@ export function lensProgressSnackbar(stage: LensStage): LensProgressSnackbar | u
     case "transforming":
       return {
         title: STAGE_LABEL[stage],
-        detail: "Translation updates appear as Agent output arrives.",
+        detail: "Interpretation updates appear as Agent output arrives.",
       };
     case "ready":
       return {
@@ -172,8 +172,8 @@ export function lensLiveStatus(live: LensLiveState | undefined): LensLiveStatus 
         title: "Paused",
         detail:
           live.freshness === "unverified"
-            ? "Automatic updates are paused. The displayed translation is retained and unverified."
-            : "Automatic updates are paused. The displayed translation remains available.",
+            ? "Automatic updates are paused. The displayed interpretation is retained and unverified."
+            : "Automatic updates are paused. The displayed interpretation remains available.",
         busy: false,
         prominent: false,
       };
@@ -199,7 +199,7 @@ export function lensLiveStatus(live: LensLiveState | undefined): LensLiveStatus 
         live.error ??
         (live.health === "unavailable"
           ? "Automatic monitoring is unavailable."
-          : "The displayed translation could not be verified against the latest content."),
+          : "The displayed interpretation could not be verified against the latest content."),
       busy: false,
       prominent: true,
     };
@@ -225,7 +225,7 @@ export function lensLiveStatus(live: LensLiveState | undefined): LensLiveStatus 
       if (live.last_outcome === "updated") {
         return {
           title: "Updated",
-          detail: "The latest translation was applied automatically.",
+          detail: "The latest interpretation was applied automatically.",
           busy: false,
           prominent: false,
         };

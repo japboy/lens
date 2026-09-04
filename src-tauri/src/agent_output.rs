@@ -46,7 +46,7 @@ impl ToolOutput {
 
 impl AgentOutputCandidate {
     /// Returns whether the displayable content changed. Protocol-only updates
-    /// still advance the received-update count without becoming Translation.
+    /// still advance the received-update count without becoming Interpretation.
     pub(crate) fn record_update(
         &mut self,
         update: SessionUpdate,

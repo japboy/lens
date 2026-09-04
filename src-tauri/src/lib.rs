@@ -585,7 +585,7 @@ fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
                   metric_count: diagnosticsRoot?.querySelectorAll('.metrics > div').length ?? 0,
                   quality: diagnosticsRoot?.querySelector('.quality')?.textContent?.trim() ?? null
                 }));
-                diagnosticsRoot?.querySelector('#translation-tab')?.click();
+                diagnosticsRoot?.querySelector('#interpretation-tab')?.click();
               }, 250);
               }, 500);
             }, 1000);

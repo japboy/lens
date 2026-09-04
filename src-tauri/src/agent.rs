@@ -2759,7 +2759,7 @@ mod tests {
             AgentOutputCandidate::from_blocks(
                 vec![LensOutputBlock::Markdown {
                     message_id: Some("first".into()),
-                    text: "First video translation".into(),
+                    text: "First video representation".into(),
                 }],
                 1,
             ),
@@ -2792,7 +2792,7 @@ mod tests {
             AgentOutputCandidate::from_blocks(
                 vec![LensOutputBlock::Markdown {
                     message_id: Some("second".into()),
-                    text: "Second video translation".into(),
+                    text: "Second video representation".into(),
                 }],
                 1,
             ),
@@ -2823,7 +2823,7 @@ mod tests {
             AgentOutputCandidate::from_blocks(
                 vec![LensOutputBlock::Markdown {
                     message_id: Some("regressed".into()),
-                    text: "Regressed translation".into(),
+                    text: "Regressed representation".into(),
                 }],
                 1,
             ),

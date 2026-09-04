@@ -406,7 +406,7 @@ describe("component property and event contracts", () => {
       "Transforming content",
     );
     expect(element.shadowRoot?.querySelector(".lens-progress-snackbar")?.textContent).toContain(
-      "Translation updates",
+      "Interpretation updates",
     );
     const output = element.shadowRoot?.querySelector<
       HTMLElement & { updateComplete: Promise<boolean> }
@@ -414,7 +414,7 @@ describe("component property and event contracts", () => {
     await output?.updateComplete;
     expect(output?.querySelector(".loading-state")).toBeNull();
     expect(output?.querySelector(".empty-state")?.textContent).toContain(
-      "translation will appear here",
+      "interpretation will appear here",
     );
 
     element.model = { ...model, cancelPending: true };
@@ -495,13 +495,26 @@ describe("component property and event contracts", () => {
     expect(event?.detail).toEqual({ type: "retry" });
   });
 
-  it("settles an atomic representation without making the translation a live region", async () => {
+  it("describes missing Agent output as an interpretation", async () => {
+    const element = document.createElement("lens-agent-output") as HTMLElement & {
+      lens: LensState;
+      updateComplete: Promise<boolean>;
+    };
+    element.lens = { stage: "failed", output_blocks: [] };
+    document.body.append(element);
+    await element.updateComplete;
+    expect(element.querySelector(".empty-state")?.textContent).toBe(
+      "The Agent did not produce an interpretation.",
+    );
+  });
+
+  it("settles an atomic representation without making the interpretation a live region", async () => {
     const element = document.createElement("lens-agent-output") as HTMLElement & {
       lens: LensState;
       updateComplete: Promise<boolean>;
     };
     element.lens = {
-      ...liveLens(representation("representation-1", 1, "Published translation")),
+      ...liveLens(representation("representation-1", 1, "Published interpretation")),
       stage: "transforming",
       output_blocks: [{ type: "markdown", text: "Unpublished stream" }],
     };
@@ -517,7 +530,7 @@ describe("component property and event contracts", () => {
     >("lens-markdown");
     await markdown?.updateComplete;
 
-    expect(output?.textContent).toContain("Published translation");
+    expect(output?.textContent).toContain("Published interpretation");
     expect(output?.textContent).not.toContain("Unpublished stream");
     expect(output?.hasAttribute("aria-live")).toBe(false);
     expect(markdown?.state).toMatchObject({
@@ -548,7 +561,7 @@ describe("component property and event contracts", () => {
     element.model = {
       platform: "macos",
       lens: {
-        ...liveLens(representation("representation-1", 1, "Translation")),
+        ...liveLens(representation("representation-1", 1, "Interpretation")),
         target_set: {
           schema_version: 2,
           selection_id: "operation",
@@ -587,10 +600,90 @@ describe("component property and event contracts", () => {
     expect(element.model.lens.target_set?.targets[0]?.id).toBe(target.id);
   });
 
-  it("applies each complete replacement automatically while preserving Translation focus", async () => {
-    const first = representation("representation-1", 1, "Translation one");
-    const second = representation("representation-2", 2, "Translation two");
-    const third = representation("representation-3", 3, "Translation three");
+  it("resets to Interpretation only when the operation changes", async () => {
+    const element = document.createElement("lens-overlay-view") as HTMLElement & {
+      model: OverlayViewModel;
+      updateComplete: Promise<boolean>;
+    };
+    element.model = {
+      platform: "macos",
+      lens: liveLens(representation("representation-1", 1, "First result")),
+      pending: false,
+      cancelPending: false,
+      message: "",
+    };
+    document.body.append(element);
+    await element.updateComplete;
+    element.shadowRoot?.querySelector<HTMLButtonElement>("#source-tab")?.click();
+    await element.updateComplete;
+
+    element.model = {
+      ...element.model,
+      lens: liveLens(representation("representation-2", 2, "Updated result")),
+    };
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('[role="tabpanel"]')?.id).toBe("source-panel");
+
+    element.model = {
+      ...element.model,
+      lens: { operation_id: "next-operation", stage: "connecting", output_blocks: [] },
+    };
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('[role="tabpanel"]')?.id).toBe("interpretation-panel");
+    expect(
+      element.shadowRoot?.querySelector("#interpretation-tab")?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it.each([
+    { top: 200, initialHeight: 1000, nextHeight: 1000, expected: 200 },
+    { top: 700, initialHeight: 1400, nextHeight: 500, expected: 100 },
+    { top: 600, initialHeight: 1000, nextHeight: 1400, expected: 1000 },
+  ])(
+    "restores Interpretation scroll position for $top -> $expected",
+    async ({ top, initialHeight, nextHeight, expected }) => {
+      const element = document.createElement("lens-overlay-view") as HTMLElement & {
+        model: OverlayViewModel;
+        updateComplete: Promise<boolean>;
+      };
+      element.model = {
+        platform: "macos",
+        lens: liveLens(representation("representation-1", 1, "First result")),
+        pending: false,
+        cancelPending: false,
+        message: "",
+      };
+      document.body.append(element);
+      await vi.waitFor(() =>
+        expect(element.shadowRoot?.querySelector(".lens-output")).not.toBeNull(),
+      );
+      const output = element.shadowRoot!.querySelector<HTMLElement>(".lens-output")!;
+      let height = initialHeight;
+      Object.defineProperties(output, {
+        clientHeight: { get: () => 400 },
+        scrollHeight: { get: () => height },
+      });
+      output.scrollTop = top;
+      element.model = {
+        ...element.model,
+        lens: liveLens(representation("representation-2", 2, "Updated result")),
+      };
+      await element.updateComplete;
+      height = nextHeight;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await vi.waitFor(() => {
+        expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
+          "Updated result",
+        );
+        expect(output.scrollTop).toBe(expected);
+      });
+    },
+  );
+
+  it("applies each complete replacement automatically while preserving Interpretation focus", async () => {
+    const first = representation("representation-1", 1, "Interpretation one");
+    const second = representation("representation-2", 2, "Interpretation two");
+    const third = representation("representation-3", 3, "Interpretation three");
     const element = document.createElement("lens-overlay-view") as HTMLElement & {
       model: OverlayViewModel;
       updateComplete: Promise<boolean>;
@@ -605,28 +698,28 @@ describe("component property and event contracts", () => {
     document.body.append(element);
     await vi.waitFor(() => {
       expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-        "Translation one",
+        "Interpretation one",
       );
     });
 
-    const panel = element.shadowRoot?.querySelector<HTMLElement>("#translation-panel");
+    const panel = element.shadowRoot?.querySelector<HTMLElement>("#interpretation-panel");
     panel?.focus();
     expect(element.shadowRoot?.activeElement).toBe(panel);
 
     element.model = { ...element.model, lens: liveLens(second) };
     await vi.waitFor(() => {
       expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-        "Translation two",
+        "Interpretation two",
       );
     });
     element.model = { ...element.model, lens: liveLens(third) };
     await vi.waitFor(() => {
       expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-        "Translation three",
+        "Interpretation three",
       );
     });
     expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).not.toContain(
-      "Translation two",
+      "Interpretation two",
     );
     await vi.waitFor(() => expect(element.shadowRoot?.activeElement).toBe(panel));
     expect(element.shadowRoot?.querySelector(".lens-update-action")).toBeNull();
@@ -639,7 +732,7 @@ describe("component property and event contracts", () => {
     };
     element.model = {
       platform: "macos",
-      lens: liveLens(representation("representation-1", 1, "Translation")),
+      lens: liveLens(representation("representation-1", 1, "Interpretation")),
       pending: false,
       cancelPending: false,
       message: "",

@@ -26,14 +26,14 @@ import {
 } from "./events";
 
 const LENS_TABS = [
-  { id: "translation", label: "Translation" },
+  { id: "interpretation", label: "Interpretation" },
   { id: "source", label: "Source" },
   { id: "diagnostics", label: "Diagnostics" },
 ] as const;
 
 type LensTab = (typeof LENS_TABS)[number]["id"];
 
-interface TranslationScrollPosition {
+interface InterpretationScrollPosition {
   readonly top: number;
   readonly wasAtBottom: boolean;
 }
@@ -46,21 +46,21 @@ export class LensOverlayView extends LitElement {
   model: OverlayViewModel | undefined;
 
   @state()
-  private activeTab: LensTab = "translation";
+  private activeTab: LensTab = "interpretation";
 
   @state()
   private displayedRepresentation: LensRepresentation | undefined;
 
   private synchronizedOperationId: string | undefined;
   private hasSynchronizedOperation = false;
-  private pendingScrollPosition: TranslationScrollPosition | undefined;
-  private restoreTranslationFocus = false;
+  private pendingScrollPosition: InterpretationScrollPosition | undefined;
+  private restoreInterpretationFocus = false;
 
   protected willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("model")) return;
     const previous = changed.get("model");
     if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
-      this.activeTab = "translation";
+      this.activeTab = "interpretation";
     }
     if (this.model) this.synchronizeRepresentation(this.model.lens);
   }
@@ -92,7 +92,7 @@ export class LensOverlayView extends LitElement {
       Boolean(lens.input) && (lens.stage === "authentication_required" || lens.stage === "failed");
     const progressSnackbar = lensProgressSnackbar(lens.stage);
     const liveStatus = lensLiveStatus(lens.live);
-    const displayLens = this.translationLens(lens);
+    const displayLens = this.lensWithDisplayedRepresentation(lens);
     const hasSettledRepresentation = Boolean(displayLens.representation);
     const initialProgressStatus = progressSnackbar
       ? {
@@ -281,12 +281,12 @@ export class LensOverlayView extends LitElement {
   ) {
     const activeTab = this.activeTab;
     switch (activeTab) {
-      case "translation":
+      case "interpretation":
         return html`<section
-          id="translation-panel"
+          id="interpretation-panel"
           class="lens-panel"
           role="tabpanel"
-          aria-labelledby="translation-tab"
+          aria-labelledby="interpretation-tab"
           tabindex="0"
         >
           <lens-agent-output .lens=${displayLens}></lens-agent-output>
@@ -407,17 +407,17 @@ export class LensOverlayView extends LitElement {
     if (representation.representation_id === this.displayedRepresentation?.representation_id) {
       return;
     }
-    this.acceptRepresentation(representation, this.translationHasFocus());
+    this.acceptRepresentation(representation, this.interpretationHasFocus());
   }
 
-  private translationLens(lens: LensState): LensState {
+  private lensWithDisplayedRepresentation(lens: LensState): LensState {
     const representation = this.displayedRepresentation;
     if (!representation || representation === lens.representation) return lens;
     return { ...lens, representation };
   }
 
-  private translationHasFocus(): boolean {
-    const panel = this.renderRoot.querySelector<HTMLElement>("#translation-panel");
+  private interpretationHasFocus(): boolean {
+    const panel = this.renderRoot.querySelector<HTMLElement>("#interpretation-panel");
     if (!panel) return false;
     const activeElement = this.shadowRoot?.activeElement;
     return Boolean(activeElement && panel.contains(activeElement));
@@ -425,18 +425,18 @@ export class LensOverlayView extends LitElement {
 
   private acceptRepresentation(
     representation: LensRepresentation,
-    restoreTranslationFocus = false,
+    restoreInterpretationFocus = false,
   ): void {
     if (representation.representation_id === this.displayedRepresentation?.representation_id) {
       return;
     }
-    this.pendingScrollPosition = this.captureTranslationScrollPosition();
-    this.restoreTranslationFocus ||= restoreTranslationFocus;
+    this.pendingScrollPosition = this.captureInterpretationScrollPosition();
+    this.restoreInterpretationFocus ||= restoreInterpretationFocus;
     this.displayedRepresentation = representation;
-    void this.updateComplete.then(() => this.restoreTranslationPresentation());
+    void this.updateComplete.then(() => this.restoreInterpretationPresentation());
   }
 
-  private captureTranslationScrollPosition(): TranslationScrollPosition | undefined {
+  private captureInterpretationScrollPosition(): InterpretationScrollPosition | undefined {
     const output = this.renderRoot
       .querySelector("lens-agent-output")
       ?.querySelector<HTMLElement>(".lens-output");
@@ -448,7 +448,7 @@ export class LensOverlayView extends LitElement {
     };
   }
 
-  private async restoreTranslationPresentation(): Promise<void> {
+  private async restoreInterpretationPresentation(): Promise<void> {
     const outputComponent = this.renderRoot.querySelector<
       HTMLElement & {
         updateComplete: Promise<boolean>;
@@ -463,10 +463,10 @@ export class LensOverlayView extends LitElement {
       const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
       output.scrollTop = position.wasAtBottom ? maximum : Math.min(position.top, maximum);
     }
-    if (this.restoreTranslationFocus) {
-      this.restoreTranslationFocus = false;
+    if (this.restoreInterpretationFocus) {
+      this.restoreInterpretationFocus = false;
       this.renderRoot
-        .querySelector<HTMLElement>("#translation-panel")
+        .querySelector<HTMLElement>("#interpretation-panel")
         ?.focus({ preventScroll: true });
     }
   }
