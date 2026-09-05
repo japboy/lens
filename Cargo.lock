@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "adapter-platform-macos"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "cc",
+ "port-platform",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2283,12 +2295,13 @@ dependencies = [
 name = "lens"
 version = "0.1.0"
 dependencies = [
+ "adapter-platform-macos",
  "agent-client-protocol",
  "base64 0.22.1",
- "cc",
  "dirs",
  "domain",
  "flate2",
+ "port-platform",
  "pretty_assertions",
  "reqwest",
  "serde",
@@ -2302,6 +2315,7 @@ dependencies = [
  "tauri-plugin-opener",
  "thiserror 2.0.20",
  "tokio",
+ "use-case",
  "uuid",
 ]
 
@@ -2989,6 +3003,15 @@ dependencies = [
  "pin-project-lite",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "port-platform"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]
@@ -4978,6 +5001,17 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
+]
+
+[[package]]
+name = "use-case"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "domain",
+ "port-platform",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

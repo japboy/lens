@@ -18,7 +18,7 @@ interface Probe {
 
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const temporaryRoot = mkdtempSync(join(tmpdir(), "lens-live-sync-native-"));
-const nativeRoot = join(repositoryRoot, "src-tauri", "native", "macos");
+const nativeRoot = join(repositoryRoot, "packages", "adapter-platform-macos", "native");
 const compileTimeoutMilliseconds = 60_000;
 const probeTimeoutMilliseconds = 15_000;
 const probes: readonly Probe[] = [

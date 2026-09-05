@@ -1,0 +1,16 @@
+[package]
+name = "use-case"
+version = "0.1.0"
+description = "Application coordination and domain-to-platform conversions"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain.workspace = true
+port-platform.workspace = true
+base64.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
