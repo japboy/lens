@@ -225,7 +225,11 @@ export function sourceInclusionViolations(
       continue;
     }
     const target = resolve(root, dirname(path), argument.text.slice(1, -1));
-    if (!target.startsWith(`${resolve(root, owner)}/`))
+    const isApplicationLicense =
+      owner === "apps/desktop" &&
+      token.text === "include_str" &&
+      ["LICENSE", "NOTICE"].some((document) => target === resolve(root, document));
+    if (!target.startsWith(`${resolve(root, owner)}/`) && !isApplicationLicense)
       violations.push(`Resource escapes owner ${owner}`);
   }
   return violations;

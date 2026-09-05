@@ -1,4 +1,4 @@
-export const APP_VIEWS = ["settings", "overlay", "target-selection"] as const;
+export const APP_VIEWS = ["settings", "overlay", "target-selection", "about"] as const;
 export type AppView = (typeof APP_VIEWS)[number];
 
 export const DESKTOP_PLATFORMS = ["macos", "windows", "linux"] as const;

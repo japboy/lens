@@ -15,6 +15,8 @@ import {
   targetSelectionViewModel,
 } from "./application/view-models";
 import { tauriWebviewPort } from "./application/webview-port";
+import "./components/lens-about-view";
+import type { AboutState } from "./components/lens-about-view";
 import "./components/lens-overlay-view";
 import "./components/lens-settings-view";
 import "./components/lens-target-selection-view";
@@ -45,12 +47,16 @@ export class LensApp extends LitElement {
   private commandGeneration = 0;
 
   private readonly port = tauriWebviewPort;
-  private readonly snapshots = new AppSnapshotController(this, this.port);
+  private readonly snapshots = new AppSnapshotController(this, this.port, false);
+  @state() private about: AboutState = { stage: "loading" };
+  @state() private aboutOpenError = "";
   private readonly accessibility = new AccessibilityPermissionController(this, this.port);
 
   protected willUpdate(changed: PropertyValues<this>): void {
     if (changed.has("context")) {
       this.accessibility.setActive(this.context?.view === "settings");
+      this.snapshots.setActive(Boolean(this.context && this.context.view !== "about"));
+      if (this.context?.view === "about") void this.loadAbout();
     }
   }
 
@@ -60,9 +66,12 @@ export class LensApp extends LitElement {
     const snapshot = this.snapshots.snapshot;
     const connectionMessage = this.snapshots.message();
     switch (context.view) {
+      case "about":
+        return html`<lens-about-view .model=${this.about}></lens-about-view>`;
       case "settings":
         return html`<lens-settings-view
           data-platform=${context.platform}
+          .aboutOpenError=${this.aboutOpenError}
           .model=${settingsViewModel(
             context.platform,
             snapshot,
@@ -95,6 +104,15 @@ export class LensApp extends LitElement {
   private handleSettingsIntent = async (event: CustomEvent<SettingsIntent>): Promise<void> => {
     event.stopPropagation();
     const intent = event.detail;
+    if (intent.type === "open-about") {
+      this.aboutOpenError = "";
+      try {
+        await this.port.showAbout();
+      } catch (error) {
+        this.aboutOpenError = `Unable to open About: ${String(error)}`;
+      }
+      return;
+    }
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
       case "preview-agent-model": {
@@ -316,6 +334,15 @@ export class LensApp extends LitElement {
         return;
     }
   };
+
+  private async loadAbout(): Promise<void> {
+    this.about = { stage: "loading" };
+    try {
+      this.about = { stage: "ready", info: await this.port.getAboutInfo() };
+    } catch (error) {
+      this.about = { stage: "failed", message: String(error) };
+    }
+  }
 
   private async chooseDirectory(identity: CommandIdentity): Promise<void> {
     if (this.command.stage === "pending") return;

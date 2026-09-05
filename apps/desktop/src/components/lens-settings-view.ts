@@ -1,4 +1,4 @@
-import { LitElement, html, nothing } from "lit";
+import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { SettingsDestination } from "../agent-prompt-template";
 import type {
@@ -21,7 +21,25 @@ import {
 
 @customElement("lens-settings-view")
 export class LensSettingsView extends LitElement {
-  static styles = [viewHostStyles, sharedApplicationStyles];
+  static styles = [
+    viewHostStyles,
+    sharedApplicationStyles,
+    css`
+      .settings-sidebar {
+        grid-template-rows: minmax(0, 1fr) auto auto;
+      }
+      .about-entry {
+        margin-top: 12px;
+        padding: 12px 8px 0;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .about-entry button {
+        width: 100%;
+      }
+    `,
+  ];
+
+  @property() aboutOpenError = "";
 
   @property({ attribute: false })
   model: SettingsViewModel | undefined;
@@ -91,9 +109,11 @@ export class LensSettingsView extends LitElement {
               ${model.lensStageLabel}
             </span>
           </div>
+          <div class="about-entry">${this.aboutButton()}</div>
         </aside>
 
         <section class="settings-detail">
+          ${this.aboutOpenError ? html`<p role="alert">${this.aboutOpenError}</p>` : nothing}
           <div class="settings-detail-panel" ?hidden=${this.destination !== "general"}>
             <header class="settings-detail-header">
               <div>
@@ -170,6 +190,12 @@ export class LensSettingsView extends LitElement {
         </section>
       </main>
     `;
+  }
+
+  private aboutButton() {
+    return html`<button type="button" @click=${() => this.emit({ type: "open-about" })}>
+      About
+    </button>`;
   }
 
   private navigationButton(destination: SettingsDestination, label: string) {

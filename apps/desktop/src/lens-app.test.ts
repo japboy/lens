@@ -154,6 +154,14 @@ const closeCurrentWindow = vi.hoisted(() => vi.fn<() => Promise<void>>(async () 
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn<(command: string) => Promise<unknown>>(async (command: string) => {
+    if (command === "get_about_info")
+      return {
+        name: "Lens",
+        version: "0.1.0",
+        copyright: "Copyright © 2026 Yu Inao",
+        license: "Apache text\n<not-markup>",
+        notice: "Original project by Yu Inao",
+      };
     if (command === "get_app_snapshot") return snapshot;
     if (command === "accessibility_permission") return true;
     return undefined;
@@ -208,6 +216,53 @@ async function createLensApp(view: AppView): Promise<TestLensApp> {
 function viewRoot(element: TestLensApp, selector: string): ShadowRoot | undefined {
   return element.shadowRoot?.querySelector<HTMLElement>(selector)?.shadowRoot ?? undefined;
 }
+
+describe("About", () => {
+  it("loads embedded documents without snapshots or permission checks, and switches read-only text", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const element = await createLensApp("about");
+    await vi.waitFor(() =>
+      expect(viewRoot(element, "lens-about-view")?.querySelector("textarea")).toBeTruthy(),
+    );
+    const root = viewRoot(element, "lens-about-view")!;
+    const textarea = root.querySelector("textarea")!;
+    expect(textarea.value).toBe("Apache text\n<not-markup>");
+    expect(textarea.readOnly).toBe(true);
+    expect(textarea.disabled).toBe(false);
+    expect(root.querySelector("not-markup")).toBeNull();
+    expect(listen).not.toHaveBeenCalled();
+    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual(["get_about_info"]);
+    const select = root.querySelector("select")!;
+    textarea.scrollTop = 100;
+    select.value = "notice";
+    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() =>
+      expect(root.querySelector("textarea")?.value).toBe("Original project by Yu Inao"),
+    );
+    expect(root.querySelector("textarea")).not.toBe(textarea);
+    expect(root.querySelector("textarea")?.scrollTop).toBe(0);
+  });
+
+  it("opens About from Settings without changing the selected page", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const element = await createLensApp("settings");
+    await vi.waitFor(() =>
+      expect(
+        viewRoot(element, "lens-settings-view")?.querySelector(".about-entry button"),
+      ).toBeTruthy(),
+    );
+    const root = viewRoot(element, "lens-settings-view")!;
+    const prompt = [...root.querySelectorAll<HTMLButtonElement>(".settings-nav-item")].find(
+      (button) => button.textContent?.includes("Agent Prompt"),
+    )!;
+    prompt.click();
+    await vi.waitFor(() => expect(prompt.getAttribute("aria-current")).toBe("page"));
+    root.querySelector<HTMLButtonElement>(".about-entry button")!.click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("show_about"));
+    expect(prompt.getAttribute("aria-current")).toBe("page");
+  });
+});
 
 describe("Lens target selection preview", () => {
   it("shows only the vertical preview cards and icon actions, then invokes finite edit commands", async () => {

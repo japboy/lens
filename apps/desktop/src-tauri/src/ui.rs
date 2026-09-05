@@ -9,7 +9,7 @@ use crate::{
 use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     utils::{config::WindowEffectsConfig, WindowEffect, WindowEffectState},
     App, AppHandle, LogicalPosition, LogicalSize, LogicalUnit, Manager, WebviewUrl,
@@ -51,6 +51,7 @@ const DESKTOP_PLATFORM: &str = if cfg!(target_os = "macos") {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WebviewView {
+    About,
     Settings,
     Overlay,
     TargetSelection,
@@ -59,6 +60,7 @@ enum WebviewView {
 impl WebviewView {
     const fn as_query_value(self) -> &'static str {
         match self {
+            Self::About => "about",
             Self::Settings => "settings",
             Self::Overlay => "overlay",
             Self::TargetSelection => "target-selection",
@@ -385,10 +387,7 @@ impl TrayMenuPresentation {
             ),
             claude_checked: selected == Some(AgentKind::Claude),
             codex_checked: selected == Some(AgentKind::Codex),
-            working_directory_text: format!(
-                "Working Directory: {}…",
-                menu_safe_path(&config.working_directory.to_string_lossy())
-            ),
+            working_directory_text: menu_safe_path(&config.working_directory.to_string_lossy()),
         }
     }
 }
@@ -397,14 +396,21 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
     let select = MenuItem::with_id(
         app,
         "select_target",
-        "Select Lens Targets…",
+        "Select Targets...",
         false,
         None::<&str>,
     )?;
     let use_claude =
         CheckMenuItem::with_id(app, "agent_claude", "Claude", true, false, None::<&str>)?;
     let use_codex = CheckMenuItem::with_id(app, "agent_codex", "Codex", true, false, None::<&str>)?;
-    let agent_menu = Submenu::with_items(app, "AI Agent", true, &[&use_claude, &use_codex])?;
+    let agent_label = MenuItem::with_id(app, "agent_label", "AI Agents", false, None::<&str>)?;
+    let directory_label = MenuItem::with_id(
+        app,
+        "directory_label",
+        "Working Directory",
+        false,
+        None::<&str>,
+    )?;
     let working_directory = MenuItem::with_id(
         app,
         "working_directory",
@@ -412,19 +418,28 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         true,
         None::<&str>,
     )?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Lens", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
+    let about = MenuItem::with_id(app, "about", "About", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let separator_one = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
+    let separator_three = PredefinedMenuItem::separator(app)?;
+    let separator_four = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
         &[
             &select,
             &separator_one,
-            &agent_menu,
-            &working_directory,
-            &settings,
+            &agent_label,
+            &use_claude,
+            &use_codex,
             &separator_two,
+            &directory_label,
+            &working_directory,
+            &separator_three,
+            &settings,
+            &about,
+            &separator_four,
             &quit,
         ],
     )?;
@@ -455,6 +470,11 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             "settings" => {
                 if let Err(error) = show_settings(app) {
                     eprintln!("Unable to show Settings: {error}");
+                }
+            }
+            "about" => {
+                if let Err(error) = show_about(app) {
+                    eprintln!("Unable to show About: {error}");
                 }
             }
             "quit" => app.exit(0),
@@ -616,6 +636,24 @@ fn choose_working_directory<R: tauri::Runtime>(app: &AppHandle<R>) {
 
 fn menu_safe_path(path: &str) -> String {
     path.replace('&', "&&").replace(['\r', '\n'], " ")
+}
+
+pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("about") {
+        window.show().map_err(|error| error.to_string())?;
+        window.unminimize().map_err(|error| error.to_string())?;
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    WebviewWindowBuilder::new(app, "about", webview_url(WebviewView::About))
+        .title("About Lens")
+        .minimizable(false)
+        .inner_size(640.0, 560.0)
+        .min_inner_size(400.0, 320.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub fn show_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -1065,7 +1103,7 @@ mod tests {
                 agent_selection_enabled: true,
                 claude_checked: false,
                 codex_checked: true,
-                working_directory_text: "Working Directory: /Users/example/Work…".into(),
+                working_directory_text: "/Users/example/Work".into(),
             }
         );
 

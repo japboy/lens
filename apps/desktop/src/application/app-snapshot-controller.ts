@@ -26,6 +26,7 @@ export class AppSnapshotController implements ReactiveController {
   snapshot: AppSnapshot | undefined;
   connection: SnapshotConnectionState = { stage: "subscribing" };
 
+  private connected = false;
   private generation = 0;
   private revision = -1;
   private unlisten: Unlisten | undefined;
@@ -33,16 +34,29 @@ export class AppSnapshotController implements ReactiveController {
   constructor(
     private readonly host: ReactiveControllerHost,
     private readonly port: WebviewPort,
+    private active = true,
   ) {
     host.addController(this);
   }
 
   hostConnected(): void {
-    const generation = ++this.generation;
-    void this.load(generation);
+    this.connected = true;
+    if (this.active) void this.load(++this.generation);
+  }
+
+  setActive(active: boolean): void {
+    if (active === this.active) return;
+    this.active = active;
+    if (!active) this.stop();
+    else if (this.connected) void this.load(++this.generation);
   }
 
   hostDisconnected(): void {
+    this.connected = false;
+    this.stop();
+  }
+
+  private stop(): void {
     this.generation += 1;
     this.unlisten?.();
     this.unlisten = undefined;
@@ -56,7 +70,7 @@ export class AppSnapshotController implements ReactiveController {
     try {
       this.setConnection({ stage: "subscribing" });
       const unlisten = await this.port.subscribeToAppSnapshot((snapshot) => {
-        this.applySnapshot(snapshot);
+        if (generation === this.generation) this.applySnapshot(snapshot);
       });
       if (generation !== this.generation) {
         unlisten();

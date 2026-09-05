@@ -21,6 +21,7 @@ export type PromptIntent =
   | { type: "reset" };
 
 export type SettingsIntent =
+  | { type: "open-about" }
   | { type: "preview-agent-model"; configId: string; value?: string }
   | { type: "save-agent-defaults"; defaults: AgentDefaults }
   | { type: "select-agent"; agent: AgentKind }

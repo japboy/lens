@@ -1,3 +1,4 @@
+mod about;
 mod agent;
 mod agent_output;
 mod agent_preferences;
@@ -60,6 +61,8 @@ fn configure_shell<R: tauri::Runtime>(
 fn command_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        about::get_about_info,
+        about::show_about,
         commands::get_app_snapshot,
         commands::set_agent,
         commands::set_working_directory,
@@ -179,6 +182,12 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         .build(product_context())
         .expect("failed to build Lens")
         .run(move |app, event| match event {
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if std::env::var_os("LENS_DEBUG_SETTINGS").is_some() => {
+                if let Err(error) = ui::show_settings(app) {
+                    eprintln!("Unable to show debug Settings: {error}");
+                }
+            }
             #[cfg(debug_assertions)]
             tauri::RunEvent::Ready if validate_interactions => {
                 let app = app.clone();

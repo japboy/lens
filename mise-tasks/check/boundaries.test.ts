@@ -270,6 +270,28 @@ describe("portable source escape restrictions", () => {
     },
   );
 
+  it("admits only the two root license documents as desktop text resources", () => {
+    const check = (source: string) =>
+      sourceInclusionViolations(
+        root,
+        "apps/desktop/src-tauri/src/about.rs",
+        source,
+        "apps/desktop",
+      );
+    expect(check('include_str!("../../../../LICENSE");')).toEqual([]);
+    expect(check('include_str!("../../../../NOTICE");')).toEqual([]);
+    expect(check('include_str!("../../../../Cargo.toml");')).not.toEqual([]);
+    expect(check('include_bytes!("../../../../LICENSE");')).not.toEqual([]);
+    expect(
+      sourceInclusionViolations(
+        root,
+        "packages/domain/src/lib.rs",
+        'include_str!("../../../LICENSE");',
+        "packages/domain",
+      ),
+    ).not.toEqual([]);
+  });
+
   it("rejects cross-owner and computed source/resource inclusion", () => {
     const check = (source: string) =>
       sourceInclusionViolations(root, "packages/domain/src/lib.rs", source, "packages/domain");

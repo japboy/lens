@@ -13,7 +13,17 @@ import type {
 
 export type Unlisten = () => void;
 
+export interface AboutInfo {
+  name: string;
+  version: string;
+  copyright: string;
+  license: string;
+  notice: string;
+}
+
 export interface WebviewPort {
+  getAboutInfo(): Promise<AboutInfo>;
+  showAbout(): Promise<void>;
   previewAgentModel(selectionId: string, configId: string, value?: string): Promise<void>;
   setAgentDefaults(
     selectionId: string,
@@ -60,6 +70,8 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
+  showAbout: () => invoke<void>("show_about"),
   async previewAgentModel(selectionId, configId, value) {
     await invoke("preview_agent_model", { selectionId, configId, value });
   },

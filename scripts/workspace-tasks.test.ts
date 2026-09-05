@@ -99,7 +99,7 @@ describe("repository task ownership", () => {
 
   it("does not discover adjacent non-executable test modules as tasks", () => {
     const testFiles = [...globSync("mise-tasks/**/*.test.ts", { cwd: root })];
-    expect(testFiles).toHaveLength(5);
+    expect(testFiles).toHaveLength(6);
     for (const file of testFiles) {
       expect(statSync(resolve(root, file)).mode & 0o111).toBe(0);
       expect(tasks.map((task) => task.source)).not.toContain(resolve(root, file));
