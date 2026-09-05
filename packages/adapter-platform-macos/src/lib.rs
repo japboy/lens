@@ -4,6 +4,7 @@
 compile_error!("adapter-platform-macos requires a macOS target");
 
 mod capture;
+pub mod presentation;
 mod source;
 
 #[derive(Debug, Clone, Copy, Default)]
