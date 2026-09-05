@@ -31,10 +31,7 @@ unsafe extern "C" {
     fn lens_free_string(value: *mut c_char);
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MacOsCapture;
-
-impl Capture for MacOsCapture {
+impl Capture for crate::MacOsPlatform {
     fn capture(
         &self,
         target: CaptureTarget,

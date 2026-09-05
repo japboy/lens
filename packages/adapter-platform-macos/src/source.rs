@@ -1,34 +1,28 @@
-use super::{ExtractionLimits, PlatformError};
-use crate::model::{ExtractionResult, SelectedWindow, WindowIdentity, WindowPickerReply};
-use serde::{Deserialize, Serialize};
+use crate::MacOsPlatform;
+use port_platform::{
+    accessibility::{Accessibility, ExtractionTarget},
+    model::{ExtractionResult, SelectedWindow, WindowIdentity},
+    observation::{
+        Observation, ObservationEvents, ObservationRegistration, ObservationRequest,
+        ObservationSession, WindowObservationEvent, WindowObservationNotification,
+        WindowObservationStart,
+    },
+    selection::{TargetSelection, WindowPickerReply},
+    trust::AccessibilityTrust,
+    ExtractionLimits, PlatformError, PlatformFuture,
+};
+use serde::Deserialize;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::num::NonZeroU64;
-use tauri::WebviewWindow;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 type PickerCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
-type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 type WindowObservationCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
 
 unsafe extern "C" {
     fn lens_accessibility_is_trusted() -> bool;
     fn lens_accessibility_request_trust() -> bool;
-    fn lens_dismiss_window_to_screen_right(
-        window: *mut c_void,
-        callback: WindowTransitionCallback,
-        context: *mut c_void,
-    ) -> bool;
-    fn lens_present_window_from_screen_right(window: *mut c_void) -> bool;
-    fn lens_transition_window_frame(
-        window: *mut c_void,
-        top_left_delta_x: f64,
-        top_left_delta_y: f64,
-        content_width: f64,
-        content_height: f64,
-        callback: WindowTransitionCallback,
-        context: *mut c_void,
-    ) -> bool;
     fn lens_present_window_picker_for_operation(
         operation_id: *const c_char,
         callback: PickerCallback,
@@ -80,30 +74,6 @@ struct PickerContext {
     sender: Option<oneshot::Sender<String>>,
 }
 
-struct WindowTransitionContext {
-    sender: Option<oneshot::Sender<bool>>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowObservationNotification {
-    WindowTitleChanged,
-    WindowMoved,
-    WindowResized,
-    WindowDestroyed,
-    ApplicationChanged,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WindowObservationEvent {
-    pub operation_id: Uuid,
-    pub context_id: Uuid,
-    pub source_registration_id: Uuid,
-    pub observer_epoch: NonZeroU64,
-    pub window_id: u32,
-    pub notification: WindowObservationNotification,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum NativeObservationStartReply {
@@ -116,14 +86,6 @@ enum NativeObservationStartReply {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowObservationStart {
-    pub registered_notifications: Vec<WindowObservationNotification>,
-    pub diagnostics: Vec<String>,
-}
-
-pub type WindowObservationReceiver = mpsc::Receiver<WindowObservationEvent>;
-
 struct WindowObservationCallbackContext {
     operation_id: Uuid,
     context_id: Uuid,
@@ -133,7 +95,7 @@ struct WindowObservationCallbackContext {
     sender: mpsc::Sender<WindowObservationEvent>,
 }
 
-pub struct WindowObservationRegistration {
+struct NativeObservationRegistration {
     operation_id: Uuid,
     source_registration_id: Uuid,
     callback_context: Option<Box<WindowObservationCallbackContext>>,
@@ -159,23 +121,11 @@ unsafe extern "C" fn picker_callback(json: *const c_char, context: *mut c_void) 
     }
 }
 
-unsafe extern "C" fn window_transition_callback(completed: bool, context: *mut c_void) {
-    if context.is_null() {
-        return;
-    }
-    // SAFETY: `context` is created immediately before a native frame transition begins. The native
-    // bridge invokes this callback exactly once after reaching the terminal Preview frame.
-    let mut context = unsafe { Box::from_raw(context.cast::<WindowTransitionContext>()) };
-    if let Some(sender) = context.sender.take() {
-        let _ = sender.send(completed);
-    }
-}
-
 unsafe extern "C" fn window_observation_callback(json: *const c_char, context: *mut c_void) {
     if json.is_null() || context.is_null() {
         return;
     }
-    // SAFETY: The boxed context is owned by `WindowObservationRegistration` and remains at a
+    // SAFETY: The boxed context is owned by `NativeObservationRegistration` and remains at a
     // stable address until native stop has synchronously removed the main-run-loop observer.
     let context = unsafe { &*context.cast::<WindowObservationCallbackContext>() };
     // SAFETY: The native bridge keeps this NUL-terminated JSON buffer alive for this callback.
@@ -198,7 +148,7 @@ unsafe extern "C" fn window_observation_callback(json: *const c_char, context: *
     let _ = context.sender.try_send(event);
 }
 
-impl WindowObservationRegistration {
+impl NativeObservationRegistration {
     fn stop_inner(&mut self) -> Result<(), PlatformError> {
         if self.callback_context.is_none() {
             return Ok(());
@@ -222,7 +172,7 @@ impl WindowObservationRegistration {
     }
 }
 
-impl Drop for WindowObservationRegistration {
+impl Drop for NativeObservationRegistration {
     fn drop(&mut self) {
         let _ = self.stop_inner();
         // If native reported an already-absent source, it cannot retain the callback context.
@@ -230,125 +180,17 @@ impl Drop for WindowObservationRegistration {
     }
 }
 
-pub fn accessibility_is_trusted() -> bool {
+fn accessibility_is_trusted() -> bool {
     // SAFETY: This C function takes no pointers and delegates to AXIsProcessTrusted.
     unsafe { lens_accessibility_is_trusted() }
 }
 
-pub fn request_accessibility_trust() -> bool {
+fn request_accessibility_trust() -> bool {
     // SAFETY: This C function takes no pointers and delegates to AXIsProcessTrustedWithOptions.
     unsafe { lens_accessibility_request_trust() }
 }
 
-pub fn present_window_from_screen_right(window: &WebviewWindow) -> Result<(), PlatformError> {
-    let native_window = window.ns_window().map_err(|error| {
-        PlatformError::Operation(format!("unable to resolve native Preview window: {error}"))
-    })?;
-    // SAFETY: Tauri owns `native_window` for at least the lifetime of `window`. The bridge uses
-    // the pointer synchronously on the AppKit main queue and retains no raw pointer afterward.
-    let presented = unsafe { lens_present_window_from_screen_right(native_window) };
-    if presented {
-        Ok(())
-    } else {
-        Err(PlatformError::Operation(
-            "unable to present Preview from the right side of its screen".into(),
-        ))
-    }
-}
-
-pub async fn dismiss_window_to_screen_right(window: &WebviewWindow) -> Result<(), PlatformError> {
-    let native_window = window.ns_window().map_err(|error| {
-        PlatformError::Operation(format!("unable to resolve native Preview window: {error}"))
-    })?;
-    let (sender, receiver) = oneshot::channel();
-    let context = Box::new(WindowTransitionContext {
-        sender: Some(sender),
-    });
-    let raw_context = Box::into_raw(context).cast::<c_void>();
-    // SAFETY: Tauri owns `native_window` while this future retains `window`. The context remains
-    // callback-owned when dismissal starts and is reconstructed here only on synchronous refusal.
-    let started = unsafe {
-        lens_dismiss_window_to_screen_right(native_window, window_transition_callback, raw_context)
-    };
-    if !started {
-        // SAFETY: A synchronous refusal guarantees that the native bridge did not retain or call
-        // the callback context.
-        unsafe { drop(Box::from_raw(raw_context.cast::<WindowTransitionContext>())) };
-        return Err(PlatformError::Operation(
-            "unable to start Preview dismissal".into(),
-        ));
-    }
-    if receiver
-        .await
-        .map_err(|_| PlatformError::Operation("Preview dismissal callback was dropped".into()))?
-    {
-        Ok(())
-    } else {
-        Err(PlatformError::Operation(
-            "unable to dismiss Preview to the right side of its screen".into(),
-        ))
-    }
-}
-
-pub async fn transition_window_frame(
-    window: &WebviewWindow,
-    target_x: f64,
-    target_y: f64,
-    target_content_width: f64,
-    target_content_height: f64,
-) -> Result<(), PlatformError> {
-    let native_window = window.ns_window().map_err(|error| {
-        PlatformError::Operation(format!("unable to resolve native Preview window: {error}"))
-    })?;
-    let scale_factor = window.scale_factor().map_err(|error| {
-        PlatformError::Operation(format!("unable to resolve Preview scale factor: {error}"))
-    })?;
-    let current_position = window
-        .outer_position()
-        .map_err(|error| {
-            PlatformError::Operation(format!("unable to resolve Preview position: {error}"))
-        })?
-        .to_logical::<f64>(scale_factor);
-    let (sender, receiver) = oneshot::channel();
-    let context = Box::new(WindowTransitionContext {
-        sender: Some(sender),
-    });
-    let raw_context = Box::into_raw(context).cast::<c_void>();
-    // SAFETY: Tauri owns `native_window` while this future retains `window`. Position deltas and
-    // content dimensions are finite logical points. The callback exclusively owns `raw_context`
-    // after the native transition starts.
-    let started = unsafe {
-        lens_transition_window_frame(
-            native_window,
-            target_x - current_position.x,
-            target_y - current_position.y,
-            target_content_width,
-            target_content_height,
-            window_transition_callback,
-            raw_context,
-        )
-    };
-    if !started {
-        // SAFETY: A synchronous refusal guarantees that the native bridge did not retain or call
-        // the callback context.
-        unsafe { drop(Box::from_raw(raw_context.cast::<WindowTransitionContext>())) };
-        return Err(PlatformError::Operation(
-            "unable to start Preview frame transition".into(),
-        ));
-    }
-    if receiver
-        .await
-        .map_err(|_| PlatformError::Operation("Preview frame callback was dropped".into()))?
-    {
-        Ok(())
-    } else {
-        Err(PlatformError::Operation(
-            "unable to complete Preview frame transition".into(),
-        ))
-    }
-}
-
-pub async fn present_window_picker_for_operation(
+async fn present_window_picker_for_operation(
     operation_id: Uuid,
 ) -> Result<WindowPickerReply, PlatformError> {
     present_window_picker_impl(operation_id).await
@@ -390,7 +232,7 @@ async fn present_window_picker_impl(
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }
 
-pub fn extract_window(
+fn extract_window(
     target: &SelectedWindow,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
@@ -432,7 +274,7 @@ pub fn extract_window(
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }
 
-pub fn extract_registered_window(
+fn extract_registered_window(
     operation_id: Uuid,
     identity: &WindowIdentity,
     limits: ExtractionLimits,
@@ -467,7 +309,7 @@ pub fn extract_registered_window(
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }
 
-pub fn start_window_observation(
+fn start_window_observation(
     operation_id: Uuid,
     context_id: Uuid,
     source_registration_id: Uuid,
@@ -475,8 +317,8 @@ pub fn start_window_observation(
     identity: &WindowIdentity,
 ) -> Result<
     (
-        WindowObservationRegistration,
-        WindowObservationReceiver,
+        NativeObservationRegistration,
+        mpsc::Receiver<WindowObservationEvent>,
         WindowObservationStart,
     ),
     PlatformError,
@@ -558,7 +400,7 @@ pub fn start_window_observation(
             "native observation reported started JSON without transferring ownership".into(),
         ));
     }
-    let registration = WindowObservationRegistration {
+    let registration = NativeObservationRegistration {
         operation_id,
         source_registration_id,
         callback_context: Some(callback_context),
@@ -566,7 +408,7 @@ pub fn start_window_observation(
     Ok((registration, receiver, start))
 }
 
-pub fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
+fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
     let operation_id =
         CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
     // SAFETY: The UUID is valid for this synchronous main-thread-confined registry mutation.
@@ -579,7 +421,7 @@ pub fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(
     }
 }
 
-pub fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
+fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
     let operation_id =
         CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
     // SAFETY: The UUID is valid for this synchronous main-thread-confined registry mutation.
@@ -592,47 +434,222 @@ pub fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError>
     }
 }
 
+struct NativeObservationEvents(mpsc::Receiver<WindowObservationEvent>);
+
+impl ObservationEvents for NativeObservationEvents {
+    fn poll_next(
+        &mut self,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<WindowObservationEvent>> {
+        self.0.poll_recv(context)
+    }
+}
+
+impl ObservationRegistration for NativeObservationRegistration {
+    fn close(&mut self) -> Result<(), PlatformError> {
+        self.stop_inner()
+    }
+}
+
+impl TargetSelection for MacOsPlatform {
+    fn pick(
+        &self,
+        operation_id: Uuid,
+    ) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>> {
+        Box::pin(present_window_picker_for_operation(operation_id))
+    }
+
+    fn release_target(&self, operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
+        release_registered_window(operation_id, window_id)
+    }
+
+    fn release_operation(&self, operation_id: Uuid) -> Result<(), PlatformError> {
+        release_window_operation(operation_id)
+    }
+}
+
+impl Accessibility for MacOsPlatform {
+    fn extract(
+        &self,
+        target: ExtractionTarget,
+        limits: ExtractionLimits,
+    ) -> Result<ExtractionResult, PlatformError> {
+        match target {
+            ExtractionTarget::Registered {
+                operation_id,
+                identity,
+            } => extract_registered_window(operation_id, &identity, limits),
+            ExtractionTarget::Legacy(window) => extract_window(&window, limits),
+        }
+    }
+}
+
+impl Observation for MacOsPlatform {
+    fn observe(&self, request: ObservationRequest) -> Result<ObservationSession, PlatformError> {
+        let (registration, receiver, start) = start_window_observation(
+            request.operation_id,
+            request.context_id,
+            request.source_registration_id,
+            request.observer_epoch,
+            &request.identity,
+        )?;
+        Ok(ObservationSession {
+            registration: Box::new(registration),
+            events: Box::new(NativeObservationEvents(receiver)),
+            start,
+        })
+    }
+}
+
+impl AccessibilityTrust for MacOsPlatform {
+    fn inspect(&self) -> bool {
+        accessibility_is_trusted()
+    }
+
+    fn request(&self) -> bool {
+        request_accessibility_trust()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn observation_event_requires_closed_notification_and_nonzero_epoch() {
-        let event: WindowObservationEvent = serde_json::from_str(
-            r#"{
-                "operation_id":"00000000-0000-0000-0000-000000000001",
-                "context_id":"00000000-0000-0000-0000-000000000002",
-                "source_registration_id":"00000000-0000-0000-0000-000000000003",
-                "observer_epoch":4,
-                "window_id":17,
-                "notification":"window_title_changed"
-            }"#,
-        )
-        .expect("valid event");
-        assert_eq!(event.observer_epoch.get(), 4);
-        assert_eq!(
-            event.notification,
-            WindowObservationNotification::WindowTitleChanged
-        );
+    fn event() -> WindowObservationEvent {
+        WindowObservationEvent {
+            operation_id: Uuid::from_u128(1),
+            context_id: Uuid::from_u128(2),
+            source_registration_id: Uuid::from_u128(3),
+            observer_epoch: NonZeroU64::MIN,
+            window_id: 17,
+            notification: WindowObservationNotification::WindowTitleChanged,
+        }
+    }
 
-        let invalid = serde_json::from_str::<WindowObservationEvent>(
-            r#"{
-                "operation_id":"00000000-0000-0000-0000-000000000001",
-                "context_id":"00000000-0000-0000-0000-000000000002",
-                "source_registration_id":"00000000-0000-0000-0000-000000000003",
-                "observer_epoch":0,
-                "window_id":17,
-                "notification":"unbounded_native_detail"
-            }"#,
+    #[test]
+    fn observer_callback_checks_every_authority_axis_and_coalesces_notifications() {
+        let expected = event();
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut context = Box::new(WindowObservationCallbackContext {
+            operation_id: expected.operation_id,
+            context_id: expected.context_id,
+            source_registration_id: expected.source_registration_id,
+            observer_epoch: expected.observer_epoch,
+            window_id: expected.window_id,
+            sender,
+        });
+        let raw_context = (&mut *context as *mut WindowObservationCallbackContext).cast();
+        for stale in [
+            WindowObservationEvent {
+                operation_id: Uuid::from_u128(99),
+                ..expected.clone()
+            },
+            WindowObservationEvent {
+                context_id: Uuid::from_u128(99),
+                ..expected.clone()
+            },
+            WindowObservationEvent {
+                source_registration_id: Uuid::from_u128(99),
+                ..expected.clone()
+            },
+            WindowObservationEvent {
+                observer_epoch: NonZeroU64::new(2).unwrap(),
+                ..expected.clone()
+            },
+            WindowObservationEvent {
+                window_id: 18,
+                ..expected.clone()
+            },
+        ] {
+            let json = CString::new(serde_json::to_string(&stale).unwrap()).unwrap();
+            // SAFETY: This test owns the callback context and JSON for the synchronous call.
+            unsafe { window_observation_callback(json.as_ptr(), raw_context) };
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+        let json = CString::new(serde_json::to_string(&expected).unwrap()).unwrap();
+        // SAFETY: Owned buffers remain valid; observation callbacks only borrow the context.
+        unsafe { window_observation_callback(json.as_ptr(), raw_context) };
+        let mut later = expected.clone();
+        later.notification = WindowObservationNotification::WindowResized;
+        let second = CString::new(serde_json::to_string(&later).unwrap()).unwrap();
+        // SAFETY: The same stable owned context is still alive for this second callback.
+        unsafe { window_observation_callback(second.as_ptr(), raw_context) };
+        assert_eq!(receiver.try_recv().unwrap(), expected);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        let invalid = CString::new("invalid JSON").unwrap();
+        // SAFETY: The invalid payload is still a valid C string; null input is explicitly handled.
+        unsafe {
+            window_observation_callback(invalid.as_ptr(), raw_context);
+            window_observation_callback(std::ptr::null(), raw_context);
+            window_observation_callback(json.as_ptr(), std::ptr::null_mut());
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn native_event_stream_distinguishes_pending_delivery_and_terminal_close() {
+        let (sender, receiver) = mpsc::channel(1);
+        let mut events = NativeObservationEvents(receiver);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(events.poll_next(&mut context).is_pending());
+        sender.try_send(event()).unwrap();
+        assert_eq!(
+            events.poll_next(&mut context),
+            std::task::Poll::Ready(Some(event()))
         );
-        assert!(invalid.is_err());
+        assert!(events.poll_next(&mut context).is_pending());
+        drop(sender);
+        assert_eq!(events.poll_next(&mut context), std::task::Poll::Ready(None));
+        assert_eq!(events.poll_next(&mut context), std::task::Poll::Ready(None));
+    }
+
+    #[test]
+    fn picker_callback_transfers_owned_terminal_response_once() {
+        let (sender, mut receiver) = oneshot::channel();
+        let raw_context = Box::into_raw(Box::new(PickerContext {
+            sender: Some(sender),
+        }))
+        .cast();
+        let response = CString::new(r#"{"status":"cancelled"}"#).unwrap();
+        // SAFETY: Ownership of the allocated context transfers to this sole terminal callback.
+        unsafe { picker_callback(response.as_ptr(), raw_context) };
+        assert_eq!(receiver.try_recv().unwrap(), response.to_str().unwrap());
+
+        let (sender, mut receiver) = oneshot::channel();
+        let raw_context = Box::into_raw(Box::new(PickerContext {
+            sender: Some(sender),
+        }))
+        .cast();
+        // SAFETY: A new context transfers exactly once; a null native response is explicitly handled.
+        unsafe { picker_callback(std::ptr::null(), raw_context) };
+        let reply: WindowPickerReply = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        assert!(matches!(reply, WindowPickerReply::Error { .. }));
+
+        let (sender, receiver) = oneshot::channel();
+        drop(receiver);
+        let raw_context = Box::into_raw(Box::new(PickerContext {
+            sender: Some(sender),
+        }))
+        .cast();
+        // SAFETY: The callback still owns and releases its context after its receiver was cancelled.
+        unsafe { picker_callback(response.as_ptr(), raw_context) };
     }
 
     #[test]
     fn observation_handle_and_receiver_can_move_to_the_live_source_actor() {
         fn assert_send<T: Send>() {}
 
-        assert_send::<WindowObservationRegistration>();
-        assert_send::<WindowObservationReceiver>();
+        assert_send::<NativeObservationRegistration>();
+        assert_send::<NativeObservationEvents>();
+        assert_send::<port_platform::observation::ObservationSession>();
     }
 }

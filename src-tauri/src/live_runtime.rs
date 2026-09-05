@@ -48,8 +48,12 @@ impl ActiveObservation {
         for forwarder in self.forwarders.drain(..) {
             forwarder.abort();
         }
-        // Dropping each registration synchronously removes its AXObserver run-loop source and
-        // callback before Rust releases the callback context.
+        // Explicit close reports teardown failure; the adapter's Drop remains a cleanup backstop.
+        for registration in &mut self.registrations {
+            if let Err(error) = registration.close() {
+                eprintln!("Lens observer close failed: {error}");
+            }
+        }
         self.registrations.clear();
     }
 }
@@ -484,7 +488,7 @@ fn spawn_source_forwarder(
     mut receiver: WindowObservationReceiver,
 ) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = receiver.recv().await {
+        while let Some(event) = std::future::poll_fn(|context| receiver.poll_next(context)).await {
             match signal.try_send(LiveSignal::Invalidation(event)) {
                 Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
                 Err(mpsc::error::TrySendError::Closed(_)) => break,

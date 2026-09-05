@@ -2,14 +2,7 @@ use crate::{ImageCaptureLimits, PlatformError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Screen-point geometry in the current compatibility contract, not capture pixels.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct Bounds {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
+pub use crate::model::Bounds;
 
 /// Registered operations resolve only their retained target; they never re-enumerate it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

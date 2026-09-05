@@ -7,23 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum WindowPickerReply {
-    Selected { windows: Vec<SelectedWindow> },
-    Cancelled,
-    Error { message: String },
-}
-
-impl WindowPickerReply {
-    pub fn into_selected(self) -> Result<Option<Vec<SelectedWindow>>, String> {
-        match self {
-            Self::Selected { windows } => Ok(Some(windows)),
-            Self::Cancelled => Ok(None),
-            Self::Error { message } => Err(message),
-        }
-    }
-}
+pub use use_case::platform::WindowPickerReply;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

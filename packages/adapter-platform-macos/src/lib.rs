@@ -4,5 +4,7 @@
 compile_error!("adapter-platform-macos requires a macOS target");
 
 mod capture;
+mod source;
 
-pub use capture::MacOsCapture;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MacOsPlatform;

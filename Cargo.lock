@@ -11,6 +11,7 @@ dependencies = [
  "port-platform",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 
@@ -3010,6 +3011,7 @@ name = "port-platform"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -5010,6 +5012,7 @@ dependencies = [
  "base64 0.22.1",
  "domain",
  "port-platform",
+ "serde",
  "serde_json",
  "uuid",
 ]

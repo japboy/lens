@@ -1,10 +1,9 @@
 #[cfg(target_os = "macos")]
-mod macos;
+mod presentation_macos;
 
-#[cfg(target_os = "macos")]
 #[allow(unused_imports)]
 // Public source-observation boundary; consumers live above this module.
-pub use macos::{
+pub use port_platform::observation::{
     WindowObservationEvent, WindowObservationNotification, WindowObservationReceiver,
     WindowObservationRegistration, WindowObservationStart,
 };
@@ -16,28 +15,36 @@ use crate::{
 use std::num::NonZeroU64;
 use uuid::Uuid;
 
-use port_platform::capture::CaptureTarget;
+use adapter_platform_macos::MacOsPlatform;
+use port_platform::{
+    accessibility::{Accessibility, ExtractionTarget},
+    capture::CaptureTarget,
+    observation::{Observation, ObservationRequest},
+    selection::TargetSelection,
+    trust::AccessibilityTrust,
+};
 pub use port_platform::{ExtractionLimits, ImageCaptureLimits, PlatformError};
 use use_case::media::{capture_media, MediaCaptureContext};
+use use_case::platform as conversion;
 
 pub fn accessibility_is_trusted() -> bool {
-    macos::accessibility_is_trusted()
+    MacOsPlatform.inspect()
 }
 
 pub fn request_accessibility_trust() -> bool {
-    macos::request_accessibility_trust()
+    MacOsPlatform.request()
 }
 
 pub fn present_window_from_screen_right(
     window: &tauri::WebviewWindow,
 ) -> Result<(), PlatformError> {
-    macos::present_window_from_screen_right(window)
+    presentation_macos::present_window_from_screen_right(window)
 }
 
 pub async fn dismiss_window_to_screen_right(
     window: &tauri::WebviewWindow,
 ) -> Result<(), PlatformError> {
-    macos::dismiss_window_to_screen_right(window).await
+    presentation_macos::dismiss_window_to_screen_right(window).await
 }
 
 pub async fn transition_window_frame(
@@ -47,7 +54,7 @@ pub async fn transition_window_frame(
     target_content_width: f64,
     target_content_height: f64,
 ) -> Result<(), PlatformError> {
-    macos::transition_window_frame(
+    presentation_macos::transition_window_frame(
         window,
         target_x,
         target_y,
@@ -60,14 +67,22 @@ pub async fn transition_window_frame(
 pub async fn present_window_picker_for_operation(
     operation_id: Uuid,
 ) -> Result<WindowPickerReply, PlatformError> {
-    macos::present_window_picker_for_operation(operation_id).await
+    MacOsPlatform
+        .pick(operation_id)
+        .await
+        .map(conversion::picker_reply)
 }
 
 pub fn extract_window(
     target: &SelectedWindow,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
-    macos::extract_window(target, limits)
+    MacOsPlatform
+        .extract(
+            ExtractionTarget::Legacy(conversion::selected_window(target)),
+            limits,
+        )
+        .map(conversion::extraction)
 }
 
 pub fn extract_registered_window(
@@ -75,7 +90,15 @@ pub fn extract_registered_window(
     identity: &WindowIdentity,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
-    macos::extract_registered_window(operation_id, identity, limits)
+    MacOsPlatform
+        .extract(
+            ExtractionTarget::Registered {
+                operation_id,
+                identity: conversion::window_identity(identity),
+            },
+            limits,
+        )
+        .map(conversion::extraction)
 }
 
 pub fn start_window_observation(
@@ -92,13 +115,14 @@ pub fn start_window_observation(
     ),
     PlatformError,
 > {
-    macos::start_window_observation(
+    let session = MacOsPlatform.observe(ObservationRequest {
         operation_id,
         context_id,
         source_registration_id,
         observer_epoch,
-        identity,
-    )
+        identity: conversion::window_identity(identity),
+    })?;
+    Ok((session.registration, session.events, session.start))
 }
 
 pub fn capture_window_media(
@@ -108,7 +132,7 @@ pub fn capture_window_media(
     limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
     capture_media(
-        &adapter_platform_macos::MacOsCapture,
+        &MacOsPlatform,
         MediaCaptureContext {
             target: CaptureTarget::Legacy {
                 window_id: target.identity.window_id,
@@ -137,7 +161,7 @@ pub fn capture_registered_window_media(
         )
     })?;
     capture_media(
-        &adapter_platform_macos::MacOsCapture,
+        &MacOsPlatform,
         MediaCaptureContext {
             target: CaptureTarget::Registered {
                 operation_id,
@@ -153,9 +177,9 @@ pub fn capture_registered_window_media(
 }
 
 pub fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
-    macos::release_registered_window(operation_id, window_id)
+    MacOsPlatform.release_target(operation_id, window_id)
 }
 
 pub fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
-    macos::release_window_operation(operation_id)
+    MacOsPlatform.release_operation(operation_id)
 }

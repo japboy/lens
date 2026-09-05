@@ -1,15 +1,14 @@
+use crate::platform::{
+    bounds_from_platform as to_domain_bounds, bounds_to_platform as to_platform_bounds,
+};
 use base64::prelude::*;
-use domain::{
-    lens::{
-        LensCoordinateSpace, LensMediaAttachment, LensMediaCapture, LensMediaCoverage,
-        LensMediaOmission, LensMediaOmissionReason, LensMediaPayload, LensMediaPlan,
-        LensMediaScope,
-    },
-    model::Bounds,
+use domain::lens::{
+    LensCoordinateSpace, LensMediaAttachment, LensMediaCapture, LensMediaCoverage,
+    LensMediaOmission, LensMediaOmissionReason, LensMediaPayload, LensMediaPlan, LensMediaScope,
 };
 use port_platform::{
     capture::{
-        self, Capture, CaptureBatch, CaptureCoverage, CaptureOmissionReason, CaptureRequest,
+        Capture, CaptureBatch, CaptureCoverage, CaptureOmissionReason, CaptureRequest,
         CaptureScope, CaptureTarget,
     },
     ImageCaptureLimits, PlatformError,
@@ -65,24 +64,6 @@ pub fn capture_media(
     }
     let batch = capability.capture(context.target, &requests, limits)?;
     assemble_media(context, plan, batch)
-}
-
-fn to_platform_bounds(bounds: Bounds) -> capture::Bounds {
-    capture::Bounds {
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-    }
-}
-
-fn to_domain_bounds(bounds: capture::Bounds) -> Bounds {
-    Bounds {
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-    }
 }
 
 fn to_domain_coverage(coverage: CaptureCoverage) -> LensMediaCoverage {
@@ -214,7 +195,8 @@ fn media_uri(context_id: Uuid, context_revision: u64, attachment_id: &str) -> St
 mod tests {
     use super::*;
     use domain::lens::LensMediaRequest;
-    use port_platform::capture::{CaptureOmission, CapturedImage};
+    use domain::model::Bounds;
+    use port_platform::capture::{self, CaptureOmission, CapturedImage};
     use std::sync::Mutex;
 
     #[derive(Default)]

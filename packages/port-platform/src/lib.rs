@@ -1,6 +1,14 @@
 //! Platform capabilities expose owned facts, never domain state or native objects.
 
+pub mod accessibility;
 pub mod capture;
+pub mod model;
+pub mod observation;
+pub mod selection;
+pub mod trust;
+
+pub type PlatformFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 use thiserror::Error;
 
