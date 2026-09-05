@@ -153,6 +153,17 @@ async fn protocol_and_ui(app: &AppHandle) -> Result<(), Error> {
             check(actual == expected, "Native permission outcome mismatch")?;
             println!("LENS_INTERACTION_CASE=permission_{expected}:passed");
         }
+        for (policy, expected) in [(crate::agent_preferences::ToolPolicy::Allow, "fixture-allow"), (crate::agent_preferences::ToolPolicy::Deny, "fixture-deny")] {
+            let before = controls.snapshot().unwrap().interactions.len();
+            let saved = crate::agent_preferences::AgentDefaults { tools: crate::agent_preferences::ToolPolicies {read:policy, ..Default::default()}, ..Default::default() };
+            let restored: crate::agent_preferences::AgentDefaults = serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
+            controls.set_initial_authority("safe".into(), restored.tools)?;
+            let response = connection.send_request(permission("Automatic permission fixture")).block_task().await?;
+            check(serde_json::to_value(response).unwrap()["outcome"]["optionId"] == expected, "Automatic response did not select exact one-shot ID")?;
+            check(controls.snapshot().unwrap().interactions.len() == before, "Automatic response opened a dialog")?;
+            println!("LENS_INTERACTION_CASE=automatic_{expected}:passed");
+        }
+        controls.set_initial_authority("safe".into(), Default::default())?;
         for (button, expected) in [("Send response", "accept"), ("Decline", "decline"), ("Cancel request", "cancel")] {
             ui_response(app, "Native form fixture", button)?;
             let response = connection.send_request(form()).block_task().await?;

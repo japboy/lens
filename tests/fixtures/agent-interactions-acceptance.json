@@ -1,13 +1,15 @@
 {
-  "date": "2026-09-05T02:28:15.738979+00:00",
+  "date": "2026-09-05T03:32:22.582961+00:00",
   "sdk": "2.1.0",
   "schema": "1.7.0",
   "source_sha256": {
     "src-tauri/src/agent.rs": "76301534c1d913eede9ead67cc4e830672145dfd5a2f703a37c7f0bee5d0f5c7",
-    "src-tauri/src/session_controls.rs": "573b264e3e1da3036ea583d970d59f6b4022cc4e1e4d7a295fabe0b171cc4a21",
-    "src-tauri/src/session_controls_validation.rs": "4233e452f0797a9a18392d069617efe832bfd504a7215a40e5b9aefa723ec52c",
+    "src-tauri/src/session_controls.rs": "db4616093336da14216285a5be4c14598bca88815fc196227f6fd82435b0cd1c",
+    "src-tauri/src/session_controls_validation.rs": "ec667fe87656adc6e0f94afbeb4433b9c6758a0f2dc67d69960cde449d7306f8",
     "scripts/validate-agent-interactions.py": "7f80df04f44b9ebfe1cbcfcc5975227336ac3b692e0aa87484a8303179ace4b2",
-    "tests/fixtures/mcp-interactions.mjs": "5a2efe69866c2a8613a041933403cd65b61ee67de8aaed24610e49eb60efb373"
+    "tests/fixtures/mcp-interactions.mjs": "5a2efe69866c2a8613a041933403cd65b61ee67de8aaed24610e49eb60efb373",
+    "src-tauri/src/agent_preferences.rs": "1852797476371afd5bc61b1362c73bf70db000dc6d127f40ef8f83a9ec940133",
+    "src/components/lens-agent-defaults.ts": "491c2532635a53f1a6a6215e5f958a32fa8cbf8005c4a41f3f5b7bdb6ecc879a"
   },
   "native": {
     "status": "passed",
@@ -15,6 +17,8 @@
       "permission_fixture-allow",
       "permission_fixture-deny",
       "permission_cancelled",
+      "automatic_fixture-allow",
+      "automatic_fixture-deny",
       "form_accept",
       "form_decline",
       "form_cancel",
@@ -67,7 +71,9 @@
       "permission": 0,
       "form": 2,
       "url": 1
-    }
+    },
+    "evidence_date": "2026-09-05T02:28:15.738979+00:00",
+    "evidence_commit": "d36874ab69ad9a9d8d5ea78078b43c0bc7b5ad6e"
   },
   "claude": {
     "status": "authentication_required",
@@ -75,13 +81,19 @@
     "error": "ACP error -32000: Authentication required",
     "cli_logged_in": false
   },
-  "closure": "A4 pre-execution tool-policy enforcement remains a pre-merge issue. Claude provider validation is deferred by the user to another environment after merge; A7 stays unchecked. Existing passing counts cover only their stated layers.",
+  "closure": "Request-response contract verified locally. Await current PR review/merge; Claude authenticated provider validation remains deferred by the user to another environment after merge, and #17 remains open until recorded.",
   "tool_policy_enforcement": {
-    "status": "not_implemented_for_unrequested_tools",
+    "status": "request_response_contract_verified",
+    "scope": "User-approved per-Agent saved Ask/Allow/Deny response policy applies only to received ACP permission requests. Execution without requests remains Agent-owned.",
     "review": "https://github.com/japboy/lens/pull/39#discussion_r3939250921",
-    "verified_scope": "Native cases exercise received requests. Provider cases exercise transport and do not apply Lens AgentDefaults.tools to the provider process.",
-    "evidence": "Codex fixture_read completed with zero session/request_permission requests. permission_details only consults effect policies after receiving such a request.",
-    "required_verification": "Through the production launch path, configure each effect as Deny or Ask. Trace tool entry before any side effect; Deny must have zero invocations and Ask must have zero invocations until an exact one-shot response, including preauthorized MCP, built-ins, subagents, and privileged modes.",
-    "acceptance": "A4 is incomplete until pre-execution enforcement is implemented and verified, or the user explicitly narrows the policy contract."
+    "automatic_response": "Select only an exact unambiguous allow_once/reject_once option. Unknown effects require confirmation. Unsupported requests never auto-approve; forms and URLs remain explicit.",
+    "native_evidence": "Serialized saved policies are restored into production controls; SDK requests receive exact automatic outcomes without creating pending dialogs. Existing manual/lifecycle cases pass.",
+    "provider_evidence": "Historical provider cases establish transport compatibility, not all-tool policy enforcement. Such enforcement is outside the accepted contract."
+  },
+  "verification": {
+    "frontend_passed": 141,
+    "rust_passed": 152,
+    "rust_existing_opt_in_ignored": 1,
+    "full_verify": "passed"
   }
 }

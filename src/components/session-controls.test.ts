@@ -251,7 +251,14 @@ describe("shared Agent defaults", () => {
     const policy = element.querySelector<HTMLSelectElement>(
       'select[aria-label="Read files or data policy"]',
     )!;
-    policy.value = "deny";
+    expect(element.textContent).toContain("Permission request response policy");
+    expect(element.textContent).toContain("Operations without a request follow the Agent");
+    expect(Array.from(policy.options).map((option) => option.value)).toEqual([
+      "ask",
+      "allow",
+      "deny",
+    ]);
+    policy.value = "allow";
     policy.dispatchEvent(new Event("change"));
     await element.updateComplete;
     expect(intents).toEqual([{ type: "preview-model", configId: "model", value: "first" }]);
@@ -260,7 +267,7 @@ describe("shared Agent defaults", () => {
     element.selection = structuredClone(element.selection);
     await element.updateComplete;
     expect(model.value).toBe("first");
-    expect(policy.value).toBe("deny");
+    expect(policy.value).toBe("allow");
     click(element, "Save Shared Settings");
     expect(intents[1]).toMatchObject({
       type: "save-defaults",
@@ -269,7 +276,7 @@ describe("shared Agent defaults", () => {
           { config_id: "model", value: "first" },
           { config_id: "reasoning_effort", value: "high" },
         ],
-        tools: { read: "deny", execute: "deny" },
+        tools: { read: "allow", execute: "deny" },
       },
     });
   });

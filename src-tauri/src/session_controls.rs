@@ -114,6 +114,11 @@ pub enum InteractionResponse {
     Submit { content: serde_json::Value },
 }
 
+enum PermissionAdmission {
+    Automatic(RequestPermissionOutcome),
+    Pending(Uuid, oneshot::Receiver<InteractionResponse>),
+}
+
 struct PendingDecision {
     id: Uuid,
     sender: oneshot::Sender<InteractionResponse>,
@@ -629,32 +634,7 @@ impl SessionControls {
             }
             fields
         };
-        let Some(kind) = fields.kind else {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        };
-        let policy = {
-            let Ok(runtime) = self.runtime.lock() else {
-                return Err("Tool permission denied: its effect, policy, or correlation could not be verified".into());
-            };
-            runtime.tool_policies.for_kind(kind)
-        };
-        if policy == crate::agent_preferences::ToolPolicy::Deny {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        }
-        if state.effective_mode == state.policy_default
-            && !matches!(kind, ToolKind::Read | ToolKind::Search | ToolKind::Fetch)
-        {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        }
+        let kind = fields.kind.unwrap_or(ToolKind::Other);
         let Some(title) = fields.title else {
             return Err(
                 "Tool permission denied: its effect, policy, or correlation could not be verified"
@@ -721,6 +701,38 @@ impl SessionControls {
             options,
         })
     }
+    // These are response rules, not an execution sandbox. Only exact one-shot
+    // options may be selected automatically; provider-side persistent grants are never inferred.
+    fn automatic_permission_outcome(
+        &self,
+        details: &InteractionDetails,
+    ) -> Result<Option<RequestPermissionOutcome>, String> {
+        use crate::agent_preferences::ToolPolicy;
+        let InteractionDetails::Permission {
+            effect, options, ..
+        } = details
+        else {
+            return Ok(None);
+        };
+        let kind = serde_json::from_value::<ToolKind>(serde_json::Value::String(effect.clone()))
+            .unwrap_or(ToolKind::Other);
+        let runtime = self.runtime.lock().map_err(|_| lock_error())?;
+        self.ensure_active(&runtime)?;
+        let policy = runtime.tool_policies.for_kind(kind);
+        let desired = match policy {
+            ToolPolicy::Ask => return Ok(None),
+            ToolPolicy::Allow => PermissionOptionKind::AllowOnce,
+            ToolPolicy::Deny => PermissionOptionKind::RejectOnce,
+        };
+        let mut matching = options.iter().filter(|option| option.kind == desired);
+        match (matching.next(), matching.next()) {
+            (Some(option), None) => Ok(Some(RequestPermissionOutcome::Selected(
+                SelectedPermissionOutcome::new(option.option_id.clone()),
+            ))),
+            _ if policy == ToolPolicy::Deny => Ok(Some(RequestPermissionOutcome::Cancelled)),
+            _ => Ok(None),
+        }
+    }
     pub fn receive_permission(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -728,9 +740,25 @@ impl SessionControls {
         responder: Responder<RequestPermissionResponse>,
         connection: &ConnectionTo<Agent>,
     ) -> Result<(), Error> {
-        let pending = self
-            .permission_details(request)
-            .and_then(|details| self.begin_decision(details));
+        let pending = self.permission_details(request).and_then(|details| {
+            if let Some(outcome) = self.automatic_permission_outcome(&details)? {
+                return Ok(PermissionAdmission::Automatic(outcome));
+            }
+            self.begin_decision(details)
+                .map(|(id, receiver)| PermissionAdmission::Pending(id, receiver))
+        });
+        let pending = match pending {
+            Ok(PermissionAdmission::Automatic(outcome)) => {
+                let outcome = if responder.cancellation().is_cancelled() {
+                    RequestPermissionOutcome::Cancelled
+                } else {
+                    outcome
+                };
+                return responder.respond(RequestPermissionResponse::new(outcome));
+            }
+            Ok(PermissionAdmission::Pending(id, receiver)) => Ok((id, receiver)),
+            Err(notice) => Err(notice),
+        };
         let (id, receiver) = match pending {
             Ok(pending) => pending,
             Err(notice) => {
@@ -828,22 +856,10 @@ impl SessionControls {
                 ElicitationScope::Session(scope)
                     if scope.session_id.to_string() == runtime.state.session_id
                         && runtime.active_turn.is_some()
-                        && scope.tool_call_id.as_ref().is_none_or(|id| {
-                            runtime
-                                .tools
-                                .get(&id.to_string())
-                                .and_then(|tool| tool.kind)
-                                .is_some_and(|kind| {
-                                    runtime.tool_policies.for_kind(kind)
-                                        == crate::agent_preferences::ToolPolicy::Ask
-                                        && (runtime.state.effective_mode
-                                            != runtime.state.policy_default
-                                            || matches!(
-                                                kind,
-                                                ToolKind::Read | ToolKind::Search | ToolKind::Fetch
-                                            ))
-                                })
-                        }) => {}
+                        && scope
+                            .tool_call_id
+                            .as_ref()
+                            .is_none_or(|id| runtime.tools.contains_key(&id.to_string())) => {}
                 _ => return Err(invalid("Unsupported or stale elicitation correlation")),
             }
         }
@@ -1311,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn elicitation_cannot_bypass_tool_effect_policy_or_grant_persistence() {
+    fn elicitation_requires_correlation_and_never_grants_unsupported_persistence() {
         let (controls, _shutdown) = controls();
         controls.begin_turn(Uuid::new_v4()).unwrap();
         let form = serde_json::json!({"sessionId":"session","mode":"form","message":"Fixture","requestedSchema":{"type":"object","properties":{}}});
@@ -1333,9 +1349,80 @@ mod tests {
         correlated["toolCallId"] = "mcp".into();
         assert!(controls
             .elicitation_details(serde_json::from_value(correlated).unwrap())
-            .is_err());
+            .is_ok());
         assert!(controls.snapshot().unwrap().interactions.is_empty());
     }
+    #[test]
+    fn saved_response_rules_select_only_unambiguous_one_shot_options() {
+        use crate::agent_preferences::ToolPolicy;
+        let (controls, _shutdown) = controls();
+        let mut details = InteractionDetails::Permission {
+            tool_call_id: "tool".into(),
+            title: "Read".into(),
+            effect: "read".into(),
+            arguments: serde_json::json!({}),
+            options: vec![
+                PermissionOption::new("exact-allow", "Allow", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("exact-reject", "Reject", PermissionOptionKind::RejectOnce),
+            ],
+        };
+        for (policy, expected) in [
+            (ToolPolicy::Ask, None),
+            (ToolPolicy::Allow, Some("exact-allow")),
+            (ToolPolicy::Deny, Some("exact-reject")),
+        ] {
+            controls.runtime.lock().unwrap().tool_policies.read = policy;
+            let outcome = controls.automatic_permission_outcome(&details).unwrap();
+            match expected {
+                Some(id) => assert_eq!(
+                    serde_json::to_value(outcome.unwrap()).unwrap()["optionId"],
+                    id
+                ),
+                None => assert!(outcome.is_none()),
+            }
+        }
+        controls.runtime.lock().unwrap().tool_policies.read = ToolPolicy::Allow;
+        if let InteractionDetails::Permission { effect, .. } = &mut details {
+            *effect = "other".into();
+        }
+        assert!(controls
+            .automatic_permission_outcome(&details)
+            .unwrap()
+            .is_none());
+        if let InteractionDetails::Permission {
+            effect, options, ..
+        } = &mut details
+        {
+            *effect = "read".into();
+            options.push(PermissionOption::new(
+                "second-allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            ));
+        }
+        assert!(controls
+            .automatic_permission_outcome(&details)
+            .unwrap()
+            .is_none());
+        if let InteractionDetails::Permission { options, .. } = &mut details {
+            *options = vec![PermissionOption::new(
+                "permanent",
+                "Always",
+                PermissionOptionKind::AllowAlways,
+            )];
+        }
+        assert!(controls
+            .automatic_permission_outcome(&details)
+            .unwrap()
+            .is_none());
+        controls.runtime.lock().unwrap().tool_policies.read = ToolPolicy::Deny;
+        assert!(matches!(
+            controls.automatic_permission_outcome(&details).unwrap(),
+            Some(RequestPermissionOutcome::Cancelled)
+        ));
+        assert!(controls.snapshot().unwrap().interactions.is_empty());
+    }
+
     #[test]
     fn mode_authority_distinguishes_policy_user_and_agent_state() {
         let (controls, _shutdown) = controls();
@@ -1560,7 +1647,7 @@ mod tests {
             .is_err());
     }
     #[test]
-    fn permission_requires_current_tool_correlation_and_both_policy_layers() {
+    fn permission_requires_current_correlation_without_reinterpreting_agent_mode() {
         let (controls, _shutdown) = controls();
         let request = |kind| {
             RequestPermissionRequest::new(
@@ -1590,9 +1677,7 @@ mod tests {
             .is_err());
         controls.runtime.lock().unwrap().tool_policies.read =
             crate::agent_preferences::ToolPolicy::Deny;
-        assert!(controls
-            .permission_details(request(ToolKind::Read))
-            .is_err());
+        assert!(controls.permission_details(request(ToolKind::Read)).is_ok());
         controls.end_turn();
         controls.begin_turn(Uuid::new_v4()).unwrap();
         controls
@@ -1604,9 +1689,7 @@ mod tests {
             .unwrap();
         controls.runtime.lock().unwrap().tool_policies.edit =
             crate::agent_preferences::ToolPolicy::Ask;
-        assert!(controls
-            .permission_details(request(ToolKind::Edit))
-            .is_err());
+        assert!(controls.permission_details(request(ToolKind::Edit)).is_ok());
         controls
             .set_initial_authority(
                 "write".into(),

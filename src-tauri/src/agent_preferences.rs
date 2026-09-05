@@ -1,4 +1,4 @@
-//! Persisted Agent defaults contain exact choice IDs and explicit effect policies, never credentials.
+//! Persisted Agent defaults contain exact choice IDs and permission-request response policies, never credentials.
 use crate::model::AgentKind;
 use agent_client_protocol::schema::v1::ToolKind;
 use serde::{Deserialize, Serialize};
@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicy {
     Ask,
+    Allow,
     #[default]
     Deny,
 }
@@ -45,7 +46,7 @@ impl ToolPolicies {
             ToolKind::Delete => self.delete,
             ToolKind::Move => self.r#move,
             ToolKind::Execute => self.execute,
-            _ => ToolPolicy::Deny,
+            _ => ToolPolicy::Ask,
         }
     }
 }
@@ -96,7 +97,7 @@ mod tests {
                     value: "high".into(),
                 }],
                 tools: ToolPolicies {
-                    execute: ToolPolicy::Ask,
+                    execute: ToolPolicy::Allow,
                     ..ToolPolicies::default()
                 },
             },
@@ -105,6 +106,11 @@ mod tests {
         let restored: AgentPreferences = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored, preferences);
         assert_eq!(restored.codex, legacy);
+        assert_eq!(restored.claude.tools.execute, ToolPolicy::Allow);
+        assert_eq!(
+            restored.claude.tools.for_kind(ToolKind::Other),
+            ToolPolicy::Ask
+        );
         assert_eq!(restored.codex.tools.execute, ToolPolicy::Deny);
         assert!(serde_json::from_str::<ToolPolicies>(r#"{"read":"allow_always"}"#).is_err());
     }

@@ -110,7 +110,7 @@ export class LensAgentDefaults extends LitElement {
         }
       </fieldset>
       <fieldset ?disabled=${this.disabled}>
-        <legend>Tool approval policy</legend>
+        <legend>Permission request response policy</legend>
         ${EFFECTS.map(
           ({ key, label }) =>
             html`<label class="settings-field"
@@ -120,15 +120,18 @@ export class LensAgentDefaults extends LitElement {
                 .value=${this.draft.tools[key]}
                 @change=${(e: Event) => this.setPolicy(key, (e.target as HTMLSelectElement).value as ToolPolicy)}
               >
-                <option value="ask">Ask every time</option>
-                <option value="deny">Deny</option>
+                <option value="ask">Ask each time</option>
+                <option value="allow">Automatically approve</option>
+                <option value="deny">Automatically reject</option>
               </select></label
             >`,
         )}
       </fieldset>
       <p class="help">
-        Safe mode still prohibits changes and commands. Unknown effects and mode-switch tools are
-        denied. Tool approval never changes the session mode.
+        Applies only to permission requests sent by this Agent, including in future sessions.
+        Operations without a request follow the Agent’s own settings and mode. Unclassified requests
+        require confirmation; unsupported requests are never automatically approved. Forms and URL
+        requests always require a response.
       </p>
       <button
         ?disabled=${this.disabled}

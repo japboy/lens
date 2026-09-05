@@ -440,7 +440,7 @@ export interface SessionMode {
   name: string;
   description?: string;
 }
-export type ToolPolicy = "ask" | "deny";
+export type ToolPolicy = "ask" | "allow" | "deny";
 export interface ToolPolicies {
   read: ToolPolicy;
   search: ToolPolicy;
