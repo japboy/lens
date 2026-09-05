@@ -60,7 +60,8 @@ export function classifyChange(change: Change): CiPlan {
     path.startsWith("mise-tasks/") ||
     path.startsWith("packages/typescript-config/") ||
     path.startsWith(".github/") ||
-    path.startsWith(".cargo/")
+    path.startsWith(".cargo/") ||
+    /^apps\/desktop\/src-tauri\/tauri\.(?:conf|macos\.conf|release\.conf)\.json$/u.test(path)
   )
     return "full";
   if (FRONTEND_CONTRACTS.has(path)) return "native-code";

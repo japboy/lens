@@ -1,0 +1,93 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.3.0/schemas/config.json",
+  "release-type": "node",
+  "pull-request-header": "suggestion (blocking): review the proposed Lens version and changelog",
+  "pull-request-footer": "Generated with [Release Please](https://github.com/googleapis/release-please). Review [RELEASING.md](https://github.com/japboy/lens/blob/main/RELEASING.md) before merging.\n\n— Codex",
+  "separate-pull-requests": false,
+  "group-pull-request-title-pattern": "chore${scope}: release${component} ${version}",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "packages": {
+    ".": {
+      "package-name": "lens",
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "apps/desktop/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "apps/desktop/src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "toml",
+          "path": "apps/desktop/src-tauri/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value==\"desktop\")].version"
+        }
+      ],
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation",
+          "hidden": true
+        },
+        {
+          "type": "chore",
+          "section": "Maintenance",
+          "hidden": true
+        },
+        {
+          "type": "ci",
+          "section": "CI",
+          "hidden": true
+        },
+        {
+          "type": "test",
+          "section": "Tests",
+          "hidden": true
+        },
+        {
+          "type": "refactor",
+          "section": "Refactoring",
+          "hidden": true
+        },
+        {
+          "type": "build",
+          "section": "Build",
+          "hidden": true
+        },
+        {
+          "type": "style",
+          "section": "Style",
+          "hidden": true
+        }
+      ]
+    }
+  }
+}
