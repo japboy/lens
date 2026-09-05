@@ -46,6 +46,9 @@ function snapshot(): AgentSessionControlState {
 async function mount(controls: AgentSessionControlState) {
   const element = document.createElement("lens-session-controls") as LensSessionControls;
   element.controls = controls;
+  element.presentation = controls.interactions.some((i) => i.status === "pending")
+    ? "interaction"
+    : "diagnostics";
   document.body.append(element);
   await element.updateComplete;
   return element;
@@ -99,6 +102,63 @@ describe("session control boundary", () => {
       },
     ]);
   });
+  it("keeps the oldest request and form draft stable during updates and retries", async () => {
+    const controls = snapshot();
+    const first = {
+      id: "first",
+      sequence: 1,
+      status: "pending" as const,
+      details: {
+        kind: "form" as const,
+        message: "First request",
+        schema: {
+          type: "object" as const,
+          properties: { answer: { type: "string" as const } },
+          required: ["answer"],
+        },
+      },
+    };
+    controls.interactions = [
+      {
+        ...first,
+        id: "second",
+        sequence: 2,
+        details: { ...first.details, message: "Second request" },
+      },
+      first,
+    ];
+    const element = await mount(controls);
+    expect(element.querySelectorAll('button[type="submit"]')).toHaveLength(1);
+    expect(element.querySelector(".interaction-actions button[type=submit]")).not.toBeNull();
+    const input = element.querySelector<HTMLInputElement>("input")!;
+    input.value = "Keep my draft";
+    element.controls = { ...controls, notice: "Updated" };
+    await element.updateComplete;
+    expect(element.querySelector("input")).toBe(input);
+    expect(input.value).toBe("Keep my draft");
+    expect(element.textContent).not.toContain("Second request");
+    element.submission = { instanceId: "instance", interactionId: "first", stage: "sending" };
+    await element.updateComplete;
+    expect(element.querySelector("fieldset")?.disabled).toBe(true);
+    element.submission = { ...element.submission, stage: "failed", message: "Transport failed" };
+    await element.updateComplete;
+    expect(element.querySelector("fieldset")?.disabled).toBe(false);
+    expect(input.value).toBe("Keep my draft");
+    expect(element.querySelector('[role="alert"]')?.textContent).toContain("Transport failed");
+    element.controls = {
+      ...controls,
+      interactions: controls.interactions.map((i) =>
+        i.id === "first" ? { ...i, status: "accepted", details: undefined } : i,
+      ),
+    };
+    await element.updateComplete;
+    expect(element.textContent).toContain("Second request");
+    expect(element.querySelector<HTMLInputElement>("input")?.value).toBe("");
+    element.controls = { ...controls, active: false };
+    await element.updateComplete;
+    expect(element.querySelector("button")).toBeNull();
+  });
+
   it("requires a separate explicit mode confirmation", async () => {
     const controls = snapshot();
     controls.interactions = [

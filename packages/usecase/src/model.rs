@@ -158,6 +158,9 @@ pub struct AgentRunState {
     #[serde(default)]
     pub auth_methods: Vec<AgentAuthMethod>,
     pub received_updates: usize,
+    /// Latest bounded public Agent progress, scoped to this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_text: Option<String>,
     #[serde(default)]
     pub stop_reason: Option<String>,
     #[serde(default)]

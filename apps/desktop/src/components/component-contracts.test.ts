@@ -836,6 +836,34 @@ describe("progress notification visibility", () => {
     return element;
   }
 
+  it("updates progress without reopening a dismissed notification or replacing settled output", async () => {
+    const lens = liveLens(representation("settled", 1, "Keep this interpretation."));
+    const agent = {
+      run_id: "run",
+      kind: "codex" as const,
+      adapter_name: "Fixture",
+      adapter_version: "1",
+      auth_methods: [],
+      received_updates: 1,
+      progress_text: "Comparing sources",
+    };
+    const element = await mount({ ...lens, stage: "transforming", agent });
+    const root = element.shadowRoot!;
+    expect(root.querySelector(".lens-progress-copy")?.textContent).toContain("Comparing sources");
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    element.model = {
+      ...element.model,
+      lens: { ...element.model.lens, agent: { ...agent, progress_text: "Checking changes" } },
+    };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    root.querySelector<HTMLButtonElement>(".overlay-status-toggle")!.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-copy")?.textContent).toContain("Checking changes");
+    expect(element.model.lens.representation).toBe(lens.representation);
+  });
+
   it("dismisses and reopens the same notification without cancelling or moving content", async () => {
     const element = await mount({
       operation_id: "operation",
@@ -989,5 +1017,17 @@ it("keeps Agent diagnostics out of the Lens interpretation layout", async () => 
     },
   };
   await element.updateComplete;
-  expect(root.querySelector(".lens-progress-region")?.textContent).toContain("Open Diagnostics");
+  expect(root.querySelector(".lens-progress-region")?.textContent).toContain(
+    "Open URL and continue",
+  );
+  expect(root.querySelector(".lens-progress-dismiss")).toBeNull();
+  expect(root.querySelector(".overlay-status-toggle")).toBeNull();
+  expect(root.querySelector("#diagnostics-panel button")).toBeNull();
+  root.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await element.updateComplete;
+  expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
+  root.querySelector<HTMLButtonElement>("#source-tab")!.click();
+  await element.updateComplete;
+  expect(root.querySelector("#source-panel")).not.toBeNull();
+  expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
 });

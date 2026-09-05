@@ -334,6 +334,7 @@ export interface AgentRunState {
   session_mode_id?: string;
   auth_methods: AgentAuthMethod[];
   received_updates: number;
+  progress_text?: string;
   stop_reason?: string;
   authentication_message?: string;
 }

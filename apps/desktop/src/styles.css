@@ -1127,6 +1127,77 @@ fieldset {
   animation: lens-progress-snackbar-enter 160ms ease-out both;
 }
 
+.lens-progress-snackbar[data-interactive="true"] {
+  display: block;
+  padding: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+.lens-progress-snackbar[data-interactive="true"] > .lens-status-announcement {
+  padding: 9px 12px;
+}
+
+.agent-interaction fieldset {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.interaction-body {
+  padding: 0 12px 12px 42px;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.interaction-body h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.interaction-body p {
+  margin: 0 0 8px;
+}
+.interaction-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.interaction-body input,
+.interaction-body select {
+  max-width: 100%;
+}
+.interaction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid color-mix(in srgb, Separator 88%, transparent);
+}
+.interaction-actions button {
+  margin: 0;
+  font-size: 12px;
+}
+.interaction-feedback {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+}
+
+@media (max-width: 380px) {
+  .interaction-body {
+    padding-left: 12px;
+  }
+  .interaction-actions {
+    flex-direction: column-reverse;
+  }
+}
+
 .lens-status-announcement {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

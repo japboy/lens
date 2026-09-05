@@ -751,3 +751,51 @@ describe("Lens Settings", () => {
     ).toBe("Transformation complete");
   });
 });
+
+it("correlates notification submissions, rejects duplicate clicks, and permits retry after failure", async () => {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const element = await createLensApp("overlay");
+  await vi.waitFor(() => {
+    const view = element.shadowRoot!.querySelector("lens-overlay-view") as HTMLElement & {
+      model: { lens: { operation_id?: string } };
+    };
+    expect(view.model.lens.operation_id).toBe(operationId);
+  });
+  let rejectResponse: (reason: Error) => void = () => undefined;
+  vi.mocked(invoke).mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        rejectResponse = reject;
+      }),
+  );
+  const intent = {
+    type: "respond-interaction",
+    instanceId: "instance",
+    interactionId: "request",
+    response: { action: "select", option_id: "allow" },
+  };
+  const send = () =>
+    element
+      .shadowRoot!.querySelector("lens-overlay-view")!
+      .dispatchEvent(
+        new CustomEvent("lens-overlay-intent", { detail: intent, bubbles: true, composed: true }),
+      );
+  send();
+  send();
+  expect(
+    vi.mocked(invoke).mock.calls.filter(([name]) => name === "respond_agent_interaction"),
+  ).toHaveLength(1);
+  rejectResponse(new Error("Transport failed"));
+  await vi.waitFor(() => {
+    const view = element.shadowRoot!.querySelector("lens-overlay-view") as HTMLElement & {
+      model: { interactionSubmission?: { stage: string } };
+    };
+    expect(view.model.interactionSubmission?.stage).toBe("failed");
+  });
+  send();
+  await vi.waitFor(() =>
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([name]) => name === "respond_agent_interaction"),
+    ).toHaveLength(2),
+  );
+});

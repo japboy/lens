@@ -18,7 +18,38 @@ const MAX_TOOL_IMAGE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub(crate) struct AgentOutputCandidate {
     entries: Vec<OutputEntry>,
+    progress: ProgressText,
     pub(crate) received_updates: usize,
+}
+
+/// ACP chunks are deltas, not complete messages. Retain only a bounded latest paragraph.
+#[derive(Debug, Default)]
+struct ProgressText {
+    identity: Option<(bool, Option<String>)>,
+    text: String,
+}
+
+impl ProgressText {
+    fn record(&mut self, chunk: &ContentChunk, thought: bool) {
+        let ContentBlock::Text(content) = &chunk.content else {
+            return;
+        };
+        if content.text.is_empty() {
+            return;
+        }
+        let identity = (thought, chunk.message_id.as_ref().map(ToString::to_string));
+        if self.identity.as_ref() != Some(&identity) {
+            self.text.clear();
+            self.identity = Some(identity);
+        }
+        self.text.push_str(&content.text);
+        // Keep the latest non-empty line; blank trailing separators do not erase progress.
+        let trimmed = self.text.trim_end_matches(['\r', '\n']);
+        let start = trimmed.rfind(['\r', '\n']).map_or(0, |i| i + 1);
+        let tail = &self.text[start..];
+        let bounded = tail.char_indices().rev().nth(511).map_or(0, |(i, _)| i);
+        self.text = tail[bounded..].to_owned();
+    }
 }
 
 #[derive(Debug)]
@@ -55,6 +86,14 @@ impl AgentOutputCandidate {
         self.received_updates = self.received_updates.checked_add(1).ok_or_else(|| {
             Error::internal_error().data("Agent update count exceeded the finite local limit")
         })?;
+        match &update {
+            SessionUpdate::AgentMessageChunk(chunk) => self.progress.record(chunk, false),
+            SessionUpdate::AgentThoughtChunk(chunk) => self.progress.record(chunk, true),
+            SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_) => {
+                self.progress.identity = None;
+            }
+            _ => {}
+        }
         match update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 let block = lens_output_block(chunk);
@@ -167,6 +206,11 @@ impl AgentOutputCandidate {
         }
     }
 
+    pub(crate) fn progress_text(&self) -> Option<String> {
+        let text = self.progress.text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
     pub(crate) fn blocks(&self) -> Vec<LensOutputBlock> {
         let mut blocks = Vec::new();
         for entry in &self.entries {
@@ -195,6 +239,7 @@ impl AgentOutputCandidate {
     pub(crate) fn from_blocks(blocks: Vec<LensOutputBlock>, received_updates: usize) -> Self {
         Self {
             entries: vec![OutputEntry::Message(blocks)],
+            progress: ProgressText::default(),
             received_updates,
         }
     }
@@ -294,6 +339,43 @@ mod tests {
     };
 
     const SAFE_MODE: &str = "read-only";
+
+    #[test]
+    fn public_progress_accumulates_deltas_without_becoming_interpretation() {
+        let mut candidate = AgentOutputCandidate::default();
+        for value in ["Comparing ", "the sources.\n", "Checking changes"] {
+            let update = SessionUpdate::AgentThoughtChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new(value)))
+                    .message_id("thought-1"),
+            );
+            assert!(!candidate.record_update(update, SAFE_MODE).unwrap());
+        }
+        assert_eq!(
+            candidate.progress_text().as_deref(),
+            Some("Checking changes")
+        );
+        assert!(candidate.blocks().is_empty());
+        assert!(!candidate.has_output());
+        candidate
+            .record_update(text("Result", "message-1"), SAFE_MODE)
+            .unwrap();
+        assert_eq!(candidate.progress_text().as_deref(), Some("Result"));
+        assert_eq!(candidate.blocks().len(), 1);
+    }
+
+    #[test]
+    fn progress_is_unicode_bounded_and_resets_at_message_and_turn_boundaries() {
+        let mut candidate = AgentOutputCandidate::default();
+        candidate
+            .record_update(text(&"\u{754c}".repeat(1000), "first"), SAFE_MODE)
+            .unwrap();
+        assert_eq!(candidate.progress_text().unwrap(), "\u{754c}".repeat(512));
+        candidate
+            .record_update(text("New message", "second"), SAFE_MODE)
+            .unwrap();
+        assert_eq!(candidate.progress_text().as_deref(), Some("New message"));
+        assert!(AgentOutputCandidate::default().progress_text().is_none());
+    }
 
     fn image(data: &str) -> ToolCallContent {
         ContentBlock::Image(
