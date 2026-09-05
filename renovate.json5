@@ -119,7 +119,7 @@
     {
       description: "Managed runtime dependency updates require manual review.",
       matchManagers: ["npm"],
-      matchFileNames: ["src-tauri/agent-runtime/**"],
+      matchFileNames: ["apps/desktop/src-tauri/agent-runtime/**"],
       automerge: false,
     },
     {

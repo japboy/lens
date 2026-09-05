@@ -1,0 +1,56 @@
+[package]
+name = "desktop"
+version = "0.1.0"
+description = "Accessibility-first personal information lens for macOS"
+authors = ["Lens contributors"]
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "lens_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "lens"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dependencies]
+usecase.workspace = true
+port-platform.workspace = true
+agent-client-protocol = "=2.1.0"
+base64.workspace = true
+dirs = "6.0"
+flate2 = "1.1"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+tar = "0.4"
+tauri = { version = "2.11.5", default-features = false, features = [
+  "image-png",
+  "macos-private-api",
+  "tray-icon",
+  "compression",
+  "common-controls-v6",
+  "dynamic-acl",
+  "x11",
+  "dbus",
+] }
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-opener = "2.5.4"
+thiserror.workspace = true
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "sync", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+tauri = { version = "2.11.5", default-features = false, features = ["test"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+adapter-platform-macos.workspace = true
+tauri = { version = "2.11.5", features = ["macos-private-api"] }

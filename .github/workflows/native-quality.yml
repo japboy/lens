@@ -3,6 +3,14 @@ name: Native Quality
 on:
   workflow_call:
     inputs:
+      native_mode:
+        description: Native checks, or checks plus the signed application bundle.
+        type: string
+        default: code
+      frontend_artifact:
+        description: Same-workflow frontend artifact bound to the tested SHA.
+        type: string
+        default: ""
       save_cache:
         description: Save a trusted default-branch Rust dependency cache after verification.
         required: true
@@ -17,6 +25,16 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
+      - name: Validate native verification mode
+        env:
+          MODE: ${{ inputs.native_mode }}
+          ARTIFACT: ${{ inputs.frontend_artifact }}
+        run: |
+          case "$MODE" in
+            code) ;;
+            bundle) test -n "$ARTIFACT" ;;
+            *) exit 1 ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -31,15 +49,35 @@ jobs:
       - name: Restore Rust dependency artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          prefix-key: lens-v1-rust
-          shared-key: native-dependencies
-          workspaces: src-tauri -> target
+          prefix-key: lens-v3-rust
+          shared-key: native-aarch64-apple-darwin
+          key: ${{ hashFiles('mise.lock', 'scripts/workspace-variants.json') }}
+          workspaces: . -> target
           cache-targets: true
           cache-bin: false
           cache-on-failure: false
           cache-all-crates: false
           cache-workspace-crates: false
-          save-if: ${{ inputs.save_cache }}
+          save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}
 
       - name: Run native verification without JavaScript dependencies
-        run: pnpm --config.verify-deps-before-run=false run verify:native
+        run: mise run verify:native
+
+      - name: Restore the verified frontend artifact
+        if: inputs.native_mode == 'bundle'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.frontend_artifact }}
+          path: .
+
+      - name: Verify frontend artifact source and contents
+        if: inputs.native_mode == 'bundle'
+        run: node scripts/frontend-artifact.ts check
+
+      - name: Install the pinned native bundler
+        if: inputs.native_mode == 'bundle'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and verify the native application bundle
+        if: inputs.native_mode == 'bundle'
+        run: mise run verify:bundle

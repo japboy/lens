@@ -1,0 +1,318 @@
+{
+  "version": 1,
+  "rustcRelease": "1.98.0",
+  "hosts": {
+    "aarch64-apple-darwin": {
+      "linux-common-check": {
+        "graphDigest": "da21e792ba3b66fea2b4c9d356a9b677f043a6c3c1b522ac97789f86bbb88f51",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--lib",
+          "--profile",
+          "dev",
+          "--no-default-features"
+        ]
+      },
+      "linux-common-test": {
+        "graphDigest": "263c07619700f9aa666295a02de589eb83596a309505352b2970171350ff7dc6",
+        "arguments": [
+          "test",
+          "--locked",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--lib",
+          "--profile",
+          "test",
+          "--no-default-features"
+        ]
+      },
+      "apple-portable-check": {
+        "graphDigest": "b6c324f2f485f321096983c392a58f2ffc88991023b2cc1ac13cb795135685a2",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--lib",
+          "--profile",
+          "dev"
+        ]
+      },
+      "macos-production-check": {
+        "graphDigest": "ec8797dd590e83175c3d5eed729136606fdfaf0ce8619e4e7c4d09fe82ab87e0",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "dev"
+        ]
+      },
+      "macos-production-release": {
+        "graphDigest": "ec8797dd590e83175c3d5eed729136606fdfaf0ce8619e4e7c4d09fe82ab87e0",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "release"
+        ]
+      },
+      "macos-test": {
+        "graphDigest": "5c900faa9a8c1a85003e79977b1472fb0a0afb5791fb42b791358018fd3ff40f",
+        "arguments": [
+          "test",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "test"
+        ]
+      },
+      "macos-bundle-build": {
+        "graphDigest": "367df1315901dffd95b0a4aa555556bb880fa13a8e54298bc062f322fc9f636f",
+        "arguments": [
+          "build",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "release",
+          "--features",
+          "tauri/custom-protocol"
+        ]
+      }
+    },
+    "x86_64-unknown-linux-gnu": {
+      "linux-common-check": {
+        "graphDigest": "8a1449e8dacd39131c69100539af22845d6375ad628f981b8fee2bebc074c429",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--lib",
+          "--profile",
+          "dev",
+          "--no-default-features"
+        ]
+      },
+      "linux-common-test": {
+        "graphDigest": "350709fe070d604f43edc1d7b1f9f3dfd8c5722585b16f2e54946c006ffab8ad",
+        "arguments": [
+          "test",
+          "--locked",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--lib",
+          "--profile",
+          "test",
+          "--no-default-features"
+        ]
+      },
+      "apple-portable-check": {
+        "graphDigest": "b6c324f2f485f321096983c392a58f2ffc88991023b2cc1ac13cb795135685a2",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--lib",
+          "--profile",
+          "dev"
+        ]
+      },
+      "macos-production-check": {
+        "graphDigest": "1c8c420285828191ee23c78390e2116620a0b0a6537891c695e372d0a0b057ef",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "dev"
+        ]
+      },
+      "macos-production-release": {
+        "graphDigest": "1c8c420285828191ee23c78390e2116620a0b0a6537891c695e372d0a0b057ef",
+        "arguments": [
+          "check",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "release"
+        ]
+      },
+      "macos-test": {
+        "graphDigest": "d87d035a3cdcca494ddbc678961b1a242ce41b31f10c4b03db08447f6fd06dea",
+        "arguments": [
+          "test",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "test"
+        ]
+      },
+      "macos-bundle-build": {
+        "graphDigest": "04d8366f3122f448fb37a0805656184151528e78bad71cde16e7fd931627f50d",
+        "arguments": [
+          "build",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "usecase",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "release",
+          "--features",
+          "tauri/custom-protocol"
+        ]
+      }
+    }
+  }
+}

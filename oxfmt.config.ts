@@ -1,5 +1,5 @@
 import { defineConfig } from "oxfmt";
 
 export default defineConfig({
-  ignorePatterns: ["src-tauri/gen/**", "tests/fixtures/**"],
+  ignorePatterns: ["apps/desktop/src-tauri/gen/**", "apps/desktop/tests/fixtures/**"],
 });

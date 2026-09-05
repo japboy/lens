@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src-tauri/icons/icon-macos.svg" alt="Lens app icon" width="128" height="128">
+  <img src="apps/desktop/src-tauri/icons/icon-macos.svg" alt="Lens app icon" width="128" height="128">
 </p>
 
 <h1 align="center">Lens</h1>
@@ -17,7 +17,7 @@ Interpretation is Lens's user-facing concept: understanding selected information
 - `Agent` names the ACP execution role. Interpreter is not a replacement protocol or type name.
 - `Translation` is reserved for actual conversion between human languages.
 
-`pnpm run check:terminology` checks product source paths and content against this boundary. Intentional language-conversion terminology requires a documented, exact allowance in that policy. Historical experiment identities and evidence remain unchanged.
+`mise run check:terminology` checks product source paths and content against this boundary. Intentional language-conversion terminology requires a documented, exact allowance in that policy. Historical experiment identities and evidence remain unchanged.
 
 ## Requirements
 
@@ -33,31 +33,52 @@ macOS 15.2 is the minimum because it is the first version that provides the publ
 
 ### Icon resources
 
-The [canonical monochrome SVG](src-tauri/icons/icon.svg) is the single source for the Lens mark. The application uses a derived smoked-glass treatment; the menu bar uses the undecorated template symbol. Run `pnpm run generate:icons` after changing the source or its generation contract. `pnpm run check:icons` verifies every generated resource and also runs in portable CI. See [icon resources](src-tauri/icons/README.md) for appearance and platform boundaries.
+The [canonical monochrome SVG](apps/desktop/src-tauri/icons/icon.svg) is the single source for the Lens mark. The application uses a derived smoked-glass treatment; the menu bar uses the undecorated template symbol. Run `mise run generate:icons` after changing the source or its generation contract. `mise run check:icons` verifies every generated resource and also runs in portable CI. See [icon resources](apps/desktop/src-tauri/icons/README.md) for appearance and platform boundaries.
 
 ### Build and run
+
+The repository uses peer Cargo and pnpm workspaces. `apps/desktop` owns the private
+`desktop` JavaScript package and nested Tauri Cargo package; `packages/domain`,
+`packages/usecase`, `packages/port-platform`, and `packages/adapter-platform-macos`
+own shared Rust responsibilities. Root `repo` owns repository tooling; `packages/typescript-config` owns shared compiler settings. Package-role
+names do not change the `Lens` product, `lens` executable or `lens_lib` Rust library.
+The three development pnpm members share the root lock; embedded Agent runtime
+manifests, policies and locks remain independent under `apps/desktop/src-tauri/agent-runtime`.
 
 ```sh
 mise trust
 mise install --locked
 pnpm install --frozen-lockfile
 mise exec -- hk install --mise
-pnpm run verify
-pnpm run tauri dev
+mise run verify
+mise run desktop:dev
 ```
 
 mise installs the checksummed development toolchain from `mise.lock`: Node.js `24.19.0` (the current LTS major), pnpm `11.22.0`, Rust `1.98.0`, cargo-deny `0.20.2`, and hk `1.56.1`. JavaScript packages resolve through [Takumi Guard](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/) and pnpm enforces a three-day release quarantine, no-downgrade trust policy, blocked exotic transitive sources, frozen integrity locks, and an explicit package-name build allowlist. Renovate proposes weekly updates using the same quarantine. Patch, pin, GitHub Action digest, and npm lock-file maintenance updates merge automatically only after the required Code Quality check passes; minor, major, toolchain, and managed-runtime updates require manual review.
 
-hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. The pre-commit hook checks staged frontend and configuration files with Oxfmt and Oxlint and activates Cargo formatting checks for staged Rust changes. It is check-only: it neither stashes, rewrites, nor stages files. The commit-message hook enforces Conventional Commits. Run `pnpm run fix` explicitly to apply available Oxfmt, Oxlint, and rustfmt fixes. Full tests and dependency checks remain authoritative in the required Code Quality workflow rather than a state-dependent pre-push hook.
+hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. The pre-commit hook checks staged frontend and configuration files with Oxfmt and Oxlint and activates Cargo formatting checks for staged Rust changes. It is check-only: it neither stashes, rewrites, nor stages files. The commit-message hook enforces Conventional Commits. Run `mise run fix` explicitly to apply available Oxfmt, Oxlint, and rustfmt fixes. Full tests and dependency checks remain authoritative in the required Code Quality workflow rather than a state-dependent pre-push hook.
 
-The root TypeScript solution declares shared strict, no-emit checks and explicitly references separate application and Node.js tooling projects. Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping; the Node.js project admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
+The private `typescript-config` package owns shared strict/no-emit and Node.js compiler settings. Root and desktop declare it as a `workspace:*` development dependency; each keeps its own project references, file selection and environment types. The root TypeScript solution only coordinates repository and desktop checks. Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping; the Node.js project admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
+
+Root mise tasks own cross-language orchestration; root `package.json` has no command aliases. Executable TypeScript file tasks under `mise-tasks/` own independent checks, generation and validation. `mise.toml` owns aggregate tasks and tool invocations; `scripts/` holds shared policy data, helpers and repository tests. `mise run verify:portable` currently runs repository
+and frontend checks; `mise run verify:native` independently runs native Cargo checks,
+Clippy, tests and the locked dependency audit. `mise run verify` orders portable work
+before the native Cargo writer chain. Independent policy/frontend branches may run
+concurrently. Verification tasks never skip based on filesystem freshness.
+
+`mise run frontend:build` checks all TypeScript projects before producing app assets.
+`mise run desktop:dev` and `mise run desktop:build` invoke app-local Tauri commands;
+Tauri's own pre-build/pre-dev hooks call only the frontend tasks in that package.
+`pnpm --filter desktop run build` remains an independent frontend entry point.
+The root package is implicitly included by pnpm; the workspace list contains only the desktop and configuration package paths. Shared settings follow the [TypeScript configuration package pattern](https://turborepo.dev/%64ocs/guides/tools/typescript), without adding Turborepo. Task entry points use mise's [file tasks](https://mise.jdx.dev/tasks/file-tasks.html).
+The task model uses mise's [declared dependencies and ordering constraints](https://mise.jdx.dev/tasks/task-configuration.html).
 
 The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. Lens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
 
 To produce a debug application bundle:
 
 ```sh
-pnpm run tauri build --debug
+mise run desktop:build -- --debug
 ```
 
 The application creates no ordinary WebView window at startup. Left-clicking the `Lens` menu-bar item immediately opens the native single-window Lens Target picker when an authenticated Agent is selected. After the first selection, the entire narrow frameless Preview HUD window slides in once from beyond the right edge of its display and settles at the right-center work-area inset. Confirming the selection or removing its final item slides the whole HUD back beyond that edge before destruction. Adding or removing a non-final item never replays the entrance: AppKit instead animates the existing HUD's count-derived size and centered position as one frame transition while the affected preview card uses a paired opacity-and-horizontal-motion transition. The native and content transitions are skipped when macOS Reduce Motion is enabled. The HUD shows bounded still previews and quiet icon actions to add another window, remove an item, or confirm the one-to-four-window collection. Every addition uses a fresh system picker; confirmation alone starts extraction and Agent transformation. When target selection is unavailable, the template icon is rendered at half opacity and the click has no effect. Right-clicking the item opens this native menu. When Accessibility permission is missing at first launch, the application invokes the standard macOS permission onboarding flow.
@@ -86,13 +107,13 @@ For one selected window, the Lens window is sized to 80% of the canonical target
 
 ## Validation
 
-`pnpm run verify` runs product-identity, product-terminology, publication-boundary, and repository-language policies, Oxfmt and Oxlint checks, the root TypeScript solution across its separate browser and Node.js tooling projects, the Lit frontend build and Vitest suite, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
+`mise run verify` runs product-identity, product-terminology, publication-boundary, and repository-language policies, Oxfmt and Oxlint checks, the root TypeScript solution across its separate browser and Node.js tooling projects, the Lit frontend build and Vitest suite, locked Rust check/format/Clippy/unit tests, and cargo-deny advisory/license/source checks. Oxfmt intentionally excludes generated Tauri schemas and semantic validation fixtures.
 
 An on-device managed-runtime install and verification can be run independently for each Agent:
 
 ```sh
-LENS_VALIDATE_RUNTIME=claude pnpm run tauri dev
-LENS_VALIDATE_RUNTIME=codex pnpm run tauri dev
+LENS_VALIDATE_RUNTIME=claude mise run desktop:dev
+LENS_VALIDATE_RUNTIME=codex mise run desktop:dev
 ```
 
 On-device PoC validation covers native Safari window selection, Accessibility extraction beyond the visible viewport, LensInput generation, managed Codex ACP transformation, Lit overlay display, cancellation, and menu-bar residency. Claude validation on this machine covers adapter startup and the explicit authentication-required flow; authenticated transformation remains a follow-up on a machine with an eligible Claude account.
@@ -100,14 +121,14 @@ On-device PoC validation covers native Safari window selection, Accessibility ex
 A debug-only rich-output fixture replays ACP message and tool-call notifications through the output reducer, then exercises the bundled Tauri WebView with ordered Markdown, a completed tool's inline PNG, trailing Markdown, and an operation-scoped Source input-image preview without requiring Agent authentication, Accessibility permission, or Screen Recording permission:
 
 ```sh
-LENS_VALIDATE_RICH_OUTPUT=1 pnpm exec tauri dev --no-watch
+LENS_VALIDATE_RICH_OUTPUT=1 mise run desktop:dev -- --no-watch
 ```
 
 Set `LENS_VALIDATE_ACP_UPDATES` to an absolute path containing a JSON array of ACP `session/update` notification envelopes to replay local evidence instead of the committed synthetic fixture. The file is read only by this debug validation path. Keep private session data outside the repository. A headless PNG replay check reports the normalized images' dimensions, byte lengths, and SHA-256 hashes without printing their content:
 
 ```sh
 LENS_VALIDATE_ACP_UPDATES=/absolute/path/session-updates.json \
-  cargo test --manifest-path src-tauri/Cargo.toml --locked replay_local_acp_images -- --ignored --nocapture
+  cargo test --locked -p desktop replay_local_acp_images -- --ignored --nocapture
 ```
 
 Official references: [Tauri application identifier configuration](https://v2.tauri.app/reference/config/#identifier), [Tauri 2.11.5 application path resolver source](https://docs.rs/crate/tauri/2.11.5/source/src/path/desktop.rs), [ACP Registry](https://agentclientprotocol.com/get-started/registry), [pnpm supply-chain security settings](https://pnpm.io/settings#minimumreleaseage), [Takumi Guard npm compatibility](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).

@@ -8,16 +8,26 @@ on:
       - .cargo/config.toml
       - .github/workflows/code-quality.yml
       - .github/workflows/native-quality.yml
+      - .github/workflows/linux-common.yml
       - .github/workflows/rust-cache-seed.yml
+      - Cargo.toml
+      - Cargo.lock
       - mise.lock
       - mise.toml
+      - scripts/workspace-variants.json
       - package.json
       - rust-toolchain
       - rust-toolchain.toml
-      - src-tauri/**/.cargo/config.toml
-      - src-tauri/**/Cargo.toml
-      - src-tauri/Cargo.lock
+      - apps/desktop/src-tauri/**/.cargo/config.toml
+      - apps/desktop/src-tauri/**/Cargo.toml
+      - packages/**/Cargo.toml
   workflow_dispatch:
+    inputs:
+      linux_common:
+        description: Run bounded Linux common verification instead of seeding native caches.
+        type: boolean
+        default: false
+        required: true
 
 permissions:
   contents: read
@@ -29,6 +39,26 @@ concurrency:
 jobs:
   native-quality:
     name: native-dependency-cache-seed
+    if: github.ref == 'refs/heads/main' && !inputs.linux_common
     uses: ./.github/workflows/native-quality.yml
     with:
       save_cache: true
+
+  linux-dependency-cache-seed:
+    if: github.ref == 'refs/heads/main' && !inputs.linux_common
+    uses: ./.github/workflows/linux-common.yml
+    with:
+      save_cache: true
+
+  reject-untrusted-cache-seed:
+    if: github.ref != 'refs/heads/main' && !inputs.linux_common
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo '::error::Native dependency caches may only be seeded from main.'
+          exit 1
+
+  linux-common:
+    if: github.event_name == 'workflow_dispatch' && inputs.linux_common
+    uses: ./.github/workflows/linux-common.yml

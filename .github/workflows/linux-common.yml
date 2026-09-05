@@ -1,0 +1,76 @@
+name: Linux Common Verification
+
+on:
+  workflow_call:
+    inputs:
+      frontend_artifact:
+        description: Same-workflow frontend artifact; empty only for standalone verification.
+        type: string
+        default: ""
+      save_cache:
+        description: Save dependency artifacts only from trusted main.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux-common:
+    name: linux-common
+    runs-on: ubuntu-24.04
+    # The uncached complete migration run took twelve minutes with repeated measurements.
+    timeout-minutes: 25
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: "v2026.8.10"
+          sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
+          cache: false
+          install: true
+
+      - name: Install common-shell system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          rustup target add aarch64-apple-darwin
+
+      - name: Restore verified frontend assets
+        if: inputs.frontend_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.frontend_artifact }}
+          path: .
+
+      - name: Verify frontend artifact source and contents
+        if: inputs.frontend_artifact != ''
+        run: node scripts/frontend-artifact.ts check
+
+      - name: Verify and build the frontend for standalone execution
+        if: inputs.frontend_artifact == ''
+        run: |
+          pnpm install --frozen-lockfile
+          mise run verify:portable
+
+      - name: Restore common Rust dependency artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: lens-v3-rust
+          shared-key: common-x86_64-unknown-linux-gnu
+          key: ${{ hashFiles('mise.lock', 'scripts/workspace-variants.json') }}
+          workspaces: . -> target
+          cache-targets: true
+          cache-bin: false
+          cache-on-failure: false
+          cache-all-crates: false
+          cache-workspace-crates: false
+          save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}
+
+      - name: Verify normal common code, tests and native-feature compatibility
+        run: mise run verify:common

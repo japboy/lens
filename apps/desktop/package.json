@@ -1,0 +1,47 @@
+{
+  "name": "desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm run check:types && vite build",
+    "build:assets": "vite build",
+    "check:types": "tsc --build",
+    "tauri": "tauri",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "7.3.1",
+    "@generative-dom/core": "0.4.0",
+    "@generative-dom/plugin-cursor": "0.4.0",
+    "@generative-dom/plugin-markdown-base": "0.4.0",
+    "@generative-dom/plugin-markdown-code": "0.4.0",
+    "@generative-dom/plugin-markdown-heading": "0.4.0",
+    "@generative-dom/plugin-markdown-inline": "0.4.0",
+    "@generative-dom/plugin-markdown-link": "0.4.0",
+    "@generative-dom/plugin-markdown-list": "0.4.0",
+    "@generative-dom/plugin-markdown-quote": "0.4.0",
+    "@generative-dom/plugin-markdown-table": "0.4.0",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.2",
+    "@tauri-apps/plugin-opener": "2.5.4",
+    "dompurify": "3.4.14",
+    "lit": "3.3.3",
+    "marked": "18.0.10",
+    "mermaid": "11.17.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "24.13.3",
+    "jsdom": "30.0.1",
+    "typescript": "7.0.2",
+    "typescript-config": "workspace:*",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": "24.19.0",
+    "pnpm": "11.22.0"
+  }
+}
