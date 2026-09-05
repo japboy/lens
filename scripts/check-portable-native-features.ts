@@ -193,7 +193,9 @@ export function checkPortableNativeFeatures(root: string): void {
   assertBuildEnvironment(process.env);
   const report = inspectFeatureGraphs(
     root,
-    BUILD_VARIANTS.filter((variant) => variant.id === "macos-production-check"),
+    BUILD_VARIANTS.filter((variant) =>
+      ["macos-production-check", "macos-bundle-build"].includes(variant.id),
+    ),
   );
   validateVariantAdmission(
     report,
@@ -222,6 +224,15 @@ export function checkPortableNativeFeatures(root: string): void {
     cargo([...graphArguments(nativeVariant), "--no-dedupe"], root),
     root,
     original.packages,
+  );
+  const bundledVariant = BUILD_VARIANTS.find((variant) => variant.id === "macos-bundle-build")!;
+  assertProductionProjection(
+    expected,
+    sharedProductionProjection(
+      cargo([...graphArguments(bundledVariant), "--no-dedupe"], root),
+      root,
+      original.packages,
+    ),
   );
   const fixture = realpathSync(mkdtempSync(join(tmpdir(), "lens-native-features-")));
   try {

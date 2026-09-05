@@ -131,6 +131,31 @@
           "--profile",
           "test"
         ]
+      },
+      "macos-bundle-build": {
+        "graphDigest": "12887a40f0940a6a5a002ed2e1ccede8c89c13d3b152f11e9f27e1239408c903",
+        "arguments": [
+          "build",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "use-case",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "release",
+          "--features",
+          "tauri/custom-protocol"
+        ]
       }
     },
     "x86_64-unknown-linux-gnu": {
@@ -261,6 +286,31 @@
           "--bins",
           "--profile",
           "test"
+        ]
+      },
+      "macos-bundle-build": {
+        "graphDigest": "2ad4278ce3a70e309b803d644d289cd47942c9e12db7ed2932f34091d2ed046c",
+        "arguments": [
+          "build",
+          "--locked",
+          "--target",
+          "aarch64-apple-darwin",
+          "--package",
+          "domain",
+          "--package",
+          "port-platform",
+          "--package",
+          "use-case",
+          "--package",
+          "desktop",
+          "--package",
+          "adapter-platform-macos",
+          "--lib",
+          "--bins",
+          "--profile",
+          "release",
+          "--features",
+          "tauri/custom-protocol"
         ]
       }
     }

@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      impact: ${{ steps.impact.outputs.impact }}
+      plan: ${{ steps.plan.outputs.plan }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,46 +30,74 @@ jobs:
           cache: false
           install: true
 
-      - name: Classify change impact
-        id: impact
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" | node scripts/classify-ci-impact.ts
-
       - run: pnpm install --frozen-lockfile
 
       - run: mise run verify:portable
 
+      - name: Classify the complete tested merge-ref change set
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: node scripts/ci-diff.ts
+
+      - name: Bind frontend assets to the tested source
+        if: steps.plan.outputs.plan != 'frontend-only'
+        run: node scripts/frontend-artifact.ts write
+
+      - name: Share verified frontend assets
+        if: steps.plan.outputs.plan != 'frontend-only'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-${{ github.sha }}
+          path: |
+            apps/desktop/dist
+            target/ci/frontend-manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  linux-common:
+    name: linux-common
+    needs: portable-quality
+    if: contains(fromJSON('["portable-rust","native-code","native-bundle","full"]'), needs.portable-quality.outputs.plan)
+    uses: ./.github/workflows/linux-common.yml
+    with:
+      frontend_artifact: frontend-${{ github.sha }}
+      save_cache: false
+
   native-quality:
     name: native-quality
     needs: portable-quality
-    if: needs.portable-quality.outputs.impact == 'native-or-control-plane'
+    if: contains(fromJSON('["native-code","native-bundle","full"]'), needs.portable-quality.outputs.plan)
     uses: ./.github/workflows/native-quality.yml
     with:
       save_cache: false
+      native_mode: ${{ needs.portable-quality.outputs.plan == 'native-code' && 'code' || 'bundle' }}
+      frontend_artifact: frontend-${{ github.sha }}
 
   code-quality:
     name: code-quality
     needs:
       - portable-quality
+      - linux-common
       - native-quality
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      IMPACT: ${{ needs.portable-quality.outputs.impact }}
+      PLAN: ${{ needs.portable-quality.outputs.plan }}
+      COMMON_RESULT: ${{ needs.linux-common.result }}
       NATIVE_RESULT: ${{ needs.native-quality.result }}
       PORTABLE_RESULT: ${{ needs.portable-quality.result }}
     steps:
       - name: Require the complete verification state
         run: |
-          case "$PORTABLE_RESULT:$NATIVE_RESULT:$IMPACT" in
-            success:skipped:portable-only | success:success:native-or-control-plane)
-              echo "Code quality passed for impact state: $IMPACT"
+          case "$PORTABLE_RESULT:$COMMON_RESULT:$NATIVE_RESULT:$PLAN" in
+            success:skipped:skipped:frontend-only | success:success:skipped:portable-rust | success:success:success:native-code | success:success:success:native-bundle | success:success:success:full)
+              echo "Code quality passed for plan: $PLAN"
               ;;
             *)
-              echo "::error::Incomplete code-quality state: portable=$PORTABLE_RESULT native=$NATIVE_RESULT impact=$IMPACT"
+              echo "::error::Incomplete code-quality state: portable=$PORTABLE_RESULT common=$COMMON_RESULT native=$NATIVE_RESULT plan=$PLAN"
               exit 1
               ;;
           esac

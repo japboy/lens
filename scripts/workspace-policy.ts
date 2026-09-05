@@ -150,7 +150,7 @@ export type BuildVariant = {
   id: string;
   target: "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin";
   packages: readonly string[];
-  operation: "check" | "test";
+  operation: "check" | "test" | "build";
   profile: "dev" | "test" | "release";
   defaultFeatures: boolean;
   features: readonly string[];
@@ -220,6 +220,16 @@ export const BUILD_VARIANTS: readonly BuildVariant[] = [
     profile: "test",
     defaultFeatures: true,
     features: [],
+    targets: "lib-and-bins",
+  },
+  {
+    id: "macos-bundle-build",
+    target: "aarch64-apple-darwin",
+    packages: native,
+    operation: "build",
+    profile: "release",
+    defaultFeatures: true,
+    features: ["tauri/custom-protocol"],
     targets: "lib-and-bins",
   },
 ];

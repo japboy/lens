@@ -169,6 +169,17 @@ description = "Verify repository, frontend, common Rust and native-feature compa
 dir = "{{config_root}}"
 depends = ["verify:portable", "check:rust:native-features", "check:dependencies"]
 
+[tasks."verify:common"]
+description = "Verify Rust after a separate same-source portable CI job"
+dir = "{{config_root}}"
+depends = ["check:rust:native-features", "check:dependencies"]
+
+[tasks."verify:bundle"]
+description = "Build and inspect the signed native bundle using prebuilt frontend assets"
+dir = "{{config_root}}"
+wait_for = ["frontend:build", "verify:native"]
+run = "node scripts/verify-native-bundle.ts"
+
 [tasks."check:dependencies"]
 description = "Audit the locked Linux and macOS dependency graphs"
 dir = "{{config_root}}"

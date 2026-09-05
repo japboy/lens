@@ -8,11 +8,13 @@ on:
       - .cargo/config.toml
       - .github/workflows/code-quality.yml
       - .github/workflows/native-quality.yml
+      - .github/workflows/linux-common.yml
       - .github/workflows/rust-cache-seed.yml
       - Cargo.toml
       - Cargo.lock
       - mise.lock
       - mise.toml
+      - scripts/workspace-variants.json
       - package.json
       - rust-toolchain
       - rust-toolchain.toml
@@ -39,6 +41,12 @@ jobs:
     name: native-dependency-cache-seed
     if: github.ref == 'refs/heads/main' && !inputs.linux_common
     uses: ./.github/workflows/native-quality.yml
+    with:
+      save_cache: true
+
+  linux-dependency-cache-seed:
+    if: github.ref == 'refs/heads/main' && !inputs.linux_common
+    uses: ./.github/workflows/linux-common.yml
     with:
       save_cache: true
 
