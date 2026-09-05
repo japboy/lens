@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub use use_case::platform::WindowPickerReply;
+#[cfg(test)]
+use use_case::platform::WindowPickerReply;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

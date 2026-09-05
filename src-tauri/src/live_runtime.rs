@@ -4,9 +4,7 @@ use crate::{
     commands::refresh_lens_context,
     lens::LensTargetSet,
     model::{LensFreshness, LensMonitoringLifecycle, LensSourceHealth, LensStage, LensState},
-    platform::{
-        self, WindowObservationEvent, WindowObservationReceiver, WindowObservationRegistration,
-    },
+    platform::{WindowObservationEvent, WindowObservationReceiver, WindowObservationRegistration},
 };
 use std::{collections::BTreeMap, num::NonZeroU64, sync::Mutex, time::Duration};
 use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
@@ -413,14 +411,20 @@ fn build_observation(
         // Window IDs are unique inside LensTargetSet. Adding one avoids the nil UUID while keeping
         // the registration identity deterministic across Pause/Resume epochs.
         let source_registration_id = Uuid::from_u128(u128::from(target.identity.window_id) + 1);
-        match platform::start_window_observation(
-            operation_id,
-            context_id,
-            source_registration_id,
-            observer_epoch,
-            &target.identity,
+        match app.state::<AppState>().platform.observation.observe(
+            port_platform::observation::ObservationRequest {
+                operation_id,
+                context_id,
+                source_registration_id,
+                observer_epoch,
+                identity: use_case::platform::window_identity(&target.identity),
+            },
         ) {
-            Ok((registration, receiver, start)) => {
+            Ok(port_platform::observation::ObservationSession {
+                registration,
+                events: receiver,
+                start,
+            }) => {
                 has_registration_diagnostics |= !start.diagnostics.is_empty();
                 for diagnostic in start.diagnostics {
                     eprintln!("Lens observer diagnostic for {}: {diagnostic}", target.id);

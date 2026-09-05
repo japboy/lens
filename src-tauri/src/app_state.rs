@@ -486,6 +486,7 @@ impl LensMediaStore {
 }
 
 pub struct AppState {
+    pub platform: crate::platform::Services,
     pub session_controls: Mutex<Option<Arc<crate::session_controls::SessionControls>>>,
     pub(crate) runtime: RwLock<AppSnapshot>,
     pub agent_runtime_install: AsyncMutex<()>,
@@ -507,10 +508,11 @@ pub struct LensPromptMaterial {
 }
 
 impl AppState {
-    pub fn load() -> Self {
+    pub fn load(platform: crate::platform::Services) -> Self {
         let store = ConfigStore::new();
         let config = store.load();
         Self {
+            platform,
             runtime: RwLock::new(AppSnapshot::new(config)),
             session_controls: Mutex::new(None),
             agent_runtime_install: AsyncMutex::new(()),

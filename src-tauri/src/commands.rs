@@ -8,13 +8,8 @@ use crate::{
     },
     confirm_targets::{confirm_targets, ConfirmationHost, OPERATION_SUPERSEDED},
     lens::{
-        target_id, LensContext, LensInput, LensMediaCapture, LensMediaOmission,
-        LensMediaOmissionReason, LensMediaPayload, LensMediaPlan, LensMediaRequest, LensMediaScope,
-        LensTarget, LensTargetCapture, LensTargetSet, MAX_AX_RESOURCE_REFERENCES,
-        MAX_AX_RESOURCE_URI_BYTES, MAX_AX_TOTAL_RESOURCE_URI_BYTES, MAX_LENS_CONTEXT_NODES,
-        MAX_LENS_CONTEXT_TEXT_BYTES, MAX_LENS_MEDIA_ATTACHMENTS, MAX_LENS_MEDIA_ATTACHMENT_BYTES,
-        MAX_LENS_MEDIA_LONG_EDGE, MAX_LENS_MEDIA_PIXELS, MAX_LENS_MEDIA_TOTAL_BYTES,
-        MAX_LENS_SOURCE_NODES, MAX_LENS_SOURCE_TEXT_BYTES, MAX_LENS_TARGETS,
+        target_id, LensInput, LensMediaPayload, LensMediaPlan, LensMediaRequest, LensMediaScope,
+        LensTargetSet, MAX_LENS_TARGETS,
     },
     live_runtime,
     live_sync::LensAgentProjection,
@@ -24,13 +19,28 @@ use crate::{
         LensState, LensTargetSelection, LensTargetSelectionItem, LensTargetSelectionStage,
         SelectedWindow, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
     },
-    platform::{self, ExtractionLimits, ImageCaptureLimits},
+    platform::ImageCaptureLimits,
     prompt_template::AgentPromptTemplate,
     ui,
 };
 use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
 use tauri::{AppHandle, Manager, State};
+use use_case::context::{
+    build_context, BlockingExecutor, BuiltContext, ContextBuildRequest, WindowAccessMode,
+};
 use uuid::Uuid;
+
+struct DesktopBlockingExecutor;
+
+impl BlockingExecutor for DesktopBlockingExecutor {
+    fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send>> {
+        let task = tauri::async_runtime::spawn_blocking(work);
+        Box::pin(async move { task.await.map_err(|error| error.to_string()) })
+    }
+}
 
 const MAX_SELECTION_PREVIEW_LONG_EDGE: u32 = 480;
 const MAX_SELECTION_PREVIEW_PIXELS: u32 = 230_400;
@@ -108,13 +118,13 @@ fn update_config(
 }
 
 #[tauri::command]
-pub fn accessibility_permission() -> bool {
-    platform::accessibility_is_trusted()
+pub fn accessibility_permission(state: State<'_, AppState>) -> bool {
+    state.platform.trust.inspect()
 }
 
 #[tauri::command]
-pub fn request_accessibility_permission() -> bool {
-    platform::request_accessibility_trust()
+pub fn request_accessibility_permission(state: State<'_, AppState>) -> bool {
+    state.platform.trust.request()
 }
 
 async fn select_single_window(
@@ -123,10 +133,13 @@ async fn select_single_window(
 ) -> Result<Option<SelectedWindow>, String> {
     let state = app.state::<AppState>();
     let _picker_lease = state.picker_control.try_begin()?;
-    let reply = platform::present_window_picker_for_operation(operation_id)
+    let reply = state
+        .platform
+        .selection
+        .pick(operation_id)
         .await
         .map_err(|error| error.to_string())?;
-    let Some(mut windows) = reply.into_selected()? else {
+    let Some(mut windows) = use_case::platform::picker_reply(reply).into_selected()? else {
         return Ok(None);
     };
     if windows.len() != 1 {
@@ -234,46 +247,6 @@ pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<Le
     extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Legacy).await
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SourceExtractionBudget {
-    max_nodes: usize,
-    max_text_bytes: usize,
-    limits: ExtractionLimits,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowAccessMode {
-    Registered,
-    Legacy,
-}
-
-fn source_extraction_budget(
-    remaining_nodes: usize,
-    remaining_text_bytes: usize,
-    remaining_resource_refs: usize,
-    remaining_resource_uri_bytes: usize,
-) -> Option<SourceExtractionBudget> {
-    let max_nodes = remaining_nodes.min(MAX_LENS_SOURCE_NODES);
-    if max_nodes == 0 {
-        return None;
-    }
-    let max_text_bytes = remaining_text_bytes.min(MAX_LENS_SOURCE_TEXT_BYTES);
-    Some(SourceExtractionBudget {
-        max_nodes,
-        max_text_bytes,
-        limits: ExtractionLimits {
-            max_nodes: u32::try_from(max_nodes).expect("versioned node budget fits u32"),
-            max_text_bytes: u32::try_from(max_text_bytes).expect("versioned text budget fits u32"),
-            max_resource_refs: u32::try_from(remaining_resource_refs)
-                .expect("versioned resource-reference budget fits u32"),
-            max_resource_uri_bytes: u32::try_from(MAX_AX_RESOURCE_URI_BYTES)
-                .expect("versioned resource-URI limit fits u32"),
-            max_total_resource_uri_bytes: u32::try_from(remaining_resource_uri_bytes)
-                .expect("versioned resource-URI group budget fits u32"),
-        },
-    })
-}
-
 async fn extract_target_set_for_operation(
     app: AppHandle,
     operation_id: Uuid,
@@ -291,11 +264,16 @@ async fn extract_target_set_for_operation(
         context,
         payloads,
     } = match build_context(
-        operation_id,
-        context_revision,
-        source_revisions,
-        &target_set,
-        access_mode,
+        &DesktopBlockingExecutor,
+        app.state::<AppState>().platform.accessibility.clone(),
+        app.state::<AppState>().platform.capture.clone(),
+        ContextBuildRequest {
+            operation_id,
+            context_revision,
+            source_revisions,
+            target_set: &target_set,
+            access_mode,
+        },
     )
     .await
     {
@@ -379,12 +357,6 @@ async fn extract_target_set_for_operation(
     Ok(next)
 }
 
-struct BuiltContext {
-    target_set: LensTargetSet,
-    context: LensContext,
-    payloads: Vec<LensMediaPayload>,
-}
-
 pub(crate) async fn refresh_lens_context(
     app: AppHandle,
     operation_id: Uuid,
@@ -445,11 +417,16 @@ pub(crate) async fn refresh_lens_context(
         context: next_context,
         payloads,
     } = match build_context(
-        operation_id,
-        next_context_revision,
-        source_revisions,
-        &target_set,
-        WindowAccessMode::Registered,
+        &DesktopBlockingExecutor,
+        app.state::<AppState>().platform.accessibility.clone(),
+        app.state::<AppState>().platform.capture.clone(),
+        ContextBuildRequest {
+            operation_id,
+            context_revision: next_context_revision,
+            source_revisions,
+            target_set: &target_set,
+            access_mode: WindowAccessMode::Registered,
+        },
     )
     .await
     {
@@ -574,203 +551,6 @@ fn mark_refresh_failed(
     Ok(())
 }
 
-async fn build_context(
-    operation_id: Uuid,
-    context_revision: u64,
-    source_revisions: BTreeMap<String, u64>,
-    target_set: &LensTargetSet,
-    access_mode: WindowAccessMode,
-) -> Result<BuiltContext, String> {
-    let mut remaining_nodes = MAX_LENS_CONTEXT_NODES;
-    let mut remaining_text_bytes = MAX_LENS_CONTEXT_TEXT_BYTES;
-    let mut remaining_resource_refs = MAX_AX_RESOURCE_REFERENCES;
-    let mut remaining_resource_uri_bytes = MAX_AX_TOTAL_RESOURCE_URI_BYTES;
-    let mut remaining_media_attachments = MAX_LENS_MEDIA_ATTACHMENTS;
-    let mut remaining_media_bytes = MAX_LENS_MEDIA_TOTAL_BYTES;
-    let mut captures = Vec::with_capacity(target_set.targets.len());
-    let mut payloads = Vec::new();
-    let mut observed_facts = BTreeMap::new();
-
-    for target in &target_set.targets {
-        let extraction_budget = source_extraction_budget(
-            remaining_nodes,
-            remaining_text_bytes,
-            remaining_resource_refs,
-            remaining_resource_uri_bytes,
-        );
-        let accessibility = if let Some(extraction_budget) = extraction_budget {
-            let max_nodes = extraction_budget.max_nodes;
-            let max_text_bytes = extraction_budget.max_text_bytes;
-            let limits = extraction_budget.limits;
-            let extraction_identity = target.identity.clone();
-            let extraction_window = target.selected_window();
-            let mut extraction =
-                match tauri::async_runtime::spawn_blocking(move || match access_mode {
-                    WindowAccessMode::Registered => platform::extract_registered_window(
-                        operation_id,
-                        &extraction_identity,
-                        limits,
-                    ),
-                    WindowAccessMode::Legacy => {
-                        platform::extract_window(&extraction_window, limits)
-                    }
-                })
-                .await
-                {
-                    Ok(Ok(extraction)) => extraction,
-                    Ok(Err(error)) => LensContext::unavailable_accessibility(error.to_string()),
-                    Err(error) => LensContext::unavailable_accessibility(error.to_string()),
-                };
-            if extraction.metrics.truncated_nodes && max_nodes < MAX_LENS_SOURCE_NODES {
-                extraction.diagnostics.push(format!(
-                    "{} reached the version 1 group traversal-node budget",
-                    target.id
-                ));
-            }
-            if extraction.metrics.truncated_text && max_text_bytes < MAX_LENS_SOURCE_TEXT_BYTES {
-                extraction.diagnostics.push(format!(
-                    "{} reached the version 1 group text-byte budget",
-                    target.id
-                ));
-            }
-            remaining_nodes = remaining_nodes.saturating_sub(extraction.metrics.visited_nodes);
-            remaining_text_bytes =
-                remaining_text_bytes.saturating_sub(extraction.metrics.text_bytes);
-            remaining_resource_refs =
-                remaining_resource_refs.saturating_sub(extraction.metrics.resource_ref_count);
-            remaining_resource_uri_bytes =
-                remaining_resource_uri_bytes.saturating_sub(extraction.metrics.resource_uri_bytes);
-            extraction
-        } else {
-            LensContext::unavailable_accessibility(format!(
-                "{} was not extracted because the version 1 group traversal-node budget was exhausted",
-                target.id
-            ))
-        };
-
-        let mut current_target = target.clone();
-        if let Some(resolved_window) = &accessibility.resolved_window {
-            current_target.facts = resolved_window.facts.clone();
-            observed_facts.insert(target.id.clone(), current_target.facts.clone());
-        }
-        let plan = LensMediaPlan::from_accessibility(
-            &current_target,
-            &accessibility,
-            remaining_media_attachments,
-        );
-        let mut media = capture_target_media(
-            operation_id,
-            context_revision,
-            current_target.clone(),
-            plan,
-            remaining_media_bytes,
-            access_mode,
-        )
-        .await;
-        if let Some(observed_frame) = media.observed_window_frame {
-            current_target.facts.frame = observed_frame;
-            observed_facts.insert(target.id.clone(), current_target.facts.clone());
-        }
-        remaining_media_attachments =
-            remaining_media_attachments.saturating_sub(media.attachments.len());
-        remaining_media_bytes = remaining_media_bytes.saturating_sub(
-            media
-                .attachments
-                .iter()
-                .map(|attachment| attachment.encoded_bytes)
-                .sum(),
-        );
-        payloads.append(&mut media.payloads);
-        captures.push(LensTargetCapture {
-            accessibility,
-            media,
-        });
-    }
-
-    let refreshed_target_set = target_set
-        .refresh_observable_facts(context_revision, observed_facts)
-        .map_err(|error| error.to_string())?;
-    let context = LensContext::from_captures_at_revision(
-        operation_id,
-        context_revision,
-        source_revisions,
-        &refreshed_target_set,
-        captures,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(BuiltContext {
-        target_set: refreshed_target_set,
-        context,
-        payloads,
-    })
-}
-
-async fn capture_target_media(
-    operation_id: Uuid,
-    context_revision: u64,
-    target: LensTarget,
-    plan: LensMediaPlan,
-    remaining_total_bytes: usize,
-    access_mode: WindowAccessMode,
-) -> LensMediaCapture {
-    if plan.requests.is_empty() {
-        return LensMediaCapture {
-            omissions: plan.omissions,
-            ..LensMediaCapture::default()
-        };
-    }
-    if remaining_total_bytes == 0 {
-        return byte_budget_media_capture(target.id, plan);
-    }
-
-    let target_id = target.id.clone();
-    let capture_plan = plan.clone();
-    let limits = ImageCaptureLimits {
-        max_long_edge: u32::try_from(MAX_LENS_MEDIA_LONG_EDGE)
-            .expect("versioned media long-edge limit fits u32"),
-        max_pixels: u32::try_from(MAX_LENS_MEDIA_PIXELS)
-            .expect("versioned media pixel limit fits u32"),
-        max_attachment_bytes: u32::try_from(MAX_LENS_MEDIA_ATTACHMENT_BYTES)
-            .expect("versioned media attachment-byte limit fits u32"),
-        max_total_bytes: u32::try_from(remaining_total_bytes)
-            .expect("versioned media total-byte budget fits u32"),
-    };
-    let mut result = match tauri::async_runtime::spawn_blocking(move || match access_mode {
-        WindowAccessMode::Registered => platform::capture_registered_window_media(
-            operation_id,
-            &target.id,
-            &target.identity,
-            operation_id,
-            context_revision,
-            capture_plan,
-            limits,
-        ),
-        WindowAccessMode::Legacy => platform::capture_window_media(
-            &target.selected_window(),
-            operation_id,
-            capture_plan,
-            limits,
-        ),
-    })
-    .await
-    {
-        Ok(Ok(capture)) => capture,
-        Ok(Err(error)) => failed_media_capture(target_id, plan, error.to_string()),
-        Err(error) => failed_media_capture(target_id, plan, error.to_string()),
-    };
-    if context_revision != 1 {
-        let prefix = format!("lens://context/{operation_id}/1/media/");
-        let replacement = format!("lens://context/{operation_id}/{context_revision}/media/");
-        for attachment in &mut result.attachments {
-            attachment.uri = attachment.uri.replacen(&prefix, &replacement, 1);
-        }
-        for payload in &mut result.payloads {
-            payload.uri = payload.uri.replacen(&prefix, &replacement, 1);
-        }
-    }
-    result
-}
-
 fn source_health(quality: ExtractionQuality) -> LensSourceHealth {
     match quality {
         ExtractionQuality::Full => LensSourceHealth::Healthy,
@@ -779,49 +559,8 @@ fn source_health(quality: ExtractionQuality) -> LensSourceHealth {
     }
 }
 
-fn byte_budget_media_capture(target_id: String, plan: LensMediaPlan) -> LensMediaCapture {
-    let mut omissions = plan.omissions;
-    omissions.extend(plan.requests.into_iter().map(|request| LensMediaOmission {
-        target_id: target_id.clone(),
-        attachment_id: Some(request.id),
-        source_node_id: request.source_node_id,
-        reason: LensMediaOmissionReason::ByteBudget,
-        omitted_count: 1,
-        first_order: None,
-        last_order: None,
-        detail:
-            "The versioned 16 MiB media group byte budget was exhausted before this target.".into(),
-    }));
-    LensMediaCapture {
-        omissions,
-        ..LensMediaCapture::default()
-    }
-}
-
-fn failed_media_capture(
-    target_id: String,
-    plan: LensMediaPlan,
-    message: String,
-) -> LensMediaCapture {
-    let mut omissions = plan.omissions;
-    omissions.extend(plan.requests.into_iter().map(|request| LensMediaOmission {
-        target_id: target_id.clone(),
-        attachment_id: Some(request.id),
-        source_node_id: request.source_node_id,
-        reason: LensMediaOmissionReason::CaptureFailed,
-        omitted_count: 1,
-        first_order: None,
-        last_order: None,
-        detail: message.clone(),
-    }));
-    LensMediaCapture {
-        omissions,
-        diagnostics: vec![format!("ScreenCaptureKit media capture failed: {message}")],
-        ..LensMediaCapture::default()
-    }
-}
-
 async fn build_target_selection_item(
+    capture_service: std::sync::Arc<dyn port_platform::capture::Capture>,
     operation_id: Uuid,
     window: SelectedWindow,
 ) -> (LensTargetSelectionItem, Option<LensMediaPayload>) {
@@ -839,12 +578,17 @@ async fn build_target_selection_item(
     let capture_window = window.clone();
     let capture_target_id = id.clone();
     let capture = tauri::async_runtime::spawn_blocking(move || {
-        platform::capture_registered_window_media(
-            operation_id,
-            &capture_target_id,
-            &capture_window.identity,
-            operation_id,
-            1,
+        use_case::media::capture_media(
+            capture_service.as_ref(),
+            use_case::media::MediaCaptureContext {
+                target: port_platform::capture::CaptureTarget::Registered {
+                    operation_id,
+                    window_id: capture_window.identity.window_id,
+                },
+                target_id: capture_target_id,
+                context_id: operation_id,
+                context_revision: NonZeroU64::MIN,
+            },
             plan,
             ImageCaptureLimits {
                 max_long_edge: MAX_SELECTION_PREVIEW_LONG_EDGE,
@@ -1022,7 +766,12 @@ pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
         }
     };
     let anchor = window.facts.frame;
-    let (item, payload) = build_target_selection_item(operation_id, window).await;
+    let (item, payload) = build_target_selection_item(
+        app.state::<AppState>().platform.capture.clone(),
+        operation_id,
+        window,
+    )
+    .await;
     store_target_selection_payload(&app, operation_id, payload)?;
     publish_target_selection(
         &app,
@@ -1078,7 +827,12 @@ pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensS
                 selection.notice = Some("That window is already selected.".into());
                 return publish_target_selection(&app, operation_id, selection).await;
             }
-            let (item, payload) = build_target_selection_item(operation_id, window).await;
+            let (item, payload) = build_target_selection_item(
+                app.state::<AppState>().platform.capture.clone(),
+                operation_id,
+                window,
+            )
+            .await;
             store_target_selection_payload(&app, operation_id, payload)?;
             selection.items.push(item);
             selection.stage = LensTargetSelectionStage::Reviewing;
@@ -1106,7 +860,10 @@ pub async fn remove_lens_target(
     let window_id = selection.items[index].window.identity.window_id;
     // Release native ownership before mutating the authoritative Rust media/state snapshot. A
     // native teardown failure therefore leaves the reviewed item intact and retryable.
-    platform::release_registered_window(operation_id, window_id)
+    app.state::<AppState>()
+        .platform
+        .selection
+        .release_target(operation_id, window_id)
         .map_err(|error| error.to_string())?;
     let removed = selection.items.remove(index);
     let state = app.state::<AppState>();
@@ -1240,7 +997,12 @@ pub fn stop_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String
     })?;
     live_runtime::stop(&app, operation_id)?;
     if current.live.is_some() || current.selection.is_some() {
-        if let Err(error) = platform::release_window_operation(operation_id) {
+        if let Err(error) = app
+            .state::<AppState>()
+            .platform
+            .selection
+            .release_operation(operation_id)
+        {
             eprintln!("Unable to release the stopped native Lens operation: {error}");
         }
     }
@@ -1421,28 +1183,6 @@ mod tests {
         assert_eq!(state.stage, LensStage::Failed);
         assert_eq!(state.target_set, Some(target_set));
         assert_eq!(state.error.as_deref(), Some("failure"));
-    }
-
-    #[test]
-    fn exhausted_diagnostic_text_budget_keeps_source_traversal_available() {
-        let budget = source_extraction_budget(
-            MAX_LENS_SOURCE_NODES,
-            0,
-            MAX_AX_RESOURCE_REFERENCES,
-            MAX_AX_TOTAL_RESOURCE_URI_BYTES,
-        )
-        .expect("remaining nodes keep extraction available");
-
-        assert_eq!(budget.max_nodes, MAX_LENS_SOURCE_NODES);
-        assert_eq!(budget.max_text_bytes, 0);
-        assert_eq!(budget.limits.max_text_bytes, 0);
-        assert!(source_extraction_budget(
-            0,
-            MAX_LENS_SOURCE_TEXT_BYTES,
-            MAX_AX_RESOURCE_REFERENCES,
-            MAX_AX_TOTAL_RESOURCE_URI_BYTES,
-        )
-        .is_none());
     }
 
     #[test]

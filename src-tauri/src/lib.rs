@@ -55,7 +55,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(app_state::AppState::load())
+        .manage(app_state::AppState::load(platform::macos_services()))
         .manage(ui::LensWindowPresentationState::default())
         .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
         .setup(move |app| {
@@ -103,8 +103,9 @@ pub fn run() {
                     }
                 });
             }
-            if !validate_rich_output && !platform::accessibility_is_trusted() {
-                platform::request_accessibility_trust();
+            let state = app.state::<app_state::AppState>();
+            if !validate_rich_output && !state.platform.trust.inspect() {
+                state.platform.trust.request();
             }
             Ok(())
         })

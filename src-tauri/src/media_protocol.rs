@@ -109,7 +109,7 @@ mod tests {
     use uuid::Uuid;
 
     fn active_state(uri: &str, mime_type: &str, data: &str) -> AppState {
-        let state = AppState::load();
+        let state = AppState::load(crate::platform::macos_services());
         let operation_id = Uuid::new_v4();
         state
             .lens_media

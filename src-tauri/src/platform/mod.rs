@@ -2,37 +2,37 @@
 mod presentation_macos;
 
 #[allow(unused_imports)]
-// Public source-observation boundary; consumers live above this module.
 pub use port_platform::observation::{
     WindowObservationEvent, WindowObservationNotification, WindowObservationReceiver,
     WindowObservationRegistration, WindowObservationStart,
 };
-
-use crate::{
-    lens::{LensMediaCapture, LensMediaPlan},
-    model::{ExtractionResult, SelectedWindow, WindowIdentity, WindowPickerReply},
-};
-use std::num::NonZeroU64;
-use uuid::Uuid;
-
-use adapter_platform_macos::MacOsPlatform;
 use port_platform::{
-    accessibility::{Accessibility, ExtractionTarget},
-    capture::CaptureTarget,
-    observation::{Observation, ObservationRequest},
-    selection::TargetSelection,
-    trust::AccessibilityTrust,
+    accessibility::Accessibility, capture::Capture, observation::Observation,
+    selection::TargetSelection, trust::AccessibilityTrust,
 };
-pub use port_platform::{ExtractionLimits, ImageCaptureLimits, PlatformError};
-use use_case::media::{capture_media, MediaCaptureContext};
-use use_case::platform as conversion;
+pub use port_platform::{ImageCaptureLimits, PlatformError};
+use std::sync::Arc;
 
-pub fn accessibility_is_trusted() -> bool {
-    MacOsPlatform.inspect()
+/// One explicitly supplied instance per capability; no ambient platform selection in consumers.
+#[derive(Clone)]
+pub struct Services {
+    pub selection: Arc<dyn TargetSelection>,
+    pub accessibility: Arc<dyn Accessibility>,
+    pub capture: Arc<dyn Capture>,
+    pub observation: Arc<dyn Observation>,
+    pub trust: Arc<dyn AccessibilityTrust>,
 }
 
-pub fn request_accessibility_trust() -> bool {
-    MacOsPlatform.request()
+#[cfg(target_os = "macos")]
+pub fn macos_services() -> Services {
+    let native = Arc::new(adapter_platform_macos::MacOsPlatform);
+    Services {
+        selection: native.clone(),
+        accessibility: native.clone(),
+        capture: native.clone(),
+        observation: native.clone(),
+        trust: native,
+    }
 }
 
 pub fn present_window_from_screen_right(
@@ -62,124 +62,4 @@ pub async fn transition_window_frame(
         target_content_height,
     )
     .await
-}
-
-pub async fn present_window_picker_for_operation(
-    operation_id: Uuid,
-) -> Result<WindowPickerReply, PlatformError> {
-    MacOsPlatform
-        .pick(operation_id)
-        .await
-        .map(conversion::picker_reply)
-}
-
-pub fn extract_window(
-    target: &SelectedWindow,
-    limits: ExtractionLimits,
-) -> Result<ExtractionResult, PlatformError> {
-    MacOsPlatform
-        .extract(
-            ExtractionTarget::Legacy(conversion::selected_window(target)),
-            limits,
-        )
-        .map(conversion::extraction)
-}
-
-pub fn extract_registered_window(
-    operation_id: Uuid,
-    identity: &WindowIdentity,
-    limits: ExtractionLimits,
-) -> Result<ExtractionResult, PlatformError> {
-    MacOsPlatform
-        .extract(
-            ExtractionTarget::Registered {
-                operation_id,
-                identity: conversion::window_identity(identity),
-            },
-            limits,
-        )
-        .map(conversion::extraction)
-}
-
-pub fn start_window_observation(
-    operation_id: Uuid,
-    context_id: Uuid,
-    source_registration_id: Uuid,
-    observer_epoch: NonZeroU64,
-    identity: &WindowIdentity,
-) -> Result<
-    (
-        WindowObservationRegistration,
-        WindowObservationReceiver,
-        WindowObservationStart,
-    ),
-    PlatformError,
-> {
-    let session = MacOsPlatform.observe(ObservationRequest {
-        operation_id,
-        context_id,
-        source_registration_id,
-        observer_epoch,
-        identity: conversion::window_identity(identity),
-    })?;
-    Ok((session.registration, session.events, session.start))
-}
-
-pub fn capture_window_media(
-    target: &SelectedWindow,
-    context_id: Uuid,
-    plan: LensMediaPlan,
-    limits: ImageCaptureLimits,
-) -> Result<LensMediaCapture, PlatformError> {
-    capture_media(
-        &MacOsPlatform,
-        MediaCaptureContext {
-            target: CaptureTarget::Legacy {
-                window_id: target.identity.window_id,
-            },
-            target_id: crate::lens::target_id(target),
-            context_id,
-            context_revision: NonZeroU64::MIN,
-        },
-        plan,
-        limits,
-    )
-}
-
-pub fn capture_registered_window_media(
-    operation_id: Uuid,
-    target_id: &str,
-    identity: &WindowIdentity,
-    context_id: Uuid,
-    context_revision: u64,
-    plan: LensMediaPlan,
-    limits: ImageCaptureLimits,
-) -> Result<LensMediaCapture, PlatformError> {
-    let context_revision = NonZeroU64::new(context_revision).ok_or_else(|| {
-        PlatformError::Operation(
-            "registered image capture context revision must be non-zero".into(),
-        )
-    })?;
-    capture_media(
-        &MacOsPlatform,
-        MediaCaptureContext {
-            target: CaptureTarget::Registered {
-                operation_id,
-                window_id: identity.window_id,
-            },
-            target_id: target_id.to_owned(),
-            context_id,
-            context_revision,
-        },
-        plan,
-        limits,
-    )
-}
-
-pub fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
-    MacOsPlatform.release_target(operation_id, window_id)
-}
-
-pub fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
-    MacOsPlatform.release_operation(operation_id)
 }
