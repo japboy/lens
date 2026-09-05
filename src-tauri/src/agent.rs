@@ -25,9 +25,8 @@ use agent_client_protocol::{
             AuthCapabilities, AuthMethod, AuthMethodTerminal, AuthenticateRequest,
             CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
             EmbeddedResourceResource, ImageContent, Implementation, InitializeRequest,
-            LogoutRequest, PromptCapabilities, PromptRequest, RequestPermissionOutcome,
-            RequestPermissionRequest, RequestPermissionResponse, SessionModeId,
-            SessionNotification, StopReason, TextContent, TextResourceContents,
+            LogoutRequest, PromptCapabilities, PromptRequest, RequestPermissionRequest,
+            SessionModeId, SessionNotification, StopReason, TextContent, TextResourceContents,
         },
         ProtocolVersion,
     },
@@ -131,7 +130,7 @@ struct AgentSessionMetadata<'a> {
 }
 
 struct AgentTurnExecution<'a> {
-    controls: &'a SessionControls,
+    controls: &'a Arc<SessionControls>,
     app: &'a AppHandle,
     identity: &'a AgentSessionIdentity,
     mailbox: &'a AgentSessionMailbox,
@@ -904,30 +903,9 @@ async fn run_persistent_session(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Error> {
     let process = descriptor.process();
-    let permission_app = app.clone();
-    let permission_operation = identity.operation_id;
-    let elicitation_app = app.clone();
     agent_client_protocol::Client
         .builder()
         .name("lens")
-        .on_receive_request(
-            async move |request: RequestPermissionRequest, responder, _connection| {
-                let response = match session_controls::active_controls(&permission_app, permission_operation) {
-                    Ok(controls) => controls.permission(&permission_app, request, responder.cancellation()).await,
-                    Err(_) => RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
-                };
-                responder.respond(response)
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: agent_client_protocol::schema::v1::CreateElicitationRequest, responder, _connection| {
-                let controls = session_controls::active_controls(&elicitation_app, permission_operation).map_err(state_error)?;
-                let response = controls.elicit(&elicitation_app, request, responder.cancellation()).await?;
-                responder.respond(response)
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
             let initialize = tokio::select! {
                 result = initialize(&connection) => result?,
@@ -1008,7 +986,7 @@ async fn run_persistent_session(
                         turn = &mut next_turn => break turn?,
                         message = session.read_update() => {
                             if let SessionMessage::SessionMessage(dispatch) = message? {
-                                record_control_update(&app, &controls, dispatch, None).await?;
+                                record_control_update(&app, &controls, &connection, dispatch, None).await?;
                             }
                         }
                     }
@@ -1729,7 +1707,7 @@ async fn run_session_turn(
             message = session.read_update() => {
                 if let SessionMessage::SessionMessage(dispatch) = message? {
                     let output_changed =
-                        match record_control_update(app, controls, dispatch, Some(&mut candidate)).await {
+                        match record_control_update(app, controls, &session_connection, dispatch, Some(&mut candidate)).await {
                             Ok(changed) => changed,
                             Err(error) => {
                                 session_connection.send_notification(
@@ -1897,9 +1875,13 @@ fn required_safe_mode(
         })
 }
 
-async fn record_control_update(
+// Consume session notifications and requests through the same ActiveSession queue.
+// Global request handlers can overtake a queued tool update and lose its correlation.
+// Reserve responders here in receipt order; their connection-scoped waits never block this queue.
+pub(crate) async fn record_control_update(
     app: &AppHandle,
-    controls: &SessionControls,
+    controls: &Arc<SessionControls>,
+    connection: &ConnectionTo<Agent>,
     dispatch: Dispatch,
     mut candidate: Option<&mut AgentOutputCandidate>,
 ) -> Result<bool, Error> {
@@ -1924,6 +1906,17 @@ async fn record_control_update(
             controls.publish(app).map_err(state_error)?;
             Ok(())
         })
+        .await
+        .if_request(async |request: RequestPermissionRequest, responder| {
+            controls.receive_permission(app, request, responder, connection)
+        })
+        .await
+        .if_request(
+            async |request: agent_client_protocol::schema::v1::CreateElicitationRequest,
+                   responder| {
+                controls.receive_elicitation(app, request, responder, connection)
+            },
+        )
         .await
         .otherwise_ignore()?;
     Ok(changed)

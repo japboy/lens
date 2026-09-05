@@ -1,6 +1,6 @@
 //! Operation-scoped ACP controls. Protocol responders never cross the WebView boundary.
 use crate::app_state::{update_lens_state, AppState};
-use agent_client_protocol::{schema::v1::*, Agent, ConnectionTo, Error};
+use agent_client_protocol::{schema::v1::*, Agent, ConnectionTo, Error, Responder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -76,6 +76,14 @@ pub struct ConfigChange {
     pub status: ChangeStatus,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeOrigin {
+    Policy,
+    User,
+    Agent,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionControlState {
     pub instance_id: Uuid,
@@ -87,6 +95,9 @@ pub struct AgentSessionControlState {
     pub config_options: Option<Vec<SessionConfigOption>>,
     pub modes: Vec<SessionMode>,
     pub effective_mode: String,
+    pub configured_mode: String,
+    pub configured_origin: ModeOrigin,
+    pub last_mode_origin: ModeOrigin,
     pub policy_default: String,
     pub change: Option<ConfigChange>,
     pub notice: Option<String>,
@@ -219,6 +230,9 @@ impl SessionControls {
             config_options: options,
             modes,
             effective_mode: policy_default.clone(),
+            configured_mode: policy_default.clone(),
+            configured_origin: ModeOrigin::Policy,
+            last_mode_origin: ModeOrigin::Policy,
             policy_default: policy_default.clone(),
             change: None,
             notice: None,
@@ -251,6 +265,13 @@ impl SessionControls {
             .lock()
             .map_err(|_| invalid("Agent controls unavailable"))?;
         runtime.approved_mode = mode.clone();
+        runtime.state.configured_mode = mode.clone();
+        runtime.state.configured_origin = if mode == runtime.state.policy_default {
+            ModeOrigin::Policy
+        } else {
+            ModeOrigin::User
+        };
+        runtime.state.last_mode_origin = runtime.state.configured_origin;
         runtime.state.effective_mode = mode;
         runtime.tool_policies = policies;
         Ok(())
@@ -341,6 +362,7 @@ impl SessionControls {
             .map_err(|_| invalid("Agent controls unavailable"))?;
         if let Some(mode) = mode_option(&options)? {
             let effective = current_value(mode)?;
+            runtime.state.last_mode_origin = ModeOrigin::Agent;
             if effective != runtime.approved_mode {
                 return Err(invalid("Agent changed mode without approval"));
             }
@@ -366,6 +388,7 @@ impl SessionControls {
             .runtime
             .lock()
             .map_err(|_| invalid("Agent controls unavailable"))?;
+        runtime.state.last_mode_origin = ModeOrigin::Agent;
         if mode != runtime.approved_mode {
             return Err(invalid("Agent changed mode without approval"));
         }
@@ -523,9 +546,30 @@ impl SessionControls {
         details: InteractionDetails,
         cancellation: Option<agent_client_protocol::RequestCancellation>,
     ) -> InteractionResponse {
-        let Ok((id, mut receiver)) = self.begin_decision(details) else {
+        self.decision_with_deadline(app, details, cancellation, DECISION_TIMEOUT)
+            .await
+    }
+    async fn decision_with_deadline(
+        &self,
+        app: &AppHandle,
+        details: InteractionDetails,
+        cancellation: Option<agent_client_protocol::RequestCancellation>,
+        timeout: Duration,
+    ) -> InteractionResponse {
+        let Ok((id, receiver)) = self.begin_decision(details) else {
             return InteractionResponse::Cancel;
         };
+        self.await_decision(app, id, receiver, cancellation, timeout)
+            .await
+    }
+    async fn await_decision(
+        &self,
+        app: &AppHandle,
+        id: Uuid,
+        mut receiver: oneshot::Receiver<InteractionResponse>,
+        cancellation: Option<agent_client_protocol::RequestCancellation>,
+        timeout: Duration,
+    ) -> InteractionResponse {
         let _guard = DecisionLifetime { controls: self, id };
         let _ = self.publish(app);
         let mut shutdown = self.shutdown.clone();
@@ -534,7 +578,7 @@ impl SessionControls {
             _ = shutdown.changed() => InteractionResponse::Cancel,
             _ = async { if let Some(cancellation) = &cancellation { cancellation.cancelled().await; } else { std::future::pending::<()>().await; } } => InteractionResponse::Cancel,
             response = &mut receiver => response.unwrap_or(InteractionResponse::Cancel),
-            _ = tokio::time::sleep(DECISION_TIMEOUT) => {
+            _ = tokio::time::sleep(timeout) => {
                 if self.expire_decision(id) { InteractionResponse::Cancel }
                 else { receiver.await.unwrap_or(InteractionResponse::Cancel) }
 
@@ -677,35 +721,102 @@ impl SessionControls {
             options,
         })
     }
-    pub async fn permission(
-        &self,
+    pub fn receive_permission(
+        self: &Arc<Self>,
         app: &AppHandle,
         request: RequestPermissionRequest,
-        cancellation: agent_client_protocol::RequestCancellation,
-    ) -> RequestPermissionResponse {
-        let details = match self.permission_details(request) {
-            Ok(details) => details,
+        responder: Responder<RequestPermissionResponse>,
+        connection: &ConnectionTo<Agent>,
+    ) -> Result<(), Error> {
+        let pending = self
+            .permission_details(request)
+            .and_then(|details| self.begin_decision(details));
+        let (id, receiver) = match pending {
+            Ok(pending) => pending,
             Err(notice) => {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.state.notice = Some(notice);
                 }
                 let _ = self.publish(app);
-                return RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+                return responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ));
             }
         };
-        match self.decision(app, details, Some(cancellation)).await {
-            InteractionResponse::Select { option_id } => RequestPermissionResponse::new(
-                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
-            ),
-            _ => RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
-        }
+        let _ = self.publish(app);
+        let controls = self.clone();
+        let app = app.clone();
+        let cancellation = responder.cancellation();
+        connection.spawn(async move {
+            let response = controls
+                .await_decision(&app, id, receiver, Some(cancellation), DECISION_TIMEOUT)
+                .await;
+            let outcome = match response {
+                InteractionResponse::Select { option_id } => {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
+                }
+                _ => RequestPermissionOutcome::Cancelled,
+            };
+            responder.respond(RequestPermissionResponse::new(outcome))
+        })
     }
-    pub async fn elicit(
-        &self,
+    pub fn receive_elicitation(
+        self: &Arc<Self>,
         app: &AppHandle,
         request: CreateElicitationRequest,
-        cancellation: agent_client_protocol::RequestCancellation,
-    ) -> Result<CreateElicitationResponse, Error> {
+        responder: Responder<CreateElicitationResponse>,
+        connection: &ConnectionTo<Agent>,
+    ) -> Result<(), Error> {
+        let details = match self.elicitation_details(request) {
+            Ok(details) => details,
+            Err(error) => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.state.notice = Some("Agent input request denied: unsupported extension, schema, or tool authority".into());
+                }
+                let _ = self.publish(app);
+                return responder.respond_with_error(error);
+            }
+        };
+        let (id, receiver) = self
+            .begin_decision(details)
+            .map_err(|_| invalid("Agent interaction queue unavailable"))?;
+        let _ = self.publish(app);
+        let controls = self.clone();
+        let app = app.clone();
+        let cancellation = responder.cancellation();
+        connection.spawn(async move {
+            let response = controls
+                .await_decision(&app, id, receiver, Some(cancellation), DECISION_TIMEOUT)
+                .await;
+            let action = match response {
+                InteractionResponse::Submit { content } => {
+                    let content =
+                        serde_json::from_value::<BTreeMap<String, ElicitationContentValue>>(
+                            content,
+                        )
+                        .map_err(|_| invalid("Invalid form response"))?;
+                    ElicitationAction::Accept(ElicitationAcceptAction::new().content(content))
+                }
+                InteractionResponse::Accept => {
+                    ElicitationAction::Accept(ElicitationAcceptAction::new())
+                }
+                InteractionResponse::Decline => ElicitationAction::Decline,
+                _ => ElicitationAction::Cancel,
+            };
+            responder.respond(CreateElicitationResponse::new(action))
+        })
+    }
+    fn elicitation_details(
+        &self,
+        request: CreateElicitationRequest,
+    ) -> Result<InteractionDetails, Error> {
+        if request.message.len() > 8192
+            || request.meta.as_ref().is_some_and(|meta| !meta.is_empty())
+        {
+            return Err(invalid(
+                "Unsupported elicitation extensions or message size",
+            ));
+        }
         {
             let runtime = self
                 .runtime
@@ -717,10 +828,22 @@ impl SessionControls {
                 ElicitationScope::Session(scope)
                     if scope.session_id.to_string() == runtime.state.session_id
                         && runtime.active_turn.is_some()
-                        && scope
-                            .tool_call_id
-                            .as_ref()
-                            .is_none_or(|id| runtime.tools.contains_key(&id.to_string())) => {}
+                        && scope.tool_call_id.as_ref().is_none_or(|id| {
+                            runtime
+                                .tools
+                                .get(&id.to_string())
+                                .and_then(|tool| tool.kind)
+                                .is_some_and(|kind| {
+                                    runtime.tool_policies.for_kind(kind)
+                                        == crate::agent_preferences::ToolPolicy::Ask
+                                        && (runtime.state.effective_mode
+                                            != runtime.state.policy_default
+                                            || matches!(
+                                                kind,
+                                                ToolKind::Read | ToolKind::Search | ToolKind::Fetch
+                                            ))
+                                })
+                        }) => {}
                 _ => return Err(invalid("Unsupported or stale elicitation correlation")),
             }
         }
@@ -746,21 +869,7 @@ impl SessionControls {
             }
             _ => return Err(invalid("Unsupported elicitation mode")),
         };
-        let response = self.decision(app, details, Some(cancellation)).await;
-        let action = match response {
-            InteractionResponse::Submit { content } => {
-                let content =
-                    serde_json::from_value::<BTreeMap<String, ElicitationContentValue>>(content)
-                        .map_err(|_| invalid("Invalid form response"))?;
-                ElicitationAction::Accept(ElicitationAcceptAction::new().content(content))
-            }
-            InteractionResponse::Accept => {
-                ElicitationAction::Accept(ElicitationAcceptAction::new())
-            }
-            InteractionResponse::Decline => ElicitationAction::Decline,
-            _ => ElicitationAction::Cancel,
-        };
-        Ok(CreateElicitationResponse::new(action))
+        Ok(details)
     }
     pub async fn serve(
         &self,
@@ -798,10 +907,13 @@ impl SessionControls {
                 .map_err(|_| invalid("Agent controls unavailable"))?;
             Self::validate_change(&current, &change.config_id, &change.value)?;
             if is_mode {
-                self.runtime
+                let mut runtime = self
+                    .runtime
                     .lock()
-                    .map_err(|_| invalid("Agent controls unavailable"))?
-                    .approved_mode = change.value.clone();
+                    .map_err(|_| invalid("Agent controls unavailable"))?;
+                runtime.approved_mode = change.value.clone();
+                runtime.state.configured_mode = change.value.clone();
+                runtime.state.configured_origin = ModeOrigin::User;
             }
             let request = async {
                 if state.config_options.is_some() {
@@ -1130,6 +1242,23 @@ impl Drop for TurnLifetime<'_> {
     }
 }
 
+/// Synchronously revoke UI responders before the application or operation is torn down.
+pub fn close_active(app: &AppHandle) {
+    let controls = app
+        .state::<AppState>()
+        .session_controls
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    if let Some(controls) = controls {
+        controls.close(app);
+    }
+}
+
+#[cfg(debug_assertions)]
+#[path = "session_controls_validation.rs"]
+pub mod validation;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1181,6 +1310,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn elicitation_cannot_bypass_tool_effect_policy_or_grant_persistence() {
+        let (controls, _shutdown) = controls();
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        let form = serde_json::json!({"sessionId":"session","mode":"form","message":"Fixture","requestedSchema":{"type":"object","properties":{}}});
+        assert!(controls
+            .elicitation_details(serde_json::from_value(form.clone()).unwrap())
+            .is_ok());
+        let mut extension = form.clone();
+        extension["_meta"] =
+            serde_json::json!({"codex_approval_kind":"mcp_tool_call","persist":["always"]});
+        assert!(controls
+            .elicitation_details(serde_json::from_value(extension).unwrap())
+            .is_err());
+        controls
+            .record_tool(&SessionUpdate::ToolCall(
+                ToolCall::new("mcp", "Unclassified MCP tool").kind(ToolKind::Other),
+            ))
+            .unwrap();
+        let mut correlated = form;
+        correlated["toolCallId"] = "mcp".into();
+        assert!(controls
+            .elicitation_details(serde_json::from_value(correlated).unwrap())
+            .is_err());
+        assert!(controls.snapshot().unwrap().interactions.is_empty());
+    }
+    #[test]
+    fn mode_authority_distinguishes_policy_user_and_agent_state() {
+        let (controls, _shutdown) = controls();
+        assert_eq!(
+            controls.snapshot().unwrap().configured_origin,
+            ModeOrigin::Policy
+        );
+        controls
+            .set_initial_authority("write".into(), ToolPolicies::default())
+            .unwrap();
+        assert_eq!(
+            controls.snapshot().unwrap().configured_origin,
+            ModeOrigin::User
+        );
+        controls.record_mode("write").unwrap();
+        let state = controls.snapshot().unwrap();
+        assert_eq!(state.configured_mode, "write");
+        assert_eq!(state.effective_mode, "write");
+        assert_eq!(state.last_mode_origin, ModeOrigin::Agent);
+        assert!(controls.record_mode("unapproved").is_err());
+        assert_eq!(controls.snapshot().unwrap().effective_mode, "write");
+    }
     #[test]
     fn malformed_or_ambiguous_options_fail_closed() {
         let good = options();

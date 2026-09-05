@@ -366,6 +366,7 @@ pub fn resume(app: &AppHandle, operation_id: Uuid) -> Result<LensState, String> 
 }
 
 pub fn stop(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
+    crate::session_controls::close_active(app);
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     state.live_control.stop(operation_id)?;

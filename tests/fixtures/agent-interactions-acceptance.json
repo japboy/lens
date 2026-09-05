@@ -1,0 +1,79 @@
+{
+  "date": "2026-09-05T02:28:15.738979+00:00",
+  "sdk": "2.1.0",
+  "schema": "1.7.0",
+  "source_sha256": {
+    "src-tauri/src/agent.rs": "76301534c1d913eede9ead67cc4e830672145dfd5a2f703a37c7f0bee5d0f5c7",
+    "src-tauri/src/session_controls.rs": "573b264e3e1da3036ea583d970d59f6b4022cc4e1e4d7a295fabe0b171cc4a21",
+    "src-tauri/src/session_controls_validation.rs": "4233e452f0797a9a18392d069617efe832bfd504a7215a40e5b9aefa723ec52c",
+    "scripts/validate-agent-interactions.py": "7f80df04f44b9ebfe1cbcfcc5975227336ac3b692e0aa87484a8303179ace4b2",
+    "tests/fixtures/mcp-interactions.mjs": "5a2efe69866c2a8613a041933403cd65b61ee67de8aaed24610e49eb60efb373"
+  },
+  "native": {
+    "status": "passed",
+    "cases": [
+      "permission_fixture-allow",
+      "permission_fixture-deny",
+      "permission_cancelled",
+      "form_accept",
+      "form_decline",
+      "form_cancel",
+      "url_decline",
+      "sdk_request_cancellation",
+      "wrong_session",
+      "concurrent_reverse_response_and_wrong_operation",
+      "elicitation_approval_extension_denied",
+      "active_session_tool_permission_ordering",
+      "turn_end",
+      "disconnect",
+      "supersession",
+      "lens_close",
+      "app_shutdown",
+      "expiry"
+    ],
+    "layer": "Production controls, Tauri command, native WKWebView and synthetic ACP; includes ActiveSession FIFO dispatch and actual close-button/window destruction."
+  },
+  "codex": {
+    "status": "passed",
+    "version": "1.6.2",
+    "layer": "Separate on-device provider transport probe with inert MCP server; complementary to native production-controller tests.",
+    "cases": [
+      {
+        "case": "fixture_read",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "I\u2019ll invoke the fixture reader once and return its text verbatim.LENS_FIXTURE_READ_7B4A"
+      },
+      {
+        "case": "fixture_form",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "LENS_FIXTURE_FORM_ACCEPTED_7B4A"
+      },
+      {
+        "case": "fixture_url",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "LENS_FIXTURE_URL_DECLINED_7B4A"
+      },
+      {
+        "case": "fixture_approval",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "user cancelled MCP tool call"
+      }
+    ],
+    "counts": {
+      "permission": 0,
+      "form": 2,
+      "url": 1
+    }
+  },
+  "claude": {
+    "status": "authentication_required",
+    "version": "0.70.0",
+    "error": "ACP error -32000: Authentication required",
+    "cli_logged_in": false
+  },
+  "closure": "Blocked only on remaining authenticated Claude provider scenarios, followed by review/merge. No skipped provider scenario is counted as passed."
+}

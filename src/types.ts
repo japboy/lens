@@ -487,6 +487,9 @@ export interface AgentSessionControlState {
   config_options?: SessionConfigOption[];
   modes: SessionMode[];
   effective_mode: string;
+  configured_mode?: string;
+  configured_origin?: "policy" | "user" | "agent";
+  last_mode_origin?: "policy" | "user" | "agent";
   policy_default: string;
   change?: {
     config_id: string;

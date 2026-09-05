@@ -22,6 +22,8 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let validate_interactions =
+        cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
     let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();
     let validate_acp = std::env::var_os("LENS_VALIDATE_ACP").is_some();
     let validate_rich_output =
@@ -83,6 +85,7 @@ pub fn run() {
                 && std::env::var_os("LENS_VALIDATE_ACP").is_none()
                 && std::env::var_os("LENS_VALIDATE_RUNTIME").is_none()
                 && !validate_rich_output
+                && !validate_interactions
             {
                 let handle = app.handle().clone();
                 let preferred_agent = handle
@@ -133,6 +136,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Lens")
         .run(move |app, event| match event {
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if validate_interactions => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(240), session_controls::validation::run(&app)).await;
+                    let passed = matches!(result, Ok(Ok(())));
+                    println!("LENS_INTERACTION_RESULT={}", serde_json::json!({"passed":passed,"error":format!("{result:?}")}));
+                    app.exit(if passed {0} else {1});
+                });
+            }
+            tauri::RunEvent::ExitRequested { code: Some(_), .. } | tauri::RunEvent::Exit => {
+                session_controls::close_active(app);
+                let _ = app.state::<app_state::AppState>().agent_control.cancel_active();
+            }
             tauri::RunEvent::Ready if validation_runtime.is_some() => {
                 let handle = app.clone();
                 let agent = validation_runtime.expect("validated above");
