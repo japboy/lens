@@ -3,9 +3,9 @@ name = "lens"
 version = "0.1.0"
 description = "Accessibility-first personal information lens for macOS"
 authors = ["Lens contributors"]
-edition = "2021"
-rust-version = "1.88"
-publish = false
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lib]
 name = "lens_lib"
@@ -39,10 +39,3 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-panic = "abort"
-strip = true

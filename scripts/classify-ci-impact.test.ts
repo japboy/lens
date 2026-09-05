@@ -7,6 +7,8 @@ describe("CI impact classification", () => {
     [["README.md", "src/styles/global.css", "scripts/check-product-identity.ts"], "portable-only"],
     [["src-tauri/src/lib.rs"], "native-or-control-plane"],
     [["package.json"], "native-or-control-plane"],
+    [["Cargo.toml"], "native-or-control-plane"],
+    [["Cargo.lock"], "native-or-control-plane"],
     [[".github/workflows/code-quality.yml"], "native-or-control-plane"],
     [["scripts/classify-ci-impact.ts"], "native-or-control-plane"],
     [["src/lens-app.ts", "src-tauri/Cargo.toml"], "native-or-control-plane"],

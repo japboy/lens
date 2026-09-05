@@ -31,9 +31,9 @@ jobs:
       - name: Restore Rust dependency artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          prefix-key: lens-v1-rust
+          prefix-key: lens-v2-rust
           shared-key: native-dependencies
-          workspaces: src-tauri -> target
+          workspaces: . -> target
           cache-targets: true
           cache-bin: false
           cache-on-failure: false

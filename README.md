@@ -107,7 +107,7 @@ Set `LENS_VALIDATE_ACP_UPDATES` to an absolute path containing a JSON array of A
 
 ```sh
 LENS_VALIDATE_ACP_UPDATES=/absolute/path/session-updates.json \
-  cargo test --manifest-path src-tauri/Cargo.toml --locked replay_local_acp_images -- --ignored --nocapture
+  cargo test --locked -p lens replay_local_acp_images -- --ignored --nocapture
 ```
 
 Official references: [Tauri application identifier configuration](https://v2.tauri.app/reference/config/#identifier), [Tauri 2.11.5 application path resolver source](https://docs.rs/crate/tauri/2.11.5/source/src/path/desktop.rs), [ACP Registry](https://agentclientprotocol.com/get-started/registry), [pnpm supply-chain security settings](https://pnpm.io/settings#minimumreleaseage), [Takumi Guard npm compatibility](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/), [Node.js 24.19.0 distribution](https://nodejs.org/dist/v24.19.0/), and [Apple's Code Signing Requirement Language](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/RequirementLang/RequirementLang.html).

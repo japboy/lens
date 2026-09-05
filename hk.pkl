@@ -11,7 +11,11 @@ local qualityChecks = new Mapping<String, Step> {
   ["oxlint"] = (Builtins.ox_lint) {
     prefix = List("pnpm", "exec")
   }
-  ["cargo-fmt"] = Builtins.cargo_fmt
+  ["cargo-fmt"] {
+    glob = List("**/*.rs")
+    check = "cargo fmt --all --check"
+    fix = "cargo fmt --all"
+  }
 }
 
 hooks {

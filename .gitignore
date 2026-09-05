@@ -14,6 +14,7 @@ ARCHITECTURE.md
 # Tauri project ignores
 node_modules/
 /dist/
+/target/
 /src-tauri/target/
 /src-tauri/binaries/*-aarch64-apple-darwin
 /src-tauri/binaries/*-x86_64-apple-darwin

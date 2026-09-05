@@ -9,6 +9,8 @@ on:
       - .github/workflows/code-quality.yml
       - .github/workflows/native-quality.yml
       - .github/workflows/rust-cache-seed.yml
+      - Cargo.toml
+      - Cargo.lock
       - mise.lock
       - mise.toml
       - package.json
@@ -16,7 +18,6 @@ on:
       - rust-toolchain.toml
       - src-tauri/**/.cargo/config.toml
       - src-tauri/**/Cargo.toml
-      - src-tauri/Cargo.lock
   workflow_dispatch:
 
 permissions:
