@@ -24,7 +24,7 @@ fn on_main_thread<R: tauri::Runtime, T: Send + 'static>(
         .map_err(|_| PlatformError::Operation("Preview presentation dispatch was dropped".into()))?
 }
 
-impl<R: tauri::Runtime> super::WindowPresentation<R> for MacOsPresentation {
+impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresentation {
     fn present(&self, window: &WebviewWindow<R>) -> Result<(), PlatformError> {
         on_main_thread(window, |window| {
             let native_window = window.ns_window().map_err(|error| {
@@ -38,7 +38,10 @@ impl<R: tauri::Runtime> super::WindowPresentation<R> for MacOsPresentation {
         })
     }
 
-    fn dismiss<'a>(&'a self, window: &'a WebviewWindow<R>) -> super::PresentationFuture<'a> {
+    fn dismiss<'a>(
+        &'a self,
+        window: &'a WebviewWindow<R>,
+    ) -> crate::platform::PresentationFuture<'a> {
         Box::pin(async move {
             let transition = on_main_thread(window, |window| {
                 let native_window = window.ns_window().map_err(|error| {
@@ -61,7 +64,7 @@ impl<R: tauri::Runtime> super::WindowPresentation<R> for MacOsPresentation {
         y: f64,
         width: f64,
         height: f64,
-    ) -> super::PresentationFuture<'a> {
+    ) -> crate::platform::PresentationFuture<'a> {
         Box::pin(async move {
             let transition = on_main_thread(window, move |window| {
                 let native_window = window.ns_window().map_err(|error| {

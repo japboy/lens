@@ -16,6 +16,13 @@ const CONTROL_PLANE_PATHS = new Set([
   "scripts/workspace-boundaries.test.ts",
   "scripts/workspace-feature-graphs.ts",
   "scripts/workspace-feature-graphs.test.ts",
+  "scripts/rust-source-surface.ts",
+  "scripts/rust-source-surface.test.ts",
+  "scripts/run-workspace-variant.ts",
+  "scripts/run-workspace-variant.test.ts",
+  "scripts/workspace-variants.json",
+  "scripts/check-portable-native-features.ts",
+  "scripts/check-portable-native-features.test.ts",
 ]);
 
 const PORTABLE_PATHS = new Set([

@@ -1,6 +1,3 @@
-#[cfg(target_os = "macos")]
-mod presentation_macos;
-
 #[allow(unused_imports)]
 pub use port_platform::observation::{
     WindowObservationEvent, WindowObservationNotification, WindowObservationReceiver,
@@ -23,18 +20,6 @@ pub struct Services {
     pub trust: Arc<dyn AccessibilityTrust>,
 }
 
-#[cfg(target_os = "macos")]
-pub fn macos_services() -> Services {
-    let native = Arc::new(adapter_platform_macos::MacOsPlatform);
-    Services {
-        selection: native.clone(),
-        accessibility: native.clone(),
-        capture: native.clone(),
-        observation: native.clone(),
-        trust: native,
-    }
-}
-
 /// Tauri-owned presentation effects, separate from portable source capabilities.
 pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
     fn present(&self, window: &tauri::WebviewWindow<R>) -> Result<(), PlatformError>;
@@ -53,11 +38,6 @@ pub type PresentationFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PlatformError>> + Send + 'a>>;
 
 pub struct Presentation<R: tauri::Runtime>(pub Arc<dyn WindowPresentation<R>>);
-
-#[cfg(target_os = "macos")]
-pub fn macos_presentation() -> Presentation<tauri::Wry> {
-    Presentation(Arc::new(presentation_macos::MacOsPresentation))
-}
 
 pub fn present_window_from_screen_right<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,

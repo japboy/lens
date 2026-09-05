@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { MANAGED_RUNTIME_DIRECTORIES, MEMBERS, TARGET_DEPENDENCIES } from "./workspace-policy.ts";
 import type { DependencyKind, Member } from "./workspace-policy.ts";
 import { portableSourceViolations, sourceInclusionViolations } from "./rust-source-boundaries.ts";
+import {
+  commonShellConditionalViolations,
+  nativeCompositionViolations,
+  rustDeclarationSurface,
+} from "./rust-source-surface.ts";
 
 export type CargoDependency = {
   name: string;
@@ -337,7 +342,14 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
     const source = readFileSync(resolve(root, path), "utf8");
     const owner = member.role === "application" ? "apps/desktop" : member.directory;
     const violations = sourceInclusionViolations(root, path, source, owner);
-    if (member.implementation === "portable") violations.push(...portableSourceViolations(source));
+    if (member.implementation === "portable") {
+      violations.push(...portableSourceViolations(source));
+      rustDeclarationSurface(source);
+    }
+    if (path.startsWith("apps/desktop/src-tauri/src/native/"))
+      violations.push(...nativeCompositionViolations(source));
+    else if (path.startsWith("apps/desktop/src-tauri/src/"))
+      violations.push(...commonShellConditionalViolations(path, source));
     assert(violations.length === 0, `${path}: ${violations.join("; ")}`);
   }
   return { cargo, paths };

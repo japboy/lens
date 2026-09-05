@@ -14,6 +14,10 @@ pub use use_case::live_sync;
 mod confirmation_tests;
 mod media_protocol;
 mod model;
+#[cfg(target_os = "macos")]
+mod native;
+#[cfg(target_os = "macos")]
+pub use native::run;
 mod platform;
 mod session_controls;
 #[cfg(test)]
@@ -84,16 +88,6 @@ fn command_handler<R: tauri::Runtime>(
     ]
 }
 
-#[cfg(target_os = "macos")]
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    run_with_runtime(
-        tauri::Builder::default(),
-        platform::macos_services(),
-        platform::macos_presentation(),
-    );
-}
-
 /// Shared shell implementation. Product entry points still admit only supported native targets.
 pub fn run_with_runtime<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
@@ -137,11 +131,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
     )
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(if validate_a11y {
-                tauri::ActivationPolicy::Regular
-            } else {
-                tauri::ActivationPolicy::Accessory
-            });
+            native::configure_activation(app, validate_a11y);
             ui::install_menu_bar(app)?;
             #[cfg(debug_assertions)]
             if std::env::var_os("LENS_VALIDATE_UI").is_some() {

@@ -86,7 +86,13 @@ describe("repository task ownership", () => {
     const result = replay("verify:native");
     expect(result).toMatchObject({ status: 0 });
     expect(result.completed.toSorted()).toEqual(
-      ["check:dependencies", "check:rust", "rust:clippy", "rust:test"].toSorted(),
+      [
+        "check:dependencies",
+        "check:rust",
+        "rust:clippy",
+        "rust:test",
+        "check:rust:release",
+      ].toSorted(),
     );
     expect(result.completed.indexOf("check:rust")).toBeLessThan(
       result.completed.indexOf("rust:clippy"),
@@ -94,6 +100,38 @@ describe("repository task ownership", () => {
     expect(result.completed.indexOf("rust:clippy")).toBeLessThan(
       result.completed.indexOf("rust:test"),
     );
+    expect(result.completed.indexOf("rust:test")).toBeLessThan(
+      result.completed.indexOf("check:rust:release"),
+    );
+  });
+
+  it("runs the complete Linux chain without selecting a native host task", () => {
+    const result = replay("verify:linux");
+    expect(result.status).toBe(0);
+    const chain = [
+      "check:rust:linux",
+      "rust:clippy:linux",
+      "rust:test:linux",
+      "check:rust:apple",
+      "check:rust:native-features",
+    ];
+    for (const task of chain) {
+      expect(result.completed).toContain(task);
+    }
+    for (const [index, task] of chain.slice(1).entries())
+      expect(result.completed.indexOf(chain[index]!)).toBeLessThan(result.completed.indexOf(task));
+    expect(result.completed).not.toContain("check:rust");
+    expect(result.completed.indexOf("frontend:build")).toBeLessThan(
+      result.completed.indexOf(chain[0]!),
+    );
+    expect(new Set(result.completed).size).toBe(result.completed.length);
+  });
+
+  it("does not attempt feature compatibility after a Linux normal-check failure", () => {
+    const result = replay("verify:linux", "check:rust:linux");
+    expect(result.status).not.toBe(0);
+    expect(result.completed).not.toContain("rust:test:linux");
+    expect(result.completed).not.toContain("check:rust:native-features");
   });
 
   it("finishes portable leaves before the full-verification Cargo writer chain", () => {

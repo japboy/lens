@@ -90,12 +90,15 @@ export function graphArguments(variant: BuildVariant): string[] {
   ];
 }
 
-export function inspectFeatureGraphs(root: string) {
+export function inspectFeatureGraphs(
+  root: string,
+  selection: readonly BuildVariant[] = BUILD_VARIANTS,
+) {
   const rustc = execFileSync("rustc", ["-vV"], { cwd: root, encoding: "utf8" });
   const host = /^host: (.+)$/mu.exec(rustc)?.[1];
   if (!host || !["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"].includes(host))
     throw new Error("Unreviewed graph-analysis host");
-  const variants = BUILD_VARIANTS.map((variant) => {
+  const variants = selection.map((variant) => {
     const args = graphArguments(variant);
     const output = execFileSync("cargo", args, {
       cwd: root,

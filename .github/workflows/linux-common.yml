@@ -67,3 +67,6 @@ jobs:
 
       - name: Audit both admitted dependency targets from Linux
         run: cargo deny --locked --manifest-path Cargo.toml check
+
+      - name: Verify the admitted Linux task matrix and native production feature compatibility
+        run: mise run verify:linux
