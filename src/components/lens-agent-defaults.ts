@@ -40,7 +40,9 @@ export class LensAgentDefaults extends LitElement {
   }
   protected willUpdate(changed: PropertyValues<this>) {
     if (
-      changed.has("defaults") ||
+      (changed.has("defaults") &&
+        JSON.stringify(changed.get("defaults") ?? DEFAULT_AGENT_DEFAULTS) !==
+          JSON.stringify(this.defaults ?? DEFAULT_AGENT_DEFAULTS)) ||
       (changed.has("selection") && changed.get("selection")?.candidate !== this.selection.candidate)
     ) {
       this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);

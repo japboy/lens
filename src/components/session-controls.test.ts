@@ -241,6 +241,12 @@ describe("shared Agent defaults", () => {
     policy.dispatchEvent(new Event("change"));
     await element.updateComplete;
     expect(intents).toEqual([]);
+    const { DEFAULT_AGENT_DEFAULTS } = await import("./lens-agent-defaults");
+    element.defaults = structuredClone(DEFAULT_AGENT_DEFAULTS);
+    element.selection = structuredClone(element.selection);
+    await element.updateComplete;
+    expect(model.value).toBe("first");
+    expect(policy.value).toBe("deny");
     click(element, "Save Shared Settings");
     expect(intents[0]).toMatchObject({
       type: "save-defaults",
