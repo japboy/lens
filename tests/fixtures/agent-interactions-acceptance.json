@@ -75,5 +75,13 @@
     "error": "ACP error -32000: Authentication required",
     "cli_logged_in": false
   },
-  "closure": "Blocked only on remaining authenticated Claude provider scenarios, followed by review/merge. No skipped provider scenario is counted as passed."
+  "closure": "A4 pre-execution tool-policy enforcement remains a pre-merge issue. Claude provider validation is deferred by the user to another environment after merge; A7 stays unchecked. Existing passing counts cover only their stated layers.",
+  "tool_policy_enforcement": {
+    "status": "not_implemented_for_unrequested_tools",
+    "review": "https://github.com/japboy/lens/pull/39#discussion_r3939250921",
+    "verified_scope": "Native cases exercise received requests. Provider cases exercise transport and do not apply Lens AgentDefaults.tools to the provider process.",
+    "evidence": "Codex fixture_read completed with zero session/request_permission requests. permission_details only consults effect policies after receiving such a request.",
+    "required_verification": "Through the production launch path, configure each effect as Deny or Ask. Trace tool entry before any side effect; Deny must have zero invocations and Ask must have zero invocations until an exact one-shot response, including preauthorized MCP, built-ins, subagents, and privileged modes.",
+    "acceptance": "A4 is incomplete until pre-execution enforcement is implemented and verified, or the user explicitly narrows the policy contract."
+  }
 }
