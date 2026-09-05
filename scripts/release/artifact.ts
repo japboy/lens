@@ -65,7 +65,7 @@ shasum -a 256 -c SHA256SUMS
 
 Open the DMG, drag Lens.app to Applications, eject the image, and launch the installed copy.
 For Gatekeeper, attempt launch and use System Settings > Privacy & Security > Open Anyway
-only after verifying the download. See [installation and first-launch instructions](${base}/blob/${source}/INSTALL.md).
+only after verifying the download. Follow [Apple's first-launch instructions](https://support.apple.com/en-us/102445).
 For updates, quit Lens before replacing the app. Accessibility and Screen Recording
 permissions may need to be granted again. There is no automatic updater.
 Agent runtimes are downloaded separately; select and authenticate an Agent in Settings.

@@ -164,9 +164,9 @@ export async function bootstrap(
     base: "main",
     head: RELEASE_BRANCH,
     body:
-      "suggestion (blocking): review the initial Lens 0.1.0 release\n\nMerging this PR authorizes the annotated tag and verified DMG release pipeline. Review CHANGELOG.md and the commissioning steps in [RELEASING.md](https://github.com/" +
+      "suggestion (blocking): review the initial Lens 0.1.0 release\n\nMerging this PR authorizes the annotated tag and verified DMG release pipeline. Review CHANGELOG.md and the commissioning checklist in [issue #18](https://github.com/" +
       repository +
-      "/blob/main/RELEASING.md).\n\n— Codex",
+      "/issues/18).\n\n— Codex",
   });
   await request(`/issues/${pr.number}/labels`, "POST", { labels: [PENDING] });
 }
