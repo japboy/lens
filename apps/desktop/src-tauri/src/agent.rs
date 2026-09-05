@@ -273,6 +273,7 @@ impl AgentDescriptor {
             session_mode_id: None,
             auth_methods: Vec::new(),
             received_updates: 0,
+            progress_text: None,
             stop_reason: None,
             authentication_message: None,
         }
@@ -1374,6 +1375,7 @@ pub async fn authenticate_current<R: tauri::Runtime>(
         lens.stage = LensStage::Connecting;
         if let Some(agent) = lens.agent.as_mut() {
             agent.run_id = run_id;
+            agent.progress_text = None;
         }
         lens.error = None;
     })?;
@@ -1613,6 +1615,7 @@ fn finish_prompt_response(
 ) {
     if let Some(agent) = lens.agent.as_mut() {
         agent.received_updates = candidate.received_updates;
+        agent.progress_text = candidate.progress_text();
         agent.stop_reason = Some(stop_reason);
     }
     lens.pending_representation = None;
@@ -1799,7 +1802,7 @@ async fn run_session_turn<R: tauri::Runtime>(
                             }
                         };
                     let streaming_blocks = (initial_streaming && output_changed).then(|| candidate.blocks());
-                    if initial_streaming {
+                    {
                         let _ = update_lens_state_for_run(
                             app,
                             key,
@@ -1807,6 +1810,7 @@ async fn run_session_turn<R: tauri::Runtime>(
                             |lens| {
                                 if let Some(agent) = lens.agent.as_mut() {
                                     agent.received_updates = candidate.received_updates;
+                                    agent.progress_text = candidate.progress_text();
                                 }
                                 if let Some(blocks) = streaming_blocks {
                                     lens.output_blocks = blocks;

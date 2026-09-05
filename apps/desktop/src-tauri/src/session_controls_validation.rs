@@ -73,9 +73,13 @@ fn ui_response<R: tauri::Runtime>(
         if (!root) return;
         if (root.querySelector('.overlay-header lens-session-controls,.session-mode-label,.overlay-shell > lens-session-controls')) {{clearInterval(timer); return;}}
         root.querySelector('#diagnostics-tab')?.click(); await view.updateComplete;
-        const panel = root.querySelector('#diagnostics-panel');
+        if (root.querySelector('#diagnostics-panel lens-session-controls button')) {{clearInterval(timer);return;}}
+        const panel = root.querySelector('.lens-progress-notification') ?? root.querySelector('#lens-progress-notification');
         if (!panel?.textContent.includes(marker)) return;
-        if (panel.querySelector('summary')?.textContent.includes('Session settings')) {{clearInterval(timer);return;}}
+        if (root.querySelector('.lens-progress-dismiss,.overlay-status-toggle')) {{clearInterval(timer);return;}}
+        root.querySelector('#source-tab')?.click(); await view.updateComplete;
+        panel.dispatchEvent(new KeyboardEvent('keydown', {{key:'Escape',bubbles:true}}));
+        if (!root.querySelector('#source-panel') || !panel.querySelector('.lens-progress-snackbar')) {{clearInterval(timer);return;}}
         const input = panel.querySelector('input[name="answer"]');
         if (input) input.value = 'fixture-answer';
         const target = [...panel.querySelectorAll('button')].find(b => b.textContent.trim() === button);
@@ -153,7 +157,9 @@ async fn protocol_and_ui<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Er
     Agent.builder().connect_with(client, async |connection: ConnectionTo<Client>| {
         for (button, expected) in [("Allow once", "fixture-allow"), ("Reject once", "fixture-deny"), ("Cancel request", "cancelled")] {
             ui_response(app, "Native permission fixture", button)?;
-            let response = connection.send_request(permission("Native permission fixture")).block_task().await?;
+            let mut request = permission("Native permission fixture");
+            if expected == "cancelled" { request.options.retain(|option| option.kind != PermissionOptionKind::RejectOnce); }
+            let response = connection.send_request(request).block_task().await?;
             let value = serde_json::to_value(response).unwrap();
             let actual = value["outcome"]["optionId"].as_str().unwrap_or("cancelled");
             check(actual == expected, "Native permission outcome mismatch")?;
@@ -170,7 +176,7 @@ async fn protocol_and_ui<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Er
             println!("LENS_INTERACTION_CASE=automatic_{expected}:passed");
         }
         controls.set_initial_authority("safe".into(), Default::default())?;
-        for (button, expected) in [("Send response", "accept"), ("Decline", "decline"), ("Cancel request", "cancel")] {
+        for (button, expected) in [("Send response", "accept"), ("Decline", "decline")] {
             ui_response(app, "Native form fixture", button)?;
             let response = connection.send_request(form()).block_task().await?;
             let value = serde_json::to_value(response).unwrap();

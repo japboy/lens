@@ -60,7 +60,15 @@ export interface TargetSelectionViewModel {
   message: string;
 }
 
+export interface InteractionSubmission {
+  instanceId: string;
+  interactionId: string;
+  stage: "sending" | "sent" | "failed";
+  message?: string;
+}
+
 export interface OverlayViewModel {
+  interactionSubmission?: InteractionSubmission;
   platform: DesktopPlatform;
   lens: LensState;
   pending: boolean;

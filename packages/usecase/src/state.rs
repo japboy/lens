@@ -842,6 +842,7 @@ mod tests {
             session_mode_id: Some("read-only".into()),
             auth_methods: vec![],
             received_updates: 0,
+            progress_text: None,
             stop_reason: None,
             authentication_message: None,
         });

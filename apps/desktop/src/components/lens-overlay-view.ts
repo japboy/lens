@@ -56,15 +56,25 @@ function overlayNotification(lens: LensState): OverlayNotification | undefined {
   ) {
     return {
       title: "Agent response required",
-      detail: "Open Diagnostics to respond to the Agent request.",
+      detail: "Choose a response below.",
       busy: false,
       prominent: true,
     };
   }
   const liveStatus = lensLiveStatus(lens.live);
-  if (lens.representation) return liveStatus;
+  if (lens.representation && lens.stage !== "transforming") return liveStatus;
   const progress = lensProgressSnackbar(lens.stage);
-  return progress ? { ...progress, busy: true, prominent: true } : liveStatus;
+  return progress
+    ? {
+        ...progress,
+        detail:
+          lens.stage === "transforming"
+            ? lens.agent?.progress_text || progress.detail
+            : progress.detail,
+        busy: true,
+        prominent: true,
+      }
+    : liveStatus;
 }
 
 @customElement("lens-overlay-view")
@@ -103,7 +113,8 @@ export class LensOverlayView extends LitElement {
       ? JSON.stringify([
           this.model?.lens.operation_id,
           notification.title,
-          notification.detail,
+          this.model?.lens.agent?.run_id,
+          this.model?.lens.stage === "transforming" ? undefined : notification.detail,
           notification.busy,
           notification.prominent,
         ])
@@ -142,7 +153,13 @@ export class LensOverlayView extends LitElement {
     const liveStatus = lensLiveStatus(lens.live);
     const displayLens = this.lensWithDisplayedRepresentation(lens);
     const announcedStatus = overlayNotification(displayLens);
-    const showStatusSnackbar = Boolean(announcedStatus && this.notificationVisibility === "open");
+    const interactive = Boolean(
+      lens.session_controls?.active &&
+      lens.session_controls.interactions.some((i) => i.status === "pending"),
+    );
+    const showStatusSnackbar = Boolean(
+      announcedStatus && (interactive || this.notificationVisibility === "open"),
+    );
     const persistentStatus = liveStatus;
     const outputMedia = composeOutputMedia(lensOutputPresentation(displayLens));
     const hasMediaCue =
@@ -273,6 +290,7 @@ export class LensOverlayView extends LitElement {
             announcedStatus
               ? html`<div
                   class=${showStatusSnackbar ? "lens-progress-snackbar" : "visually-hidden"}
+                  data-interactive=${interactive}
                 >
                   <div
                     class="lens-status-announcement"
@@ -290,11 +308,11 @@ export class LensOverlayView extends LitElement {
                     ></i>
                     <span class="lens-progress-copy">
                       <strong>${announcedStatus.title}</strong>
-                      <span>${announcedStatus.detail}</span>
+                      ${interactive ? nothing : html`<span aria-hidden=${lens.stage === "transforming" ? "true" : "false"}>${announcedStatus.detail}</span>`}
                     </span>
                   </div>
                   ${
-                    showStatusSnackbar
+                    showStatusSnackbar && !interactive
                       ? html`<button
                           type="button"
                           class="close-button lens-progress-dismiss"
@@ -306,6 +324,15 @@ export class LensOverlayView extends LitElement {
                         </button>`
                       : nothing
                   }
+                  ${
+                    interactive
+                      ? html`<lens-session-controls
+                          presentation="interaction"
+                          .controls=${lens.session_controls}
+                          .submission=${model.interactionSubmission}
+                        ></lens-session-controls>`
+                      : nothing
+                  }
                 </div>`
               : nothing
           }
@@ -313,7 +340,7 @@ export class LensOverlayView extends LitElement {
 
         <footer class="overlay-footer">
           ${
-            announcedStatus
+            announcedStatus && !interactive
               ? html`<button
                   type="button"
                   class="overlay-footer-status overlay-status-toggle"
@@ -332,7 +359,7 @@ export class LensOverlayView extends LitElement {
                 >
                   <span class="overlay-stage-indicator" aria-hidden="true"></span>
                   <span class="overlay-stage"
-                    >${persistentStatus?.title ?? STAGE_LABEL[lens.stage]}</span
+                    >${interactive ? "Agent response required" : (persistentStatus?.title ?? STAGE_LABEL[lens.stage])}</span
                   >
                 </div>`
           }

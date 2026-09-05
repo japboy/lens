@@ -9,6 +9,7 @@ import {
   type CommandState,
 } from "./application/command-state";
 import {
+  type InteractionSubmission,
   overlayViewModel,
   settingsViewModel,
   targetSelectionViewModel,
@@ -38,6 +39,8 @@ export class LensApp extends LitElement {
 
   @state()
   private command: CommandState = IDLE_COMMAND_STATE;
+
+  @state() private interactionSubmission: InteractionSubmission | undefined;
 
   private commandGeneration = 0;
 
@@ -83,7 +86,7 @@ export class LensApp extends LitElement {
       case "overlay":
         return html`<lens-overlay-view
           data-platform=${context.platform}
-          .model=${overlayViewModel(context.platform, snapshot, this.command, connectionMessage)}
+          .model=${{ ...overlayViewModel(context.platform, snapshot, this.command, connectionMessage), interactionSubmission: this.interactionSubmission }}
           @lens-overlay-intent=${this.handleOverlayIntent}
         ></lens-overlay-view>`;
     }
@@ -236,14 +239,31 @@ export class LensApp extends LitElement {
       }
       case "respond-interaction": {
         if (!lens?.operation_id) return;
-        await this.runCommand(identity, () =>
-          this.port.respondAgentInteraction(
-            lens.operation_id!,
+        if (
+          this.interactionSubmission?.instanceId === intent.instanceId &&
+          this.interactionSubmission.interactionId === intent.interactionId &&
+          this.interactionSubmission.stage !== "failed"
+        )
+          return;
+        const submission: InteractionSubmission = {
+          instanceId: intent.instanceId,
+          interactionId: intent.interactionId,
+          stage: "sending",
+        };
+        this.interactionSubmission = submission;
+        try {
+          await this.port.respondAgentInteraction(
+            lens.operation_id,
             intent.instanceId,
             intent.interactionId,
             intent.response,
-          ),
-        );
+          );
+          if (this.interactionSubmission === submission)
+            this.interactionSubmission = { ...submission, stage: "sent" };
+        } catch (error) {
+          if (this.interactionSubmission === submission)
+            this.interactionSubmission = { ...submission, stage: "failed", message: String(error) };
+        }
         return;
       }
       case "authenticate": {
