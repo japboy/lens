@@ -745,6 +745,7 @@ pub async fn show_target_selection_window(
     .closable(false)
     .skip_taskbar(true)
     .visible(false)
+    .accept_first_mouse(true)
     .effects(WindowEffectsConfig {
         effects: vec![LENS_WINDOW_EFFECT],
         state: Some(WindowEffectState::Active),
