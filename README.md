@@ -50,8 +50,8 @@ mise trust
 mise install --locked
 pnpm install --frozen-lockfile
 mise exec -- hk install --mise
-pnpm run verify
-pnpm run tauri dev
+mise run verify
+mise run desktop:dev
 ```
 
 mise installs the checksummed development toolchain from `mise.lock`: Node.js `24.19.0` (the current LTS major), pnpm `11.22.0`, Rust `1.98.0`, cargo-deny `0.20.2`, and hk `1.56.1`. JavaScript packages resolve through [Takumi Guard](https://shisho.dev/%64ocs/ja/t/guard/quickstart/npm/) and pnpm enforces a three-day release quarantine, no-downgrade trust policy, blocked exotic transitive sources, frozen integrity locks, and an explicit package-name build allowlist. Renovate proposes weekly updates using the same quarantine. Patch, pin, GitHub Action digest, and npm lock-file maintenance updates merge automatically only after the required Code Quality check passes; minor, major, toolchain, and managed-runtime updates require manual review.
@@ -60,17 +60,25 @@ hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. T
 
 The root TypeScript solution declares shared strict, no-emit checks and explicitly references separate application and Node.js tooling projects. Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping; the Node.js project admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
 
-Root `dev`, `build`, and `tauri` commands delegate to `desktop`; `test` runs repository
-tests and then desktop tests. `pnpm --filter desktop run build` and
-`pnpm --filter desktop run tauri dev` are the corresponding app-local entry points.
-Tauri's pre-build/pre-dev hooks call only the frontend tasks in that package.
+Root mise tasks own cross-language orchestration; root pnpm scripts are compatibility
+delegates, not a second task graph. `mise run verify:portable` currently runs repository
+and frontend checks; `mise run verify:native` independently runs native Cargo checks,
+Clippy, tests and the locked dependency audit. `mise run verify` orders portable work
+before the native Cargo writer chain. Independent policy/frontend branches may run
+concurrently. Verification tasks never skip based on filesystem freshness.
+
+`mise run frontend:build` checks all TypeScript projects before producing app assets.
+`mise run desktop:dev` and `mise run desktop:build` invoke app-local Tauri commands;
+Tauri's own pre-build/pre-dev hooks call only the frontend tasks in that package.
+`pnpm --filter desktop run build` remains an independent frontend entry point.
+The task model uses mise's [declared dependencies and ordering constraints](https://mise.jdx.dev/tasks/task-configuration.html).
 
 The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. Lens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
 
 To produce a debug application bundle:
 
 ```sh
-pnpm run tauri build --debug
+mise run desktop:build -- --debug
 ```
 
 The application creates no ordinary WebView window at startup. Left-clicking the `Lens` menu-bar item immediately opens the native single-window Lens Target picker when an authenticated Agent is selected. After the first selection, the entire narrow frameless Preview HUD window slides in once from beyond the right edge of its display and settles at the right-center work-area inset. Confirming the selection or removing its final item slides the whole HUD back beyond that edge before destruction. Adding or removing a non-final item never replays the entrance: AppKit instead animates the existing HUD's count-derived size and centered position as one frame transition while the affected preview card uses a paired opacity-and-horizontal-motion transition. The native and content transitions are skipped when macOS Reduce Motion is enabled. The HUD shows bounded still previews and quiet icon actions to add another window, remove an item, or confirm the one-to-four-window collection. Every addition uses a fresh system picker; confirmation alone starts extraction and Agent transformation. When target selection is unavailable, the template icon is rendered at half opacity and the click has no effect. Right-clicking the item opens this native menu. When Accessibility permission is missing at first launch, the application invokes the standard macOS permission onboarding flow.

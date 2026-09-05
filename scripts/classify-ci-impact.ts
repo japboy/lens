@@ -9,6 +9,7 @@ export type CiImpactState = (typeof CI_IMPACT_STATES)[number];
 const CONTROL_PLANE_PATHS = new Set([
   "scripts/classify-ci-impact.test.ts",
   "scripts/classify-ci-impact.ts",
+  "scripts/workspace-tasks.test.ts",
 ]);
 
 const PORTABLE_PATHS = new Set([

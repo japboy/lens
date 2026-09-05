@@ -8,6 +8,7 @@ describe("CI impact classification", () => {
     [["src-tauri/src/lib.rs"], "native-or-control-plane"],
     [["apps/desktop/src/lens-app.ts"], "native-or-control-plane"],
     [["apps/desktop/src-tauri/tauri.macos.conf.json"], "native-or-control-plane"],
+    [["scripts/workspace-tasks.test.ts"], "native-or-control-plane"],
     [["package.json"], "native-or-control-plane"],
     [["Cargo.toml"], "native-or-control-plane"],
     [["Cargo.lock"], "native-or-control-plane"],

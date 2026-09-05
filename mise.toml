@@ -9,3 +9,149 @@ hk = "1.56.1"
 lockfile = true
 locked = true
 minimum_release_age = "3d"
+
+# Root owns cross-language orchestration. No task uses filesystem freshness as authority.
+# wait_for orders an already selected writer; it does not make standalone Rust checks need pnpm.
+
+[tasks."check:identity"]
+description = "Check product identity"
+dir = "{{config_root}}"
+run = "node scripts/check-product-identity.ts"
+
+[tasks."check:terminology"]
+description = "Check product terminology"
+dir = "{{config_root}}"
+run = "node scripts/check-product-terminology.ts"
+
+[tasks."check:publication"]
+description = "Check public source references"
+dir = "{{config_root}}"
+run = "node scripts/check-publication-boundary.ts"
+
+[tasks."check:language"]
+description = "Check repository source language"
+dir = "{{config_root}}"
+run = "node scripts/check-repository-language.ts"
+
+[tasks."check:quality"]
+description = "Check formatting and lint"
+dir = "{{config_root}}"
+run = "hk check --all"
+
+[tasks."check:icons"]
+description = "Verify generated app resources"
+dir = "{{config_root}}"
+run = "node scripts/generate-icons.ts --check"
+
+[tasks."generate:icons"]
+description = "Generate app resources"
+dir = "{{config_root}}"
+run = "node scripts/generate-icons.ts"
+
+[tasks."check:types"]
+description = "Check repository and desktop TypeScript"
+dir = "{{config_root}}"
+run = "pnpm exec tsc --build"
+
+[tasks."frontend:dev"]
+description = "Run the desktop frontend development server"
+dir = "{{config_root}}/apps/desktop"
+run = "pnpm run dev"
+
+[tasks."frontend:build"]
+description = "Build desktop assets after all TypeScript checks"
+dir = "{{config_root}}/apps/desktop"
+depends = ["check:types"]
+run = "pnpm run build:assets"
+
+[tasks."test:repository"]
+description = "Run repository policy tests"
+dir = "{{config_root}}"
+run = "pnpm exec vitest run"
+
+[tasks."test:frontend"]
+description = "Run desktop frontend tests"
+dir = "{{config_root}}/apps/desktop"
+run = "pnpm test"
+
+[tasks."test"]
+description = "Run both JavaScript test owners"
+dir = "{{config_root}}"
+depends = ["test:repository", "test:frontend"]
+
+[tasks."verify:portable"]
+description = "Run the current repository and frontend verification suite"
+dir = "{{config_root}}"
+depends = [
+  "check:identity",
+  "check:terminology",
+  "check:publication",
+  "check:language",
+  "check:quality",
+  "check:icons",
+  "frontend:build",
+  "test",
+]
+
+[tasks."check:rust"]
+description = "Check normal native workspace compilation"
+dir = "{{config_root}}"
+wait_for = ["verify:portable", "frontend:build"]
+run = "cargo check --locked --workspace"
+
+[tasks."rust:clippy"]
+description = "Lint native workspace targets after normal compilation"
+dir = "{{config_root}}"
+depends = ["check:rust"]
+run = "cargo clippy --locked --workspace --all-targets -- -D warnings"
+
+[tasks."rust:test"]
+description = "Run native workspace tests after compilation and lint"
+dir = "{{config_root}}"
+depends = ["rust:clippy"]
+run = "cargo test --locked --workspace"
+
+[tasks."check:dependencies"]
+description = "Audit the locked Linux and macOS dependency graphs"
+dir = "{{config_root}}"
+run = "cargo deny --locked --manifest-path Cargo.toml check"
+
+[tasks."verify:native"]
+description = "Run native compilation, lint, tests and dependency audit"
+dir = "{{config_root}}"
+depends = ["rust:test", "check:dependencies"]
+
+[tasks."verify"]
+description = "Run portable verification before the native Cargo writer chain"
+dir = "{{config_root}}"
+depends = ["verify:portable", "verify:native"]
+
+[tasks."check"]
+description = "Check generated icons, frontend assets and native compilation"
+dir = "{{config_root}}"
+depends = ["check:icons", "frontend:build", "check:rust"]
+
+[tasks."desktop:tauri"]
+description = "Forward arguments to the app-local Tauri CLI"
+dir = "{{config_root}}/apps/desktop"
+run = "pnpm run tauri"
+
+[tasks."desktop:dev"]
+description = "Run app-local native development"
+dir = "{{config_root}}/apps/desktop"
+run = "pnpm run tauri dev"
+
+[tasks."desktop:build"]
+description = "Build the macOS application bundle"
+dir = "{{config_root}}/apps/desktop"
+run = "pnpm run tauri build"
+
+[tasks."validate:native"]
+description = "Run bounded on-device native probes"
+dir = "{{config_root}}"
+run = "node scripts/validate-live-sync-native.ts"
+
+[tasks."fix"]
+description = "Apply explicitly requested repository formatting fixes"
+dir = "{{config_root}}"
+run = "hk fix --all"
