@@ -106,6 +106,7 @@ describe("repository task ownership", () => {
       "check:publication",
       "check:language",
       "check:quality",
+      "check:boundaries",
       "check:icons",
       "check:types",
       "frontend:build",

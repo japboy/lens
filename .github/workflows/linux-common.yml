@@ -45,10 +45,11 @@ jobs:
           df -h .
           pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1
 
-      - name: Build the real frontend assets
+      - name: Verify repository boundaries and build the real frontend assets
         run: |
           pnpm install --frozen-lockfile
-          pnpm run build
+          mise run verify:portable
+          mise run inspect:features
 
       # No restore/save action: these measurements start without a repository Rust cache.
       # Normal checks precede tests so development-only Tauri features cannot prove them.

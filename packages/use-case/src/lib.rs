@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Application operations compose domain rules with explicitly supplied capabilities.
 
 // Canonical contracts exposed to common application consumers through the use-case boundary.

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Platform capabilities expose owned facts, never domain state or native objects.
 
 pub mod accessibility;

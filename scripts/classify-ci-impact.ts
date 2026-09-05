@@ -10,6 +10,12 @@ const CONTROL_PLANE_PATHS = new Set([
   "scripts/classify-ci-impact.test.ts",
   "scripts/classify-ci-impact.ts",
   "scripts/workspace-tasks.test.ts",
+  "scripts/workspace-policy.ts",
+  "scripts/check-workspace-boundaries.ts",
+  "scripts/rust-source-boundaries.ts",
+  "scripts/workspace-boundaries.test.ts",
+  "scripts/workspace-feature-graphs.ts",
+  "scripts/workspace-feature-graphs.test.ts",
 ]);
 
 const PORTABLE_PATHS = new Set([

@@ -38,6 +38,16 @@ description = "Check formatting and lint"
 dir = "{{config_root}}"
 run = "hk check --all"
 
+[tasks."check:boundaries"]
+description = "Check workspace identities, dependency roles and Rust source boundaries"
+dir = "{{config_root}}"
+run = "node scripts/check-workspace-boundaries.ts"
+
+[tasks."inspect:features"]
+description = "Report target-specific normal/test dependency feature graphs without granting CI admission"
+dir = "{{config_root}}"
+run = "node scripts/workspace-feature-graphs.ts"
+
 [tasks."check:icons"]
 description = "Verify generated app resources"
 dir = "{{config_root}}"
@@ -88,6 +98,7 @@ depends = [
   "check:publication",
   "check:language",
   "check:quality",
+  "check:boundaries",
   "check:icons",
   "frontend:build",
   "test",

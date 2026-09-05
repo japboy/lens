@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Deterministic observation models, normalization, projection and prompt rules.
 //! This package has no native-service, Tauri, transport or persistence dependency.
 
