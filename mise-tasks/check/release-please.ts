@@ -280,7 +280,9 @@ assert.equal(grouped[0]!.pullRequest.headRefName, "release-please--branches--mai
 assert.equal(grouped[0]!.pullRequest.title.toString(), "chore(main): release 0.1.0");
 cases++;
 // Exercise the real Manifest path, including JSON config parsing, the empty version
-// manifest, exclusive history boundary, grouping, changelog and manifest updaters.
+// manifest, complete initial history, grouping, changelog and manifest updaters.
+assert.equal(config["bootstrap-sha"], undefined);
+assert.ok(!config["pull-request-footer"].includes("— Codex"));
 for (const message of ["feat: first supported capability", "docs: maintenance"]) {
   const github = {
     repository: { owner: "fixture", repo: "lens" },
@@ -296,8 +298,13 @@ for (const message of ["feat: first supported capability", "docs: maintenance"])
     },
     async *mergeCommitIterator() {
       yield { sha: "d".repeat(40), message, files: ["packages/domain/src/lib.rs"] };
-      yield { sha: config["bootstrap-sha"], message: "feat: excluded boundary", files: [] };
-      yield { sha: "e".repeat(40), message: "feat: excluded older change", files: [] };
+      yield {
+        sha: "e".repeat(40),
+        message: message.startsWith("feat:")
+          ? "feat: oldest supported capability"
+          : "docs: oldest maintenance",
+        files: ["README.md"],
+      };
     },
   };
   const manifest = await bundled.library.Manifest.fromManifest(
@@ -354,7 +361,7 @@ for (const message of ["feat: first supported capability", "docs: maintenance"])
     const changelog = updates.get("CHANGELOG.md")!.updater.updateContent("");
     assert.match(changelog, /## .*0\.1\.0/u);
     assert.ok(changelog.includes("first supported capability"));
-    assert.ok(!changelog.includes("excluded"));
+    assert.ok(changelog.includes("oldest supported capability"));
     assert.deepEqual(
       JSON.parse(updates.get(".release-please-manifest.json")!.updater.updateContent("{}")),
       { ".": "0.1.0" },
