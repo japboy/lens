@@ -93,7 +93,7 @@ describe("repository task ownership", () => {
       expect(task.depends_post).toEqual([]);
     }
     const fileTasks = tasks.filter((task) => task.file);
-    expect(fileTasks).toHaveLength(11);
+    expect(fileTasks).toHaveLength(12);
     for (const task of fileTasks) expect(task.run).toEqual([]);
   });
 

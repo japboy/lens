@@ -23,11 +23,6 @@ description = "Verify generated app resources"
 dir = "{{config_root}}"
 run = "node mise-tasks/generate/icons.ts --check"
 
-[tasks."check:release-please"]
-description = "Verify the exact release Action updaters and version policy without installing its dependency tree"
-dir = "{{config_root}}"
-run = "node scripts/release/please-conformance.ts"
-
 [tasks."check:types"]
 description = "Check repository and desktop TypeScript"
 dir = "{{config_root}}"

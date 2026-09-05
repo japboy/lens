@@ -1,3 +1,7 @@
+#!/usr/bin/env node
+//MISE description = "Verify the exact release Action updaters and version policy without installing its dependency tree"
+//MISE dir = "{{config_root}}"
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
