@@ -20,22 +20,23 @@ cc = "1.2"
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
+domain.workspace = true
 agent-client-protocol = "=2.1.0"
-base64 = "0.22"
+base64.workspace = true
 dirs = "6.0"
 flate2 = "1.1"
 reqwest = { version = "0.13", features = ["json", "stream"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_json_canonicalizer = "=0.3.2"
-sha2 = "0.11"
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
 tar = "0.4"
 tauri = { version = "2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-opener = "2.5.4"
-thiserror = "2"
+thiserror.workspace = true
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "sync", "time"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1"

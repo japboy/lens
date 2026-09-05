@@ -18,6 +18,7 @@ on:
       - rust-toolchain.toml
       - src-tauri/**/.cargo/config.toml
       - src-tauri/**/Cargo.toml
+      - packages/**/Cargo.toml
   workflow_dispatch:
 
 permissions:

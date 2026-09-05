@@ -1,4 +1,4 @@
-use crate::live_sync::ProjectionRef;
+use crate::projection::ProjectionRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -261,7 +261,7 @@ fn render_section(template: &str, values: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live_sync::ProjectionDigest;
+    use crate::projection::ProjectionDigest;
     use std::num::NonZeroU64;
 
     fn projection(revision: u64) -> ProjectionRef {

@@ -13,6 +13,7 @@ describe("product terminology policy", () => {
     ["src/new-output.test.ts", true],
     ["src-tauri/src/lib.rs", true],
     ["src-tauri/native/macos/LensNative.m", true],
+    ["packages/domain/src/projection.rs", true],
     ["public/new-output.html", true],
     ["experiments/translation-continuity/results.json", false],
     ["src-tauri/agent-runtime/codex/pnpm-lock.yaml", false],
@@ -37,6 +38,12 @@ describe("product terminology policy", () => {
     expect(productTerminologyViolations("src/translation.ts", "")).toEqual([
       "src/translation.ts: product source path must use Interpretation",
     ]);
+  });
+
+  it("keeps shared package wording inside the product policy boundary", () => {
+    expect(
+      productTerminologyViolations("packages/domain/src/output.rs", "Translation"),
+    ).toHaveLength(1);
   });
 
   it("keeps the exact language-conversion definition without exempting its file", () => {

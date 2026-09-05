@@ -8,19 +8,18 @@ mod confirm_targets;
 #[cfg(test)]
 mod contract_tests;
 mod elicitation;
-mod lens;
 mod live_runtime;
 pub mod live_sync;
 mod media_protocol;
 mod model;
 mod platform;
-mod prompt_template;
 mod session_controls;
 mod store;
 mod ui;
 
 #[cfg(debug_assertions)]
 use base64::prelude::*;
+use domain::{lens, prompt_template};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

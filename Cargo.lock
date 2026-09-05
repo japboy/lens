@@ -993,6 +993,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2273,6 +2287,7 @@ dependencies = [
  "base64 0.22.1",
  "cc",
  "dirs",
+ "domain",
  "flate2",
  "pretty_assertions",
  "reqwest",
