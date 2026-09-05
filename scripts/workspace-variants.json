@@ -1,10 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "rustcRelease": "1.98.0",
   "hosts": {
     "aarch64-apple-darwin": {
       "linux-common-check": {
-        "graphDigest": "da21e792ba3b66fea2b4c9d356a9b677f043a6c3c1b522ac97789f86bbb88f51",
+        "graphDigest": "03c47ed7f95f59d432469c0d1851b12888431b4b4dda019c69bd04f346eb5aa3",
         "arguments": [
           "check",
           "--locked",
@@ -25,7 +25,7 @@
         ]
       },
       "linux-common-test": {
-        "graphDigest": "263c07619700f9aa666295a02de589eb83596a309505352b2970171350ff7dc6",
+        "graphDigest": "bc0a84f9823bcc7529adbba4977f751a3bfe69efa8ec9902292f342c59acb3b0",
         "arguments": [
           "test",
           "--locked",
@@ -64,7 +64,7 @@
         ]
       },
       "macos-production-check": {
-        "graphDigest": "ec8797dd590e83175c3d5eed729136606fdfaf0ce8619e4e7c4d09fe82ab87e0",
+        "graphDigest": "5951070cfd29d2524b5ec7cdeb9234d6170069c58b83be763125901e1fe100c1",
         "arguments": [
           "check",
           "--locked",
@@ -87,7 +87,7 @@
         ]
       },
       "macos-production-release": {
-        "graphDigest": "ec8797dd590e83175c3d5eed729136606fdfaf0ce8619e4e7c4d09fe82ab87e0",
+        "graphDigest": "5951070cfd29d2524b5ec7cdeb9234d6170069c58b83be763125901e1fe100c1",
         "arguments": [
           "check",
           "--locked",
@@ -110,7 +110,7 @@
         ]
       },
       "macos-test": {
-        "graphDigest": "5c900faa9a8c1a85003e79977b1472fb0a0afb5791fb42b791358018fd3ff40f",
+        "graphDigest": "085cc113f662b42188b4171257dcf898d818f01361ad9f7039195f783f4bb312",
         "arguments": [
           "test",
           "--locked",
@@ -133,7 +133,7 @@
         ]
       },
       "macos-bundle-build": {
-        "graphDigest": "367df1315901dffd95b0a4aa555556bb880fa13a8e54298bc062f322fc9f636f",
+        "graphDigest": "f3636b08262b37481d6c01664cd766dc4825448bb2b946a8a514f508f251c200",
         "arguments": [
           "build",
           "--locked",
@@ -160,7 +160,7 @@
     },
     "x86_64-unknown-linux-gnu": {
       "linux-common-check": {
-        "graphDigest": "8a1449e8dacd39131c69100539af22845d6375ad628f981b8fee2bebc074c429",
+        "graphDigest": "d734bf5e7d23878a6b8a8785a0853884035f7e6d017ee90fbd587b4e8f2963d6",
         "arguments": [
           "check",
           "--locked",
@@ -181,7 +181,7 @@
         ]
       },
       "linux-common-test": {
-        "graphDigest": "350709fe070d604f43edc1d7b1f9f3dfd8c5722585b16f2e54946c006ffab8ad",
+        "graphDigest": "283e9c2bdf813376dd14deab87c23c990365de27c57e38a5c660350a97a2d621",
         "arguments": [
           "test",
           "--locked",
@@ -220,7 +220,7 @@
         ]
       },
       "macos-production-check": {
-        "graphDigest": "1c8c420285828191ee23c78390e2116620a0b0a6537891c695e372d0a0b057ef",
+        "graphDigest": "00357f72c4b3508e4fad9ab393d79d07970a2b062d7775fdd378c32c1332bbbb",
         "arguments": [
           "check",
           "--locked",
@@ -243,7 +243,7 @@
         ]
       },
       "macos-production-release": {
-        "graphDigest": "1c8c420285828191ee23c78390e2116620a0b0a6537891c695e372d0a0b057ef",
+        "graphDigest": "00357f72c4b3508e4fad9ab393d79d07970a2b062d7775fdd378c32c1332bbbb",
         "arguments": [
           "check",
           "--locked",
@@ -266,7 +266,7 @@
         ]
       },
       "macos-test": {
-        "graphDigest": "d87d035a3cdcca494ddbc678961b1a242ce41b31f10c4b03db08447f6fd06dea",
+        "graphDigest": "81050291e3f5c5c369c0de46c723a81d6bd83882c759cec46fc3f9150e3cc9d0",
         "arguments": [
           "test",
           "--locked",
@@ -289,7 +289,7 @@
         ]
       },
       "macos-bundle-build": {
-        "graphDigest": "04d8366f3122f448fb37a0805656184151528e78bad71cde16e7fd931627f50d",
+        "graphDigest": "0af077a852e7666bd9c42dc4ba0a8145dc3f39032cd8c071dc947cfc045034c0",
         "arguments": [
           "build",
           "--locked",

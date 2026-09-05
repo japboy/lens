@@ -14,7 +14,11 @@ type Admission = {
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 export function validateVariantAdmission(report: Report, admission: Admission): void {
-  if (admission.version !== 1 || !/^\d+\.\d+\.\d+$/u.test(admission.rustcRelease))
+  if (
+    admission.version !== 2 ||
+    report.version !== 2 ||
+    !/^\d+\.\d+\.\d+$/u.test(admission.rustcRelease)
+  )
     throw new Error("Unsupported variant admission policy");
   const release = /^release: (.+)$/mu.exec(report.rustc)?.[1];
   if (release !== admission.rustcRelease) throw new Error("Unreviewed compiler release");
@@ -40,7 +44,10 @@ export function validateVariantAdmission(report: Report, admission: Admission): 
       JSON.stringify(expected.arguments) !== JSON.stringify(variantArguments(variant))
     )
       throw new Error("Unreviewed package/target/features/profile invocation");
-    if (!/^[a-f0-9]{64}$/u.test(expected.graphDigest) || observed.digest !== expected.graphDigest)
+    if (
+      !/^[a-f0-9]{64}$/u.test(expected.graphDigest) ||
+      observed.admissionDigest !== expected.graphDigest
+    )
       throw new Error(`Unreviewed dependency/feature graph: ${report.host}/${observed.variant}`);
   }
 }

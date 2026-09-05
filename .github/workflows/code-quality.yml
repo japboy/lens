@@ -2,6 +2,7 @@ name: Code Quality
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -29,6 +30,11 @@ jobs:
           sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
           cache: false
           install: true
+
+      - name: Validate the squash commit title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/release/cli.ts pr-title
 
       - run: pnpm install --frozen-lockfile
 
@@ -72,6 +78,7 @@ jobs:
     uses: ./.github/workflows/native-quality.yml
     with:
       save_cache: false
+      bundle_kind: ${{ needs.portable-quality.outputs.plan == 'full' && 'dmg' || 'app' }}
       native_mode: ${{ needs.portable-quality.outputs.plan == 'native-code' && 'code' || 'bundle' }}
       frontend_artifact: frontend-${{ github.sha }}
 

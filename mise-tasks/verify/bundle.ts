@@ -1,78 +1,76 @@
 #!/usr/bin/env node
-//MISE description = "Build and inspect the signed native bundle using prebuilt frontend assets"
+//MISE description = "Build and inspect the native app or DMG using prebuilt frontend assets"
 //MISE dir = "{{config_root}}"
 //MISE wait_for = ["frontend:build", "verify:native"]
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runVariant } from "../../scripts/run-workspace-variant.ts";
+import { bundleContract, verifyApp, verifyDmg } from "../../scripts/release/bundle.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
-export function verifyNativeBundle(root = ROOT): void {
+export function verifyNativeBundle(root = ROOT, kind = "app"): string {
+  if (!["app", "dmg"].includes(kind)) throw new Error("Explicit app or dmg bundle kind required");
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw new Error("Bundle verification requires the admitted Apple-silicon host");
   const application = join(root, "apps/desktop");
-  const base = JSON.parse(readFileSync(join(application, "src-tauri/tauri.conf.json"), "utf8"));
-  const mac = JSON.parse(
-    readFileSync(join(application, "src-tauri/tauri.macos.conf.json"), "utf8"),
-  );
+  const contract = bundleContract(root);
   if (!existsSync(join(application, "dist/index.html")))
     throw new Error("Prebuilt frontend artifact is required");
-  const minimum = mac.bundle.macOS.minimumSystemVersion;
-  if (typeof minimum !== "string" || !/^\d+\.\d+(?:\.\d+)?$/u.test(minimum))
-    throw new Error("Explicit minimum macOS version is required");
+  const directory = join(root, "target/aarch64-apple-darwin/release/bundle");
   const previous = process.env.MACOSX_DEPLOYMENT_TARGET;
   try {
-    process.env.MACOSX_DEPLOYMENT_TARGET = minimum;
+    process.env.MACOSX_DEPLOYMENT_TARGET = contract.minimum;
     runVariant("macos-bundle-build", root);
-    // bundle does not run beforeBuildCommand: Linux owns the supplied frontend assets.
-    execFileSync(
+    // Remove only generated packaging output; stale DMGs cannot become candidates.
+    rmSync(directory, { recursive: true, force: true });
+    // Resolve under the installed pnpm environment before setting CI for Tauri only.
+    // pnpm changes its virtual-store policy when CI changes after installation.
+    const cli = execFileSync(
       "pnpm",
+      ["exec", "node", "-p", 'require.resolve("@tauri-apps/cli/tauri.js")'],
+      { cwd: application, encoding: "utf8" },
+    ).trim();
+    execFileSync(
+      process.execPath,
       [
-        "exec",
-        "tauri",
+        cli,
         "bundle",
         "--target",
         "aarch64-apple-darwin",
         "--features",
         "tauri/custom-protocol",
         "--bundles",
-        "app",
+        kind,
         "--ci",
+        ...(kind === "dmg" ? ["--config", "src-tauri/tauri.release.conf.json"] : []),
       ],
-      { cwd: application, stdio: "inherit" },
+      { cwd: application, stdio: "inherit", env: { ...process.env, CI: "true" } },
     );
   } finally {
     if (previous === undefined) delete process.env.MACOSX_DEPLOYMENT_TARGET;
     else process.env.MACOSX_DEPLOYMENT_TARGET = previous;
   }
-  const bundle = join(
-    root,
-    "target/aarch64-apple-darwin/release/bundle/macos",
-    `${base.productName}.app`,
-  );
-  const info = join(bundle, "Contents/Info.plist");
-  const field = (key: string) =>
-    execFileSync("plutil", ["-extract", key, "raw", "-o", "-", info], { encoding: "utf8" }).trim();
-  if (
-    field("CFBundleIdentifier") !== base.identifier ||
-    field("CFBundleExecutable") !== "lens" ||
-    field("CFBundleName") !== base.productName ||
-    field("LSMinimumSystemVersion") !== minimum
-  )
-    throw new Error("Native bundle identity or minimum OS changed");
-  const binary = join(bundle, "Contents/MacOS/lens");
-  if (execFileSync("lipo", ["-archs", binary], { encoding: "utf8" }).trim() !== "arm64")
-    throw new Error("Unexpected bundle architecture");
-  execFileSync("codesign", ["--verify", "--deep", "--strict", bundle], { stdio: "inherit" });
+  const app = join(directory, "macos/Lens.app");
+  // Tauri removes its intermediate .app when only DMG was requested.
+  if (kind === "app") verifyApp(app, contract);
+  const bundle =
+    kind === "app" ? app : join(directory, "dmg", `Lens_${contract.version}_aarch64.dmg`);
+  if (kind === "dmg") {
+    const candidates = readdirSync(join(directory, "dmg")).filter((name) => name.endsWith(".dmg"));
+    if (JSON.stringify(candidates) !== JSON.stringify([`Lens_${contract.version}_aarch64.dmg`]))
+      throw new Error("Unexpected DMG candidate set");
+    verifyDmg(bundle, contract);
+  }
   process.stdout.write(
-    `${JSON.stringify({ bundle, identifier: base.identifier, executable: "lens", architecture: "arm64", minimumMacOS: minimum, signingIdentity: mac.bundle.macOS.signingIdentity, status: "passed", notarization: "not-checked" })}\n`,
+    `${JSON.stringify({ bundle, ...contract, architecture: "arm64", applicationSignature: "adhoc", dmgSignature: kind === "dmg" ? "unsigned" : "not-applicable", notarization: "not-performed", status: "passed" })}\n`,
   );
+  return bundle;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  if (process.argv.length !== 2) throw new Error("No implicit bundle override mode is provided");
-  verifyNativeBundle();
+  if (process.argv.length > 3) throw new Error("Only an explicit bundle kind may be supplied");
+  verifyNativeBundle(ROOT, process.argv[2] ?? "app");
 }

@@ -14,14 +14,16 @@ const admission = JSON.parse(
 function report() {
   const host = "aarch64-apple-darwin";
   return {
-    version: 1,
+    version: 2,
+    applicationVersion: "0.1.0",
     host,
     rustc: `host: ${host}\nrelease: ${admission.rustcRelease}\n`,
     variants: BUILD_VARIANTS.map((variant) => ({
       variant: variant.id,
       profile: variant.profile,
       args: graphArguments(variant),
-      digest: admission.hosts[host][variant.id].graphDigest,
+      digest: "f".repeat(64),
+      admissionDigest: admission.hosts[host][variant.id].graphDigest,
       graph: { nodes: [], edges: [], roots: [] },
     })),
   };
@@ -61,7 +63,7 @@ describe("explicit compiler variant admission", () => {
       value.variants[0]!.profile = "release";
     },
     (value: ReturnType<typeof report>) => {
-      value.variants[0]!.digest = "0".repeat(64);
+      value.variants[0]!.admissionDigest = "0".repeat(64);
     },
   ])("rejects incomplete or unreviewed compiler evidence (%#)", (mutate) => {
     const value = report();

@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.preflight.outputs.source_sha }}
+      state: ${{ steps.preflight.outputs.state }}
+      artifact_id: ${{ steps.preflight.outputs.artifact_id }}
+      previous_tag: ${{ steps.preflight.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: "v2026.8.10"
+          sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
+          cache: false
+          install: true
+      - id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release/cli.ts preflight
+
+  portable:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      frontend_artifact: ${{ steps.frontend.outputs.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: "v2026.8.10"
+          sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
+          cache: false
+          install: true
+      - run: pnpm install --frozen-lockfile
+      - run: mise run verify:portable
+      - id: frontend
+        env:
+          ARTIFACT_NAME: release-frontend-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          node scripts/frontend-artifact.ts write
+          echo "name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-frontend-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/desktop/dist
+            target/ci/frontend-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+  common:
+    needs: [preflight, portable]
+    uses: ./.github/workflows/linux-common.yml
+    with:
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+      frontend_artifact: ${{ needs.portable.outputs.frontend_artifact }}
+      save_cache: false
+
+  native:
+    needs: [preflight, portable]
+    uses: ./.github/workflows/native-quality.yml
+    with:
+      source_sha: ${{ needs.preflight.outputs.source_sha }}
+      frontend_artifact: ${{ needs.portable.outputs.frontend_artifact }}
+      native_mode: ${{ needs.preflight.outputs.state == 'build' && 'bundle' || 'code' }}
+      bundle_kind: dmg
+      release_tag: ${{ needs.preflight.outputs.state == 'build' && github.ref_name || '' }}
+      previous_tag: ${{ needs.preflight.outputs.previous_tag }}
+      save_cache: false
+
+  publication-policy:
+    needs: preflight
+    if: vars.RELEASE_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # No repository checkout or repository code runs with this metadata token.
+      - id: policy-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Require immutable release settings
+        env:
+          GH_TOKEN: ${{ steps.policy-token.outputs.token }}
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled or .enforced_by_owner')" = true
+
+  publish:
+    needs: [preflight, portable, common, native, publication-policy]
+    if: always() && needs.preflight.result == 'success' && needs.portable.result == 'success' && needs.common.result == 'success' && needs.native.result == 'success' && (vars.RELEASE_PUBLISH_ENABLED != 'true' || needs.publication-policy.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: "v2026.8.10"
+          sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
+          cache: false
+          install: true
+      - name: Retrieve the exact original artifact by ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id || needs.native.outputs.artifact_id }}
+          path: target/release-artifact
+          merge-multiple: true
+      - name: Verify, resume the matching draft, and conditionally publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_PUBLISH_ENABLED: ${{ vars.RELEASE_PUBLISH_ENABLED }}
+          IMMUTABILITY_RESULT: ${{ needs.publication-policy.result }}
+          PORTABLE_RESULT: ${{ needs.portable.result }}
+          COMMON_RESULT: ${{ needs.common.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+        run: node scripts/release/cli.ts publish

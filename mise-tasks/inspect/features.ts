@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { BUILD_VARIANTS } from "../../scripts/workspace-policy.ts";
 import type { BuildVariant } from "../../scripts/workspace-policy.ts";
 import { repositoryPath } from "../check/boundaries.ts";
+import { readVersion } from "../../scripts/release/version.ts";
+import { admissionGraph } from "../../scripts/release/graph.ts";
 
 export type FeatureNode = { name: string; version: string; source: string; features: string[] };
 export type FeatureGraph = { nodes: FeatureNode[]; edges: [number, number][]; roots: number[] };
@@ -102,6 +104,7 @@ export function inspectFeatureGraphs(
   const host = /^host: (.+)$/mu.exec(rustc)?.[1];
   if (!host || !["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"].includes(host))
     throw new Error("Unreviewed graph-analysis host");
+  const { version: applicationVersion } = readVersion(root);
   const variants = selection.map((variant) => {
     const args = graphArguments(variant);
     const output = execFileSync("cargo", args, {
@@ -130,12 +133,13 @@ export function inspectFeatureGraphs(
       args,
       profile: variant.profile,
       digest: graphDigest(graph),
+      admissionDigest: graphDigest(admissionGraph(graph, applicationVersion)),
       graph,
     };
   });
   // This is reviewable resolution evidence, not compiler-unit or CI-skip attestation.
   // Profile-specific normal compilation, both host snapshots and admission remain required.
-  return { version: 1, host, rustc, variants };
+  return { version: 2, host, rustc, applicationVersion, variants };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

@@ -59,6 +59,8 @@ description = "Run the current repository and frontend verification suite"
 dir = "{{config_root}}"
 depends = [
   "check:identity",
+  "check:version",
+  "check:release-please",
   "check:terminology",
   "check:publication",
   "check:language",

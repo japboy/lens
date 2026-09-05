@@ -3,6 +3,19 @@ name: Native Quality
 on:
   workflow_call:
     inputs:
+      source_sha:
+        description: Exact verified source; defaults to the caller revision for ordinary CI.
+        type: string
+        default: ""
+      bundle_kind:
+        type: string
+        default: app
+      release_tag:
+        type: string
+        default: ""
+      previous_tag:
+        type: string
+        default: ""
       native_mode:
         description: Native checks, or checks plus the signed application bundle.
         type: string
@@ -16,6 +29,11 @@ on:
         required: true
         type: boolean
 
+    outputs:
+      artifact_id:
+        value: ${{ jobs.native-quality.outputs.artifact_id }}
+        description: Verified release artifact ID from this run.
+
 permissions:
   contents: read
 
@@ -24,12 +42,18 @@ jobs:
     name: native-quality
     runs-on: macos-15
     timeout-minutes: 45
+    outputs:
+      artifact_id: ${{ steps.release-artifact.outputs.artifact-id }}
     steps:
       - name: Validate native verification mode
         env:
           MODE: ${{ inputs.native_mode }}
+          KIND: ${{ inputs.bundle_kind }}
+          TAG: ${{ inputs.release_tag }}
           ARTIFACT: ${{ inputs.frontend_artifact }}
         run: |
+          case "$KIND" in app | dmg) ;; *) exit 1 ;; esac
+          if test -n "$TAG"; then test "$KIND:$MODE" = "dmg:bundle"; fi
           case "$MODE" in
             code) ;;
             bundle) test -n "$ARTIFACT" ;;
@@ -38,6 +62,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
@@ -80,4 +105,24 @@ jobs:
 
       - name: Build and verify the native application bundle
         if: inputs.native_mode == 'bundle'
-        run: mise run verify:bundle
+        env:
+          BUNDLE_KIND: ${{ inputs.bundle_kind }}
+        run: mise run verify:bundle -- "$BUNDLE_KIND"
+
+      - name: Package immutable source-bound release evidence
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PREVIOUS_TAG: ${{ inputs.previous_tag }}
+        run: node scripts/release/cli.ts package
+
+      - name: Preserve the original verified distribution
+        if: inputs.release_tag != ''
+        id: release-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ inputs.release_tag }}
+          path: target/release-artifact
+          if-no-files-found: error
+          retention-days: 30
