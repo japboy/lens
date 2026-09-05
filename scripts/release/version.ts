@@ -57,7 +57,7 @@ export function versionState(files: Readonly<Record<string, string>>): {
   if (mirrors.some((value) => stableVersion(value) !== version))
     throw new Error("Application version mirrors disagree with Tauri authority");
   if (!keys.length && version !== "0.1.0")
-    throw new Error("Only initial 0.1.0 may precede the bootstrap release PR");
+    throw new Error("Only initial 0.1.0 may precede the first release PR");
   return { version, bootstrapped: keys.length === 1 };
 }
 

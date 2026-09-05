@@ -42,7 +42,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Reconcile bootstrap or merged release PR and annotated tag
+      - name: Reconcile release state and tag an admitted merged release PR
         id: control
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

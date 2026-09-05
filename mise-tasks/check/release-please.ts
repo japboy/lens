@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInThisContext } from "node:vm";
+import { VERSION_FILES, versionState } from "../../scripts/release/version.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const revision = "5c625bfb5d1ff62eadeeb3772007f7f66fdcf071";
@@ -89,7 +90,11 @@ wrapper(
   join(root, "target/release-please-conformance"),
 );
 type Version = { toString(): string };
-type Updater = { path: string; updater: { updateContent(content: string): string } };
+type Updater = {
+  path: string;
+  createIfMissing?: boolean;
+  updater: { updateContent(content: string): string };
+};
 type Strategy = {
   buildReleasePullRequest(
     commits: { sha: string; message: string; files: string[] }[],
@@ -107,7 +112,28 @@ type Strategy = {
   }): Promise<Updater[]>;
 };
 const bundled = module.exports as {
-  library: { VERSION: string; setLogger(logger: unknown): void };
+  library: {
+    VERSION: string;
+    setLogger(logger: unknown): void;
+    Manifest: {
+      fromManifest(
+        github: unknown,
+        branch: string,
+        configFile: string,
+        manifestFile: string,
+        options: unknown,
+      ): Promise<{
+        buildPullRequests(): Promise<
+          {
+            headRefName: string;
+            title: { toString(): string };
+            labels: string[];
+            updates: Updater[];
+          }[]
+        >;
+      }>;
+    };
+  };
   Merge: new (
     github: unknown,
     branch: string,
@@ -253,4 +279,87 @@ assert.equal(grouped.length, 1);
 assert.equal(grouped[0]!.pullRequest.headRefName, "release-please--branches--main");
 assert.equal(grouped[0]!.pullRequest.title.toString(), "chore(main): release 0.1.0");
 cases++;
+// Exercise the real Manifest path, including JSON config parsing, the empty version
+// manifest, exclusive history boundary, grouping, changelog and manifest updaters.
+for (const message of ["feat: first supported capability", "docs: maintenance"]) {
+  const github = {
+    repository: { owner: "fixture", repo: "lens" },
+    async getFileJson(path: string) {
+      assert.ok(["release-please-config.json", ".release-please-manifest.json"].includes(path));
+      return path === "release-please-config.json" ? config : {};
+    },
+    async *releaseIterator() {
+      yield* [];
+    },
+    async *tagIterator() {
+      yield* [];
+    },
+    async *mergeCommitIterator() {
+      yield { sha: "d".repeat(40), message, files: ["packages/domain/src/lib.rs"] };
+      yield { sha: config["bootstrap-sha"], message: "feat: excluded boundary", files: [] };
+      yield { sha: "e".repeat(40), message: "feat: excluded older change", files: [] };
+    },
+  };
+  const manifest = await bundled.library.Manifest.fromManifest(
+    github,
+    "main",
+    "release-please-config.json",
+    ".release-please-manifest.json",
+    {
+      logger: {
+        ...quiet,
+        warn(message: string) {
+          assert.match(
+            message,
+            /^(?:Expected 1 releases, only found 0|Missing 1 paths: \.|No version for path \.|No latest release pull request found\.)$/u,
+          );
+        },
+      },
+    },
+  );
+  const proposals = await manifest.buildPullRequests();
+  assert.equal(proposals.length, message.startsWith("feat:") ? 1 : 0);
+  if (proposals.length) {
+    const proposal = proposals[0]!;
+    assert.equal(proposal.headRefName, "release-please--branches--main");
+    assert.equal(proposal.title.toString(), "chore(main): release 0.1.0");
+    assert.deepEqual(proposal.labels, ["autorelease: pending"]);
+    const updates = new Map(proposal.updates.map((update) => [update.path, update]));
+    assert.equal(updates.size, proposal.updates.length);
+    const applicable = [...updates.values()].filter(
+      (update) => update.createIfMissing || existsSync(join(root, update.path)),
+    );
+    assert.deepEqual(
+      applicable.map((update) => update.path).sort(),
+      [
+        "CHANGELOG.md",
+        ".release-please-manifest.json",
+        "package.json",
+        ...component["extra-files"].map((file: { path: string }) => file.path),
+      ].sort(),
+    );
+    const files = Object.fromEntries(
+      VERSION_FILES.map((path) => [
+        path,
+        updates
+          .get(path)!
+          .updater.updateContent(
+            path === ".release-please-manifest.json"
+              ? "{}"
+              : readFileSync(join(root, path), "utf8"),
+          ),
+      ]),
+    );
+    assert.deepEqual(versionState(files), { version: "0.1.0", bootstrapped: true });
+    const changelog = updates.get("CHANGELOG.md")!.updater.updateContent("");
+    assert.match(changelog, /## .*0\.1\.0/u);
+    assert.ok(changelog.includes("first supported capability"));
+    assert.ok(!changelog.includes("excluded"));
+    assert.deepEqual(
+      JSON.parse(updates.get(".release-please-manifest.json")!.updater.updateContent("{}")),
+      { ".": "0.1.0" },
+    );
+  }
+  cases++;
+}
 process.stdout.write(`Pinned Release Please Action conformance passed: ${cases} cases.\n`);

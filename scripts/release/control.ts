@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Request } from "./github.ts";
 import { optional, pages } from "./github.ts";
 import { annotation, changelogSection, commitSha, git, readSource, requireMain } from "./source.ts";
@@ -109,74 +107,12 @@ export async function ensureTag(request: Request, data: TagAnnotation): Promise<
   await check(await request(refPath));
 }
 
-export async function bootstrap(
-  request: Request,
-  root: string,
-  sha: string,
-  repository: string,
-): Promise<void> {
-  const open = await pages<PullRequest>(
-    request,
-    `/pulls?state=open&base=main&head=${repository.split("/")[0]}:${RELEASE_BRANCH}`,
-  );
-  if (open.length > 1) throw new Error("Multiple release PRs");
-  if (open.length === 1) {
-    await request(`/issues/${open[0]!.number}/labels`, "POST", { labels: [PENDING] });
-    return;
-  }
-  const refPath = `/git/ref/heads/${RELEASE_BRANCH}`;
-  let ref = await optional(() => request<{ object: { sha: string } }>(refPath));
-  if (!ref) {
-    const commit = await request<{ tree: { sha: string } }>(`/git/commits/${sha}`);
-    const changelog = readFileSync(join(root, ".github/release-initial.md"), "utf8");
-    changelogSection(changelog, "0.1.0");
-    const tree = await request<{ sha: string }>("/git/trees", "POST", {
-      base_tree: commit.tree.sha,
-      tree: [
-        { path: "CHANGELOG.md", mode: "100644", type: "blob", content: changelog },
-        {
-          path: ".release-please-manifest.json",
-          mode: "100644",
-          type: "blob",
-          content: '{\n  ".": "0.1.0"\n}\n',
-        },
-      ],
-    });
-    const created = await request<{ sha: string }>("/git/commits", "POST", {
-      message: "chore(main): release 0.1.0",
-      tree: tree.sha,
-      parents: [sha],
-    });
-    await request("/git/refs", "POST", { ref: `refs/heads/${RELEASE_BRANCH}`, sha: created.sha });
-    ref = { object: { sha: created.sha } };
-  }
-  // Validate a leftover branch before resuming a partially completed bootstrap.
-  const manifest = await request<{ content: string; encoding: string }>(
-    `/contents/.release-please-manifest.json?ref=${ref.object.sha}`,
-  );
-  if (
-    manifest.encoding !== "base64" ||
-    JSON.parse(Buffer.from(manifest.content, "base64").toString())["."] !== "0.1.0"
-  )
-    throw new Error("Conflicting bootstrap branch");
-  const pr = await request<{ number: number }>("/pulls", "POST", {
-    title: "chore(main): release 0.1.0",
-    base: "main",
-    head: RELEASE_BRANCH,
-    body:
-      "suggestion (blocking): review the initial Lens 0.1.0 release\n\nMerging this PR authorizes the annotated tag and verified DMG release pipeline. Review CHANGELOG.md and the commissioning checklist in [issue #18](https://github.com/" +
-      repository +
-      "/issues/18).\n\n— Codex",
-  });
-  await request(`/issues/${pr.number}/labels`, "POST", { labels: [PENDING] });
-}
-
 export async function control(
   request: Request,
   root: string,
   eventSha: string,
   repository: string,
-): Promise<"bootstrap" | "tagged" | "update-pr" | "awaiting-publication"> {
+): Promise<"tagged" | "update-pr" | "awaiting-publication"> {
   requireMain(root, eventSha);
   const associated = await pages<PullRequest>(request, `/commits/${eventSha}/pulls`);
   const pending = await pages<{ number: number }>(
@@ -217,9 +153,8 @@ export async function control(
   const source = readSource(root, eventSha);
   if (!source.bootstrapped) {
     if ((await pages(request, "/tags")).length || (await pages(request, "/releases")).length)
-      throw new Error("Bootstrap cannot reuse a repository with release state");
-    await bootstrap(request, root, eventSha, repository);
-    return "bootstrap";
+      throw new Error("An empty manifest cannot reuse a repository with release state");
+    return "update-pr";
   }
   const published = await optional(() => request<Release>(`/releases/tags/v${source.version}`));
   if (!published || published.draft) return "awaiting-publication";
