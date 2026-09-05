@@ -10,7 +10,7 @@ import type { Request } from "./github.ts";
 import { VERSION_FILES } from "./version.ts";
 import { annotation } from "./source.ts";
 
-function fixture() {
+function fixture(unrelatedCount = 0) {
   const root = mkdtempSync(join(tmpdir(), "lens-release-control-"));
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
@@ -41,13 +41,30 @@ function fixture() {
   let ref: { object: { type: string; sha: string } } | undefined;
   let tag: unknown;
   const writes: string[] = [];
+  const reads: string[] = [];
   const request = (async (path: string, method = "GET", payload?: unknown) => {
     if (method !== "GET") writes.push(method + " " + path);
     if (path.startsWith("/commits/")) return [];
-    if (path.startsWith("/issues?"))
-      return merged?.labels.some((label) => label.name === PENDING)
-        ? [{ number: merged.number }]
-        : [];
+    reads.push(path);
+    if (path.startsWith("/issues?")) throw new ApiError(403, method, path);
+    if (path.startsWith("/pulls?")) {
+      const query = new URL(path, "https://api.github.test").searchParams;
+      if (
+        query.get("state") !== "closed" ||
+        query.get("base") !== "main" ||
+        query.get("head") !== `owner:${RELEASE_BRANCH}`
+      )
+        throw new Error("Unexpected release PR search scope");
+      const entries = [
+        ...Array.from({ length: unrelatedCount }, (_, index) => ({
+          number: index + 2,
+          labels: [{ name: TAGGED }],
+        })),
+        ...(merged ? [merged] : []),
+      ];
+      const start = (Number(query.get("page")) - 1) * 100;
+      return entries.slice(start, start + 100);
+    }
     if (path === "/pulls/1") return merged;
     if (path.startsWith("/tags?")) return tags;
     if (path.startsWith("/releases?")) return releases;
@@ -88,6 +105,7 @@ function fixture() {
     advance,
     request,
     writes,
+    reads,
     tag: () => tag,
     merge: (sha: string) => {
       merged = {
@@ -137,40 +155,52 @@ describe("standard initial release control", () => {
       f.cleanup();
     }
   });
-  it("tags the initial merged PR after main advances and holds subsequent proposals until publication", async () => {
-    const f = fixture();
-    try {
-      writeFileSync(join(f.root, ".release-please-manifest.json"), '{".":"0.1.0"}\n');
-      writeFileSync(
-        join(f.root, "CHANGELOG.md"),
-        "# Changelog\n\n## 0.1.0\n\n### Features\n\n- Initial capability.\n",
-      );
-      f.git("add", ".");
-      f.git("commit", "-m", "chore(main): release 0.1.0");
-      const merge = f.git("rev-parse", "HEAD");
-      f.merge(merge);
-      f.git("commit", "--allow-empty", "-m", "fix: later change");
-      f.advance();
-      const tip = f.git("rev-parse", "HEAD");
-      await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe("tagged");
-      expect(f.tag()).toEqual({
-        tag: "v0.1.0",
-        message: annotation({ schema: 1, version: "0.1.0", commit: merge, pullRequest: 1 }),
-        object: { type: "commit", sha: merge },
-      });
-      const writes = [...f.writes];
-      await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe(
-        "awaiting-publication",
-      );
-      f.setRelease(true);
-      await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe(
-        "awaiting-publication",
-      );
-      f.setRelease(false);
-      await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe("update-pr");
-      expect(f.writes).toEqual(writes);
-    } finally {
-      f.cleanup();
-    }
-  });
+  it.each([0, 100])(
+    "recovers a merged PR behind %i unrelated closed PRs after main advances",
+    async (unrelatedCount) => {
+      const f = fixture(unrelatedCount);
+      try {
+        writeFileSync(join(f.root, ".release-please-manifest.json"), '{".":"0.1.0"}\n');
+        writeFileSync(
+          join(f.root, "CHANGELOG.md"),
+          "# Changelog\n\n## 0.1.0\n\n### Features\n\n- Initial capability.\n",
+        );
+        f.git("add", ".");
+        f.git("commit", "-m", "chore(main): release 0.1.0");
+        const merge = f.git("rev-parse", "HEAD");
+        f.merge(merge);
+        f.git("commit", "--allow-empty", "-m", "fix: later change");
+        f.advance();
+        const tip = f.git("rev-parse", "HEAD");
+        await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe("tagged");
+        expect(f.tag()).toEqual({
+          tag: "v0.1.0",
+          message: annotation({ schema: 1, version: "0.1.0", commit: merge, pullRequest: 1 }),
+          object: { type: "commit", sha: merge },
+        });
+        const writes = [...f.writes];
+        await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe(
+          "awaiting-publication",
+        );
+        f.setRelease(true);
+        await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe(
+          "awaiting-publication",
+        );
+        f.setRelease(false);
+        await expect(control(f.request, f.root, tip, "owner/repo")).resolves.toBe("update-pr");
+        expect(f.writes).toEqual(writes);
+        expect(f.reads.some((path) => path.startsWith("/issues?"))).toBe(false);
+        expect(
+          f.reads
+            .filter((path) => /^\/pulls\/\d+$/u.test(path))
+            .every((path) => path === "/pulls/1"),
+        ).toBe(true);
+        expect(f.reads.some((path) => path.startsWith("/pulls?") && path.includes("page=2"))).toBe(
+          unrelatedCount > 0,
+        );
+      } finally {
+        f.cleanup();
+      }
+    },
+  );
 });
