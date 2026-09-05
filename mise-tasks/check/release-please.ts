@@ -282,6 +282,7 @@ cases++;
 // Exercise the real Manifest path, including JSON config parsing, the empty version
 // manifest, complete initial history, grouping, changelog and manifest updaters.
 assert.equal(config["bootstrap-sha"], undefined);
+assert.equal(config["pull-request-header"], undefined);
 assert.ok(!config["pull-request-footer"].includes("— Codex"));
 for (const message of ["feat: first supported capability", "docs: maintenance"]) {
   const github = {

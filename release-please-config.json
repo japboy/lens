@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.3.0/schemas/config.json",
   "release-type": "node",
-  "pull-request-header": "suggestion (blocking): review the proposed Lens version and changelog",
   "pull-request-footer": "Generated with [Release Please](https://github.com/googleapis/release-please). Review the proposed version and changelog before merging. Merging authorizes the annotated tag and verified DMG release pipeline.",
   "separate-pull-requests": false,
   "group-pull-request-title-pattern": "chore${scope}: release${component} ${version}",
