@@ -36,6 +36,12 @@ function repositoryFiles(): string[] {
     .sort();
 }
 
+export function ignoredResourceReferences(line: string): string[] {
+  // Absolute web URLs refer to external resources, not this checkout.
+  const localText = line.replace(/https?:\/\/[^\s<>"'`()[\]{}]+/giu, "");
+  return IGNORED_RESOURCE_REFERENCES.filter((reference) => localText.includes(reference));
+}
+
 function scanFile(relativePath: string): string[] {
   if (relativePath === DEFINITION_FILE || relativePath === POLICY_FILE) return [];
   if (BINARY_EXTENSIONS.has(extname(relativePath).toLowerCase())) return [];
@@ -50,25 +56,28 @@ function scanFile(relativePath: string): string[] {
 
   const violations = [];
   for (const [index, line] of text.split(/\r?\n/u).entries()) {
-    for (const reference of IGNORED_RESOURCE_REFERENCES) {
-      if (line.includes(reference)) {
-        violations.push(
-          `${relativePath}:${index + 1}: references ignored local resource ${JSON.stringify(reference)}`,
-        );
-      }
+    for (const reference of ignoredResourceReferences(line)) {
+      violations.push(
+        `${relativePath}:${index + 1}: references ignored local resource ${JSON.stringify(reference)}`,
+      );
     }
   }
   return violations;
 }
 
-const files = repositoryFiles();
-const violations = files.flatMap(scanFile);
+function run(): void {
+  const files = repositoryFiles();
+  const violations = files.flatMap(scanFile);
 
-if (violations.length > 0) {
-  process.stderr.write(["Publication boundary policy failed:", ...violations].join("\n") + "\n");
-  process.exitCode = 1;
-} else {
-  process.stdout.write(
-    `Publication boundary policy passed: no disallowed ignored-resource references across ${files.length} source artifacts.\n`,
-  );
+  if (violations.length > 0) {
+    process.stderr.write(["Publication boundary policy failed:", ...violations].join("\n") + "\n");
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(
+      `Publication boundary policy passed: no disallowed ignored-resource references across ${files.length} source artifacts.\n`,
+    );
+  }
 }
+
+const entryPoint = process.argv[1];
+if (entryPoint && fileURLToPath(import.meta.url) === resolve(entryPoint)) run();
