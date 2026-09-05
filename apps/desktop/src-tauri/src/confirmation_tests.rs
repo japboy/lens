@@ -63,6 +63,8 @@ struct Fixture {
     effects: Mutex<Vec<Effect>>,
     prompt_started: tokio::sync::Notify,
     finish_prompt: tokio::sync::Notify,
+    release_started: tokio::sync::Notify,
+    finish_release: (Mutex<bool>, std::sync::Condvar),
     extraction_started: tokio::sync::Notify,
     finish_extraction: (Mutex<bool>, std::sync::Condvar),
 }
@@ -178,6 +180,21 @@ impl TargetSelection for Fixture {
     fn release_operation(&self, operation: Uuid) -> Result<(), PlatformError> {
         assert_eq!(operation, OPERATION);
         self.record(Effect::Released);
+        if self.scenario == Scenario::StopDuringPrompt {
+            self.release_started.notify_one();
+            let (lock, condition) = &self.finish_release;
+            let (released, timeout) = condition
+                .wait_timeout_while(
+                    lock.lock().unwrap(),
+                    std::time::Duration::from_secs(5),
+                    |released| !*released,
+                )
+                .unwrap();
+            assert!(
+                *released && !timeout.timed_out(),
+                "controlled release was not resumed"
+            );
+        }
         Ok(())
     }
 }
@@ -422,6 +439,8 @@ fn setup(scenario: Scenario) -> Harness {
         effects: Mutex::new(vec![]),
         prompt_started: tokio::sync::Notify::new(),
         finish_prompt: tokio::sync::Notify::new(),
+        release_started: tokio::sync::Notify::new(),
+        finish_release: (Mutex::new(false), std::sync::Condvar::new()),
         extraction_started: tokio::sync::Notify::new(),
         finish_extraction: (Mutex::new(false), std::sync::Condvar::new()),
     });
@@ -735,20 +754,38 @@ fn stop_during_agent_prompt_revokes_publication_and_releases_observation() {
         .await
         .unwrap();
     });
-    let stopped = invoke(window, "stop_lens");
-    assert_eq!(stopped, LensState::default());
-    fixture.finish_prompt.notify_one();
-    let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+    let stopping_window = window.clone();
+    let stopping = std::thread::spawn(move || invoke(&stopping_window, "stop_lens"));
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.release_started.notified(),
+        )
+        .await
         .unwrap();
+    });
+    // Hold Stop after cancellation but before state clearance. The concurrent IPC
+    // must finish in this interval, rather than racing the final state publication.
+    fixture.finish_prompt.notify_one();
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(5));
+    let (lock, condition) = &fixture.finish_release;
+    *lock.lock().unwrap() = true;
+    condition.notify_one();
+    assert_eq!(stopping.join().unwrap(), LensState::default());
     invocation.join().unwrap();
-    // A turn already acknowledged by the actor returns the latest (cleared) Lens state;
-    // a closed mailbox instead reports cancellation. Neither may return stale output.
-    if let Ok(result) = result {
+    // An acknowledged turn can return the stopped snapshot; a closed actor mailbox
+    // reports cancellation. Neither response may contain a late interpretation.
+    if let Ok(result) = result.unwrap() {
+        let lens = serde_json::from_value::<LensState>(result).unwrap();
+        assert_eq!(lens.operation_id, Some(OPERATION));
         assert_eq!(
-            serde_json::from_value::<LensState>(result).unwrap(),
-            LensState::default()
+            lens.live.unwrap().lifecycle,
+            LensMonitoringLifecycle::Stopped
         );
+        assert_ne!(lens.stage, LensStage::Completed);
+        assert!(lens.output_blocks.is_empty());
+        assert!(lens.representation.is_none());
+        assert!(lens.pending_representation.is_none());
     }
     assert_eq!(
         app.state::<AppState>().lens().unwrap(),
