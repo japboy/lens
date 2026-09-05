@@ -31,6 +31,8 @@ describe("finite Linux-first change plans", () => {
     ["apps/desktop/src-tauri/agent-runtime/claude/pnpm-lock.yaml", "full"],
     ["apps/desktop/src/package.json", "full"],
     ["scripts/new-policy.ts", "full"],
+    ["mise-tasks/check/identity.ts", "full"],
+    ["packages/typescript-config/base.json", "full"],
     ["Cargo.lock", "full"],
     ["mise.toml", "full"],
     ["unknown/path", "full"],

@@ -5,7 +5,7 @@ export type Member = {
   ecosystem: "cargo" | "pnpm";
   name: string;
   directory: string;
-  role: "repository" | "application" | "domain" | "use-case" | "port" | "adapter";
+  role: "repository" | "application" | "domain" | "use-case" | "port" | "adapter" | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
   implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
@@ -19,7 +19,7 @@ export const MEMBERS: readonly Member[] = [
     role: "repository",
     capability: "repository",
     implementation: "tooling",
-    dependencies: {},
+    dependencies: { dev: ["typescript-config"] },
   },
   {
     ecosystem: "pnpm",
@@ -28,6 +28,15 @@ export const MEMBERS: readonly Member[] = [
     role: "application",
     capability: "desktop",
     implementation: "webview",
+    dependencies: { dev: ["typescript-config"] },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "typescript-config",
+    directory: "packages/typescript-config",
+    role: "configuration",
+    capability: "repository",
+    implementation: "tooling",
     dependencies: {},
   },
   {

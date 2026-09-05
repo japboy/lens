@@ -1,10 +1,15 @@
+#!/usr/bin/env node
+//MISE description = "Build and inspect the signed native bundle using prebuilt frontend assets"
+//MISE dir = "{{config_root}}"
+//MISE wait_for = ["frontend:build", "verify:native"]
+
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runVariant } from "./run-workspace-variant.ts";
+import { runVariant } from "../../scripts/run-workspace-variant.ts";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 export function verifyNativeBundle(root = ROOT): void {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw new Error("Bundle verification requires the admitted Apple-silicon host");

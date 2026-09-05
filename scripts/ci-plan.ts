@@ -57,6 +57,8 @@ export function classifyChange(change: Change): CiPlan {
       path,
     ) ||
     path.startsWith("scripts/") ||
+    path.startsWith("mise-tasks/") ||
+    path.startsWith("packages/typescript-config/") ||
     path.startsWith(".github/") ||
     path.startsWith(".cargo/")
   )

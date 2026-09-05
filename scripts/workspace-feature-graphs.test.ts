@@ -8,7 +8,7 @@ import {
   graphArguments,
   graphDigest,
   parseFeatureGraph,
-} from "./workspace-feature-graphs.ts";
+} from "../mise-tasks/inspect/features.ts";
 import { BUILD_VARIANTS } from "./workspace-policy.ts";
 
 describe("target-specific transitive feature resolution", () => {

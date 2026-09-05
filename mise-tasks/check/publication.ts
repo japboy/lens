@@ -1,10 +1,14 @@
+#!/usr/bin/env node
+//MISE description = "Check public source references"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const POLICY_FILE = "scripts/check-publication-boundary.ts";
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
+const POLICY_FILE = "mise-tasks/check/publication.ts";
 const DEFINITION_FILE = ".gitignore";
 const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const IGNORED_RESOURCE_REFERENCES = [

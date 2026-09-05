@@ -1,6 +1,10 @@
+#!/usr/bin/env node
+//MISE description = "Run bounded on-device native probes"
+//MISE dir = "{{config_root}}"
+
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +20,7 @@ interface Probe {
   definitions?: readonly string[];
 }
 
-const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const temporaryRoot = mkdtempSync(join(tmpdir(), "lens-live-sync-native-"));
 const nativeRoot = join(repositoryRoot, "packages", "adapter-platform-macos", "native");
 const compileTimeoutMilliseconds = 60_000;

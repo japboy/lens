@@ -10,7 +10,7 @@ import {
   renderRichMark,
   renderTauriManifest,
   validateCanonicalSource,
-} from "./generate-icons.ts";
+} from "../mise-tasks/generate/icons.ts";
 
 const source = readFileSync(
   new URL("../apps/desktop/src-tauri/icons/icon.svg", import.meta.url),

@@ -14,6 +14,7 @@ type Task = {
   depends_post: string[];
   dir: string;
   run: string[];
+  file?: string;
   sources: string[];
   outputs: string[];
 };
@@ -44,7 +45,7 @@ function replay(entry: string, failure?: string) {
           `depends = ${JSON.stringify(task.depends)}`,
           `wait_for = ${JSON.stringify(task.wait_for)}`,
           `depends_post = ${JSON.stringify(task.depends_post)}`,
-          ...(task.run.length ? [`run = ${JSON.stringify(command)}`] : []),
+          ...(task.run.length || task.file ? [`run = ${JSON.stringify(command)}`] : []),
         ].join("\n");
       })
       .join("\n\n");
@@ -67,19 +68,34 @@ function replay(entry: string, failure?: string) {
 }
 
 describe("repository task ownership", () => {
-  it("keeps root scripts as single delegates and verification free of freshness skips", () => {
+  it("owns commands only in mise and keeps verification free of freshness skips", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-    for (const script of Object.values(manifest.scripts) as string[]) {
-      expect(script).toMatch(/^mise run [a-z:-]+(?: --)?$/u);
-      expect(tasks.some((task) => script.split(" ")[2] === task.name)).toBe(true);
-    }
+    expect(manifest.scripts).toBeUndefined();
+    expect(tasks).toHaveLength(37);
+    expect(new Set(tasks.map((task) => task.name)).size).toBe(tasks.length);
     for (const task of tasks) {
-      expect(task.source).toBe(resolve(root, "mise.toml"));
+      expect(task.source).toBe(
+        task.file
+          ? resolve(root, "mise-tasks", `${task.name.replaceAll(":", "/")}.ts`)
+          : resolve(root, "mise.toml"),
+      );
       expect([resolve(root), resolve(root, "apps/desktop")]).toContain(task.dir);
       expect(task.sources).toEqual([]);
       expect(task.outputs).toEqual([]);
       expect(task.depends_post).toEqual([]);
     }
+    const fileTasks = tasks.filter((task) => task.file);
+    expect(fileTasks).toHaveLength(10);
+    for (const task of fileTasks) expect(task.run).toEqual([]);
+  });
+
+  it("discovers and runs root file tasks from the desktop working directory", () => {
+    expect(
+      execFileSync("mise", ["run", "check:identity"], {
+        cwd: resolve(root, "apps/desktop"),
+        encoding: "utf8",
+      }),
+    ).toContain("Product identity policy passed");
   });
 
   it("runs native verification independently of JavaScript installation", () => {

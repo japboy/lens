@@ -7,13 +7,13 @@ import {
   inspectWorkspace,
   repositoryPath,
   validateInventory,
-} from "./check-workspace-boundaries.ts";
+} from "../mise-tasks/check/boundaries.ts";
 import type {
   CargoDependency,
   CargoInventory,
   PnpmManifest,
   PnpmMember,
-} from "./check-workspace-boundaries.ts";
+} from "../mise-tasks/check/boundaries.ts";
 import {
   portableSourceViolations,
   rustTokens,
@@ -60,7 +60,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
   it("checks actual Cargo and pnpm discovery without conflating desktop identities", () => {
     expect(() => fixture().check()).not.toThrow();
     expect(baseline.cargo.packages).toHaveLength(5);
-    expect(pnpm).toHaveLength(2);
+    expect(pnpm).toHaveLength(3);
     expect(
       MEMBERS.filter((entry) => entry.name === "desktop").map((entry) => entry.ecosystem),
     ).toEqual(["pnpm", "cargo"]);
@@ -134,6 +134,32 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     const f = fixture();
     f.jsManifests.get("apps/desktop")!.private = false;
     expect(f.check).toThrow("pnpm private must be true");
+  });
+
+  it("requires both consumers to declare the shared configuration dependency", () => {
+    for (const directory of [".", "apps/desktop"]) {
+      const f = fixture();
+      delete f.jsManifests.get(directory)!.devDependencies!["typescript-config"];
+      expect(f.check).toThrow("missing declared pnpm dependency");
+    }
+  });
+
+  it.each(["*", "file:../typescript-config", "npm:typescript-config@0.1.0"])(
+    "rejects configuration dependency substitution: %s",
+    (version) => {
+      const f = fixture();
+      f.jsManifests.get("apps/desktop")!.devDependencies!["typescript-config"] = version;
+      expect(f.check).toThrow("unclassified pnpm local dependency or alias");
+    },
+  );
+
+  it("rejects shared configuration as a runtime dependency or a reverse edge", () => {
+    const f = fixture();
+    f.jsManifests.get("apps/desktop")!.dependencies!["typescript-config"] = "workspace:*";
+    expect(f.check).toThrow("unclassified pnpm local dependency or alias");
+    const g = fixture();
+    g.jsManifests.get("packages/typescript-config")!.devDependencies = { desktop: "workspace:*" };
+    expect(g.check).toThrow("unclassified pnpm local dependency or alias");
   });
 
   it.each(["workspace:*", "file:../desktop", "link:../desktop", "npm:desktop@1"])(

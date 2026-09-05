@@ -1,3 +1,7 @@
+#!/usr/bin/env node
+//MISE description = "Generate app resources"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
@@ -14,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const DESKTOP_DIRECTORY = resolve(REPOSITORY_ROOT, "apps/desktop");
 const ICON_DIRECTORY = resolve(DESKTOP_DIRECTORY, "src-tauri/icons");
 const FAMILY_CONTRACT_PATH = resolve(ICON_DIRECTORY, "icon-family.json");
@@ -519,7 +523,7 @@ function enforceNoObsoleteProjections(check: boolean): void {
 function main(): void {
   const arguments_ = process.argv.slice(2);
   const check = arguments_.length === 1 && arguments_[0] === "--check";
-  if (!check && arguments_.length !== 0) fail("usage: generate-icons.ts [--check]");
+  if (!check && arguments_.length !== 0) fail("usage: mise run generate:icons [--check]");
 
   const contract = parseContract(JSON.parse(readFileSync(FAMILY_CONTRACT_PATH, "utf8")) as unknown);
   const canonicalSvg = readFileSync(resolve(ICON_DIRECTORY, contract.source), "utf8");

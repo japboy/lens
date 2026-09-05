@@ -1,9 +1,13 @@
+#!/usr/bin/env node
+//MISE description = "Check product terminology"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const PRODUCT_PATHS = new Set([
   "README.md",
   "apps/desktop/index.html",

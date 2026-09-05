@@ -1,9 +1,13 @@
+#!/usr/bin/env node
+//MISE description = "Check product identity"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const LEGACY_PRODUCT_IDENTITY = /personal(?:[-_ ]?lens)/iu;
 const LEGACY_PRODUCT_ABBREVIATION = /\b(?:PL_[A-Z0-9_]+|pl_[a-z0-9_]+)\b/u;

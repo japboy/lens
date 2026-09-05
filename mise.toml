@@ -13,50 +13,15 @@ minimum_release_age = "3d"
 # Root owns cross-language orchestration. No task uses filesystem freshness as authority.
 # wait_for orders an already selected writer; it does not make standalone Rust checks need pnpm.
 
-[tasks."check:identity"]
-description = "Check product identity"
-dir = "{{config_root}}"
-run = "node scripts/check-product-identity.ts"
-
-[tasks."check:terminology"]
-description = "Check product terminology"
-dir = "{{config_root}}"
-run = "node scripts/check-product-terminology.ts"
-
-[tasks."check:publication"]
-description = "Check public source references"
-dir = "{{config_root}}"
-run = "node scripts/check-publication-boundary.ts"
-
-[tasks."check:language"]
-description = "Check repository source language"
-dir = "{{config_root}}"
-run = "node scripts/check-repository-language.ts"
-
 [tasks."check:quality"]
 description = "Check formatting and lint"
 dir = "{{config_root}}"
 run = "hk check --all"
 
-[tasks."check:boundaries"]
-description = "Check workspace identities, dependency roles and Rust source boundaries"
-dir = "{{config_root}}"
-run = "node scripts/check-workspace-boundaries.ts"
-
-[tasks."inspect:features"]
-description = "Report target-specific normal/test dependency feature graphs without granting CI admission"
-dir = "{{config_root}}"
-run = "node scripts/workspace-feature-graphs.ts"
-
 [tasks."check:icons"]
 description = "Verify generated app resources"
 dir = "{{config_root}}"
-run = "node scripts/generate-icons.ts --check"
-
-[tasks."generate:icons"]
-description = "Generate app resources"
-dir = "{{config_root}}"
-run = "node scripts/generate-icons.ts"
+run = "node mise-tasks/generate/icons.ts --check"
 
 [tasks."check:types"]
 description = "Check repository and desktop TypeScript"
@@ -158,12 +123,6 @@ dir = "{{config_root}}"
 depends = ["rust:test:linux"]
 run = "node scripts/run-workspace-variant.ts apple-portable-check"
 
-[tasks."check:rust:native-features"]
-description = "Compile actual shared libraries with the native production feature projection"
-dir = "{{config_root}}"
-depends = ["check:rust:apple"]
-run = "node scripts/check-portable-native-features.ts"
-
 [tasks."verify:linux"]
 description = "Verify repository, frontend, common Rust and native-feature compatibility on Linux"
 dir = "{{config_root}}"
@@ -173,12 +132,6 @@ depends = ["verify:portable", "check:rust:native-features", "check:dependencies"
 description = "Verify Rust after a separate same-source portable CI job"
 dir = "{{config_root}}"
 depends = ["check:rust:native-features", "check:dependencies"]
-
-[tasks."verify:bundle"]
-description = "Build and inspect the signed native bundle using prebuilt frontend assets"
-dir = "{{config_root}}"
-wait_for = ["frontend:build", "verify:native"]
-run = "node scripts/verify-native-bundle.ts"
 
 [tasks."check:dependencies"]
 description = "Audit the locked Linux and macOS dependency graphs"
@@ -214,11 +167,6 @@ run = "pnpm run tauri dev"
 description = "Build the macOS application bundle"
 dir = "{{config_root}}/apps/desktop"
 run = "pnpm run tauri build"
-
-[tasks."validate:native"]
-description = "Run bounded on-device native probes"
-dir = "{{config_root}}"
-run = "node scripts/validate-live-sync-native.ts"
 
 [tasks."fix"]
 description = "Apply explicitly requested repository formatting fixes"

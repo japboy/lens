@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isProductTerminologyPath,
   productTerminologyViolations,
-} from "./check-product-terminology.ts";
+} from "../mise-tasks/check/terminology.ts";
 
 describe("product terminology policy", () => {
   it.each([

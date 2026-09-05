@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectFeatureGraphs } from "./workspace-feature-graphs.ts";
+import { inspectFeatureGraphs } from "../mise-tasks/inspect/features.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
 
 type Report = ReturnType<typeof inspectFeatureGraphs>;

@@ -3,7 +3,7 @@ import {
   assertProductionProjection,
   sharedProductionProjection,
   verificationManifest,
-} from "./check-portable-native-features.ts";
+} from "../mise-tasks/check/rust/native-features.ts";
 
 const tree = `0domain v0.1.0 (/fixture/packages/domain)|
 1bridge v1.0.0|default

@@ -1,15 +1,26 @@
+#!/usr/bin/env node
+//MISE description = "Check workspace identities, dependency roles and Rust source boundaries"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MANAGED_RUNTIME_DIRECTORIES, MEMBERS, TARGET_DEPENDENCIES } from "./workspace-policy.ts";
-import type { DependencyKind, Member } from "./workspace-policy.ts";
-import { portableSourceViolations, sourceInclusionViolations } from "./rust-source-boundaries.ts";
+import {
+  MANAGED_RUNTIME_DIRECTORIES,
+  MEMBERS,
+  TARGET_DEPENDENCIES,
+} from "../../scripts/workspace-policy.ts";
+import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
+import {
+  portableSourceViolations,
+  sourceInclusionViolations,
+} from "../../scripts/rust-source-boundaries.ts";
 import {
   commonShellConditionalViolations,
   nativeCompositionViolations,
   rustDeclarationSurface,
-} from "./rust-source-surface.ts";
+} from "../../scripts/rust-source-surface.ts";
 
 export type CargoDependency = {
   name: string;
@@ -262,21 +273,35 @@ export function validateInventory(
       member.private === true && manifest?.private === true && manifest.name === member.name,
       `${member.name}: pnpm private must be true`,
     );
-    for (const section of [
-      manifest.dependencies,
-      manifest.devDependencies,
-      manifest.optionalDependencies,
-      manifest.peerDependencies,
-    ]) {
+    const seen = new Set<string>();
+    for (const [kind, section] of [
+      ["normal", manifest.dependencies],
+      ["dev", manifest.devDependencies],
+      ["optional", manifest.optionalDependencies],
+      ["peer", manifest.peerDependencies],
+    ] as const) {
       for (const [name, version] of Object.entries(section ?? {})) {
-        // The current two JS members have no local edges. Any addition is a graph-policy change.
-        assert(
-          !expectedPnpm.some((entry) => entry.name === name) &&
-            !/^(?:workspace:|file:|link:|npm:)/u.test(version),
-          `${member.name}: unclassified pnpm local dependency or alias ${name}`,
-        );
+        if (
+          expectedPnpm.some((entry) => entry.name === name) ||
+          /^(?:workspace:|file:|link:|npm:)/u.test(version)
+        ) {
+          assert(
+            (kind === "normal" || kind === "dev") &&
+              owner.dependencies[kind]?.includes(name) &&
+              version === "workspace:*",
+            `${member.name}: unclassified pnpm local dependency or alias ${name}`,
+          );
+          seen.add(`${kind}:${name}`);
+        }
       }
     }
+    const expected = Object.entries(owner.dependencies).flatMap(([kind, names]) =>
+      names.map((name) => `${kind}:${name}`),
+    );
+    assert(
+      expected.length === seen.size && expected.every((edge) => seen.has(edge)),
+      `${member.name}: missing declared pnpm dependency`,
+    );
   }
 
   const admittedManifests = new Set([
@@ -356,7 +381,7 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  const root = fileURLToPath(new URL("..", import.meta.url));
+  const root = fileURLToPath(new URL("../../", import.meta.url));
   const { cargo, paths } = inspectWorkspace(root);
   process.stdout.write(
     `Workspace boundaries passed: ${cargo.packages.length} Cargo members, ${MEMBERS.filter((member) => member.ecosystem === "pnpm").length} pnpm members, ${paths.length} source paths.\n`,

@@ -1,5 +1,5 @@
 {
-  "extends": "./tsconfig.json",
+  "extends": "typescript-config/base.json",
   "compilerOptions": {
     "target": "ES2022",
     "experimentalDecorators": true,

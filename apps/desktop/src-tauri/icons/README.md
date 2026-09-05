@@ -3,8 +3,8 @@
 `icon.svg` is the sole authored mark: three filled paths on a 20-unit canvas. Its circular frame, clear inner boundary, and circle-cut L remain identical at every size. The clear areas are transparency, not white paint. Do not edit generated resources independently.
 
 ```sh
-pnpm run generate:icons
-pnpm run check:icons
+mise run generate:icons
+mise run check:icons
 ```
 
 The versioned `icon-family.json` contract selects explicit appearances, material, composition, filenames, and tray size. The generator validates the source, regenerates assets with the pinned Tauri CLI in temporary directories, and checks their contents. ICNS chunk order is normalized without changing payloads. Portable CI runs the same check; no additional image tool or system font is required.

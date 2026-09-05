@@ -6,7 +6,7 @@ import {
   validateVariantAdmission,
 } from "./run-workspace-variant.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
-import { graphArguments } from "./workspace-feature-graphs.ts";
+import { graphArguments } from "../mise-tasks/inspect/features.ts";
 
 const admission = JSON.parse(
   readFileSync(new URL("./workspace-variants.json", import.meta.url), "utf8"),

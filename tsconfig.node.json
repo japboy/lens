@@ -1,14 +1,7 @@
 {
-  "extends": "./tsconfig.json",
+  "extends": "typescript-config/node.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "lib": ["ESNext"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "types": ["node"],
-    "erasableSyntaxOnly": true,
-    "rewriteRelativeImportExtensions": true,
-    "verbatimModuleSyntax": true
+    "types": ["node"]
   },
-  "include": ["scripts/**/*.ts", "*.config.ts"]
+  "include": ["scripts/**/*.ts", "mise-tasks/**/*.ts", "*.config.ts"]
 }

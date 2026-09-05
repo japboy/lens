@@ -1,3 +1,8 @@
+#!/usr/bin/env node
+//MISE description = "Compile actual shared libraries with the native production feature projection"
+//MISE dir = "{{config_root}}"
+//MISE depends = ["check:rust:apple"]
+
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
@@ -10,14 +15,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { graphArguments, inspectFeatureGraphs, parseFeatureGraph } from "../../inspect/features.ts";
+import type { FeatureNode } from "../../inspect/features.ts";
+import { BUILD_VARIANTS } from "../../../scripts/workspace-policy.ts";
 import {
-  graphArguments,
-  inspectFeatureGraphs,
-  parseFeatureGraph,
-} from "./workspace-feature-graphs.ts";
-import type { FeatureNode } from "./workspace-feature-graphs.ts";
-import { BUILD_VARIANTS } from "./workspace-policy.ts";
-import { assertBuildEnvironment, validateVariantAdmission } from "./run-workspace-variant.ts";
+  assertBuildEnvironment,
+  validateVariantAdmission,
+} from "../../../scripts/run-workspace-variant.ts";
 
 type Package = {
   name: string;
@@ -326,5 +330,5 @@ export function checkPortableNativeFeatures(root: string): void {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   if (process.argv.length !== 2) throw new Error("No implicit feature-update mode is provided");
-  checkPortableNativeFeatures(fileURLToPath(new URL("..", import.meta.url)));
+  checkPortableNativeFeatures(fileURLToPath(new URL("../../../", import.meta.url)));
 }

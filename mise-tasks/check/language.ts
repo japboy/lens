@@ -1,9 +1,13 @@
+#!/usr/bin/env node
+//MISE description = "Check repository source language"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const LETTER = /\p{Letter}/gu;
 const LATIN_LETTER = /\p{Script=Latin}/u;

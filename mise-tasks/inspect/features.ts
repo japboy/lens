@@ -1,10 +1,14 @@
+#!/usr/bin/env node
+//MISE description = "Report target-specific normal/test dependency feature graphs without granting CI admission"
+//MISE dir = "{{config_root}}"
+
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BUILD_VARIANTS } from "./workspace-policy.ts";
-import type { BuildVariant } from "./workspace-policy.ts";
-import { repositoryPath } from "./check-workspace-boundaries.ts";
+import { BUILD_VARIANTS } from "../../scripts/workspace-policy.ts";
+import type { BuildVariant } from "../../scripts/workspace-policy.ts";
+import { repositoryPath } from "../check/boundaries.ts";
 
 export type FeatureNode = { name: string; version: string; source: string; features: string[] };
 export type FeatureGraph = { nodes: FeatureNode[]; edges: [number, number][]; roots: number[] };
@@ -137,7 +141,7 @@ export function inspectFeatureGraphs(
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   if (process.argv.length !== 2)
     throw new Error("No implicit graph update or admission mode is provided");
-  const report = inspectFeatureGraphs(fileURLToPath(new URL("..", import.meta.url)));
+  const report = inspectFeatureGraphs(fileURLToPath(new URL("../../", import.meta.url)));
   process.stdout.write(
     `${JSON.stringify({ ...report, variants: report.variants.map(({ graph, ...variant }) => ({ ...variant, nodes: graph.nodes.length, edges: graph.edges.length })) }, null, 2)}\n`,
   );

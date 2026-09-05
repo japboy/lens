@@ -1,9 +1,11 @@
 {
-  "compilerOptions": {
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true
-  },
   "files": [],
-  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./apps/desktop" }]
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    },
+    {
+      "path": "./apps/desktop"
+    }
+  ]
 }
