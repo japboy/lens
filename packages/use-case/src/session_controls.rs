@@ -6,6 +6,38 @@ use uuid::Uuid;
 
 const MAX_CONFIG_BYTES: usize = 128 * 1024;
 
+/// Saved response policy selects only an unambiguous one-shot option, never a persistent grant.
+pub fn permission_response(
+    policy: crate::agent_preferences::ToolPolicy,
+    options: &[PermissionOption],
+) -> Option<RequestPermissionOutcome> {
+    use crate::agent_preferences::ToolPolicy;
+    let desired = match policy {
+        ToolPolicy::Ask => return None,
+        ToolPolicy::Allow => PermissionOptionKind::AllowOnce,
+        ToolPolicy::Deny => PermissionOptionKind::RejectOnce,
+    };
+    let mut matching = options.iter().filter(|option| option.kind == desired);
+    match (matching.next(), matching.next()) {
+        (Some(option), None) => Some(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new(option.option_id.clone()),
+        )),
+        _ if policy == ToolPolicy::Deny => Some(RequestPermissionOutcome::Cancelled),
+        _ => None,
+    }
+}
+
+pub fn confirm_choice(options: &[SessionConfigOption], id: &str, value: &str) -> Result<(), Error> {
+    let option = options
+        .iter()
+        .find(|o| o.id.to_string() == id)
+        .ok_or_else(|| invalid("Agent removed the requested selector"))?;
+    if current_value(option)? != value {
+        return Err(invalid("Agent did not confirm the requested value"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionStatus {
@@ -177,6 +209,45 @@ pub fn validate_options(options: &[SessionConfigOption]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_permission_policy_never_infers_persistent_or_ambiguous_grants() {
+        use crate::agent_preferences::ToolPolicy;
+        let choices = [
+            PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+            PermissionOption::new("always", "Always", PermissionOptionKind::AllowAlways),
+        ];
+        assert!(permission_response(ToolPolicy::Ask, &choices).is_none());
+        for (policy, expected) in [(ToolPolicy::Allow, "allow"), (ToolPolicy::Deny, "deny")] {
+            let result = permission_response(policy, &choices).unwrap();
+            assert_eq!(serde_json::to_value(result).unwrap()["optionId"], expected);
+        }
+        for choices in [
+            vec![],
+            vec![choices[2].clone()],
+            vec![choices[0].clone(), choices[0].clone()],
+        ] {
+            assert!(permission_response(ToolPolicy::Allow, &choices).is_none());
+            assert!(matches!(
+                permission_response(ToolPolicy::Deny, &choices),
+                Some(RequestPermissionOutcome::Cancelled)
+            ));
+        }
+        let ambiguous_denials = [choices[1].clone(), choices[1].clone()];
+        assert!(matches!(
+            permission_response(ToolPolicy::Deny, &ambiguous_denials),
+            Some(RequestPermissionOutcome::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn confirmed_selector_requires_the_returned_id_and_current_value() {
+        let options = [selector()];
+        assert!(confirm_choice(&options, "mode", "safe").is_ok());
+        assert!(confirm_choice(&options, "removed", "safe").is_err());
+        assert!(confirm_choice(&options, "mode", "different").is_err());
+    }
     use serde_json::json;
 
     fn selector() -> SessionConfigOption {

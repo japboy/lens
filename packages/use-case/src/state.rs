@@ -10,6 +10,39 @@ pub struct AgentRunKey {
     pub run_id: Uuid,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentSessionIdentity {
+    pub operation_id: Uuid,
+    pub context_id: Uuid,
+    pub config: AppConfig,
+}
+
+impl AgentSessionIdentity {
+    pub fn admits_reuse(&self, requested: &Self, mailbox_closed: bool) -> bool {
+        self == requested && !mailbox_closed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSessionTurnCompletion {
+    Finished,
+    Coalesced,
+}
+
+/// Capacity-one admission. The host supplies its closed flag while holding its pending
+/// lock, then completes displaced/rejected turns only after releasing that lock.
+pub fn coalesce_agent_turn<T>(
+    pending: &mut Option<T>,
+    incoming: T,
+    mailbox_closed: bool,
+) -> Result<Option<T>, T> {
+    if mailbox_closed {
+        Err(incoming)
+    } else {
+        Ok(pending.replace(incoming))
+    }
+}
+
 /// Finite authority for starting a source read; already-running native work is not abortable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextReadAuthority {
@@ -348,6 +381,107 @@ pub fn prepare_context_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_mailbox_coalesces_one_pending_turn_and_rejects_closed_admission() {
+        let mut pending = None;
+        assert_eq!(coalesce_agent_turn(&mut pending, 1, false), Ok(None));
+        assert_eq!(pending, Some(1));
+        assert_eq!(coalesce_agent_turn(&mut pending, 2, false), Ok(Some(1)));
+        assert_eq!(pending, Some(2));
+        assert_eq!(coalesce_agent_turn(&mut pending, 3, true), Err(3));
+        assert_eq!(pending, Some(2));
+        assert_eq!(pending.take(), Some(2));
+        assert_eq!(coalesce_agent_turn(&mut pending, 4, true), Err(4));
+        assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn agent_session_reuse_requires_exact_identity_and_an_open_mailbox() {
+        let identity = AgentSessionIdentity {
+            operation_id: Uuid::from_u128(1),
+            context_id: Uuid::from_u128(2),
+            config: AppConfig::new("/fixture".into()),
+        };
+        assert!(identity.admits_reuse(&identity, false));
+        assert!(!identity.admits_reuse(&identity, true));
+        for axis in 0..3 {
+            let mut changed = identity.clone();
+            match axis {
+                0 => changed.operation_id = Uuid::from_u128(3),
+                1 => changed.context_id = Uuid::from_u128(3),
+                2 => changed.config.working_directory = "/changed".into(),
+                _ => unreachable!(),
+            }
+            assert!(!identity.admits_reuse(&changed, false));
+        }
+    }
+
+    #[test]
+    fn observation_refresh_admission_reads_only_the_current_watching_context() {
+        use crate::observation::refresh_revision;
+        let original = canonical_state(7);
+        let operation_id = original.operation_id.unwrap();
+        let context_id = original.context.as_ref().unwrap().context_id;
+        assert_eq!(
+            refresh_revision(&original, operation_id, context_id),
+            Some(7)
+        );
+        for axis in 0..6 {
+            let mut stale = original.clone();
+            match axis {
+                0 => stale.operation_id = None,
+                1 => stale.operation_id = Some(Uuid::from_u128(3)),
+                2 => stale.context = None,
+                3 => stale.context.as_mut().unwrap().context_id = Uuid::from_u128(3),
+                4 => stale.live = None,
+                5 => stale.live.as_mut().unwrap().lifecycle = LensMonitoringLifecycle::Paused,
+                _ => unreachable!(),
+            }
+            assert_eq!(refresh_revision(&stale, operation_id, context_id), None);
+        }
+        let mut stopped = original;
+        stopped.live.as_mut().unwrap().lifecycle = LensMonitoringLifecycle::Stopped;
+        assert_eq!(refresh_revision(&stopped, operation_id, context_id), None);
+    }
+
+    #[test]
+    fn observation_coverage_preserves_failure_and_degradation_precedence() {
+        use crate::observation::ObservationCoverage;
+        let mut lens = canonical_state(7);
+        let mut coverage = ObservationCoverage {
+            expected_sources: 2,
+            observing_sources: 2,
+            has_registration_diagnostics: false,
+            failures: vec![],
+        };
+        let original = lens.clone();
+        coverage.apply_to(&mut lens);
+        assert_eq!(lens, original);
+        coverage.has_registration_diagnostics = true;
+        coverage.apply_to(&mut lens);
+        assert_eq!(
+            lens.live.as_ref().unwrap().health,
+            LensSourceHealth::Degraded
+        );
+        coverage.observing_sources = 0;
+        coverage.failures = vec!["first".into(), "second".into()];
+        coverage.apply_to(&mut lens);
+        let live = lens.live.as_ref().unwrap();
+        assert_eq!(live.health, LensSourceHealth::Unavailable);
+        assert_eq!(live.freshness, LensFreshness::Unverified);
+        assert_eq!(live.error.as_deref(), Some("first; second"));
+        coverage.observing_sources = 2;
+        coverage.apply_to(&mut lens);
+        assert_eq!(
+            lens.live.as_ref().unwrap().health,
+            LensSourceHealth::Unavailable
+        );
+        lens.live = None;
+        let without_live = lens.clone();
+        coverage.apply_to(&mut lens);
+        assert_eq!(lens, without_live);
+    }
 
     fn canonical_state(revision: u64) -> LensState {
         use domain::{lens::LensTargetCapture, model::ExtractedNode};

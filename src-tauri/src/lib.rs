@@ -25,8 +25,8 @@ mod ui;
 
 #[cfg(debug_assertions)]
 use base64::prelude::*;
-use domain::{lens, prompt_template};
 use tauri::Manager;
+use use_case::{lens, prompt_template};
 
 /// Generate product assets, capabilities and embedded metadata once for every runtime.
 fn product_context<R: tauri::Runtime>() -> tauri::Context<R> {

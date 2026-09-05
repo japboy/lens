@@ -453,7 +453,7 @@ fn setup(scenario: Scenario) -> Harness {
             selection: Some(LensTargetSelection {
                 selection_id: OPERATION,
                 stage: LensTargetSelectionStage::Reviewing,
-                maximum_targets: domain::lens::MAX_LENS_TARGETS,
+                maximum_targets: crate::lens::MAX_LENS_TARGETS,
                 anchor: Some(selected.facts.frame),
                 items: vec![LensTargetSelectionItem {
                     id: "macos:example.fixture:7".into(),

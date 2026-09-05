@@ -133,7 +133,7 @@ fn production_confirmation_ipc_rejects_stale_and_empty_selection_before_effects(
         selection: Some(LensTargetSelection {
             selection_id: operation,
             stage: LensTargetSelectionStage::Reviewing,
-            maximum_targets: domain::lens::MAX_LENS_TARGETS,
+            maximum_targets: crate::lens::MAX_LENS_TARGETS,
             anchor: None,
             items: vec![],
             notice: None,
@@ -152,7 +152,7 @@ fn production_confirmation_ipc_rejects_stale_and_empty_selection_before_effects(
         .unwrap_err(),
         json!(crate::confirm_targets::OPERATION_SUPERSEDED)
     );
-    let expected = domain::lens::LensTargetSet::try_new(operation, vec![])
+    let expected = crate::lens::LensTargetSet::try_new(operation, vec![])
         .unwrap_err()
         .to_string();
     assert_eq!(

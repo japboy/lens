@@ -1,18 +1,21 @@
 use crate::{
     agent,
-    app_state::{update_lens_state, AppState, LensContextRefreshOutcome},
+    app_state::{update_lens_state, AppState},
     commands::refresh_lens_context,
     lens::LensTargetSet,
-    model::{LensFreshness, LensMonitoringLifecycle, LensSourceHealth, LensStage, LensState},
-    platform::{WindowObservationEvent, WindowObservationReceiver, WindowObservationRegistration},
+    model::{LensFreshness, LensMonitoringLifecycle, LensStage, LensState},
+    platform::{WindowObservationReceiver, WindowObservationRegistration},
 };
-use std::{collections::BTreeMap, num::NonZeroU64, sync::Mutex, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU64, sync::Mutex};
 use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use uuid::Uuid;
 
-const OBSERVATION_COALESCING_INTERVAL: Duration = Duration::from_millis(250);
-const PERIODIC_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
+use use_case::observation::{
+    refresh_revision, valid_signal, AgentSubmissionDirective, LiveSignal, ObservationCoverage,
+    ObservationStart, RefreshSchedulingState, OBSERVATION_COALESCING_INTERVAL,
+    PERIODIC_RECONCILIATION_INTERVAL,
+};
 
 #[derive(Default)]
 pub struct LensLiveControl {
@@ -57,61 +60,6 @@ impl ActiveObservation {
 }
 
 #[derive(Debug)]
-enum LiveSignal {
-    Invalidation(WindowObservationEvent),
-    ImmediateRefresh,
-    PeriodicReconciliation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObservationStart {
-    Initial,
-    Resume,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentSubmissionDirective {
-    None,
-    LiveProjectionUpdate,
-    RecoveryCheckpoint,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RefreshSchedulingState {
-    recovery_checkpoint_pending: bool,
-}
-
-impl RefreshSchedulingState {
-    fn new(start: ObservationStart) -> Self {
-        Self {
-            recovery_checkpoint_pending: start == ObservationStart::Resume,
-        }
-    }
-
-    fn completed_refresh(
-        &mut self,
-        outcome: LensContextRefreshOutcome,
-    ) -> AgentSubmissionDirective {
-        if self.recovery_checkpoint_pending {
-            self.recovery_checkpoint_pending = false;
-            AgentSubmissionDirective::RecoveryCheckpoint
-        } else if outcome == LensContextRefreshOutcome::Updated {
-            AgentSubmissionDirective::LiveProjectionUpdate
-        } else {
-            AgentSubmissionDirective::None
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ObservationCoverage {
-    expected_sources: usize,
-    observing_sources: usize,
-    has_registration_diagnostics: bool,
-    failures: Vec<String>,
-}
-
-#[derive(Debug)]
 struct ObservationSchedulerContext {
     operation_id: Uuid,
     context_id: Uuid,
@@ -119,20 +67,6 @@ struct ObservationSchedulerContext {
     source_window_authority: BTreeMap<Uuid, u32>,
     coverage: ObservationCoverage,
     start: ObservationStart,
-}
-
-impl ObservationCoverage {
-    fn is_usable(&self) -> bool {
-        self.expected_sources > 0
-    }
-
-    fn has_missing_sources(&self) -> bool {
-        self.observing_sources != self.expected_sources
-    }
-
-    fn message(&self) -> Option<String> {
-        (!self.failures.is_empty()).then(|| self.failures.join("; "))
-    }
 }
 
 struct ObservationSetup {
@@ -525,10 +459,7 @@ async fn run_scheduler<R: tauri::Runtime>(
     } = context;
     let mut scheduling = RefreshSchedulingState::new(start);
     while let Some(signal) = receiver.recv().await {
-        let immediate = matches!(
-            signal,
-            LiveSignal::ImmediateRefresh | LiveSignal::PeriodicReconciliation
-        );
+        let immediate = signal.is_immediate();
         if !immediate
             && !valid_signal(
                 &signal,
@@ -565,19 +496,11 @@ async fn run_scheduler<R: tauri::Runtime>(
             }
         }
 
-        let expected_revision = match app.state::<AppState>().lens() {
-            Ok(lens)
-                if lens.operation_id == Some(operation_id)
-                    && lens.live.as_ref().is_some_and(|live| {
-                        live.lifecycle == LensMonitoringLifecycle::Watching
-                    }) =>
-            {
-                lens.context.as_ref().and_then(|context| {
-                    (context.context_id == context_id).then_some(context.revision)
-                })
-            }
-            _ => None,
-        };
+        let expected_revision = app
+            .state::<AppState>()
+            .lens()
+            .ok()
+            .and_then(|lens| refresh_revision(&lens, operation_id, context_id));
         let Some(expected_revision) = expected_revision else {
             continue;
         };
@@ -622,100 +545,11 @@ async fn run_scheduler<R: tauri::Runtime>(
     }
 }
 
-fn valid_signal(
-    signal: &LiveSignal,
-    operation_id: Uuid,
-    context_id: Uuid,
-    observer_epoch: NonZeroU64,
-    authority: &BTreeMap<Uuid, u32>,
-) -> bool {
-    match signal {
-        LiveSignal::ImmediateRefresh | LiveSignal::PeriodicReconciliation => true,
-        LiveSignal::Invalidation(event) => {
-            event.operation_id == operation_id
-                && event.context_id == context_id
-                && event.observer_epoch == observer_epoch
-                && authority.get(&event.source_registration_id) == Some(&event.window_id)
-        }
-    }
-}
-
 fn apply_observation_coverage<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation_id: Uuid,
     coverage: &ObservationCoverage,
 ) -> Result<(), String> {
-    let message = coverage.message();
-    update_lens_state(app, operation_id, |lens| {
-        let Some(live) = lens.live.as_mut() else {
-            return;
-        };
-        if coverage.has_missing_sources() {
-            live.health = LensSourceHealth::Unavailable;
-            live.freshness = LensFreshness::Unverified;
-            live.error = message;
-        } else if coverage.has_registration_diagnostics && live.health == LensSourceHealth::Healthy
-        {
-            live.health = LensSourceHealth::Degraded;
-        }
-    })?;
+    update_lens_state(app, operation_id, |lens| coverage.apply_to(lens))?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn polling_fallback_remains_usable_when_every_observer_registration_failed() {
-        let coverage = ObservationCoverage {
-            expected_sources: 2,
-            observing_sources: 0,
-            has_registration_diagnostics: false,
-            failures: vec!["source unavailable".into()],
-        };
-
-        assert!(coverage.is_usable());
-        assert!(coverage.has_missing_sources());
-        assert_eq!(PERIODIC_RECONCILIATION_INTERVAL, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn periodic_reconciliation_is_authoritative_without_observer_callbacks() {
-        assert!(valid_signal(
-            &LiveSignal::PeriodicReconciliation,
-            Uuid::nil(),
-            Uuid::nil(),
-            NonZeroU64::new(1).expect("epoch"),
-            &BTreeMap::new(),
-        ));
-    }
-
-    #[test]
-    fn resume_requires_one_recovery_checkpoint_even_for_an_unchanged_projection() {
-        let mut initial = RefreshSchedulingState::new(ObservationStart::Initial);
-        assert_eq!(
-            initial.completed_refresh(LensContextRefreshOutcome::Unchanged),
-            AgentSubmissionDirective::None
-        );
-        assert_eq!(
-            initial.completed_refresh(LensContextRefreshOutcome::Updated),
-            AgentSubmissionDirective::LiveProjectionUpdate
-        );
-
-        for outcome in [
-            LensContextRefreshOutcome::Unchanged,
-            LensContextRefreshOutcome::Updated,
-        ] {
-            let mut resumed = RefreshSchedulingState::new(ObservationStart::Resume);
-            assert_eq!(
-                resumed.completed_refresh(outcome),
-                AgentSubmissionDirective::RecoveryCheckpoint
-            );
-            assert_eq!(
-                resumed.completed_refresh(LensContextRefreshOutcome::Unchanged),
-                AgentSubmissionDirective::None
-            );
-        }
-    }
 }

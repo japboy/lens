@@ -19,9 +19,10 @@ pub use use_case::state::{
     LensContextRefreshOutcome,
 };
 use use_case::state::{
-    agent_run_has_authority, prepare_context_refresh, validate_context_state,
+    agent_run_has_authority, coalesce_agent_turn, prepare_context_refresh, validate_context_state,
     validate_refresh_identity, validated_payload_map,
 };
+pub(crate) use use_case::state::{AgentSessionIdentity, AgentSessionTurnCompletion};
 use uuid::Uuid;
 
 pub struct AgentRunHandle {
@@ -34,24 +35,11 @@ struct ActiveAgentRun {
     cancellation: watch::Sender<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AgentSessionIdentity {
-    pub operation_id: Uuid,
-    pub context_id: Uuid,
-    pub config: AppConfig,
-}
-
 pub(crate) struct AgentSessionTurn {
     pub context_revision: u64,
     pub projection_ref: ProjectionRef,
     pub projection: LensAgentProjection,
     completion: Option<oneshot::Sender<Result<AgentSessionTurnCompletion, String>>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionTurnCompletion {
-    Finished,
-    Coalesced,
 }
 
 impl AgentSessionTurn {
@@ -111,11 +99,9 @@ impl AgentSessionMailbox {
                 .pending
                 .lock()
                 .map_err(|_| "Agent session mailbox lock is poisoned".to_string())?;
-            if self.closed.load(Ordering::Acquire) {
-                return Err("Agent session mailbox is closed".into());
-            }
-            pending.replace(turn)
-        };
+            coalesce_agent_turn(&mut pending, turn, self.closed.load(Ordering::Acquire))
+        }
+        .map_err(|_| "Agent session mailbox is closed".to_string())?;
         if let Some(previous) = previous {
             previous.complete(Ok(AgentSessionTurnCompletion::Coalesced));
         }
@@ -242,7 +228,10 @@ impl AgentControl {
                 .lock()
                 .map_err(|_| "Agent session control lock is poisoned".to_string())?;
             if let Some(active) = session.as_ref() {
-                if active.identity == identity && !active.mailbox.is_closed() {
+                if active
+                    .identity
+                    .admits_reuse(&identity, active.mailbox.is_closed())
+                {
                     active.mailbox.replace(turn)?;
                     return Ok(receiver);
                 }

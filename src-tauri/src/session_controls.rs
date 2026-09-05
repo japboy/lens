@@ -542,7 +542,6 @@ impl SessionControls {
         &self,
         details: &InteractionDetails,
     ) -> Result<Option<RequestPermissionOutcome>, String> {
-        use crate::agent_preferences::ToolPolicy;
         let InteractionDetails::Permission {
             effect, options, ..
         } = details
@@ -554,19 +553,7 @@ impl SessionControls {
         let runtime = self.runtime.lock().map_err(|_| lock_error())?;
         self.ensure_active(&runtime)?;
         let policy = crate::agent_preferences::policy_for_tool(&runtime.tool_policies, kind);
-        let desired = match policy {
-            ToolPolicy::Ask => return Ok(None),
-            ToolPolicy::Allow => PermissionOptionKind::AllowOnce,
-            ToolPolicy::Deny => PermissionOptionKind::RejectOnce,
-        };
-        let mut matching = options.iter().filter(|option| option.kind == desired);
-        match (matching.next(), matching.next()) {
-            (Some(option), None) => Ok(Some(RequestPermissionOutcome::Selected(
-                SelectedPermissionOutcome::new(option.option_id.clone()),
-            ))),
-            _ if policy == ToolPolicy::Deny => Ok(Some(RequestPermissionOutcome::Cancelled)),
-            _ => Ok(None),
-        }
+        Ok(permission_response(policy, options))
     }
     pub fn receive_permission<R: tauri::Runtime>(
         self: &Arc<Self>,
@@ -945,17 +932,6 @@ impl<R: tauri::Runtime> Drop for ControlLifetime<R> {
     fn drop(&mut self) {
         self.controls.close(&self.app);
     }
-}
-
-fn confirm_choice(options: &[SessionConfigOption], id: &str, value: &str) -> Result<(), Error> {
-    let option = options
-        .iter()
-        .find(|o| o.id.to_string() == id)
-        .ok_or_else(|| invalid("Agent removed the requested selector"))?;
-    if current_value(option)? != value {
-        return Err(invalid("Agent did not confirm the requested value"));
-    }
-    Ok(())
 }
 
 /// Resolve and apply defaults against this Agent's current catalog; never reconstruct choices.

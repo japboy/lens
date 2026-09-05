@@ -2300,7 +2300,6 @@ dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
  "dirs",
- "domain",
  "flate2",
  "port-platform",
  "pretty_assertions",
