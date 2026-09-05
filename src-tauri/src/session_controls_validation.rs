@@ -23,7 +23,9 @@ fn options() -> Vec<SessionConfigOption> {
     )
     .category(SessionConfigOptionCategory::Mode)]
 }
-fn install(app: &AppHandle) -> Result<(Arc<SessionControls>, watch::Sender<bool>), Error> {
+fn install<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(Arc<SessionControls>, watch::Sender<bool>), Error> {
     close_active(app);
     let operation = Uuid::new_v4();
     app.state::<AppState>()
@@ -56,7 +58,11 @@ fn install(app: &AppHandle) -> Result<(Arc<SessionControls>, watch::Sender<bool>
         .map_err(|_| invalid("Unable to publish fixture controls"))?;
     Ok((controls, shutdown))
 }
-fn ui_response(app: &AppHandle, marker: &str, button: &str) -> Result<(), Error> {
+fn ui_response<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    marker: &str,
+    button: &str,
+) -> Result<(), Error> {
     let script = format!(
         r#"(() => {{
       const marker = {marker}; const button = {button}; let attempts = 0;
@@ -105,7 +111,7 @@ fn permission(title: &str) -> RequestPermissionRequest {
         ],
     )
 }
-async fn protocol_and_ui(app: &AppHandle) -> Result<(), Error> {
+async fn protocol_and_ui<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
     let (controls, _shutdown) = install(app)?;
     controls.record_tool(&SessionUpdate::ToolCall(
         ToolCall::new("fixture-read", "Fixture read")
@@ -223,7 +229,7 @@ async fn protocol_and_ui(app: &AppHandle) -> Result<(), Error> {
     controls.close(app);
     Ok(())
 }
-async fn lifecycle(app: &AppHandle) -> Result<(), Error> {
+async fn lifecycle<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
     for cause in [
         "turn_end",
         "disconnect",
@@ -317,7 +323,7 @@ async fn lifecycle(app: &AppHandle) -> Result<(), Error> {
     }
     Ok(())
 }
-async fn high_level_session(app: &AppHandle) -> Result<(), Error> {
+async fn high_level_session<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
     use agent_client_protocol::SessionMessage;
     let (controls, _shutdown) = install(app)?;
     let client = Client.builder();
@@ -396,7 +402,7 @@ async fn high_level_session(app: &AppHandle) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn run(app: &AppHandle) -> Result<(), Error> {
+pub async fn run<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
     tauri::WebviewWindowBuilder::new(
         app,
         crate::ui::LENS_WINDOW_LABEL,

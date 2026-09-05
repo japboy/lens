@@ -141,9 +141,9 @@ struct ObservationSetup {
 }
 
 impl LensLiveControl {
-    fn install(
+    fn install<R: tauri::Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         operation_id: Uuid,
         context_id: Uuid,
         target_set: &LensTargetSet,
@@ -267,7 +267,7 @@ impl LensLiveControl {
     }
 }
 
-pub fn start(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
+pub fn start<R: tauri::Runtime>(app: &AppHandle<R>, operation_id: Uuid) -> Result<(), String> {
     let lens = require_live_operation(app, operation_id, LensMonitoringLifecycle::Watching)?;
     let context = lens
         .context
@@ -288,13 +288,19 @@ pub fn start(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
     Ok(())
 }
 
-pub fn request_immediate_refresh(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
+pub fn request_immediate_refresh<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<(), String> {
     app.state::<AppState>()
         .live_control
         .request_immediate_refresh(operation_id)
 }
 
-pub fn pause(app: &AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub fn pause<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     require_live_operation(app, operation_id, LensMonitoringLifecycle::Watching)?;
     if !update_lens_state(app, operation_id, |lens| {
         let Some(live) = lens.live.as_mut() else {
@@ -318,7 +324,10 @@ pub fn pause(app: &AppHandle, operation_id: Uuid) -> Result<LensState, String> {
     state.lens()
 }
 
-pub fn resume(app: &AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub fn resume<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     let lens = require_live_operation(app, operation_id, LensMonitoringLifecycle::Paused)?;
     let context = lens
         .context
@@ -367,7 +376,7 @@ pub fn resume(app: &AppHandle, operation_id: Uuid) -> Result<LensState, String> 
     app.state::<AppState>().lens()
 }
 
-pub fn stop(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
+pub fn stop<R: tauri::Runtime>(app: &AppHandle<R>, operation_id: Uuid) -> Result<(), String> {
     crate::session_controls::close_active(app);
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
@@ -375,8 +384,8 @@ pub fn stop(app: &AppHandle, operation_id: Uuid) -> Result<(), String> {
     Ok(())
 }
 
-fn require_live_operation(
-    app: &AppHandle,
+fn require_live_operation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     lifecycle: LensMonitoringLifecycle,
 ) -> Result<LensState, String> {
@@ -392,8 +401,8 @@ fn require_live_operation(
     Ok(lens)
 }
 
-fn build_observation(
-    app: AppHandle,
+fn build_observation<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     context_id: Uuid,
     observer_epoch: NonZeroU64,
@@ -501,8 +510,8 @@ fn spawn_source_forwarder(
     })
 }
 
-async fn run_scheduler(
-    app: AppHandle,
+async fn run_scheduler<R: tauri::Runtime>(
+    app: AppHandle<R>,
     context: ObservationSchedulerContext,
     mut receiver: mpsc::Receiver<LiveSignal>,
 ) {
@@ -631,8 +640,8 @@ fn valid_signal(
     }
 }
 
-fn apply_observation_coverage(
-    app: &AppHandle,
+fn apply_observation_coverage<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     coverage: &ObservationCoverage,
 ) -> Result<(), String> {

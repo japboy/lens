@@ -227,9 +227,9 @@ impl AgentControl {
         Ok(false)
     }
 
-    pub(crate) fn submit_session(
+    pub(crate) fn submit_session<R: tauri::Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         identity: AgentSessionIdentity,
         context_revision: u64,
         projection_ref: ProjectionRef,
@@ -474,6 +474,14 @@ impl AppState {
     pub fn load(platform: crate::platform::Services) -> Self {
         let store = ConfigStore::new();
         let config = store.load();
+        Self::with_config(platform, store, config)
+    }
+
+    pub(crate) fn with_config(
+        platform: crate::platform::Services,
+        store: ConfigStore,
+        config: AppConfig,
+    ) -> Self {
         Self {
             platform,
             runtime: RwLock::new(AppSnapshot::new(config)),
@@ -552,7 +560,10 @@ impl AppState {
     }
 }
 
-pub fn publish_agent_runtime(app: &AppHandle, next: AgentRuntimeState) -> Result<(), String> {
+pub fn publish_agent_runtime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    next: AgentRuntimeState,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let snapshot = {
         let mut snapshot = state
@@ -566,8 +577,8 @@ pub fn publish_agent_runtime(app: &AppHandle, next: AgentRuntimeState) -> Result
     emit_app_snapshot(app, snapshot, false)
 }
 
-pub fn update_agent_runtime(
-    app: &AppHandle,
+pub fn update_agent_runtime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     update: impl FnOnce(&mut AgentRuntimeState),
 ) -> Result<bool, String> {
@@ -588,8 +599,8 @@ pub fn update_agent_runtime(
     Ok(true)
 }
 
-pub(crate) fn emit_app_snapshot(
-    app: &AppHandle,
+pub(crate) fn emit_app_snapshot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     snapshot: AppSnapshot,
     sync_tray: bool,
 ) -> Result<(), String> {
@@ -600,7 +611,10 @@ pub(crate) fn emit_app_snapshot(
         .map_err(|error| error.to_string())
 }
 
-pub fn publish_agent_selection(app: &AppHandle, next: AgentSelectionState) -> Result<(), String> {
+pub fn publish_agent_selection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    next: AgentSelectionState,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let snapshot = {
         let mut snapshot = state
@@ -614,8 +628,8 @@ pub fn publish_agent_selection(app: &AppHandle, next: AgentSelectionState) -> Re
     emit_app_snapshot(app, snapshot, true)
 }
 
-pub fn update_agent_selection(
-    app: &AppHandle,
+pub fn update_agent_selection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     update: impl FnOnce(&mut AgentSelectionState),
 ) -> Result<bool, String> {
@@ -636,7 +650,10 @@ pub fn update_agent_selection(
     Ok(true)
 }
 
-pub fn publish_lens_state(app: &AppHandle, next: LensState) -> Result<(), String> {
+pub fn publish_lens_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    next: LensState,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let (snapshot, sync_tray) = {
         let mut snapshot = state
@@ -653,8 +670,8 @@ pub fn publish_lens_state(app: &AppHandle, next: LensState) -> Result<(), String
 }
 
 /// Atomically commits the first canonical context and its exact private media payload revision.
-pub fn commit_initial_lens_context(
-    app: &AppHandle,
+pub fn commit_initial_lens_context<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     next: LensState,
     payloads: Vec<LensMediaPayload>,
@@ -696,8 +713,8 @@ pub fn commit_initial_lens_context(
 }
 
 /// Atomically merges a refreshed canonical context into the latest Agent and representation state.
-pub(crate) fn commit_lens_context_refresh(
-    app: &AppHandle,
+pub(crate) fn commit_lens_context_refresh<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     context_id: Uuid,
     expected_previous_context_revision: u64,
@@ -752,7 +769,10 @@ pub(crate) fn commit_lens_context_refresh(
 }
 
 /// Clears the exact active operation and its private media in one publication boundary.
-pub fn clear_lens_operation(app: &AppHandle, operation_id: Uuid) -> Result<bool, String> {
+pub fn clear_lens_operation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<bool, String> {
     let state = app.state::<AppState>();
     let snapshot = {
         let mut snapshot = state
@@ -782,8 +802,8 @@ pub fn clear_lens_operation(app: &AppHandle, operation_id: Uuid) -> Result<bool,
     Ok(true)
 }
 
-pub fn begin_agent_run(
-    app: &AppHandle,
+pub fn begin_agent_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     expected_projection: &ProjectionRef,
     expected_config: &AppConfig,
@@ -828,8 +848,8 @@ pub fn begin_agent_run(
     Ok(run)
 }
 
-pub fn update_lens_state(
-    app: &AppHandle,
+pub fn update_lens_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     update: impl FnOnce(&mut LensState),
 ) -> Result<bool, String> {
@@ -840,8 +860,8 @@ pub fn update_lens_state(
     )
 }
 
-pub fn update_lens_state_for_context(
-    app: &AppHandle,
+pub fn update_lens_state_for_context<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     context_id: Uuid,
     context_revision: u64,
@@ -859,8 +879,8 @@ pub fn update_lens_state_for_context(
     )
 }
 
-pub fn update_lens_state_for_projection(
-    app: &AppHandle,
+pub fn update_lens_state_for_projection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     expected_projection: &ProjectionRef,
     expected_config: &AppConfig,
@@ -877,8 +897,8 @@ pub fn update_lens_state_for_projection(
     )
 }
 
-pub fn update_lens_state_for_run(
-    app: &AppHandle,
+pub fn update_lens_state_for_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     key: AgentRunKey,
     expected_config: &AppConfig,
     update: impl FnOnce(&mut LensState),
@@ -890,8 +910,8 @@ pub fn update_lens_state_for_run(
     )
 }
 
-fn update_lens_state_if(
-    app: &AppHandle,
+fn update_lens_state_if<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     predicate: impl FnOnce(&AppSnapshot) -> bool,
     update: impl FnOnce(&mut LensState),
 ) -> Result<bool, String> {

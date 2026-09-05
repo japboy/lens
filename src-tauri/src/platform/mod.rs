@@ -35,31 +35,61 @@ pub fn macos_services() -> Services {
     }
 }
 
-pub fn present_window_from_screen_right(
-    window: &tauri::WebviewWindow,
-) -> Result<(), PlatformError> {
-    presentation_macos::present_window_from_screen_right(window)
+/// Tauri-owned presentation effects, separate from portable source capabilities.
+pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
+    fn present(&self, window: &tauri::WebviewWindow<R>) -> Result<(), PlatformError>;
+    fn dismiss<'a>(&'a self, window: &'a tauri::WebviewWindow<R>) -> PresentationFuture<'a>;
+    fn transition<'a>(
+        &'a self,
+        window: &'a tauri::WebviewWindow<R>,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> PresentationFuture<'a>;
 }
 
-pub async fn dismiss_window_to_screen_right(
-    window: &tauri::WebviewWindow,
-) -> Result<(), PlatformError> {
-    presentation_macos::dismiss_window_to_screen_right(window).await
+pub type PresentationFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PlatformError>> + Send + 'a>>;
+
+pub struct Presentation<R: tauri::Runtime>(pub Arc<dyn WindowPresentation<R>>);
+
+#[cfg(target_os = "macos")]
+pub fn macos_presentation() -> Presentation<tauri::Wry> {
+    Presentation(Arc::new(presentation_macos::MacOsPresentation))
 }
 
-pub async fn transition_window_frame(
-    window: &tauri::WebviewWindow,
+pub fn present_window_from_screen_right<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), PlatformError> {
+    use tauri::Manager;
+    window.state::<Presentation<R>>().0.present(window)
+}
+
+pub async fn dismiss_window_to_screen_right<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), PlatformError> {
+    use tauri::Manager;
+    window.state::<Presentation<R>>().0.dismiss(window).await
+}
+
+pub async fn transition_window_frame<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
     target_x: f64,
     target_y: f64,
     target_content_width: f64,
     target_content_height: f64,
 ) -> Result<(), PlatformError> {
-    presentation_macos::transition_window_frame(
-        window,
-        target_x,
-        target_y,
-        target_content_width,
-        target_content_height,
-    )
-    .await
+    use tauri::Manager;
+    window
+        .state::<Presentation<R>>()
+        .0
+        .transition(
+            window,
+            target_x,
+            target_y,
+            target_content_width,
+            target_content_height,
+        )
+        .await
 }

@@ -129,9 +129,9 @@ struct AgentSessionMetadata<'a> {
     safe_mode_id: &'a str,
 }
 
-struct AgentTurnExecution<'a> {
+struct AgentTurnExecution<'a, R: tauri::Runtime> {
     controls: &'a Arc<SessionControls>,
-    app: &'a AppHandle,
+    app: &'a AppHandle<R>,
     identity: &'a AgentSessionIdentity,
     mailbox: &'a AgentSessionMailbox,
     shutdown: &'a mut watch::Receiver<bool>,
@@ -163,13 +163,19 @@ struct ClaudeAuthenticationStatus {
 }
 
 impl AgentDescriptor {
-    async fn resolve(app: &AppHandle, kind: AgentKind) -> Result<Self, String> {
+    async fn resolve<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        kind: AgentKind,
+    ) -> Result<Self, String> {
         agent_runtime::resolve(app, kind)
             .await
             .map(Self::from_runtime)
     }
 
-    async fn resolve_installed(app: &AppHandle, kind: AgentKind) -> Result<Option<Self>, String> {
+    async fn resolve_installed<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        kind: AgentKind,
+    ) -> Result<Option<Self>, String> {
         agent_runtime::resolve_installed(app, kind)
             .await
             .map(|runtime| runtime.map(Self::from_runtime))
@@ -212,8 +218,8 @@ impl AgentDescriptor {
     }
 }
 
-pub async fn select_agent(
-    app: AppHandle,
+pub async fn select_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
     candidate: AgentKind,
 ) -> Result<AgentSelectionState, String> {
     let current = current_agent_selection(&app)?;
@@ -255,8 +261,8 @@ pub async fn select_agent(
     finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
 }
 
-pub async fn restore_agent_selection(
-    app: AppHandle,
+pub async fn restore_agent_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     candidate: AgentKind,
 ) -> Result<AgentSelectionState, String> {
     let operation_id = Uuid::new_v4();
@@ -302,8 +308,8 @@ pub async fn restore_agent_selection(
     finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
 }
 
-async fn finish_agent_selection_probe(
-    app: AppHandle,
+async fn finish_agent_selection_probe<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     candidate: AgentKind,
     descriptor: AgentDescriptor,
@@ -335,8 +341,8 @@ async fn finish_agent_selection_probe(
     current_agent_selection(&app)
 }
 
-pub async fn authenticate_selection(
-    app: AppHandle,
+pub async fn authenticate_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     method_id: String,
 ) -> Result<AgentSelectionState, String> {
     let snapshot = current_agent_selection(&app)?;
@@ -405,16 +411,20 @@ enum LogoutPurpose {
     Reauthenticate,
 }
 
-pub async fn sign_out_selection(app: AppHandle) -> Result<AgentSelectionState, String> {
+pub async fn sign_out_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<AgentSelectionState, String> {
     logout_selection(app, LogoutPurpose::SignOut).await
 }
 
-pub async fn reauthenticate_selection(app: AppHandle) -> Result<AgentSelectionState, String> {
+pub async fn reauthenticate_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<AgentSelectionState, String> {
     logout_selection(app, LogoutPurpose::Reauthenticate).await
 }
 
-async fn logout_selection(
-    app: AppHandle,
+async fn logout_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     purpose: LogoutPurpose,
 ) -> Result<AgentSelectionState, String> {
     let snapshot = current_agent_selection(&app)?;
@@ -527,8 +537,8 @@ async fn run_logout(descriptor: AgentDescriptor) -> Result<Vec<AgentAuthMethod>,
         .await
 }
 
-async fn probe_agent_authentication(
-    app: AppHandle,
+async fn probe_agent_authentication<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     descriptor: AgentDescriptor,
     working_directory: PathBuf,
@@ -644,8 +654,8 @@ fn claude_cli_authentication_status(descriptor: &AgentDescriptor) -> Result<bool
     Ok(status.logged_in)
 }
 
-fn complete_agent_selection(
-    app: &AppHandle,
+fn complete_agent_selection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     candidate: AgentKind,
 ) -> Result<bool, String> {
@@ -691,11 +701,16 @@ fn complete_agent_selection(
     Ok(true)
 }
 
-fn current_agent_selection(app: &AppHandle) -> Result<AgentSelectionState, String> {
+fn current_agent_selection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<AgentSelectionState, String> {
     app.state::<AppState>().agent_selection()
 }
 
-fn confirm_agent_selection_after_session(app: &AppHandle, agent: AgentKind) -> Result<(), String> {
+fn confirm_agent_selection_after_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    agent: AgentKind,
+) -> Result<(), String> {
     let selection = current_agent_selection(app)?;
     if selection.selected_agent() == Some(agent) {
         return Ok(());
@@ -708,8 +723,8 @@ fn confirm_agent_selection_after_session(app: &AppHandle, agent: AgentKind) -> R
     Ok(())
 }
 
-fn mark_selected_agent_authentication_required(
-    app: &AppHandle,
+fn mark_selected_agent_authentication_required<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     agent: AgentKind,
 ) -> Result<(), String> {
     let selection = current_agent_selection(app)?;
@@ -742,8 +757,8 @@ fn agent_display_name(agent: AgentKind) -> &'static str {
     }
 }
 
-pub async fn transform_current(
-    app: AppHandle,
+pub async fn transform_current<R: tauri::Runtime>(
+    app: AppHandle<R>,
     expected_operation_id: Uuid,
 ) -> Result<LensState, String> {
     submit_current_projection(
@@ -754,8 +769,8 @@ pub async fn transform_current(
     .await
 }
 
-pub(crate) async fn transform_live_projection(
-    app: AppHandle,
+pub(crate) async fn transform_live_projection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     expected_operation_id: Uuid,
 ) -> Result<LensState, String> {
     submit_current_projection(
@@ -766,8 +781,8 @@ pub(crate) async fn transform_live_projection(
     .await
 }
 
-pub(crate) async fn transform_recovery_projection(
-    app: AppHandle,
+pub(crate) async fn transform_recovery_projection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     expected_operation_id: Uuid,
 ) -> Result<LensState, String> {
     submit_current_projection(
@@ -778,8 +793,8 @@ pub(crate) async fn transform_recovery_projection(
     .await
 }
 
-async fn submit_current_projection(
-    app: AppHandle,
+async fn submit_current_projection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     expected_operation_id: Uuid,
     admission: AgentTransformAdmission,
 ) -> Result<LensState, String> {
@@ -801,8 +816,8 @@ async fn submit_current_projection(
     current_lens(&app)
 }
 
-pub(crate) async fn run_persistent_session_actor(
-    app: AppHandle,
+pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
+    app: AppHandle<R>,
     generation: Uuid,
     identity: AgentSessionIdentity,
     mailbox: Arc<AgentSessionMailbox>,
@@ -895,8 +910,8 @@ pub(crate) async fn run_persistent_session_actor(
     }
 }
 
-async fn run_persistent_session(
-    app: AppHandle,
+async fn run_persistent_session<R: tauri::Runtime>(
+    app: AppHandle<R>,
     identity: AgentSessionIdentity,
     descriptor: AgentDescriptor,
     mailbox: Arc<AgentSessionMailbox>,
@@ -1112,8 +1127,8 @@ async fn next_agent_session_turn(
     }
 }
 
-fn agent_session_identity_is_current(
-    app: &AppHandle,
+fn agent_session_identity_is_current<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     identity: &AgentSessionIdentity,
 ) -> Result<bool, String> {
     let snapshot = app.state::<AppState>().snapshot()?;
@@ -1156,8 +1171,8 @@ fn prompt_mode(
     ))
 }
 
-fn prepare_agent_turn(
-    app: &AppHandle,
+fn prepare_agent_turn<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     identity: &AgentSessionIdentity,
     turn: AgentSessionTurn,
     metadata: &AgentSessionMetadata<'_>,
@@ -1215,8 +1230,8 @@ fn prepare_agent_turn(
     })
 }
 
-fn fail_unstarted_turn(
-    app: &AppHandle,
+fn fail_unstarted_turn<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     identity: &AgentSessionIdentity,
     descriptor: Option<&AgentDescriptor>,
     projection: &ProjectionRef,
@@ -1256,8 +1271,8 @@ fn fail_unstarted_turn(
     )
 }
 
-pub async fn authenticate_current(
-    app: AppHandle,
+pub async fn authenticate_current<R: tauri::Runtime>(
+    app: AppHandle<R>,
     expected_operation_id: Uuid,
     method_id: String,
 ) -> Result<LensState, String> {
@@ -1354,7 +1369,10 @@ pub async fn authenticate_current(
     }
 }
 
-pub fn cancel_current(app: &AppHandle, key: AgentRunKey) -> Result<LensState, String> {
+pub fn cancel_current<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    key: AgentRunKey,
+) -> Result<LensState, String> {
     let config = app.state::<AppState>().config()?;
     if !app.state::<AppState>().agent_control.cancel(key)? {
         return Err("Agent run was superseded before cancellation".into());
@@ -1370,8 +1388,8 @@ pub fn cancel_current(app: &AppHandle, key: AgentRunKey) -> Result<LensState, St
     current_lens(app)
 }
 
-fn current_transform_input(
-    app: &AppHandle,
+fn current_transform_input<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     expected_operation_id: Uuid,
     admission: AgentTransformAdmission,
 ) -> Result<AgentTransformInput, String> {
@@ -1413,7 +1431,7 @@ fn current_transform_input(
     })
 }
 
-fn current_lens(app: &AppHandle) -> Result<LensState, String> {
+fn current_lens<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<LensState, String> {
     app.state::<AppState>().lens()
 }
 
@@ -1447,8 +1465,8 @@ fn finish_retained_representation(
     }
 }
 
-fn finish_agent_run_error(
-    app: &AppHandle,
+fn finish_agent_run_error<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     key: AgentRunKey,
     config: &AppConfig,
     agent_kind: AgentKind,
@@ -1648,8 +1666,8 @@ where
     }
 }
 
-async fn run_session_turn(
-    execution: AgentTurnExecution<'_>,
+async fn run_session_turn<R: tauri::Runtime>(
+    execution: AgentTurnExecution<'_, R>,
     key: AgentRunKey,
     cancellation: &mut watch::Receiver<bool>,
     projection: &LensAgentProjection,
@@ -1768,8 +1786,8 @@ async fn run_session_turn(
     }
 }
 
-async fn run_authentication(
-    app: AppHandle,
+async fn run_authentication<R: tauri::Runtime>(
+    app: AppHandle<R>,
     descriptor: AgentDescriptor,
     method_id: String,
     cancellation: &mut watch::Receiver<bool>,
@@ -1878,8 +1896,8 @@ fn required_safe_mode(
 // Consume session notifications and requests through the same ActiveSession queue.
 // Global request handlers can overtake a queued tool update and lose its correlation.
 // Reserve responders here in receipt order; their connection-scoped waits never block this queue.
-pub(crate) async fn record_control_update(
-    app: &AppHandle,
+pub(crate) async fn record_control_update<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     controls: &Arc<SessionControls>,
     connection: &ConnectionTo<Agent>,
     dispatch: Dispatch,
@@ -1961,8 +1979,8 @@ fn complete_agent_authentication(lens: &mut LensState) {
     lens.error = None;
 }
 
-fn launch_terminal_auth(
-    app: &AppHandle,
+fn launch_terminal_auth<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     descriptor: &AgentDescriptor,
     method: &AuthMethodTerminal,
 ) -> Result<(), String> {
@@ -2131,8 +2149,8 @@ fn build_prompt_blocks(
     Ok(blocks)
 }
 
-pub async fn validate_agent_defaults(
-    app: &AppHandle,
+pub async fn validate_agent_defaults<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     config: &AppConfig,
     defaults: &crate::agent_preferences::AgentDefaults,
 ) -> Result<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>, String> {

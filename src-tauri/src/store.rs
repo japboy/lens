@@ -15,9 +15,11 @@ impl ConfigStore {
         let base = dirs::config_dir()
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
-        Self {
-            path: base.join("Lens").join("settings.json"),
-        }
+        Self::at_path(base.join("Lens").join("settings.json"))
+    }
+
+    pub(crate) fn at_path(path: PathBuf) -> Self {
+        Self { path }
     }
 
     pub fn load(&self) -> AppConfig {

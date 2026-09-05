@@ -32,7 +32,16 @@ serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 tar = "0.4"
-tauri = { version = "2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
+tauri = { version = "2.11.5", default-features = false, features = [
+  "image-png",
+  "macos-private-api",
+  "tray-icon",
+  "compression",
+  "common-controls-v6",
+  "dynamic-acl",
+  "x11",
+  "dbus",
+] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-opener = "2.5.4"
 thiserror.workspace = true
@@ -41,6 +50,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1"
+tauri = { version = "2.11.5", default-features = false, features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 adapter-platform-macos.workspace = true
+tauri = { version = "2.11.5", features = ["macos-private-api"] }

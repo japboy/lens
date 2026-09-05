@@ -14,7 +14,11 @@ mod media_protocol;
 mod model;
 mod platform;
 mod session_controls;
+#[cfg(test)]
+mod shell_tests;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod ui;
 
 #[cfg(debug_assertions)]
@@ -22,8 +26,74 @@ use base64::prelude::*;
 use domain::{lens, prompt_template};
 use tauri::Manager;
 
+/// Generate product assets, capabilities and embedded metadata once for every runtime.
+fn product_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
+fn configure_shell<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    state: app_state::AppState,
+    presentation: platform::Presentation<R>,
+) -> tauri::Builder<R> {
+    builder
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .manage(state)
+        .manage(presentation)
+        .manage(ui::LensWindowPresentationState::default())
+        .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
+        .invoke_handler(command_handler())
+}
+
+/// One command registration for native composition and common-shell IPC verification.
+fn command_handler<R: tauri::Runtime>(
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        commands::get_app_snapshot,
+        commands::set_agent,
+        commands::set_working_directory,
+        commands::set_agent_prompt_template,
+        commands::reset_agent_prompt_template,
+        commands::accessibility_permission,
+        commands::request_accessibility_permission,
+        commands::select_lens_target,
+        commands::add_lens_target,
+        commands::remove_lens_target,
+        commands::confirm_lens_targets,
+        commands::retry_lens_transform,
+        commands::pause_lens,
+        commands::resume_lens,
+        commands::stop_lens,
+        commands::authenticate_agent,
+        commands::authenticate_agent_selection,
+        commands::reauthenticate_agent_selection,
+        commands::sign_out_agent_selection,
+        commands::cancel_agent,
+        commands::set_session_option,
+        commands::set_agent_defaults,
+        commands::preview_agent_model,
+        commands::respond_agent_interaction,
+        commands::show_settings,
+    ]
+}
+
+#[cfg(target_os = "macos")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    run_with_runtime(
+        tauri::Builder::default(),
+        platform::macos_services(),
+        platform::macos_presentation(),
+    );
+}
+
+/// Shared shell implementation. Product entry points still admit only supported native targets.
+pub fn run_with_runtime<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    services: platform::Services,
+    presentation: platform::Presentation<R>,
+) {
     let validate_interactions =
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
     let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();
@@ -52,12 +122,7 @@ pub fn run() {
         serde_json::from_str::<model::SelectedWindow>(&json)
             .expect("LENS_VALIDATE_TARGET must be a SelectedWindow JSON object")
     });
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .manage(app_state::AppState::load(platform::macos_services()))
-        .manage(ui::LensWindowPresentationState::default())
-        .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
+    configure_shell(builder, app_state::AppState::load(services), presentation)
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(if validate_a11y {
@@ -109,34 +174,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::get_app_snapshot,
-            commands::set_agent,
-            commands::set_working_directory,
-            commands::set_agent_prompt_template,
-            commands::reset_agent_prompt_template,
-            commands::accessibility_permission,
-            commands::request_accessibility_permission,
-            commands::select_lens_target,
-            commands::add_lens_target,
-            commands::remove_lens_target,
-            commands::confirm_lens_targets,
-            commands::retry_lens_transform,
-            commands::pause_lens,
-            commands::resume_lens,
-            commands::stop_lens,
-            commands::authenticate_agent,
-            commands::authenticate_agent_selection,
-            commands::reauthenticate_agent_selection,
-            commands::sign_out_agent_selection,
-            commands::cancel_agent,
-            commands::set_session_option,
-            commands::set_agent_defaults,
-            commands::preview_agent_model,
-            commands::respond_agent_interaction,
-            commands::show_settings,
-        ])
-        .build(tauri::generate_context!())
+        .build(product_context())
         .expect("failed to build Lens")
         .run(move |app, event| match event {
             #[cfg(debug_assertions)]
@@ -351,7 +389,7 @@ pub fn run() {
 }
 
 #[cfg(debug_assertions)]
-fn show_rich_output_validation(app: tauri::AppHandle) -> Result<(), String> {
+fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     let operation_id = uuid::Uuid::new_v4();
     let first_input_image = include_bytes!("../icons/128x128@2x.png");
     let second_input_image = include_bytes!("../icons/128x128.png");

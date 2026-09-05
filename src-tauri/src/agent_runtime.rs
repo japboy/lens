@@ -193,7 +193,10 @@ struct PnpmInstallRecord {
     dist_sha256: String,
 }
 
-pub async fn resolve(app: &AppHandle, kind: AgentKind) -> Result<ResolvedAgentRuntime, String> {
+pub async fn resolve<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+) -> Result<ResolvedAgentRuntime, String> {
     let state = app.state::<AppState>();
     let _install_guard = state.agent_runtime_install.lock().await;
     let operation_id = Uuid::new_v4();
@@ -219,8 +222,8 @@ pub async fn resolve(app: &AppHandle, kind: AgentKind) -> Result<ResolvedAgentRu
     result
 }
 
-pub async fn resolve_installed(
-    app: &AppHandle,
+pub async fn resolve_installed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     kind: AgentKind,
 ) -> Result<Option<ResolvedAgentRuntime>, String> {
     let state = app.state::<AppState>();
@@ -260,8 +263,8 @@ pub async fn resolve_installed(
     }
 }
 
-async fn resolve_inner(
-    app: &AppHandle,
+async fn resolve_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     kind: AgentKind,
     operation_id: Uuid,
     install_if_missing: bool,
@@ -319,8 +322,8 @@ fn runtime_state(
     }
 }
 
-fn publish_ready(
-    app: &AppHandle,
+fn publish_ready<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     approved: AgentRuntimePolicy,
 ) -> Result<(), String> {
@@ -339,7 +342,7 @@ fn publish_ready(
     Ok(())
 }
 
-fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
+fn runtime_root<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map(|path| path.join("agent-runtimes"))
@@ -361,11 +364,11 @@ fn agent_install_root(root: &Path, approved: AgentRuntimePolicy) -> PathBuf {
         .join(approved.adapter_version)
 }
 
-async fn verify_installed_runtime(
+async fn verify_installed_runtime<R: tauri::Runtime>(
     root: &Path,
     approved: AgentRuntimePolicy,
     operation_id: Uuid,
-    app: &AppHandle,
+    app: &AppHandle<R>,
 ) -> Result<ResolvedAgentRuntime, String> {
     let node_root = node_install_root(root);
     let agent_root = agent_install_root(root, approved);
@@ -531,8 +534,8 @@ fn validate_registry_entry(bytes: &[u8], approved: AgentRuntimePolicy) -> Result
     Ok(())
 }
 
-async fn ensure_node_runtime(
-    app: &AppHandle,
+async fn ensure_node_runtime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     root: &Path,
     operation_id: Uuid,
 ) -> Result<PathBuf, String> {
@@ -623,8 +626,8 @@ async fn verify_node_runtime_payload(node_root: &Path) -> Result<(), String> {
     verify_version_command(&node, &["--version"], &format!("v{NODE_VERSION}"), "Node").await
 }
 
-async fn download_node_archive(
-    app: &AppHandle,
+async fn download_node_archive<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     destination: &Path,
 ) -> Result<(), String> {
@@ -754,8 +757,8 @@ fn extract_approved_archive_blocking(
     Ok(())
 }
 
-async fn ensure_pnpm_runtime(
-    app: &AppHandle,
+async fn ensure_pnpm_runtime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     root: &Path,
     node_root: &Path,
     operation_id: Uuid,
@@ -864,8 +867,8 @@ async fn verify_pnpm_runtime_payload(node_root: &Path, pnpm_root: &Path) -> Resu
     .await
 }
 
-async fn download_pnpm_archive(
-    app: &AppHandle,
+async fn download_pnpm_archive<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     destination: &Path,
 ) -> Result<(), String> {
@@ -927,8 +930,8 @@ async fn download_pnpm_archive(
     Ok(())
 }
 
-async fn ensure_agent_runtime(
-    app: &AppHandle,
+async fn ensure_agent_runtime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     root: &Path,
     node_root: &Path,
     pnpm_root: &Path,

@@ -99,11 +99,11 @@ fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
     Ok(Image::new_owned(rgba, icon.width(), icon.height()))
 }
 
-struct TrayMenuItems {
-    select_target: MenuItem<tauri::Wry>,
-    agent_claude: CheckMenuItem<tauri::Wry>,
-    agent_codex: CheckMenuItem<tauri::Wry>,
-    working_directory: MenuItem<tauri::Wry>,
+struct TrayMenuItems<R: tauri::Runtime> {
+    select_target: MenuItem<R>,
+    agent_claude: CheckMenuItem<R>,
+    agent_codex: CheckMenuItem<R>,
+    working_directory: MenuItem<R>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -310,8 +310,8 @@ impl LensWindowGeometry {
     }
 }
 
-fn lens_window_geometry(
-    app: &AppHandle,
+fn lens_window_geometry<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     target_set: &LensTargetSet,
 ) -> tauri::Result<LensWindowGeometry> {
     match target_set.targets.as_slice() {
@@ -384,7 +384,7 @@ impl TrayMenuPresentation {
     }
 }
 
-pub fn install_menu_bar(app: &mut App) -> tauri::Result<()> {
+pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()> {
     let select = MenuItem::with_id(
         app,
         "select_target",
@@ -462,12 +462,12 @@ pub fn install_menu_bar(app: &mut App) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
+pub fn sync_tray_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let state = app.state::<crate::app_state::AppState>();
     let snapshot = state.snapshot()?;
     let presentation =
         TrayMenuPresentation::derive(&snapshot.agent_selection, &snapshot.config, &snapshot.lens);
-    let items = app.state::<TrayMenuItems>();
+    let items = app.state::<TrayMenuItems<R>>();
     items
         .select_target
         .set_enabled(presentation.select_target_enabled)
@@ -516,7 +516,7 @@ pub fn sync_tray_menu(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn select_lens_target_from_tray(app: &AppHandle) {
+fn select_lens_target_from_tray<R: tauri::Runtime>(app: &AppHandle<R>) {
     let snapshot = app.state::<crate::app_state::AppState>().snapshot();
     let Ok(snapshot) = snapshot else {
         return;
@@ -543,7 +543,7 @@ fn select_lens_target_from_tray(app: &AppHandle) {
     });
 }
 
-fn select_agent_from_menu(app: &AppHandle, agent: AgentKind) {
+fn select_agent_from_menu<R: tauri::Runtime>(app: &AppHandle<R>, agent: AgentKind) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         match commands::select_agent(handle.clone(), agent).await {
@@ -563,7 +563,7 @@ fn select_agent_from_menu(app: &AppHandle, agent: AgentKind) {
     });
 }
 
-fn choose_working_directory(app: &AppHandle) {
+fn choose_working_directory<R: tauri::Runtime>(app: &AppHandle<R>) {
     let current = match app
         .state::<crate::app_state::AppState>()
         .config()
@@ -601,7 +601,7 @@ fn menu_safe_path(path: &str) -> String {
     path.replace('&', "&&").replace(['\r', '\n'], " ")
 }
 
-pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
+pub fn show_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
         window.show()?;
         window.set_focus()?;
@@ -627,7 +627,10 @@ pub fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn show_lens_window(app: &AppHandle, target_set: &LensTargetSet) -> tauri::Result<()> {
+pub fn show_lens_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    target_set: &LensTargetSet,
+) -> tauri::Result<()> {
     let window = app.get_webview_window(LENS_WINDOW_LABEL);
     let presentation = app.state::<LensWindowPresentationState>();
     let mut placement = presentation.placement.lock().map_err(|_| {
@@ -681,8 +684,8 @@ pub fn show_lens_window(app: &AppHandle, target_set: &LensTargetSet) -> tauri::R
     }
 }
 
-pub async fn show_target_selection_window(
-    app: &AppHandle,
+pub async fn show_target_selection_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     selection: &LensTargetSelection,
 ) -> tauri::Result<()> {
     let anchor = selection.anchor.ok_or_else(|| {
@@ -758,7 +761,9 @@ pub async fn show_target_selection_window(
     Ok(())
 }
 
-pub async fn dismiss_target_selection_window(app: &AppHandle) -> tauri::Result<()> {
+pub async fn dismiss_target_selection_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
         crate::platform::dismiss_window_to_screen_right(&window)
             .await
@@ -768,7 +773,7 @@ pub async fn dismiss_target_selection_window(app: &AppHandle) -> tauri::Result<(
     Ok(())
 }
 
-pub fn destroy_target_selection_window(app: &AppHandle) -> tauri::Result<()> {
+pub fn destroy_target_selection_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(TARGET_SELECTION_WINDOW_LABEL) {
         window.destroy()?;
     }

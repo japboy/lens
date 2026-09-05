@@ -3,6 +3,29 @@ use std::ffi::c_void;
 use tauri::WebviewWindow;
 use tokio::sync::oneshot;
 
+pub struct MacOsPresentation;
+
+impl<R: tauri::Runtime> super::WindowPresentation<R> for MacOsPresentation {
+    fn present(&self, window: &WebviewWindow<R>) -> Result<(), PlatformError> {
+        present_window_from_screen_right(window)
+    }
+
+    fn dismiss<'a>(&'a self, window: &'a WebviewWindow<R>) -> super::PresentationFuture<'a> {
+        Box::pin(dismiss_window_to_screen_right(window))
+    }
+
+    fn transition<'a>(
+        &'a self,
+        window: &'a WebviewWindow<R>,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> super::PresentationFuture<'a> {
+        Box::pin(transition_window_frame(window, x, y, width, height))
+    }
+}
+
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 
 unsafe extern "C" {
@@ -39,7 +62,9 @@ unsafe extern "C" fn window_transition_callback(completed: bool, context: *mut c
     }
 }
 
-pub fn present_window_from_screen_right(window: &WebviewWindow) -> Result<(), PlatformError> {
+pub fn present_window_from_screen_right<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+) -> Result<(), PlatformError> {
     let native_window = window.ns_window().map_err(|error| {
         PlatformError::Operation(format!("unable to resolve native Preview window: {error}"))
     })?;
@@ -55,7 +80,9 @@ pub fn present_window_from_screen_right(window: &WebviewWindow) -> Result<(), Pl
     }
 }
 
-pub async fn dismiss_window_to_screen_right(window: &WebviewWindow) -> Result<(), PlatformError> {
+pub async fn dismiss_window_to_screen_right<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+) -> Result<(), PlatformError> {
     let native_window = window.ns_window().map_err(|error| {
         PlatformError::Operation(format!("unable to resolve native Preview window: {error}"))
     })?;
@@ -89,8 +116,8 @@ pub async fn dismiss_window_to_screen_right(window: &WebviewWindow) -> Result<()
     }
 }
 
-pub async fn transition_window_frame(
-    window: &WebviewWindow,
+pub async fn transition_window_frame<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
     target_x: f64,
     target_y: f64,
     target_content_width: f64,

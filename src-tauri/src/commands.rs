@@ -51,27 +51,33 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Strin
     state.snapshot()
 }
 
-pub async fn select_agent(
-    app: AppHandle,
+pub async fn select_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
     candidate: AgentKind,
 ) -> Result<AgentSelectionState, String> {
     agent::select_agent(app, candidate).await
 }
 
 #[tauri::command]
-pub async fn set_agent(app: AppHandle, agent: AgentKind) -> Result<AgentSelectionState, String> {
+pub async fn set_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    agent: AgentKind,
+) -> Result<AgentSelectionState, String> {
     select_agent(app, agent).await
 }
 
 #[tauri::command]
-pub fn set_working_directory(path: String, app: AppHandle) -> Result<AppConfig, String> {
+pub fn set_working_directory<R: tauri::Runtime>(
+    path: String,
+    app: AppHandle<R>,
+) -> Result<AppConfig, String> {
     update_working_directory(&app, PathBuf::from(path))
 }
 
 #[tauri::command]
-pub fn set_agent_prompt_template(
+pub fn set_agent_prompt_template<R: tauri::Runtime>(
     agent_prompt_template: AgentPromptTemplate,
-    app: AppHandle,
+    app: AppHandle<R>,
 ) -> Result<AppConfig, String> {
     let agent_prompt_template = agent_prompt_template.normalize()?;
     update_config(&app, |config| {
@@ -80,21 +86,26 @@ pub fn set_agent_prompt_template(
 }
 
 #[tauri::command]
-pub fn reset_agent_prompt_template(app: AppHandle) -> Result<AppConfig, String> {
+pub fn reset_agent_prompt_template<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<AppConfig, String> {
     update_config(&app, |config| {
         config.agent_prompt_template = AgentPromptTemplate::default();
     })
 }
 
-pub fn update_working_directory(app: &AppHandle, directory: PathBuf) -> Result<AppConfig, String> {
+pub fn update_working_directory<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    directory: PathBuf,
+) -> Result<AppConfig, String> {
     if !directory.is_absolute() || !directory.is_dir() {
         return Err("working directory must be an existing absolute directory".into());
     }
     update_config(app, |config| config.working_directory = directory)
 }
 
-fn update_config(
-    app: &AppHandle,
+fn update_config<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     update: impl FnOnce(&mut AppConfig),
 ) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
@@ -127,8 +138,8 @@ pub fn request_accessibility_permission(state: State<'_, AppState>) -> bool {
     state.platform.trust.request()
 }
 
-async fn select_single_window(
-    app: &AppHandle,
+async fn select_single_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<Option<SelectedWindow>, String> {
     let state = app.state::<AppState>();
@@ -162,7 +173,7 @@ fn validation_window_count() -> usize {
         .unwrap_or(1)
 }
 
-pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
+pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
@@ -228,7 +239,10 @@ pub async fn select_and_extract(app: AppHandle) -> Result<LensState, String> {
         .await
 }
 
-pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<LensState, String> {
+pub async fn extract_target<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    target: SelectedWindow,
+) -> Result<LensState, String> {
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
@@ -247,8 +261,8 @@ pub async fn extract_target(app: AppHandle, target: SelectedWindow) -> Result<Le
     extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Legacy).await
 }
 
-async fn extract_target_set_for_operation(
-    app: AppHandle,
+async fn extract_target_set_for_operation<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     target_set: LensTargetSet,
     access_mode: WindowAccessMode,
@@ -357,8 +371,8 @@ async fn extract_target_set_for_operation(
     Ok(next)
 }
 
-pub(crate) async fn refresh_lens_context(
-    app: AppHandle,
+pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     expected_context_revision: u64,
 ) -> Result<LensContextRefreshOutcome, String> {
@@ -533,8 +547,8 @@ fn mark_context_refresh_started(lens: &mut LensState) {
     }
 }
 
-fn mark_refresh_failed(
-    app: &AppHandle,
+fn mark_refresh_failed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     context_id: Uuid,
     context_revision: u64,
@@ -644,8 +658,8 @@ async fn build_target_selection_item(
     )
 }
 
-fn target_selection_for_operation(
-    app: &AppHandle,
+fn target_selection_for_operation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<LensTargetSelection, String> {
     let lens = app.state::<AppState>().lens()?;
@@ -665,8 +679,8 @@ fn target_selection_for_operation(
     Ok(selection)
 }
 
-async fn publish_target_selection(
-    app: &AppHandle,
+async fn publish_target_selection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     selection: LensTargetSelection,
 ) -> Result<LensState, String> {
@@ -696,8 +710,8 @@ async fn publish_target_selection(
     Ok(next)
 }
 
-fn store_target_selection_payload(
-    app: &AppHandle,
+fn store_target_selection_payload<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     payload: Option<LensMediaPayload>,
 ) -> Result<(), String> {
@@ -713,7 +727,7 @@ fn store_target_selection_payload(
 }
 
 #[tauri::command]
-pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
+pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
     let agent_selection = state.agent_selection()?;
     if !agent_selection.can_select_lens_target() {
@@ -789,7 +803,10 @@ pub async fn select_lens_target(app: AppHandle) -> Result<LensState, String> {
 }
 
 #[tauri::command]
-pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub async fn add_lens_target<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     let mut selection = target_selection_for_operation(&app, operation_id)?;
     if selection.stage != LensTargetSelectionStage::Reviewing {
         return Err("Lens target selection is already picking a window".into());
@@ -843,8 +860,8 @@ pub async fn add_lens_target(app: AppHandle, operation_id: Uuid) -> Result<LensS
 }
 
 #[tauri::command]
-pub async fn remove_lens_target(
-    app: AppHandle,
+pub async fn remove_lens_target<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     target_id: String,
 ) -> Result<LensState, String> {
@@ -895,15 +912,18 @@ pub async fn remove_lens_target(
 }
 
 #[tauri::command]
-pub async fn confirm_lens_targets(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub async fn confirm_lens_targets<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     confirm_targets(&DesktopConfirmation { app }, operation_id).await
 }
 
-struct DesktopConfirmation {
-    app: AppHandle,
+struct DesktopConfirmation<R: tauri::Runtime> {
+    app: AppHandle<R>,
 }
 
-impl ConfirmationHost for DesktopConfirmation {
+impl<R: tauri::Runtime> ConfirmationHost for DesktopConfirmation<R> {
     fn selection(&self, operation: Uuid) -> Result<LensTargetSelection, String> {
         target_selection_for_operation(&self.app, operation)
     }
@@ -957,7 +977,10 @@ impl ConfirmationHost for DesktopConfirmation {
 }
 
 #[tauri::command]
-pub async fn retry_lens_transform(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub async fn retry_lens_transform<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     let lens = app.state::<AppState>().lens()?;
     if lens.operation_id != Some(operation_id) {
         return Err(OPERATION_SUPERSEDED.into());
@@ -973,17 +996,26 @@ fn can_retry_agent_transform(stage: LensStage, has_input: bool) -> bool {
 }
 
 #[tauri::command]
-pub fn pause_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub fn pause_lens<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     live_runtime::pause(&app, operation_id)
 }
 
 #[tauri::command]
-pub fn resume_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub fn resume_lens<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     live_runtime::resume(&app, operation_id)
 }
 
 #[tauri::command]
-pub fn stop_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
+pub fn stop_lens<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+) -> Result<LensState, String> {
     let current = app.state::<AppState>().lens()?;
     if current.operation_id != Some(operation_id) {
         return Err("Lens operation was superseded".into());
@@ -1013,8 +1045,8 @@ pub fn stop_lens(app: AppHandle, operation_id: Uuid) -> Result<LensState, String
 }
 
 #[tauri::command]
-pub async fn authenticate_agent(
-    app: AppHandle,
+pub async fn authenticate_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     method_id: String,
 ) -> Result<LensState, String> {
@@ -1022,25 +1054,33 @@ pub async fn authenticate_agent(
 }
 
 #[tauri::command]
-pub async fn authenticate_agent_selection(
-    app: AppHandle,
+pub async fn authenticate_agent_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
     method_id: String,
 ) -> Result<AgentSelectionState, String> {
     agent::authenticate_selection(app, method_id).await
 }
 
 #[tauri::command]
-pub async fn reauthenticate_agent_selection(app: AppHandle) -> Result<AgentSelectionState, String> {
+pub async fn reauthenticate_agent_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<AgentSelectionState, String> {
     agent::reauthenticate_selection(app).await
 }
 
 #[tauri::command]
-pub async fn sign_out_agent_selection(app: AppHandle) -> Result<AgentSelectionState, String> {
+pub async fn sign_out_agent_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<AgentSelectionState, String> {
     agent::sign_out_selection(app).await
 }
 
 #[tauri::command]
-pub fn cancel_agent(app: AppHandle, operation_id: Uuid, run_id: Uuid) -> Result<LensState, String> {
+pub fn cancel_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+    run_id: Uuid,
+) -> Result<LensState, String> {
     agent::cancel_current(
         &app,
         AgentRunKey {
@@ -1051,7 +1091,7 @@ pub fn cancel_agent(app: AppHandle, operation_id: Uuid, run_id: Uuid) -> Result<
 }
 
 #[tauri::command]
-pub fn show_settings(app: AppHandle) -> Result<(), String> {
+pub fn show_settings<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
     ui::show_settings(&app).map_err(|error| error.to_string())
 }
 
@@ -1065,8 +1105,8 @@ fn failed_state(operation_id: Uuid, target_set: Option<LensTargetSet>, error: St
     }
 }
 
-fn replace_operation_state(
-    app: &AppHandle,
+fn replace_operation_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     next: LensState,
 ) -> Result<bool, String> {
@@ -1075,8 +1115,8 @@ fn replace_operation_state(
 
 /// Resolve model-dependent settings without persisting a draft or touching the live actor.
 #[tauri::command]
-pub async fn preview_agent_model(
-    app: AppHandle,
+pub async fn preview_agent_model<R: tauri::Runtime>(
+    app: AppHandle<R>,
     selection_id: Uuid,
     config_id: String,
     value: Option<String>,
@@ -1253,8 +1293,8 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn set_session_option(
-    app: AppHandle,
+pub fn set_session_option<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     instance_id: Uuid,
     config_revision: u32,
@@ -1267,8 +1307,8 @@ pub fn set_session_option(
 }
 
 #[tauri::command]
-pub fn respond_agent_interaction(
-    app: AppHandle,
+pub fn respond_agent_interaction<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     instance_id: Uuid,
     interaction_id: Uuid,
@@ -1280,8 +1320,8 @@ pub fn respond_agent_interaction(
 }
 
 #[tauri::command]
-pub async fn set_agent_defaults(
-    app: AppHandle,
+pub async fn set_agent_defaults<R: tauri::Runtime>(
+    app: AppHandle<R>,
     selection_id: Uuid,
     defaults: crate::agent_preferences::AgentDefaults,
     confirm_privilege: bool,

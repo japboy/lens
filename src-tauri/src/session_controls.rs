@@ -119,7 +119,7 @@ impl SessionControls {
     pub fn snapshot(&self) -> Result<AgentSessionControlState, String> {
         Ok(self.runtime.lock().map_err(|_| lock_error())?.state.clone())
     }
-    pub fn publish(&self, app: &AppHandle) -> Result<(), String> {
+    pub fn publish<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
         // Serialize mutation/publication so a slower publisher cannot replace a newer snapshot.
         let runtime = self.runtime.lock().map_err(|_| lock_error())?;
         let snapshot = runtime.state.clone();
@@ -235,7 +235,7 @@ impl SessionControls {
         runtime.state.effective_mode = mode.into();
         Ok(())
     }
-    pub fn close(&self, app: &AppHandle) {
+    pub fn close<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.state.active = false;
             for interaction in &mut runtime.state.interactions {
@@ -291,9 +291,9 @@ impl SessionControls {
         runtime.decisions.push(PendingDecision { id, sender });
         Ok((id, receiver))
     }
-    pub fn respond(
+    pub fn respond<R: tauri::Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         instance_id: Uuid,
         id: Uuid,
         response: InteractionResponse,
@@ -380,18 +380,18 @@ impl SessionControls {
             .send(response)
             .map_err(|_| "Agent interaction was cancelled".into())
     }
-    async fn decision(
+    async fn decision<R: tauri::Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         details: InteractionDetails,
         cancellation: Option<agent_client_protocol::RequestCancellation>,
     ) -> InteractionResponse {
         self.decision_with_deadline(app, details, cancellation, DECISION_TIMEOUT)
             .await
     }
-    async fn decision_with_deadline(
+    async fn decision_with_deadline<R: tauri::Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         details: InteractionDetails,
         cancellation: Option<agent_client_protocol::RequestCancellation>,
         timeout: Duration,
@@ -402,9 +402,9 @@ impl SessionControls {
         self.await_decision(app, id, receiver, cancellation, timeout)
             .await
     }
-    async fn await_decision(
+    async fn await_decision<R: tauri::Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         id: Uuid,
         mut receiver: oneshot::Receiver<InteractionResponse>,
         cancellation: Option<agent_client_protocol::RequestCancellation>,
@@ -568,9 +568,9 @@ impl SessionControls {
             _ => Ok(None),
         }
     }
-    pub fn receive_permission(
+    pub fn receive_permission<R: tauri::Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         request: RequestPermissionRequest,
         responder: Responder<RequestPermissionResponse>,
         connection: &ConnectionTo<Agent>,
@@ -623,9 +623,9 @@ impl SessionControls {
             responder.respond(RequestPermissionResponse::new(outcome))
         })
     }
-    pub fn receive_elicitation(
+    pub fn receive_elicitation<R: tauri::Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         request: CreateElicitationRequest,
         responder: Responder<CreateElicitationResponse>,
         connection: &ConnectionTo<Agent>,
@@ -722,9 +722,9 @@ impl SessionControls {
         };
         Ok(details)
     }
-    pub async fn serve(
+    pub async fn serve<R: tauri::Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         connection: &ConnectionTo<Agent>,
         mut receiver: mpsc::Receiver<ConfigChange>,
     ) -> Result<(), Error> {
@@ -918,8 +918,8 @@ impl SessionControls {
     }
 }
 
-pub fn active_controls(
-    app: &AppHandle,
+pub fn active_controls<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<Arc<SessionControls>, String> {
     let state = app.state::<AppState>();
@@ -937,11 +937,11 @@ pub fn active_controls(
     Ok(controls)
 }
 
-pub struct ControlLifetime {
-    pub app: AppHandle,
+pub struct ControlLifetime<R: tauri::Runtime> {
+    pub app: AppHandle<R>,
     pub controls: Arc<SessionControls>,
 }
-impl Drop for ControlLifetime {
+impl<R: tauri::Runtime> Drop for ControlLifetime<R> {
     fn drop(&mut self) {
         self.controls.close(&self.app);
     }
@@ -1082,11 +1082,11 @@ impl Drop for DecisionLifetime<'_> {
         self.controls.cancel_decision(self.id);
     }
 }
-pub struct TurnLifetime<'a> {
+pub struct TurnLifetime<'a, R: tauri::Runtime> {
     pub controls: &'a SessionControls,
-    pub app: &'a AppHandle,
+    pub app: &'a AppHandle<R>,
 }
-impl Drop for TurnLifetime<'_> {
+impl<R: tauri::Runtime> Drop for TurnLifetime<'_, R> {
     fn drop(&mut self) {
         self.controls.end_turn();
         let _ = self.controls.publish(self.app);
@@ -1094,7 +1094,7 @@ impl Drop for TurnLifetime<'_> {
 }
 
 /// Synchronously revoke UI responders before the application or operation is torn down.
-pub fn close_active(app: &AppHandle) {
+pub fn close_active<R: tauri::Runtime>(app: &AppHandle<R>) {
     let controls = app
         .state::<AppState>()
         .session_controls
