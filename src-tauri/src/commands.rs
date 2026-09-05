@@ -28,17 +28,42 @@ use tauri::{AppHandle, Manager, State};
 use use_case::context::{
     build_context, BlockingExecutor, BuiltContext, ContextBuildRequest, WindowAccessMode,
 };
+use use_case::state::ContextReadAuthority;
 use uuid::Uuid;
 
-struct DesktopBlockingExecutor;
+struct DesktopBlockingExecutor<R: tauri::Runtime> {
+    app: AppHandle<R>,
+    authority: ContextReadAuthority,
+}
 
-impl BlockingExecutor for DesktopBlockingExecutor {
+impl<R: tauri::Runtime> DesktopBlockingExecutor<R> {
+    fn admit(&self) -> Result<(), String> {
+        if self.authority.admits(&self.app.state::<AppState>().lens()?) {
+            Ok(())
+        } else {
+            Err("Lens source read authority was revoked".into())
+        }
+    }
+}
+
+impl<R: tauri::Runtime> BlockingExecutor for DesktopBlockingExecutor<R> {
     fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send>> {
-        let task = tauri::async_runtime::spawn_blocking(work);
-        Box::pin(async move { task.await.map_err(|error| error.to_string()) })
+        if let Err(error) = self.admit() {
+            return Box::pin(async move { Err(error) });
+        }
+        let executor = Self {
+            app: self.app.clone(),
+            authority: self.authority,
+        };
+        let task = tauri::async_runtime::spawn_blocking(move || {
+            // A worker queued before Pause/Stop must recheck when it actually starts.
+            executor.admit()?;
+            Ok(work())
+        });
+        Box::pin(async move { task.await.map_err(|error| error.to_string())? })
     }
 }
 
@@ -278,7 +303,10 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         context,
         payloads,
     } = match build_context(
-        &DesktopBlockingExecutor,
+        &DesktopBlockingExecutor {
+            app: app.clone(),
+            authority: ContextReadAuthority::Initial { operation_id },
+        },
         app.state::<AppState>().platform.accessibility.clone(),
         app.state::<AppState>().platform.capture.clone(),
         ContextBuildRequest {
@@ -431,7 +459,14 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
         context: next_context,
         payloads,
     } = match build_context(
-        &DesktopBlockingExecutor,
+        &DesktopBlockingExecutor {
+            app: app.clone(),
+            authority: ContextReadAuthority::Refresh {
+                operation_id,
+                context_id,
+                previous_revision: expected_context_revision,
+            },
+        },
         app.state::<AppState>().platform.accessibility.clone(),
         app.state::<AppState>().platform.capture.clone(),
         ContextBuildRequest {

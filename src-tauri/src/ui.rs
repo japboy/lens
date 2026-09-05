@@ -6,7 +6,7 @@ use crate::{
         LensTargetSelection,
     },
 };
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -345,8 +345,8 @@ fn lens_window_geometry<R: tauri::Runtime>(
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct TrayMenuPresentation {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrayMenuPresentation {
     select_target_enabled: bool,
     target_selection_active: bool,
     live_lens_active: bool,
@@ -355,6 +355,15 @@ struct TrayMenuPresentation {
     codex_checked: bool,
     working_directory_text: String,
 }
+
+/// Desktop-owned tray output; derivation remains shared application presentation policy.
+pub(crate) trait TrayOutput<R: tauri::Runtime>: Send + Sync {
+    fn apply(&self, app: &AppHandle<R>, presentation: TrayMenuPresentation) -> Result<(), String>;
+}
+
+pub(crate) struct TrayPresentation<R: tauri::Runtime>(pub Arc<dyn TrayOutput<R>>);
+
+pub(crate) struct NativeTrayOutput;
 
 impl TrayMenuPresentation {
     fn derive(agent_selection: &AgentSelectionState, config: &AppConfig, lens: &LensState) -> Self {
@@ -467,53 +476,61 @@ pub fn sync_tray_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Strin
     let snapshot = state.snapshot()?;
     let presentation =
         TrayMenuPresentation::derive(&snapshot.agent_selection, &snapshot.config, &snapshot.lens);
-    let items = app.state::<TrayMenuItems<R>>();
-    items
-        .select_target
-        .set_enabled(presentation.select_target_enabled)
+    app.state::<TrayPresentation<R>>()
+        .0
+        .apply(app, presentation)
+}
+
+impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
+    fn apply(&self, app: &AppHandle<R>, presentation: TrayMenuPresentation) -> Result<(), String> {
+        let items = app.state::<TrayMenuItems<R>>();
+        items
+            .select_target
+            .set_enabled(presentation.select_target_enabled)
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_claude
+            .set_enabled(presentation.agent_selection_enabled)
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_codex
+            .set_enabled(presentation.agent_selection_enabled)
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_claude
+            .set_checked(presentation.claude_checked)
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_codex
+            .set_checked(presentation.codex_checked)
+            .map_err(|error| error.to_string())?;
+        items
+            .working_directory
+            .set_text(presentation.working_directory_text)
+            .map_err(|error| error.to_string())?;
+        let tray = app
+            .tray_by_id("lens")
+            .ok_or_else(|| "Lens tray icon is unavailable".to_string())?;
+        tray.set_icon_with_as_template(
+            Some(
+                tray_icon(presentation.select_target_enabled || presentation.live_lens_active)
+                    .map_err(|error| error.to_string())?,
+            ),
+            true,
+        )
         .map_err(|error| error.to_string())?;
-    items
-        .agent_claude
-        .set_enabled(presentation.agent_selection_enabled)
-        .map_err(|error| error.to_string())?;
-    items
-        .agent_codex
-        .set_enabled(presentation.agent_selection_enabled)
-        .map_err(|error| error.to_string())?;
-    items
-        .agent_claude
-        .set_checked(presentation.claude_checked)
-        .map_err(|error| error.to_string())?;
-    items
-        .agent_codex
-        .set_checked(presentation.codex_checked)
-        .map_err(|error| error.to_string())?;
-    items
-        .working_directory
-        .set_text(presentation.working_directory_text)
-        .map_err(|error| error.to_string())?;
-    let tray = app
-        .tray_by_id("lens")
-        .ok_or_else(|| "Lens tray icon is unavailable".to_string())?;
-    tray.set_icon_with_as_template(
-        Some(
-            tray_icon(presentation.select_target_enabled || presentation.live_lens_active)
-                .map_err(|error| error.to_string())?,
-        ),
-        true,
-    )
-    .map_err(|error| error.to_string())?;
-    let tooltip = if presentation.target_selection_active {
-        "Lens — Lens Target selection is already active"
-    } else if presentation.live_lens_active {
-        "Lens — left-click to show the active Lens"
-    } else if presentation.select_target_enabled {
-        "Lens — left-click to select Lens Targets"
-    } else {
-        "Lens — select and authenticate an AI Agent to enable target selection"
-    };
-    tray.set_tooltip(Some(tooltip))
-        .map_err(|error| error.to_string())
+        let tooltip = if presentation.target_selection_active {
+            "Lens — Lens Target selection is already active"
+        } else if presentation.live_lens_active {
+            "Lens — left-click to show the active Lens"
+        } else if presentation.select_target_enabled {
+            "Lens — left-click to select Lens Targets"
+        } else {
+            "Lens — select and authenticate an AI Agent to enable target selection"
+        };
+        tray.set_tooltip(Some(tooltip))
+            .map_err(|error| error.to_string())
+    }
 }
 
 fn select_lens_target_from_tray<R: tauri::Runtime>(app: &AppHandle<R>) {

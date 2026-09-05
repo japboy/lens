@@ -14,6 +14,8 @@ fn app(state: AppState) -> tauri::App<MockRuntime> {
         tauri::test::mock_builder(),
         state,
         platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
     )
     .build(crate::product_context())
     .unwrap()
@@ -25,7 +27,7 @@ fn window(app: &tauri::App<MockRuntime>) -> tauri::WebviewWindow<MockRuntime> {
         .unwrap()
 }
 
-fn invoke(
+pub(crate) fn invoke(
     window: &tauri::WebviewWindow<MockRuntime>,
     command: &str,
     body: Value,

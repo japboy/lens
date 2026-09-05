@@ -10,6 +10,39 @@ pub struct AgentRunKey {
     pub run_id: Uuid,
 }
 
+/// Finite authority for starting a source read; already-running native work is not abortable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextReadAuthority {
+    Initial {
+        operation_id: Uuid,
+    },
+    Refresh {
+        operation_id: Uuid,
+        context_id: Uuid,
+        previous_revision: u64,
+    },
+}
+
+impl ContextReadAuthority {
+    pub fn admits(self, lens: &LensState) -> bool {
+        match self {
+            Self::Initial { operation_id } => {
+                lens.operation_id == Some(operation_id) && lens.stage == LensStage::Extracting
+            }
+            Self::Refresh {
+                operation_id,
+                context_id,
+                previous_revision,
+            } => lens_context_refresh_has_authority(
+                lens,
+                operation_id,
+                context_id,
+                previous_revision,
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LensContextRefreshOutcome {
     Unchanged,
@@ -367,6 +400,69 @@ mod tests {
         };
         validate_context_state(Uuid::from_u128(1), &lens).unwrap();
         lens
+    }
+
+    #[test]
+    fn initial_source_reads_require_the_exact_extracting_operation() {
+        let operation_id = Uuid::from_u128(1);
+        let authority = ContextReadAuthority::Initial { operation_id };
+        for stage in [
+            LensStage::Idle,
+            LensStage::Selecting,
+            LensStage::Extracting,
+            LensStage::Ready,
+            LensStage::Connecting,
+            LensStage::AuthenticationRequired,
+            LensStage::Transforming,
+            LensStage::Completed,
+            LensStage::Cancelled,
+            LensStage::Failed,
+        ] {
+            let mut lens = LensState {
+                operation_id: Some(operation_id),
+                stage,
+                ..LensState::default()
+            };
+            assert_eq!(authority.admits(&lens), stage == LensStage::Extracting);
+            lens.operation_id = Some(Uuid::from_u128(2));
+            assert!(!authority.admits(&lens));
+            lens.operation_id = None;
+            assert!(!authority.admits(&lens));
+        }
+    }
+
+    #[test]
+    fn refresh_source_reads_require_current_context_revision_and_watching_lifecycle() {
+        let lens = canonical_state(3);
+        let authority = ContextReadAuthority::Refresh {
+            operation_id: lens.operation_id.unwrap(),
+            context_id: lens.context.as_ref().unwrap().context_id,
+            previous_revision: 3,
+        };
+        assert!(authority.admits(&lens));
+        for lifecycle in [
+            LensMonitoringLifecycle::Paused,
+            LensMonitoringLifecycle::Stopped,
+        ] {
+            let mut revoked = lens.clone();
+            revoked.live.as_mut().unwrap().lifecycle = lifecycle;
+            assert!(!authority.admits(&revoked));
+        }
+        let mut revoked = lens.clone();
+        revoked.context.as_mut().unwrap().revision = 4;
+        assert!(!authority.admits(&revoked));
+        revoked = lens.clone();
+        revoked.context.as_mut().unwrap().context_id = Uuid::from_u128(99);
+        assert!(!authority.admits(&revoked));
+        revoked = lens.clone();
+        revoked.operation_id = Some(Uuid::from_u128(99));
+        assert!(!authority.admits(&revoked));
+        revoked = lens.clone();
+        revoked.context = None;
+        assert!(!authority.admits(&revoked));
+        revoked = lens;
+        revoked.live = None;
+        assert!(!authority.admits(&revoked));
     }
 
     fn refresh_candidate() -> LensContextRefreshCommit {

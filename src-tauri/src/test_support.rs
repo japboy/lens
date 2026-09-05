@@ -95,3 +95,38 @@ impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
         panic!("unexpected native transition")
     }
 }
+
+pub(crate) struct UnusedTray;
+impl<R: tauri::Runtime> crate::ui::TrayOutput<R> for UnusedTray {
+    fn apply(
+        &self,
+        _: &tauri::AppHandle<R>,
+        _: crate::ui::TrayMenuPresentation,
+    ) -> Result<(), String> {
+        panic!("unexpected native tray update")
+    }
+}
+
+pub(crate) struct UnusedAgent;
+impl<R: tauri::Runtime> crate::agent::AgentHost<R> for UnusedAgent {
+    fn resolve<'a>(
+        &'a self,
+        _: &'a tauri::AppHandle<R>,
+        _: crate::model::AgentKind,
+    ) -> crate::agent::HostFuture<'a, crate::agent_runtime::ResolvedAgentRuntime> {
+        panic!("unexpected Agent runtime resolution")
+    }
+    fn resolve_installed<'a>(
+        &'a self,
+        _: &'a tauri::AppHandle<R>,
+        _: crate::model::AgentKind,
+    ) -> crate::agent::HostFuture<'a, Option<crate::agent_runtime::ResolvedAgentRuntime>> {
+        panic!("unexpected installed Agent runtime resolution")
+    }
+    fn connect(
+        &self,
+        _: &crate::agent::AgentDescriptor,
+    ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+        panic!("unexpected Agent connection")
+    }
+}

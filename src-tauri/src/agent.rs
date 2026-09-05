@@ -147,13 +147,70 @@ struct SourceCheckpoint<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct AgentDescriptor {
+pub(crate) struct AgentDescriptor {
     kind: AgentKind,
     adapter_name: &'static str,
     adapter_version: &'static str,
     safe_mode_id: &'static str,
     command: PathBuf,
     args: Vec<String>,
+}
+
+pub(crate) type HostFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
+
+/// Approved runtime acquisition and ACP transport, not session or output policy.
+pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
+    fn resolve<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+    ) -> HostFuture<'a, ResolvedAgentRuntime>;
+    fn resolve_installed<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+    ) -> HostFuture<'a, Option<ResolvedAgentRuntime>>;
+    fn connect(
+        &self,
+        descriptor: &AgentDescriptor,
+    ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client>;
+}
+
+pub(crate) struct AgentServices<R: tauri::Runtime>(pub Arc<dyn AgentHost<R>>);
+
+pub(crate) struct ManagedAgentHost;
+
+impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
+    fn resolve<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+    ) -> HostFuture<'a, ResolvedAgentRuntime> {
+        Box::pin(agent_runtime::resolve(app, kind))
+    }
+
+    fn resolve_installed<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+    ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        Box::pin(agent_runtime::resolve_installed(app, kind))
+    }
+
+    fn connect(
+        &self,
+        descriptor: &AgentDescriptor,
+    ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+        agent_client_protocol::DynConnectTo::new(descriptor.process())
+    }
+}
+
+fn transport<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    descriptor: &AgentDescriptor,
+) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+    app.state::<AgentServices<R>>().0.connect(descriptor)
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,7 +224,9 @@ impl AgentDescriptor {
         app: &AppHandle<R>,
         kind: AgentKind,
     ) -> Result<Self, String> {
-        agent_runtime::resolve(app, kind)
+        app.state::<AgentServices<R>>()
+            .0
+            .resolve(app, kind)
             .await
             .map(Self::from_runtime)
     }
@@ -176,7 +235,9 @@ impl AgentDescriptor {
         app: &AppHandle<R>,
         kind: AgentKind,
     ) -> Result<Option<Self>, String> {
-        agent_runtime::resolve_installed(app, kind)
+        app.state::<AgentServices<R>>()
+            .0
+            .resolve_installed(app, kind)
             .await
             .map(|runtime| runtime.map(Self::from_runtime))
     }
@@ -465,7 +526,7 @@ async fn logout_selection<R: tauri::Runtime>(
         }
     };
 
-    let result = tokio::time::timeout(AGENT_LOGOUT_TIMEOUT, run_logout(descriptor)).await;
+    let result = tokio::time::timeout(AGENT_LOGOUT_TIMEOUT, run_logout(&app, descriptor)).await;
     match result {
         Ok(Ok(auth_methods)) => {
             update_agent_selection(&app, operation_id, |selection| match purpose {
@@ -510,8 +571,11 @@ async fn logout_selection<R: tauri::Runtime>(
     current_agent_selection(&app)
 }
 
-async fn run_logout(descriptor: AgentDescriptor) -> Result<Vec<AgentAuthMethod>, Error> {
-    let process = descriptor.process();
+async fn run_logout<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    descriptor: AgentDescriptor,
+) -> Result<Vec<AgentAuthMethod>, Error> {
+    let process = transport(app, &descriptor);
     agent_client_protocol::Client
         .builder()
         .name("lens-logout")
@@ -556,7 +620,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
     } else {
         None
     };
-    let process = descriptor.process();
+    let process = transport(&app, &descriptor);
     agent_client_protocol::Client
         .builder()
         .name("lens-agent-selection")
@@ -917,7 +981,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
     mailbox: Arc<AgentSessionMailbox>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Error> {
-    let process = descriptor.process();
+    let process = transport(&app, &descriptor);
     agent_client_protocol::Client
         .builder()
         .name("lens")
@@ -1792,7 +1856,7 @@ async fn run_authentication<R: tauri::Runtime>(
     method_id: String,
     cancellation: &mut watch::Receiver<bool>,
 ) -> Result<AuthenticationAction, Error> {
-    let process = descriptor.process();
+    let process = transport(&app, &descriptor);
     let mut cancellation = cancellation.clone();
     agent_client_protocol::Client
         .builder()
@@ -2159,7 +2223,7 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
         .builder()
         .name("lens-agent-settings")
         .connect_with(
-            descriptor.process(),
+            transport(app, &descriptor),
             async |connection: ConnectionTo<Agent>| {
                 initialize(&connection).await?;
                 let session = connection

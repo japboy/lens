@@ -10,6 +10,8 @@ mod contract_tests;
 use use_case::elicitation;
 mod live_runtime;
 pub use use_case::live_sync;
+#[cfg(test)]
+mod confirmation_tests;
 mod media_protocol;
 mod model;
 mod platform;
@@ -35,12 +37,16 @@ fn configure_shell<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
     state: app_state::AppState,
     presentation: platform::Presentation<R>,
+    tray: ui::TrayPresentation<R>,
+    agents: agent::AgentServices<R>,
 ) -> tauri::Builder<R> {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .manage(presentation)
+        .manage(tray)
+        .manage(agents)
         .manage(ui::LensWindowPresentationState::default())
         .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
         .invoke_handler(command_handler())
@@ -122,7 +128,13 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         serde_json::from_str::<model::SelectedWindow>(&json)
             .expect("LENS_VALIDATE_TARGET must be a SelectedWindow JSON object")
     });
-    configure_shell(builder, app_state::AppState::load(services), presentation)
+    configure_shell(
+        builder,
+        app_state::AppState::load(services),
+        presentation,
+        ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
+        agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost)),
+    )
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(if validate_a11y {
