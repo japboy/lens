@@ -202,7 +202,7 @@ pub fn validate_content(schema: &Value, content: &Value) -> Result<(), String> {
     Ok(())
 }
 pub fn validate_url(value: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(value).map_err(|_| "Invalid elicitation URL")?;
+    let url = url::Url::parse(value).map_err(|_| "Invalid elicitation URL")?;
     if value.len() > 8192
         || !matches!(url.scheme(), "https" | "http")
         || url.host_str().is_none()

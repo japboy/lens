@@ -7,9 +7,9 @@ mod commands;
 mod confirm_targets;
 #[cfg(test)]
 mod contract_tests;
-mod elicitation;
+use use_case::elicitation;
 mod live_runtime;
-pub mod live_sync;
+pub use use_case::live_sync;
 mod media_protocol;
 mod model;
 mod platform;

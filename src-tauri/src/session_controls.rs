@@ -718,7 +718,7 @@ impl SessionControls {
             .unwrap_or(ToolKind::Other);
         let runtime = self.runtime.lock().map_err(|_| lock_error())?;
         self.ensure_active(&runtime)?;
-        let policy = runtime.tool_policies.for_kind(kind);
+        let policy = crate::agent_preferences::policy_for_tool(&runtime.tool_policies, kind);
         let desired = match policy {
             ToolPolicy::Ask => return Ok(None),
             ToolPolicy::Allow => PermissionOptionKind::AllowOnce,

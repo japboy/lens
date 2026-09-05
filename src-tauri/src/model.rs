@@ -10,12 +10,7 @@ use uuid::Uuid;
 #[cfg(test)]
 use use_case::platform::WindowPickerReply;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentKind {
-    Claude,
-    Codex,
-}
+pub use use_case::model::AgentKind;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

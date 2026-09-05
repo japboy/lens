@@ -1,4 +1,4 @@
-//! Finite observation, delivery and Agent authority; canonical projection is owned by domain.
+//! Application-owned finite observation, delivery and Agent authority; canonical projection is domain-owned.
 
 pub use domain::projection::*;
 use serde::{Deserialize, Serialize};
