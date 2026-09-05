@@ -4,6 +4,7 @@ mod agent_preferences;
 mod agent_runtime;
 mod app_state;
 mod commands;
+mod confirm_targets;
 #[cfg(test)]
 mod contract_tests;
 mod elicitation;

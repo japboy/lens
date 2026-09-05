@@ -6,6 +6,7 @@ use crate::{
         update_lens_state_for_context, AgentRunKey, AppState, LensContextRefreshCommit,
         LensContextRefreshOutcome,
     },
+    confirm_targets::{confirm_targets, ConfirmationHost, OPERATION_SUPERSEDED},
     lens::{
         target_id, LensContext, LensInput, LensMediaCapture, LensMediaOmission,
         LensMediaOmissionReason, LensMediaPayload, LensMediaPlan, LensMediaRequest, LensMediaScope,
@@ -31,7 +32,6 @@ use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
-const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
 const MAX_SELECTION_PREVIEW_LONG_EDGE: u32 = 480;
 const MAX_SELECTION_PREVIEW_PIXELS: u32 = 230_400;
 const MAX_SELECTION_PREVIEW_BYTES: u32 = 1024 * 1024;
@@ -1139,51 +1139,64 @@ pub async fn remove_lens_target(
 
 #[tauri::command]
 pub async fn confirm_lens_targets(app: AppHandle, operation_id: Uuid) -> Result<LensState, String> {
-    let selection = target_selection_for_operation(&app, operation_id)?;
-    if selection.stage != LensTargetSelectionStage::Reviewing {
-        return Err("Lens target selection cannot be confirmed while the picker is active".into());
+    confirm_targets(&DesktopConfirmation { app }, operation_id).await
+}
+
+struct DesktopConfirmation {
+    app: AppHandle,
+}
+
+impl ConfirmationHost for DesktopConfirmation {
+    fn selection(&self, operation: Uuid) -> Result<LensTargetSelection, String> {
+        target_selection_for_operation(&self.app, operation)
     }
-    let windows = selection
-        .items
-        .into_iter()
-        .map(|item| item.window)
-        .collect();
-    let target_set =
-        LensTargetSet::try_new(operation_id, windows).map_err(|error| error.to_string())?;
-    ui::dismiss_target_selection_window(&app)
+
+    async fn dismiss_preview(&self) -> Result<(), String> {
+        ui::dismiss_target_selection_window(&self.app)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    fn replace_state(&self, operation: Uuid, next: LensState) -> Result<bool, String> {
+        replace_operation_state(&self.app, operation, next)
+    }
+
+    async fn extract_registered(
+        &self,
+        operation: Uuid,
+        targets: LensTargetSet,
+    ) -> Result<LensState, String> {
+        extract_target_set_for_operation(
+            self.app.clone(),
+            operation,
+            targets,
+            WindowAccessMode::Registered,
+        )
         .await
-        .map_err(|error| error.to_string())?;
-    let extracting = LensState {
-        operation_id: Some(operation_id),
-        stage: LensStage::Extracting,
-        target_set: Some(target_set.clone()),
-        ..LensState::default()
-    };
-    if !replace_operation_state(&app, operation_id, extracting)? {
-        return Err(OPERATION_SUPERSEDED.into());
     }
-    let ready = extract_target_set_for_operation(
-        app.clone(),
-        operation_id,
-        target_set,
-        WindowAccessMode::Registered,
-    )
-    .await?;
-    if ready.stage != LensStage::Ready {
-        return Ok(ready);
+
+    fn start_observation(&self, operation: Uuid) -> Result<(), String> {
+        live_runtime::start(&self.app, operation)
     }
-    if let Err(error) = live_runtime::start(&app, operation_id) {
-        update_lens_state(&app, operation_id, |lens| {
+
+    fn mark_observation_unavailable(&self, operation: Uuid, error: String) -> Result<(), String> {
+        update_lens_state(&self.app, operation, |lens| {
             if let Some(live) = lens.live.as_mut() {
                 live.health = LensSourceHealth::Unavailable;
                 live.freshness = LensFreshness::Unverified;
                 live.error = Some(error.clone());
             }
         })?;
+        Ok(())
     }
-    let transformed = agent::transform_current(app.clone(), operation_id).await?;
-    let _ = live_runtime::request_immediate_refresh(&app, operation_id);
-    Ok(transformed)
+
+    async fn transform(&self, operation: Uuid) -> Result<LensState, String> {
+        agent::transform_current(self.app.clone(), operation).await
+    }
+
+    fn request_refresh(&self, operation: Uuid) {
+        let _ = live_runtime::request_immediate_refresh(&self.app, operation);
+    }
 }
 
 #[tauri::command]
