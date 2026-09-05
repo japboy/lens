@@ -10,15 +10,15 @@ import {
   renderRichMark,
   renderTauriManifest,
   validateCanonicalSource,
-} from "../mise-tasks/generate/icons.ts";
+} from "./icons.ts";
 
 const source = readFileSync(
-  new URL("../apps/desktop/src-tauri/icons/icon.svg", import.meta.url),
+  new URL("../../apps/desktop/src-tauri/icons/icon.svg", import.meta.url),
   "utf8",
 );
 const rawContract = JSON.parse(
   readFileSync(
-    new URL("../apps/desktop/src-tauri/icons/icon-family.json", import.meta.url),
+    new URL("../../apps/desktop/src-tauri/icons/icon-family.json", import.meta.url),
     "utf8",
   ),
 ) as Record<string, unknown>;

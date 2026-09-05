@@ -14,15 +14,15 @@ use std::sync::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, Notify};
-pub use use_case::state::{
+pub use usecase::state::{
     advance_revision, next_revision, AgentRunKey, LensContextRefreshCommit,
     LensContextRefreshOutcome,
 };
-use use_case::state::{
+use usecase::state::{
     agent_run_has_authority, coalesce_agent_turn, prepare_context_refresh, validate_context_state,
     validate_refresh_identity, validated_payload_map,
 };
-pub(crate) use use_case::state::{AgentSessionIdentity, AgentSessionTurnCompletion};
+pub(crate) use usecase::state::{AgentSessionIdentity, AgentSessionTurnCompletion};
 use uuid::Uuid;
 
 pub struct AgentRunHandle {

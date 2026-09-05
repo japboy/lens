@@ -4,7 +4,7 @@
   "hosts": {
     "aarch64-apple-darwin": {
       "linux-common-check": {
-        "graphDigest": "b20300c0faacd81bef82f25c0c66957efef10cbad94efe5f78702d1c802d0ef8",
+        "graphDigest": "da21e792ba3b66fea2b4c9d356a9b677f043a6c3c1b522ac97789f86bbb88f51",
         "arguments": [
           "check",
           "--locked",
@@ -15,7 +15,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--lib",
@@ -25,7 +25,7 @@
         ]
       },
       "linux-common-test": {
-        "graphDigest": "1e9700f30dd5012ecd9463c780955131240c2d5d0af0f9215b13cb0ac87d5963",
+        "graphDigest": "263c07619700f9aa666295a02de589eb83596a309505352b2970171350ff7dc6",
         "arguments": [
           "test",
           "--locked",
@@ -36,7 +36,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--lib",
@@ -46,7 +46,7 @@
         ]
       },
       "apple-portable-check": {
-        "graphDigest": "4f193ecd13f6aea29ce2ac7d4f38d19ba217cbb436348abbd26b448ba05a2c8e",
+        "graphDigest": "b6c324f2f485f321096983c392a58f2ffc88991023b2cc1ac13cb795135685a2",
         "arguments": [
           "check",
           "--locked",
@@ -57,14 +57,14 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--lib",
           "--profile",
           "dev"
         ]
       },
       "macos-production-check": {
-        "graphDigest": "e4fabcac951b1af17cd6f75e9fe2f08821beddb111ebcd606dcd15ca26ac33ec",
+        "graphDigest": "ec8797dd590e83175c3d5eed729136606fdfaf0ce8619e4e7c4d09fe82ab87e0",
         "arguments": [
           "check",
           "--locked",
@@ -75,7 +75,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -87,7 +87,7 @@
         ]
       },
       "macos-production-release": {
-        "graphDigest": "e4fabcac951b1af17cd6f75e9fe2f08821beddb111ebcd606dcd15ca26ac33ec",
+        "graphDigest": "ec8797dd590e83175c3d5eed729136606fdfaf0ce8619e4e7c4d09fe82ab87e0",
         "arguments": [
           "check",
           "--locked",
@@ -98,7 +98,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -110,7 +110,7 @@
         ]
       },
       "macos-test": {
-        "graphDigest": "91372bfe64d73a11c9b423ee85f4d72edb7c56847b3d8078d89509f889adc83b",
+        "graphDigest": "5c900faa9a8c1a85003e79977b1472fb0a0afb5791fb42b791358018fd3ff40f",
         "arguments": [
           "test",
           "--locked",
@@ -121,7 +121,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -133,7 +133,7 @@
         ]
       },
       "macos-bundle-build": {
-        "graphDigest": "12887a40f0940a6a5a002ed2e1ccede8c89c13d3b152f11e9f27e1239408c903",
+        "graphDigest": "367df1315901dffd95b0a4aa555556bb880fa13a8e54298bc062f322fc9f636f",
         "arguments": [
           "build",
           "--locked",
@@ -144,7 +144,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -160,7 +160,7 @@
     },
     "x86_64-unknown-linux-gnu": {
       "linux-common-check": {
-        "graphDigest": "287a419cf33153f60da3202ce7880ef2786226daa78faf500606ab0f143223fd",
+        "graphDigest": "8a1449e8dacd39131c69100539af22845d6375ad628f981b8fee2bebc074c429",
         "arguments": [
           "check",
           "--locked",
@@ -171,7 +171,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--lib",
@@ -181,7 +181,7 @@
         ]
       },
       "linux-common-test": {
-        "graphDigest": "c5f70e68e0703b89f3f621bba7657c54dfdc4e3b94d2aefd693f0ebbc708163f",
+        "graphDigest": "350709fe070d604f43edc1d7b1f9f3dfd8c5722585b16f2e54946c006ffab8ad",
         "arguments": [
           "test",
           "--locked",
@@ -192,7 +192,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--lib",
@@ -202,7 +202,7 @@
         ]
       },
       "apple-portable-check": {
-        "graphDigest": "4f193ecd13f6aea29ce2ac7d4f38d19ba217cbb436348abbd26b448ba05a2c8e",
+        "graphDigest": "b6c324f2f485f321096983c392a58f2ffc88991023b2cc1ac13cb795135685a2",
         "arguments": [
           "check",
           "--locked",
@@ -213,14 +213,14 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--lib",
           "--profile",
           "dev"
         ]
       },
       "macos-production-check": {
-        "graphDigest": "443124dfbf94b9aacff2aa5733985cdeed7f5a3a3b64549a099f0e768ce964be",
+        "graphDigest": "1c8c420285828191ee23c78390e2116620a0b0a6537891c695e372d0a0b057ef",
         "arguments": [
           "check",
           "--locked",
@@ -231,7 +231,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -243,7 +243,7 @@
         ]
       },
       "macos-production-release": {
-        "graphDigest": "443124dfbf94b9aacff2aa5733985cdeed7f5a3a3b64549a099f0e768ce964be",
+        "graphDigest": "1c8c420285828191ee23c78390e2116620a0b0a6537891c695e372d0a0b057ef",
         "arguments": [
           "check",
           "--locked",
@@ -254,7 +254,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -266,7 +266,7 @@
         ]
       },
       "macos-test": {
-        "graphDigest": "0b297d6385db86232a9e1a95f075db4c1d40d76d3292be6a5435100342b7a6bf",
+        "graphDigest": "d87d035a3cdcca494ddbc678961b1a242ce41b31f10c4b03db08447f6fd06dea",
         "arguments": [
           "test",
           "--locked",
@@ -277,7 +277,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",
@@ -289,7 +289,7 @@
         ]
       },
       "macos-bundle-build": {
-        "graphDigest": "2ad4278ce3a70e309b803d644d289cd47942c9e12db7ed2932f34091d2ed046c",
+        "graphDigest": "04d8366f3122f448fb37a0805656184151528e78bad71cde16e7fd931627f50d",
         "arguments": [
           "build",
           "--locked",
@@ -300,7 +300,7 @@
           "--package",
           "port-platform",
           "--package",
-          "use-case",
+          "usecase",
           "--package",
           "desktop",
           "--package",

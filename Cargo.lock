@@ -919,7 +919,7 @@ dependencies = [
  "tauri-plugin-opener",
  "thiserror 2.0.20",
  "tokio",
- "use-case",
+ "usecase",
  "uuid",
 ]
 
@@ -5005,7 +5005,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "use-case"
+name = "usecase"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol-schema",

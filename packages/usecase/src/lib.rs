@@ -2,7 +2,7 @@
 
 //! Application operations compose domain rules with explicitly supplied capabilities.
 
-// Canonical contracts exposed to common application consumers through the use-case boundary.
+// Canonical contracts exposed to common application consumers through the usecase boundary.
 pub use domain::{lens, prompt_template};
 
 pub mod agent_preferences;

@@ -26,6 +26,7 @@ describe("shared TypeScript configuration", () => {
   it("keeps shared options separate from consumer file selection and references", () => {
     for (const path of ["base.json", "node.json"]) {
       const shared = read(`packages/typescript-config/${path}`);
+      expect(shared.$schema).toBe("https://json.schemastore.org/tsconfig");
       expect(shared.files).toBeUndefined();
       expect(shared.include).toBeUndefined();
       expect(shared.exclude).toBeUndefined();

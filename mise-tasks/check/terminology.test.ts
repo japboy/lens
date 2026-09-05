@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isProductTerminologyPath,
-  productTerminologyViolations,
-} from "../mise-tasks/check/terminology.ts";
+import { isProductTerminologyPath, productTerminologyViolations } from "./terminology.ts";
 
 describe("product terminology policy", () => {
   it.each([
@@ -18,7 +15,7 @@ describe("product terminology policy", () => {
     ["apps/desktop/public/new-output.html", true],
     ["experiments/translation-continuity/results.json", false],
     ["apps/desktop/src-tauri/agent-runtime/codex/pnpm-lock.yaml", false],
-    ["scripts/check-product-terminology.test.ts", false],
+    ["mise-tasks/check/terminology.test.ts", false],
   ] as const)("classifies %s as product source: %s", (path, expected) => {
     expect(isProductTerminologyPath(path)).toBe(expected);
   });

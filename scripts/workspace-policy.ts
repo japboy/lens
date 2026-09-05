@@ -5,7 +5,7 @@ export type Member = {
   ecosystem: "cargo" | "pnpm";
   name: string;
   directory: string;
-  role: "repository" | "application" | "domain" | "use-case" | "port" | "adapter" | "configuration";
+  role: "repository" | "application" | "domain" | "usecase" | "port" | "adapter" | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
   implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
@@ -48,7 +48,7 @@ export const MEMBERS: readonly Member[] = [
     implementation: "common-shell",
     dependencies: {
       normal: [
-        "use-case",
+        "usecase",
         "port-platform",
         "agent-client-protocol",
         "base64",
@@ -93,9 +93,9 @@ export const MEMBERS: readonly Member[] = [
   },
   {
     ecosystem: "cargo",
-    name: "use-case",
-    directory: "packages/use-case",
-    role: "use-case",
+    name: "usecase",
+    directory: "packages/usecase",
+    role: "usecase",
     capability: "observation",
     implementation: "portable",
     dependencies: {
@@ -166,8 +166,8 @@ export type BuildVariant = {
   targets: "lib" | "lib-and-bins";
 };
 
-const common = ["domain", "port-platform", "use-case", "desktop"];
-const portable = ["domain", "port-platform", "use-case"];
+const common = ["domain", "port-platform", "usecase", "desktop"];
+const portable = ["domain", "port-platform", "usecase"];
 const native = [...common, "adapter-platform-macos"];
 
 export const BUILD_VARIANTS: readonly BuildVariant[] = [

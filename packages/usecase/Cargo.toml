@@ -1,5 +1,5 @@
 [package]
-name = "use-case"
+name = "usecase"
 version = "0.1.0"
 description = "Application coordination and domain-to-platform conversions"
 edition.workspace = true

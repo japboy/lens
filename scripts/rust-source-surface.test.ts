@@ -57,7 +57,7 @@ describe("conservative Rust declaration comparison", () => {
             ? [join(directory, entry.name)]
             : [],
       );
-    const paths = ["domain", "port-platform", "use-case"].flatMap((name) =>
+    const paths = ["domain", "port-platform", "usecase"].flatMap((name) =>
       visit(`packages/${name}/src`),
     );
     expect(paths.length).toBeGreaterThan(10);
@@ -68,7 +68,7 @@ describe("conservative Rust declaration comparison", () => {
 
 describe("separately compiled native consumers", () => {
   it.each([
-    "use use_case::model::Value;",
+    "use usecase::model::Value;",
     "use domain as rules;",
     "use crate as root;",
     "use super::{platform, model};",
@@ -96,7 +96,7 @@ describe("separately compiled native consumers", () => {
   });
 
   it.each([
-    '#[cfg(target_os = "macos")] fn hidden() { use_case::value(); }',
+    '#[cfg(target_os = "macos")] fn hidden() { usecase::value(); }',
     '#[cfg(feature = "native")] fn hidden() {}',
     '#[cfg_attr(target_os = "macos", derive(Custom))] struct Value;',
   ])("rejects common consumers hidden from Linux: %s", (source) => {
@@ -116,7 +116,7 @@ describe("separately compiled native consumers", () => {
     expect(
       commonShellConditionalViolations(
         "apps/desktop/src-tauri/src/lib.rs",
-        '#[cfg(target_os = "macos")] native::configure_activation(app, use_case::value());',
+        '#[cfg(target_os = "macos")] native::configure_activation(app, usecase::value());',
       ),
     ).not.toEqual([]);
   });

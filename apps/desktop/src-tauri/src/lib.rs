@@ -4,12 +4,12 @@ mod agent_preferences;
 mod agent_runtime;
 mod app_state;
 mod commands;
-use use_case::confirm_targets;
+use usecase::confirm_targets;
 #[cfg(test)]
 mod contract_tests;
-use use_case::elicitation;
+use usecase::elicitation;
 mod live_runtime;
-pub use use_case::live_sync;
+pub use usecase::live_sync;
 #[cfg(test)]
 mod confirmation_tests;
 mod media_protocol;
@@ -30,7 +30,7 @@ mod ui;
 #[cfg(debug_assertions)]
 use base64::prelude::*;
 use tauri::Manager;
-use use_case::{lens, prompt_template};
+use usecase::{lens, prompt_template};
 
 /// Generate product assets, capabilities and embedded metadata once for every runtime.
 fn product_context<R: tauri::Runtime>() -> tauri::Context<R> {

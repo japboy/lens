@@ -8,7 +8,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, oneshot, watch};
-pub use use_case::session_controls::*;
+pub use usecase::session_controls::*;
 use uuid::Uuid;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);

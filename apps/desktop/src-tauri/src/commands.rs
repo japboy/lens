@@ -25,10 +25,10 @@ use crate::{
 };
 use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
 use tauri::{AppHandle, Manager, State};
-use use_case::context::{
+use usecase::context::{
     build_context, BlockingExecutor, BuiltContext, ContextBuildRequest, WindowAccessMode,
 };
-use use_case::state::ContextReadAuthority;
+use usecase::state::ContextReadAuthority;
 use uuid::Uuid;
 
 struct DesktopBlockingExecutor<R: tauri::Runtime> {
@@ -175,7 +175,7 @@ async fn select_single_window<R: tauri::Runtime>(
         .pick(operation_id)
         .await
         .map_err(|error| error.to_string())?;
-    let Some(mut windows) = use_case::platform::picker_reply(reply).into_selected()? else {
+    let Some(mut windows) = usecase::platform::picker_reply(reply).into_selected()? else {
         return Ok(None);
     };
     if windows.len() != 1 {
@@ -627,9 +627,9 @@ async fn build_target_selection_item(
     let capture_window = window.clone();
     let capture_target_id = id.clone();
     let capture = tauri::async_runtime::spawn_blocking(move || {
-        use_case::media::capture_media(
+        usecase::media::capture_media(
             capture_service.as_ref(),
-            use_case::media::MediaCaptureContext {
+            usecase::media::MediaCaptureContext {
                 target: port_platform::capture::CaptureTarget::Registered {
                     operation_id,
                     window_id: capture_window.identity.window_id,

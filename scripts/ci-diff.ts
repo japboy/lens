@@ -33,7 +33,7 @@ export function planGitChanges(root: string, base: string, head: string) {
     if (!match || match[3] !== path) throw new Error(`Unreviewed changed object: ${path}`);
     // Only shared Rust needs textual body comparison; binary frontend resources must
     // not be decoded as source. Mode/object ownership is still checked for every path.
-    return /^packages\/(?:domain|use-case)\/src\/.+\.rs$/u.test(path)
+    return /^packages\/(?:domain|usecase)\/src\/.+\.rs$/u.test(path)
       ? decoder.decode(git(["cat-file", "blob", match[2]!]))
       : "";
   };

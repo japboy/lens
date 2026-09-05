@@ -1,6 +1,6 @@
 //! ACP tool-kind interpretation stays at the desktop protocol boundary.
 use agent_client_protocol::schema::v1::ToolKind;
-pub use use_case::agent_preferences::*;
+pub use usecase::agent_preferences::*;
 
 pub fn policy_for_tool(policies: &ToolPolicies, kind: ToolKind) -> ToolPolicy {
     match kind {

@@ -39,7 +39,7 @@ The [canonical monochrome SVG](apps/desktop/src-tauri/icons/icon.svg) is the sin
 
 The repository uses peer Cargo and pnpm workspaces. `apps/desktop` owns the private
 `desktop` JavaScript package and nested Tauri Cargo package; `packages/domain`,
-`packages/use-case`, `packages/port-platform`, and `packages/adapter-platform-macos`
+`packages/usecase`, `packages/port-platform`, and `packages/adapter-platform-macos`
 own shared Rust responsibilities. Root `repo` owns repository tooling; `packages/typescript-config` owns shared compiler settings. Package-role
 names do not change the `Lens` product, `lens` executable or `lens_lib` Rust library.
 The three development pnpm members share the root lock; embedded Agent runtime

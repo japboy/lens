@@ -41,7 +41,7 @@ function fixture(
   };
   try {
     git(["init", "-b", "main"]);
-    write("packages/use-case/src/state.rs", "pub fn value() -> u8 { 1 }\n");
+    write("packages/usecase/src/state.rs", "pub fn value() -> u8 { 1 }\n");
     write("README.md", "fixture\n");
     git(["add", "."]);
     git(["commit", "-m", "fixture baseline"]);
@@ -60,16 +60,16 @@ describe("actual tested Git snapshot classification", () => {
   it("reads exact committed before/after bodies and preserves the source checkout", () =>
     fixture((root, git, write) => {
       const base = git(["rev-parse", "HEAD"]);
-      write("packages/use-case/src/state.rs", "pub fn value() -> u8 { 2 }\n");
+      write("packages/usecase/src/state.rs", "pub fn value() -> u8 { 2 }\n");
       const head = commit(git);
       expect(planGitChanges(root, base, head)).toEqual({
         base,
         head,
         plan: "portable-rust",
-        paths: ["packages/use-case/src/state.rs"],
+        paths: ["packages/usecase/src/state.rs"],
       });
       expect(git(["status", "--porcelain"])).toBe("");
-      expect(readFileSync(join(root, "packages/use-case/src/state.rs"), "utf8")).toContain("{ 2 }");
+      expect(readFileSync(join(root, "packages/usecase/src/state.rs"), "utf8")).toContain("{ 2 }");
     }));
 
   it("does not decode binary resources and emits both sides of a rename", () =>

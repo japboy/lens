@@ -11,7 +11,7 @@ use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use uuid::Uuid;
 
-use use_case::observation::{
+use usecase::observation::{
     refresh_revision, valid_signal, AgentSubmissionDirective, LiveSignal, ObservationCoverage,
     ObservationStart, RefreshSchedulingState, OBSERVATION_COALESCING_INTERVAL,
     PERIODIC_RECONCILIATION_INTERVAL,
@@ -360,7 +360,7 @@ fn build_observation<R: tauri::Runtime>(
                 context_id,
                 source_registration_id,
                 observer_epoch,
-                identity: use_case::platform::window_identity(&target.identity),
+                identity: usecase::platform::window_identity(&target.identity),
             },
         ) {
             Ok(port_platform::observation::ObservationSession {

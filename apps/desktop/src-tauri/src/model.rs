@@ -1,1 +1,1 @@
-pub use use_case::model::*;
+pub use usecase::model::*;

@@ -77,7 +77,7 @@ export function classifyChange(change: Change): CiPlan {
   )
     return "native-code";
   if (path.startsWith("apps/desktop/src-tauri/")) return "native-bundle";
-  if (/^packages\/(?:domain|use-case)\/src\/.+\.rs$/u.test(path)) {
+  if (/^packages\/(?:domain|usecase)\/src\/.+\.rs$/u.test(path)) {
     if (change.before === null || change.after === null) return "native-code";
     for (const source of [change.before, change.after]) {
       const violations = portableSourceViolations(source);

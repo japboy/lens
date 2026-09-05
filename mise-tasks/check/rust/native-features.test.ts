@@ -3,7 +3,7 @@ import {
   assertProductionProjection,
   sharedProductionProjection,
   verificationManifest,
-} from "../mise-tasks/check/rust/native-features.ts";
+} from "./native-features.ts";
 
 const tree = `0domain v0.1.0 (/fixture/packages/domain)|
 1bridge v1.0.0|default
@@ -13,7 +13,7 @@ const tree = `0domain v0.1.0 (/fixture/packages/domain)|
 3shared v1.0.0|host
 
 0port-platform v0.1.0 (/fixture/packages/port-platform)|
-0use-case v0.1.0 (/fixture/packages/use-case)|
+0usecase v0.1.0 (/fixture/packages/usecase)|
 0desktop v0.1.0 (/fixture/apps/desktop)|
 1sdk v1.0.0|native
 `;
@@ -26,7 +26,7 @@ const packages = [
     dependencies: [dependency("bridge"), dependency("derive")],
   },
   { name: "port-platform", version: "0.1.0", source: null, dependencies: [] },
-  { name: "use-case", version: "0.1.0", source: null, dependencies: [] },
+  { name: "usecase", version: "0.1.0", source: null, dependencies: [] },
   { name: "bridge", version: "1.0.0", source: "registry", dependencies: [dependency("shared")] },
   { name: "derive", version: "1.0.0", source: "registry", dependencies: [dependency("bridge")] },
 ];
@@ -50,7 +50,7 @@ describe("native-production shared feature projection", () => {
       tree.replace("2shared v1.0.0|target", "4shared v1.0.0|target"),
       /Incomplete production tree depth/u,
     ],
-    [tree.replace("0use-case v0.1.0 (/fixture/packages/use-case)|", ""), /Incomplete shared/u],
+    [tree.replace("0usecase v0.1.0 (/fixture/packages/usecase)|", ""), /Incomplete shared/u],
   ] as const)("rejects missing or approximate resolution evidence (%#)", (output, message) => {
     expect(() => project(output)).toThrow(message);
   });

@@ -3,25 +3,16 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import {
-  inspectWorkspace,
-  repositoryPath,
-  validateInventory,
-} from "../mise-tasks/check/boundaries.ts";
-import type {
-  CargoDependency,
-  CargoInventory,
-  PnpmManifest,
-  PnpmMember,
-} from "../mise-tasks/check/boundaries.ts";
+import { inspectWorkspace, repositoryPath, validateInventory } from "./boundaries.ts";
+import type { CargoDependency, CargoInventory, PnpmManifest, PnpmMember } from "./boundaries.ts";
 import {
   portableSourceViolations,
   rustTokens,
   sourceInclusionViolations,
-} from "./rust-source-boundaries.ts";
-import { BUILD_VARIANTS, MEMBERS, variantArguments } from "./workspace-policy.ts";
+} from "../../scripts/rust-source-boundaries.ts";
+import { BUILD_VARIANTS, MEMBERS, variantArguments } from "../../scripts/workspace-policy.ts";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+const root = fileURLToPath(new URL("../..", import.meta.url));
 const baseline = inspectWorkspace(root);
 const pnpm: PnpmMember[] = JSON.parse(
   execFileSync("pnpm", ["list", "--recursive", "--depth", "-1", "--json"], {
@@ -71,13 +62,13 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     (kind) => {
       const f = fixture();
       member(f.cargo, "domain").dependencies.push({
-        name: "use-case",
+        name: "usecase",
         kind,
         target: null,
         rename: null,
         source: null,
         optional: false,
-        path: resolve(root, "packages/use-case"),
+        path: resolve(root, "packages/usecase"),
       });
       expect(f.check).toThrow("forbidden dependency");
     },
@@ -87,7 +78,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     "checks inactive-target edges: %s",
     (target) => {
       const f = fixture();
-      member(f.cargo, "use-case").dependencies.push({
+      member(f.cargo, "usecase").dependencies.push({
         name: "adapter-platform-macos",
         kind: null,
         target,
@@ -109,7 +100,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     "rejects local source, alias and optional-edge escapes: %j",
     (change) => {
       const f = fixture();
-      const dependency = member(f.cargo, "use-case").dependencies.find(
+      const dependency = member(f.cargo, "usecase").dependencies.find(
         (entry) => entry.name === "domain",
       )!;
       Object.assign(dependency, change);
@@ -119,7 +110,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
 
   it("rejects missing local dependencies", () => {
     const f = fixture();
-    const owner = member(f.cargo, "use-case");
+    const owner = member(f.cargo, "usecase");
     owner.dependencies = owner.dependencies.filter((entry) => entry.name !== "domain");
     expect(f.check).toThrow("missing declared dependency");
   });
@@ -201,7 +192,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     f.js[1]!.name = f.js[0]!.name;
     expect(f.check).toThrow("duplicate identity");
     const g = fixture();
-    member(g.cargo, "domain").manifest_path = resolve(root, "packages/use-case/Cargo.toml");
+    member(g.cargo, "domain").manifest_path = resolve(root, "packages/usecase/Cargo.toml");
     expect(g.check).toThrow("identity/path mismatch");
   });
 
@@ -220,7 +211,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     });
     expect(f.check).toThrow("portable build script");
     const g = fixture();
-    member(g.cargo, "domain").targets[0]!.src_path = resolve(root, "packages/use-case/src/lib.rs");
+    member(g.cargo, "domain").targets[0]!.src_path = resolve(root, "packages/usecase/src/lib.rs");
     expect(g.check).toThrow("cross-package target");
     const h = fixture();
     member(h.cargo, "domain").targets[0]!.name = "std";
@@ -284,10 +275,10 @@ describe("portable source escape restrictions", () => {
       sourceInclusionViolations(root, "packages/domain/src/lib.rs", source, "packages/domain");
     for (const source of [
       'include!("own.rs");',
-      'include_str!("../../use-case/src/model.rs");',
+      'include_str!("../../usecase/src/model.rs");',
       'include_bytes!(concat!("../", "resource"));',
-      '#[path = "../../use-case/src/model.rs"] mod other;',
-      '#[cfg_attr(test, path = "../../use-case/src/model.rs")] mod other;',
+      '#[path = "../../usecase/src/model.rs"] mod other;',
+      '#[cfg_attr(test, path = "../../usecase/src/model.rs")] mod other;',
     ])
       expect(check(source).length).toBeGreaterThan(0);
     expect(check('include_str!("../resource.txt");')).toEqual([]);

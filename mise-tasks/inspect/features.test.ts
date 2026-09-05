@@ -3,13 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  assertGraphMatches,
-  graphArguments,
-  graphDigest,
-  parseFeatureGraph,
-} from "../mise-tasks/inspect/features.ts";
-import { BUILD_VARIANTS } from "./workspace-policy.ts";
+import { assertGraphMatches, graphArguments, graphDigest, parseFeatureGraph } from "./features.ts";
+import { BUILD_VARIANTS } from "../../scripts/workspace-policy.ts";
 
 describe("target-specific transitive feature resolution", () => {
   it("preserves duplicate package feature instances and dependency edges", () => {

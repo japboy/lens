@@ -2,7 +2,7 @@
 members = [
   "apps/desktop/src-tauri",
   "packages/domain",
-  "packages/use-case",
+  "packages/usecase",
   "packages/port-platform",
   "packages/adapter-platform-macos",
 ]
@@ -16,7 +16,7 @@ publish = false
 [workspace.dependencies]
 agent-client-protocol-schema = { version = "=1.7.0", features = ["tracing"] }
 domain = { path = "packages/domain", version = "=0.1.0" }
-use-case = { path = "packages/use-case", version = "=0.1.0" }
+usecase = { path = "packages/usecase", version = "=0.1.0" }
 port-platform = { path = "packages/port-platform", version = "=0.1.0" }
 adapter-platform-macos = { path = "packages/adapter-platform-macos", version = "=0.1.0" }
 base64 = "0.22"

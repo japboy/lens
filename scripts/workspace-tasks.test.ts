@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  globSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +95,15 @@ describe("repository task ownership", () => {
     const fileTasks = tasks.filter((task) => task.file);
     expect(fileTasks).toHaveLength(10);
     for (const task of fileTasks) expect(task.run).toEqual([]);
+  });
+
+  it("does not discover adjacent non-executable test modules as tasks", () => {
+    const testFiles = [...globSync("mise-tasks/**/*.test.ts", { cwd: root })];
+    expect(testFiles).toHaveLength(5);
+    for (const file of testFiles) {
+      expect(statSync(resolve(root, file)).mode & 0o111).toBe(0);
+      expect(tasks.map((task) => task.source)).not.toContain(resolve(root, file));
+    }
   });
 
   it("discovers and runs root file tasks from the desktop working directory", () => {

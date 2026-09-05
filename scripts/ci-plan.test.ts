@@ -9,7 +9,7 @@ import {
 import type { Change } from "./ci-plan.ts";
 
 const body: Change = {
-  path: "packages/use-case/src/state.rs",
+  path: "packages/usecase/src/state.rs",
   before: "pub fn value() -> u8 { 1 }",
   after: "pub fn value() -> u8 { 2 }",
 };

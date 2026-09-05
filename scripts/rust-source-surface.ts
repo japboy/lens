@@ -179,7 +179,7 @@ export function nativeCompositionViolations(source: string): string[] {
   const violations: string[] = [];
   for (const [index, token] of tokens.entries()) {
     if (token.literal) continue;
-    if (["use_case", "domain", "lens_lib", "include", "macro_rules", "path"].includes(token.text))
+    if (["usecase", "domain", "lens_lib", "include", "macro_rules", "path"].includes(token.text))
       violations.push(`Native composition cannot access ${token.text}`);
     if (token.text === "#") {
       if (tokens[index + 1]?.text !== "[")

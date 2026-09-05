@@ -32,7 +32,7 @@ type Package = {
 type Context = "host" | "target";
 export type ContextNode = { context: Context; package: FeatureNode };
 export type Projection = { nodes: ContextNode[]; edges: string[] };
-const SHARED = ["domain", "port-platform", "use-case"];
+const SHARED = ["domain", "port-platform", "usecase"];
 const nodeKey = (node: ContextNode) => JSON.stringify(node);
 
 // Actual common Tauri callers require Send for both exported async operations.
@@ -41,7 +41,7 @@ const nodeKey = (node: ContextNode) => JSON.stringify(node);
 export const NATIVE_FEATURE_CONSUMER = `
 use std::sync::Arc;
 use port_platform::{accessibility::Accessibility, capture::Capture};
-use use_case::{context::{BlockingExecutor, ContextBuildRequest, build_context},
+use usecase::{context::{BlockingExecutor, ContextBuildRequest, build_context},
     confirm_targets::{ConfirmationHost, confirm_targets}};
 fn requires_send<T: Send>(_: T) {}
 pub fn check_async_consumers<E: BlockingExecutor, H: ConfirmationHost + Sync>(
