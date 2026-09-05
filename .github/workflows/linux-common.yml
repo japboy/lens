@@ -1,0 +1,68 @@
+name: Linux Common Verification
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-common:
+    name: linux-common
+    runs-on: ubuntu-24.04
+    # Initial bounded measurement budget, not a measured steady-state target.
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: "v2026.8.10"
+          sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
+          cache: false
+          install: true
+
+      - name: Install common-shell system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          rustup target add aarch64-apple-darwin
+
+      - name: Record exact environment and source
+        run: |
+          git rev-parse HEAD
+          cat /etc/os-release
+          uname -m
+          rustc -vV
+          cargo -V
+          pnpm --version
+          node --version
+          free -h
+          df -h .
+          pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1
+
+      - name: Build the real frontend assets
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      # No restore/save action: these measurements start without a repository Rust cache.
+      # Normal checks precede tests so development-only Tauri features cannot prove them.
+      - name: Measure cold normal common-library check
+        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case -p lens --lib --no-default-features --target x86_64-unknown-linux-gnu
+
+      - name: Measure warm normal common-library check
+        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case -p lens --lib --no-default-features --target x86_64-unknown-linux-gnu
+
+      - name: Run common contracts and actual shell integration tests
+        run: /usr/bin/time -v cargo test --locked -p domain -p port-platform -p use-case -p lens --lib --no-default-features --target x86_64-unknown-linux-gnu
+
+      - name: Check portable libraries for the Apple target
+        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case --lib --target aarch64-apple-darwin
+
+      - name: Audit both admitted dependency targets from Linux
+        run: cargo deny --locked --manifest-path Cargo.toml check

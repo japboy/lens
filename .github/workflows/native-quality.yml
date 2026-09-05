@@ -39,7 +39,7 @@ jobs:
           cache-on-failure: false
           cache-all-crates: false
           cache-workspace-crates: false
-          save-if: ${{ inputs.save_cache }}
+          save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}
 
       - name: Run native verification without JavaScript dependencies
         run: pnpm --config.verify-deps-before-run=false run verify:native

@@ -1,9 +1,22 @@
 [graph]
-targets = ["aarch64-apple-darwin"]
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 all-features = true
 
 [advisories]
 ignore = [
+  # Reviewed 2026-09-05 when adding Linux to the audit graph. These informational
+  # maintenance notices have no patched versions; all other advisories still fail.
+  { id = "RUSTSEC-2024-0411", reason = "Unmaintained gdkwayland-sys 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0412", reason = "Unmaintained gdk 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0413", reason = "Unmaintained atk 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0414", reason = "Unmaintained gdkx11-sys 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0415", reason = "Unmaintained gtk 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0416", reason = "Unmaintained atk-sys 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0417", reason = "Unmaintained gdkx11 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0418", reason = "Unmaintained gdk-sys 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0419", reason = "Unmaintained gtk3-macros 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0420", reason = "Unmaintained gtk-sys 0.18.2 in Tauri 2.11.5's required Linux GTK3 graph; no patched compatible release. Linux is verification-only, not a shipped product. Remove when upstream leaves GTK3." },
+  { id = "RUSTSEC-2024-0370", reason = "Unmaintained proc-macro-error 1.0.4 required by GTK3/glib build macros in Tauri 2.11.5's Linux graph; no patched compatible release. Review with the upstream GTK3 replacement." },
   { id = "RUSTSEC-2025-0075", reason = "Unmaintained transitive rust-unic crate from Tauri 2.11.5 through urlpattern 0.3.0; the advisory has no safe upgrade." },
   { id = "RUSTSEC-2025-0080", reason = "Unmaintained transitive rust-unic crate from Tauri 2.11.5 through urlpattern 0.3.0; the advisory has no safe upgrade." },
   { id = "RUSTSEC-2025-0081", reason = "Unmaintained transitive rust-unic crate from Tauri 2.11.5 through urlpattern 0.3.0; the advisory has no safe upgrade." },
