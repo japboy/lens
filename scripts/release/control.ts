@@ -115,10 +115,12 @@ export async function control(
 ): Promise<"tagged" | "update-pr" | "awaiting-publication"> {
   requireMain(root, eventSha);
   const associated = await pages<PullRequest>(request, `/commits/${eventSha}/pulls`);
-  const pending = await pages<{ number: number }>(
+  // Repository issue listing requires Issues read; this token intentionally owns PRs only.
+  const closed = await pages<Pick<PullRequest, "number" | "labels">>(
     request,
-    `/issues?state=closed&labels=${encodeURIComponent(PENDING)}`,
+    `/pulls?state=closed&base=main&head=${encodeURIComponent(`${repository.split("/")[0]}:${RELEASE_BRANCH}`)}`,
   );
+  const pending = closed.filter((pr) => pr.labels.some((label) => label.name === PENDING));
   const candidates = new Map<number, PullRequest>();
   for (const item of [...associated, ...pending]) {
     const pr = await request<PullRequest>(`/pulls/${item.number}`);
