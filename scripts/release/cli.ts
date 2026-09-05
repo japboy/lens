@@ -1,9 +1,9 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { github, optional, pages } from "./github.ts";
+import { github } from "./github.ts";
 import { control, previousRelease, validateReleasePr } from "./control.ts";
-import type { PullRequest, Release } from "./control.ts";
+import type { PullRequest } from "./control.ts";
 import { assertPrTitle, changelogSection, cleanSource, git, inspectTag } from "./source.ts";
 import {
   packageArtifact,
@@ -13,6 +13,7 @@ import {
   releaseNotes,
 } from "./artifact.ts";
 import { publish, requireReleaseJobs } from "./publish.ts";
+import { preflight } from "./preflight.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const env = (name: string) => {
@@ -43,37 +44,11 @@ if (mode === "pr-title") {
   );
   changelogSection(git(root, "show", `${data.commit}:CHANGELOG.md`), data.version);
   output("source_sha", data.commit);
-  const release = await optional(() => api.request<Release>(`/releases/tags/${tag}`));
-  if (release && !release.draft) {
-    output("state", "published");
-  } else {
-    const previous = await previousRelease(api.request, data.version);
-    const run = await api.request<{ event: string; head_sha: string; path: string }>(
-      `/actions/runs/${env("GITHUB_RUN_ID")}`,
-    );
-    if (
-      run.event !== "push" ||
-      run.head_sha !== data.commit ||
-      run.path !== ".github/workflows/release.yml"
-    )
-      throw new Error("Unexpected release workflow provenance");
-    const artifacts = await api.request<{
-      artifacts: { id: number; name: string; expired: boolean }[];
-      total_count: number;
-    }>(`/actions/runs/${env("GITHUB_RUN_ID")}/artifacts?per_page=100`);
-    if (artifacts.total_count > 100) throw new Error("Unexpected artifact count");
-    const saved = artifacts.artifacts.filter((artifact) => artifact.name === `release-${tag}`);
-    if (saved.length > 1 || saved.some((artifact) => artifact.expired))
-      throw new Error("Conflicting or expired original release artifact; use a new version");
-    const drafts = (await pages<Release>(api.request, "/releases")).filter(
-      (item) => item.tag_name === tag && item.draft,
-    );
-    if (!saved.length && drafts.length)
-      throw new Error("Draft exists without this run's original artifact");
-    output("state", saved.length ? "reuse" : "build");
-    output("artifact_id", saved[0] ? String(saved[0].id) : "");
-    output("previous_tag", previous ?? "");
-  }
+  const previous = await previousRelease(api.request, data.version);
+  const plan = await preflight(api.request, tag, data.commit, env("GITHUB_RUN_ID"));
+  output("state", plan.state);
+  output("artifact_id", plan.artifactId);
+  output("previous_tag", previous ?? "");
 } else if (mode === "package") {
   packageArtifact(root, join(root, "target/release-artifact"), {
     tag: env("RELEASE_TAG"),

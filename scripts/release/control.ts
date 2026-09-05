@@ -2,7 +2,7 @@ import type { Request } from "./github.ts";
 import { optional, pages } from "./github.ts";
 import { annotation, changelogSection, commitSha, git, readSource, requireMain } from "./source.ts";
 import type { TagAnnotation } from "./source.ts";
-import { compareVersions, tagVersion } from "./version.ts";
+import { compareVersions, STABLE_VERSION, tagVersion } from "./version.ts";
 
 export const RELEASE_BRANCH = "release-please--branches--main";
 export const PENDING = "autorelease: pending";
@@ -53,7 +53,7 @@ export async function previousRelease(
   const current = `v${version}`;
   let previous: string | undefined;
   for (const { name } of tags) {
-    if (!name.startsWith("v") || name === current) continue;
+    if (!name.startsWith("v") || !STABLE_VERSION.test(name.slice(1)) || name === current) continue;
     const other = tagVersion(name);
     if (compareVersions(other, version) >= 0)
       throw new Error("Release versions must advance monotonically");

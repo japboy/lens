@@ -106,6 +106,10 @@ describe("merged release authority", () => {
     await expect(previousRelease(request, "0.2.0")).rejects.toThrow("not published");
     releases = [{ tag_name: "v0.1.0", draft: false, prerelease: false }];
     await expect(previousRelease(request, "0.2.0")).resolves.toBe("v0.1.0");
+    for (const name of ["v1.0.0-rc.1", "v2.0.0+build.1", "version-backup", "v01.0.0", "other"])
+      tags.push({ name });
+    releases.push({ tag_name: "v1.0.0-rc.1", draft: false, prerelease: true });
+    await expect(previousRelease(request, "0.2.0")).resolves.toBe("v0.1.0");
     tags.push({ name: "v0.3.0" });
     await expect(previousRelease(request, "0.2.0")).rejects.toThrow("monotonically");
   });
@@ -307,6 +311,32 @@ describe("verified artifact and finite publisher", () => {
         );
         expect(f.release().draft).toBe(true);
         expect(f.writes.some((value) => value.startsWith("DELETE"))).toBe(false);
+      } finally {
+        f.cleanup();
+      }
+    },
+  );
+  it.each(["target", "prerelease", "name", "body", "missing", "extra", "bytes"])(
+    "rejects a published release with conflicting %s without mutation",
+    async (kind) => {
+      const f = fixture();
+      try {
+        await publish(f.api, f.directory, identity, true, f.policy());
+        const writes = [...f.writes];
+        if (kind === "target") f.release().target_commitish = "b".repeat(40);
+        if (kind === "prerelease") f.release().prerelease = true;
+        if (kind === "name") f.release().name = "Manual release";
+        if (kind === "body") f.release().body = "Unverified notes";
+        if (kind === "missing") f.remote.pop();
+        if (kind === "extra") f.remote.push({ ...f.remote[0]!, name: "extra", id: 3 });
+        if (kind === "bytes") {
+          f.remote[0]!.digest = null;
+          f.remote[0]!.bytes = Buffer.from("tampered");
+        }
+        await expect(publish(f.api, f.directory, identity, true, f.policy())).rejects.toThrow(
+          /.+/u,
+        );
+        expect(f.writes).toEqual(writes);
       } finally {
         f.cleanup();
       }

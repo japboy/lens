@@ -41,7 +41,6 @@ jobs:
 
   portable:
     needs: preflight
-    if: needs.preflight.outputs.state != 'published'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -96,7 +95,7 @@ jobs:
 
   publication-policy:
     needs: preflight
-    if: needs.preflight.outputs.state != 'published' && vars.RELEASE_PUBLISH_ENABLED == 'true'
+    if: vars.RELEASE_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -116,7 +115,7 @@ jobs:
 
   publish:
     needs: [preflight, portable, common, native, publication-policy]
-    if: always() && needs.preflight.result == 'success' && needs.preflight.outputs.state != 'published' && needs.portable.result == 'success' && needs.common.result == 'success' && needs.native.result == 'success' && (vars.RELEASE_PUBLISH_ENABLED != 'true' || needs.publication-policy.result == 'success')
+    if: always() && needs.preflight.result == 'success' && needs.portable.result == 'success' && needs.common.result == 'success' && needs.native.result == 'success' && (vars.RELEASE_PUBLISH_ENABLED != 'true' || needs.publication-policy.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

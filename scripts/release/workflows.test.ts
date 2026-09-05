@@ -16,6 +16,7 @@ describe("release workflow source, credentials and retry boundaries", () => {
     expect(release).toContain("needs.common.result == 'success'");
     expect(release).toContain("needs.native.result == 'success'");
     expect(release).not.toContain("scripts/ci-diff.ts");
+    expect(release).not.toContain("state != 'published'");
     expect(release).toContain("cancel-in-progress: false");
   });
   it("preserves prerequisite artifact outputs when rerunning only a failed consumer", () => {
