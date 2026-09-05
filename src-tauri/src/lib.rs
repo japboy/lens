@@ -1,8 +1,10 @@
 mod agent;
 mod agent_output;
+mod agent_preferences;
 mod agent_runtime;
 mod app_state;
 mod commands;
+mod elicitation;
 mod lens;
 mod live_runtime;
 pub mod live_sync;
@@ -10,6 +12,7 @@ mod media_protocol;
 mod model;
 mod platform;
 mod prompt_template;
+mod session_controls;
 mod store;
 mod ui;
 
@@ -121,6 +124,9 @@ pub fn run() {
             commands::reauthenticate_agent_selection,
             commands::sign_out_agent_selection,
             commands::cancel_agent,
+            commands::set_session_option,
+            commands::set_agent_defaults,
+            commands::respond_agent_interaction,
             commands::show_settings,
         ])
         .build(tauri::generate_context!())

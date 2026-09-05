@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent controls fixture</title></head>
+<body><main><lens-agent-defaults></lens-agent-defaults><lens-session-controls></lens-session-controls></main>
+<script type="module">
+import "/src/styles.css";
+import "/src/components/lens-agent-defaults.ts";
+import "/src/components/lens-session-controls.ts";
+const options = [
+ { id:"mode",name:"Mode",type:"select",category:"mode",currentValue:"safe",options:[{value:"safe",name:"Read only"},{value:"write",name:"Allow changes"}] },
+ { id:"model",name:"Model",type:"select",category:"model",currentValue:"standard",options:[{value:"standard",name:"Standard"},{value:"advanced",name:"Advanced"}] },
+ { id:"effort",name:"Reasoning effort",type:"select",category:"thought_level",currentValue:"medium",options:[{value:"medium",name:"Medium"},{value:"high",name:"High"}] }
+];
+const shared = document.querySelector("lens-agent-defaults");
+shared.selection = { selection_id:"fixture-selection", stage:"selected", candidate:"claude", policy_default:"safe", config_options:options, modes:[] };
+shared.defaults = {choices:[],tools:{read:"ask",search:"ask",fetch:"ask",edit:"deny",delete:"deny",move:"deny",execute:"deny"}};
+const controls = document.querySelector("lens-session-controls");
+controls.controls = {instance_id:"fixture",operation_id:"fixture",session_id:"fixture",agent_name:"Fixture Agent",active:true,config_revision:1,config_options:options,modes:[],policy_default:"safe",effective_mode:"safe",interactions:[{id:"permission",sequence:1,status:"pending",details:{kind:"permission",tool_call_id:"read",title:"Read selected document",effect:"read",arguments:{path:"/fixture/document.txt"},options:[{optionId:"once",name:"Allow once",kind:"allow_once"},{optionId:"deny",name:"Reject once",kind:"reject_once"}]}}]};
+window.fixtureIntents = [];
+for (const name of ["lens-agent-intent","lens-overlay-intent"]) document.addEventListener(name,e=>window.fixtureIntents.push(e.detail));
+</script><style>body{margin:0;font:14px system-ui}main{max-width:720px;padding:20px;margin:auto}lens-agent-defaults,lens-session-controls{display:block}</style></body></html>

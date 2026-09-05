@@ -956,9 +956,9 @@ fieldset {
   isolation: isolate;
   height: 100dvh;
   display: grid;
-  grid-template-areas: "header" "source" "tabs" "content" "footer";
+  grid-template-areas: "header" "controls" "source" "tabs" "content" "footer";
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid Separator;
   border-radius: 12px;
@@ -2315,4 +2315,49 @@ lens-output-media {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+lens-session-controls {
+  grid-area: controls;
+  display: block;
+  min-height: 0;
+  max-height: 40vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.session-controls {
+  padding: 0 14px 8px;
+  border-bottom: 1px solid Separator;
+}
+.session-controls label,
+.session-form-field,
+lens-agent-defaults .settings-field {
+  display: grid;
+  gap: 4px;
+  margin-block: 8px;
+}
+.session-controls select,
+.session-controls input,
+lens-agent-defaults select {
+  max-width: 100%;
+  min-width: 0;
+}
+.session-controls pre,
+.elicitation-url {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+}
+.session-controls button {
+  margin-inline-end: 6px;
+  margin-block: 4px;
+}
+.session-mode-label {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  max-width: 160px;
+}
+lens-agent-defaults {
+  display: contents;
 }

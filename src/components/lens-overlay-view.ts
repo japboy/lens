@@ -18,6 +18,7 @@ import {
   supportedAuthMethods,
 } from "../view-model";
 import "./lens-agent-output";
+import "./lens-session-controls";
 import "./lens-extraction-diagnostics";
 import "./lens-media-gallery";
 import {
@@ -149,6 +150,7 @@ export class LensOverlayView extends LitElement {
           <div class="overlay-brand">
             <img class="overlay-app-icon" src=${appIconUrl} alt="" />
             <h1 class="overlay-title visually-hidden">Lens</h1>
+            ${lens.session_controls ? html`<span class="session-mode-label">Mode: ${lens.session_controls.effective_mode}</span>` : nothing}
           </div>
           <div class="overlay-header-actions">
             ${
@@ -211,6 +213,7 @@ export class LensOverlayView extends LitElement {
           </div>
         </header>
 
+        <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
         <section class="overlay-source-summary" aria-label="Selected source context">
           <span class="overlay-source-icon" aria-hidden="true">
             <i class="fa-solid fa-window-maximize"></i>

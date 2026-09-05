@@ -212,6 +212,12 @@ pub enum AgentSelectionStage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentSelectionState {
     #[serde(default)]
+    pub config_options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
+    #[serde(default)]
+    pub modes: Vec<agent_client_protocol::schema::v1::SessionMode>,
+    #[serde(default)]
+    pub policy_default: Option<String>,
+    #[serde(default)]
     pub operation_id: Option<Uuid>,
     pub stage: AgentSelectionStage,
     #[serde(default)]
@@ -241,6 +247,9 @@ impl Default for AgentSelectionState {
         Self {
             operation_id: None,
             stage: AgentSelectionStage::Unselected,
+            config_options: None,
+            modes: Vec::new(),
+            policy_default: None,
             candidate: None,
             auth_methods: Vec::new(),
             message: None,
@@ -273,6 +282,7 @@ pub struct AgentRunState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(from = "AppConfigWire")]
 pub struct AppConfig {
+    pub agent_preferences: crate::agent_preferences::AgentPreferences,
     pub agent: AgentKind,
     pub working_directory: PathBuf,
     pub agent_prompt_template: AgentPromptTemplate,
@@ -282,6 +292,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             agent: AgentKind::Claude,
+            agent_preferences: Default::default(),
             working_directory: dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
             agent_prompt_template: AgentPromptTemplate::default(),
         }
@@ -291,6 +302,7 @@ impl Default for AppConfig {
 #[derive(Deserialize)]
 #[serde(default)]
 struct AppConfigWire {
+    agent_preferences: crate::agent_preferences::AgentPreferences,
     agent: AgentKind,
     working_directory: PathBuf,
     agent_prompt_template: Option<AgentPromptTemplate>,
@@ -302,6 +314,7 @@ impl Default for AppConfigWire {
         let config = AppConfig::default();
         Self {
             agent: config.agent,
+            agent_preferences: config.agent_preferences,
             working_directory: config.working_directory,
             agent_prompt_template: None,
             response_prompt: None,
@@ -319,6 +332,7 @@ impl From<AppConfigWire> for AppConfig {
         });
         Self {
             agent: wire.agent,
+            agent_preferences: wire.agent_preferences,
             working_directory: wire.working_directory,
             agent_prompt_template,
         }
@@ -462,6 +476,8 @@ pub enum LensOutputBlock {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensState {
     #[serde(default)]
+    pub session_controls: Option<crate::session_controls::AgentSessionControlState>,
+    #[serde(default)]
     pub operation_id: Option<Uuid>,
     pub stage: LensStage,
     #[serde(default)]
@@ -493,6 +509,7 @@ impl Default for LensState {
         Self {
             operation_id: None,
             stage: LensStage::Idle,
+            session_controls: None,
             selection: None,
             target_set: None,
             context: None,

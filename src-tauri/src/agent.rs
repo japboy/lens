@@ -1,3 +1,4 @@
+use crate::session_controls::{self, SessionControls};
 use crate::{
     agent_output::{
         is_supported_image_mime_type, is_valid_inline_image_data, AgentOutputCandidate,
@@ -25,9 +26,8 @@ use agent_client_protocol::{
             CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
             EmbeddedResourceResource, ImageContent, Implementation, InitializeRequest,
             LogoutRequest, PromptCapabilities, PromptRequest, RequestPermissionOutcome,
-            RequestPermissionRequest, RequestPermissionResponse, SessionModeId, SessionModeState,
-            SessionNotification, SetSessionModeRequest, StopReason, TextContent,
-            TextResourceContents,
+            RequestPermissionRequest, RequestPermissionResponse, SessionModeId,
+            SessionNotification, StopReason, TextContent, TextResourceContents,
         },
         ProtocolVersion,
     },
@@ -131,9 +131,9 @@ struct AgentSessionMetadata<'a> {
 }
 
 struct AgentTurnExecution<'a> {
+    controls: &'a SessionControls,
     app: &'a AppHandle,
     identity: &'a AgentSessionIdentity,
-    descriptor: &'a AgentDescriptor,
     mailbox: &'a AgentSessionMailbox,
     shutdown: &'a mut watch::Receiver<bool>,
     session: &'a mut ActiveSession<'static, Agent>,
@@ -360,6 +360,7 @@ pub async fn authenticate_selection(
                 agent_display_name(candidate)
             )),
             error: None,
+            ..AgentSelectionState::default()
         },
     )?;
 
@@ -439,6 +440,7 @@ async fn logout_selection(
             auth_methods: snapshot.auth_methods,
             message: Some(format!("{action} {}…", agent_display_name(candidate))),
             error: None,
+            ..AgentSelectionState::default()
         },
     )?;
 
@@ -563,11 +565,24 @@ async fn probe_agent_authentication(
             if claude_authenticated == Some(false) {
                 return Err(Error::auth_required());
             }
-            connection
+            let session = connection
                 .build_session(&working_directory)
                 .block_task()
                 .start_session()
                 .await?;
+            let options = session.config_options().map(<[_]>::to_vec);
+            if let Some(options) = &options {
+                session_controls::validate_options(options)?;
+            }
+            update_agent_selection(&app, operation_id, |selection| {
+                selection.config_options = options;
+                selection.modes = session
+                    .modes()
+                    .map(|m| m.available_modes.clone())
+                    .unwrap_or_default();
+                selection.policy_default = Some(descriptor.safe_mode_id.into());
+            })
+            .map_err(state_error)?;
             Ok(())
         })
         .await
@@ -877,14 +892,27 @@ async fn run_persistent_session(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Error> {
     let process = descriptor.process();
+    let permission_app = app.clone();
+    let permission_operation = identity.operation_id;
+    let elicitation_app = app.clone();
     agent_client_protocol::Client
         .builder()
         .name("lens")
         .on_receive_request(
-            async move |_request: RequestPermissionRequest, responder, _connection| {
-                responder.respond(RequestPermissionResponse::new(
-                    RequestPermissionOutcome::Cancelled,
-                ))
+            async move |request: RequestPermissionRequest, responder, _connection| {
+                let response = match session_controls::active_controls(&permission_app, permission_operation) {
+                    Ok(controls) => controls.permission(&permission_app, request, responder.cancellation()).await,
+                    Err(_) => RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
+                };
+                responder.respond(response)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: agent_client_protocol::schema::v1::CreateElicitationRequest, responder, _connection| {
+                let controls = session_controls::active_controls(&elicitation_app, permission_operation).map_err(state_error)?;
+                let response = controls.elicit(&elicitation_app, request, responder.cancellation()).await?;
+                responder.respond(response)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -916,23 +944,31 @@ async fn run_persistent_session(
                 }
             };
             let session_id = session.session_id().clone();
-            let safe_mode_id = required_safe_mode(
-                descriptor.adapter_name,
-                descriptor.safe_mode_id,
-                session.modes(),
-            )?;
-            tokio::select! {
-                result = connection
-                    .send_request(SetSessionModeRequest::new(
-                        session_id.clone(),
-                        safe_mode_id.clone(),
-                    ))
-                    .block_task() => result?,
-                changed = shutdown.changed() => {
-                    let _ = changed;
-                    return Err(Error::request_cancelled());
-                }
+            let defaults = identity.config.agent_preferences.get(identity.config.agent);
+            let setup = session_controls::apply_defaults(
+                &connection, &session_id, session.config_options().map(<[_]>::to_vec),
+                session.modes(), defaults, descriptor.safe_mode_id,
+            );
+            let (initial_options, effective_mode) = tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(30), setup) => result.map_err(|_| state_error("Agent settings setup timed out".into()))??,
+                _ = shutdown.changed() => return Err(Error::request_cancelled()),
             };
+            let safe_mode_id = SessionModeId::new(effective_mode.clone());
+            let (controls, control_requests) = SessionControls::new(
+                identity.operation_id, session_id.to_string(), descriptor.adapter_name.into(),
+                descriptor.safe_mode_id.into(), initial_options.clone(),
+                session.modes().map(|m| m.available_modes.clone()).unwrap_or_default(), shutdown.clone(),
+            )?;
+            controls.set_initial_authority(effective_mode, defaults.tools.clone())?;
+            if let Some(options) = initial_options { controls.replace_options(options)?; }
+            {
+                let state = app.state::<AppState>();
+                let mut active = state.session_controls.lock().map_err(|_| state_error("Agent controls unavailable".into()))?;
+                if let Some(previous) = active.replace(Arc::clone(&controls)) { previous.close(&app); }
+            }
+            update_lens_state(&app, identity.operation_id, |lens| lens.session_controls = None).map_err(state_error)?;
+            controls.publish(&app).map_err(state_error)?;
+            let _control_lifetime = session_controls::ControlLifetime { app: app.clone(), controls: Arc::clone(&controls) };
             confirm_agent_selection_after_session(&app, identity.config.agent)
                 .map_err(state_error)?;
 
@@ -947,9 +983,27 @@ async fn run_persistent_session(
             };
             let mut applied_projection = None;
             let mut cadence = AgentTurnCadence::default();
+            let actor = async {
             loop {
-                wait_for_agent_turn_slot(&cadence, &mut shutdown).await?;
-                let Some(turn) = next_agent_session_turn(&mailbox, &mut shutdown).await? else {
+                let turn = {
+                let next_turn = async {
+                    wait_for_agent_turn_slot(&cadence, &mut shutdown).await?;
+                    next_agent_session_turn(&mailbox, &mut shutdown).await
+                };
+                tokio::pin!(next_turn);
+                let turn = loop {
+                    tokio::select! {
+                        turn = &mut next_turn => break turn?,
+                        message = session.read_update() => {
+                            if let SessionMessage::SessionMessage(dispatch) = message? {
+                                record_control_update(&app, &controls, dispatch, None).await?;
+                            }
+                        }
+                    }
+                };
+                turn
+                };
+                let Some(turn) = turn else {
                     return Ok(());
                 };
                 if !agent_session_identity_is_current(&app, &identity).map_err(state_error)? {
@@ -975,9 +1029,9 @@ async fn run_persistent_session(
                 cadence.record_start(Instant::now());
                 let result = run_session_turn(
                     AgentTurnExecution {
+                        controls: &controls,
                         app: &app,
                         identity: &identity,
-                        descriptor: &descriptor,
                         mailbox: &mailbox,
                         shutdown: &mut shutdown,
                         session: &mut session,
@@ -1022,6 +1076,11 @@ async fn run_persistent_session(
                         return Err(error);
                     }
                 }
+            }
+            };
+            tokio::select! {
+                result = actor => result,
+                result = controls.serve(&app, &connection, control_requests) => result,
             }
         })
         .await
@@ -1609,9 +1668,9 @@ async fn run_session_turn(
     initial_streaming: bool,
 ) -> Result<bool, Error> {
     let AgentTurnExecution {
+        controls,
         app,
         identity,
-        descriptor,
         mailbox,
         shutdown,
         session,
@@ -1621,6 +1680,8 @@ async fn run_session_turn(
         context_revision: target_context_revision,
         projection: target_projection,
     } = target;
+    controls.begin_turn(key.run_id)?;
+    let _turn_lifetime = session_controls::TurnLifetime { controls, app };
     let prompt = build_prompt_blocks(
         &identity.config.agent_prompt_template,
         projection,
@@ -1656,7 +1717,7 @@ async fn run_session_turn(
             message = session.read_update() => {
                 if let SessionMessage::SessionMessage(dispatch) = message? {
                     let output_changed =
-                        match record_agent_output(dispatch, &mut candidate, descriptor.safe_mode_id).await {
+                        match record_control_update(app, controls, dispatch, Some(&mut candidate)).await {
                             Ok(changed) => changed,
                             Err(error) => {
                                 session_connection.send_notification(
@@ -1774,7 +1835,11 @@ async fn initialize(
         .send_request(
             InitializeRequest::new(ProtocolVersion::V1)
                 .client_capabilities(
-                    ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)),
+                    ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)).elicitation(
+                        agent_client_protocol::schema::v1::ElicitationCapabilities::new()
+                            .form(agent_client_protocol::schema::v1::ElicitationFormCapabilities::new())
+                            .url(agent_client_protocol::schema::v1::ElicitationUrlCapabilities::new()),
+                    ),
                 )
                 .client_info(Implementation::new("lens", env!("CARGO_PKG_VERSION")).title("Lens")),
         )
@@ -1797,10 +1862,11 @@ fn auth_method_model(method: &AuthMethod) -> AgentAuthMethod {
     }
 }
 
+#[cfg(test)]
 fn required_safe_mode(
     adapter_name: &str,
     safe_mode_id: &str,
-    modes: Option<&SessionModeState>,
+    modes: Option<&agent_client_protocol::schema::v1::SessionModeState>,
 ) -> Result<SessionModeId, Error> {
     let modes = modes.ok_or_else(|| {
         Error::invalid_params().data(format!(
@@ -1819,6 +1885,39 @@ fn required_safe_mode(
         })
 }
 
+async fn record_control_update(
+    app: &AppHandle,
+    controls: &SessionControls,
+    dispatch: Dispatch,
+    mut candidate: Option<&mut AgentOutputCandidate>,
+) -> Result<bool, Error> {
+    let mut changed = false;
+    MatchDispatch::new(dispatch)
+        .if_notification(async |notification: SessionNotification| {
+            use agent_client_protocol::schema::v1::SessionUpdate;
+            controls.record_tool(&notification.update)?;
+            match &notification.update {
+                SessionUpdate::ConfigOptionUpdate(update) => {
+                    controls.replace_options(update.config_options.clone())?
+                }
+                SessionUpdate::CurrentModeUpdate(update) => {
+                    controls.record_mode(&update.current_mode_id.to_string())?
+                }
+                _ => {}
+            }
+            if let Some(candidate) = candidate.as_mut() {
+                let effective = controls.snapshot().map_err(state_error)?.effective_mode;
+                changed = candidate.record_update(notification.update, &effective)?;
+            }
+            controls.publish(app).map_err(state_error)?;
+            Ok(())
+        })
+        .await
+        .otherwise_ignore()?;
+    Ok(changed)
+}
+
+#[cfg(test)]
 async fn record_agent_output(
     dispatch: Dispatch,
     candidate: &mut AgentOutputCandidate,
@@ -2027,6 +2126,41 @@ fn build_prompt_blocks(
     Ok(blocks)
 }
 
+pub async fn validate_agent_defaults(
+    app: &AppHandle,
+    config: &AppConfig,
+    defaults: &crate::agent_preferences::AgentDefaults,
+) -> Result<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>, String> {
+    let descriptor = AgentDescriptor::resolve(app, config.agent).await?;
+    let result = agent_client_protocol::Client
+        .builder()
+        .name("lens-agent-settings")
+        .connect_with(
+            descriptor.process(),
+            async |connection: ConnectionTo<Agent>| {
+                initialize(&connection).await?;
+                let session = connection
+                    .build_session(&config.working_directory)
+                    .block_task()
+                    .start_session()
+                    .await?;
+                let (options, _) = session_controls::apply_defaults(
+                    &connection,
+                    session.session_id(),
+                    session.config_options().map(<[_]>::to_vec),
+                    session.modes(),
+                    defaults,
+                    descriptor.safe_mode_id,
+                )
+                .await?;
+                Ok(options)
+            },
+        );
+    tokio::time::timeout(Duration::from_secs(30), result).await
+        .map_err(|_| "Agent settings validation timed out".to_string())?
+        .map_err(|_| "The Agent could not apply these defaults. Refresh its choices and select supported values.".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2040,8 +2174,8 @@ mod tests {
         },
         model::{Bounds, ExtractionQuality, SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
-    use agent_client_protocol::schema::v1::SessionMode;
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
+    use agent_client_protocol::schema::v1::{SessionMode, SessionModeState};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
         use agent_client_protocol::{

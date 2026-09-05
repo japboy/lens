@@ -486,6 +486,7 @@ impl LensMediaStore {
 }
 
 pub struct AppState {
+    pub session_controls: Mutex<Option<Arc<crate::session_controls::SessionControls>>>,
     pub(crate) runtime: RwLock<AppSnapshot>,
     pub agent_runtime_install: AsyncMutex<()>,
     pub agent_control: AgentControl,
@@ -511,6 +512,7 @@ impl AppState {
         let config = store.load();
         Self {
             runtime: RwLock::new(AppSnapshot::new(config)),
+            session_controls: Mutex::new(None),
             agent_runtime_install: AsyncMutex::new(()),
             agent_control: AgentControl::default(),
             live_control: crate::live_runtime::LensLiveControl::default(),

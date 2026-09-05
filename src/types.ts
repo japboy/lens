@@ -37,6 +37,7 @@ export interface AgentPromptTemplate {
 }
 
 export interface AppConfig {
+  agent_preferences?: { claude: AgentDefaults; codex: AgentDefaults };
   agent: AgentKind;
   working_directory: string;
   agent_prompt_template: AgentPromptTemplate;
@@ -302,6 +303,9 @@ export interface AgentAuthMethod {
 }
 
 export interface AgentSelectionState {
+  config_options?: SessionConfigOption[];
+  modes?: SessionMode[];
+  policy_default?: string;
   operation_id?: string;
   stage: AgentSelectionStage;
   candidate?: AgentKind;
@@ -389,6 +393,7 @@ export interface LensLiveState {
 }
 
 export interface LensState {
+  session_controls?: AgentSessionControlState;
   operation_id?: string;
   stage: LensStage;
   selection?: LensTargetSelection;
@@ -409,4 +414,105 @@ export interface AppSnapshot {
   agent_selection: AgentSelectionState;
   agent_runtime: AgentRuntimeState;
   lens: LensState;
+}
+
+export interface SessionChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+export interface SessionChoiceGroup {
+  group: string;
+  name: string;
+  options: SessionChoice[];
+}
+export interface SessionConfigOption {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  type: "select" | "boolean";
+  currentValue: string | boolean;
+  options?: (SessionChoice | SessionChoiceGroup)[];
+}
+export interface SessionMode {
+  id: string;
+  name: string;
+  description?: string;
+}
+export type ToolPolicy = "ask" | "deny";
+export interface ToolPolicies {
+  read: ToolPolicy;
+  search: ToolPolicy;
+  fetch: ToolPolicy;
+  edit: ToolPolicy;
+  delete: ToolPolicy;
+  move: ToolPolicy;
+  execute: ToolPolicy;
+}
+export interface AgentDefaults {
+  choices: { config_id: string; value: string }[];
+  tools: ToolPolicies;
+}
+export type InteractionResponse =
+  | { action: "accept" | "decline" | "cancel" }
+  | { action: "select"; option_id: string }
+  | { action: "submit"; content: Record<string, string | number | boolean | string[]> };
+export interface AgentInteraction {
+  id: string;
+  run_id?: string;
+  sequence: number;
+  status: "pending" | "accepted" | "declined" | "cancelled" | "expired";
+  details?:
+    | { kind: "form"; message: string; schema: ElicitationSchema }
+    | { kind: "url"; message: string; elicitation_id: string; url: string }
+    | { kind: "mode_transition"; from: string; to: string }
+    | {
+        kind: "permission";
+        tool_call_id: string;
+        title: string;
+        effect: string;
+        arguments: unknown;
+        options: { optionId: string; name: string; kind: "allow_once" | "reject_once" }[];
+      };
+}
+export interface AgentSessionControlState {
+  instance_id: string;
+  operation_id: string;
+  session_id: string;
+  agent_name: string;
+  active: boolean;
+  config_revision: number;
+  notice?: string;
+  config_options?: SessionConfigOption[];
+  modes: SessionMode[];
+  effective_mode: string;
+  policy_default: string;
+  change?: {
+    config_id: string;
+    value: string;
+    status: "pending" | "succeeded" | "rejected" | "failed";
+  };
+  interactions: AgentInteraction[];
+}
+
+export interface ElicitationField {
+  type: "string" | "number" | "integer" | "boolean" | "array";
+  title?: string;
+  description?: string;
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  enum?: string[];
+  oneOf?: { const: string; title: string }[];
+  items?: { enum?: string[]; oneOf?: { const: string; title: string }[] };
+  default?: string | number | boolean | string[];
+}
+export interface ElicitationSchema {
+  type: "object";
+  properties: Record<string, ElicitationField>;
+  required?: string[];
+  title?: string;
+  description?: string;
 }

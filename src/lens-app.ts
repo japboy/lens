@@ -94,6 +94,27 @@ export class LensApp extends LitElement {
     const intent = event.detail;
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
+      case "save-agent-defaults": {
+        const snapshot = this.snapshots.snapshot;
+        const selection = snapshot?.agent_selection;
+        if (!selection?.operation_id) return;
+        const modeId = selection.config_options?.find((o) => o.category === "mode")?.id ?? "mode";
+        const mode = intent.defaults.choices.find((c) => c.config_id === modeId)?.value;
+        const elevated = Boolean(mode && mode !== selection.policy_default);
+        const approved =
+          !elevated ||
+          (await this.port.confirmAction(
+            `Use mode ${mode} for all new sessions of this Agent? It may allow changes or commands. Tool approval policies remain separate.`,
+            "Save Shared Agent Mode",
+          ));
+        if (!approved) return;
+        await this.runCommand(
+          identity,
+          () => this.port.setAgentDefaults(selection.operation_id!, intent.defaults, elevated),
+          "Shared Agent settings saved.",
+        );
+        return;
+      }
       case "select-agent":
         await this.runCommand(identity, () => this.port.setAgent(intent.agent));
         return;
@@ -192,6 +213,31 @@ export class LensApp extends LitElement {
     const identity: CommandIdentity = { scope: "overlay", type: intent.type };
     const lens = this.snapshots.snapshot?.lens;
     switch (intent.type) {
+      case "set-session-option": {
+        if (!lens?.operation_id) return;
+        await this.runCommand(identity, () =>
+          this.port.setSessionOption(
+            lens.operation_id!,
+            intent.instanceId,
+            intent.revision,
+            intent.configId,
+            intent.value,
+          ),
+        );
+        return;
+      }
+      case "respond-interaction": {
+        if (!lens?.operation_id) return;
+        await this.runCommand(identity, () =>
+          this.port.respondAgentInteraction(
+            lens.operation_id!,
+            intent.instanceId,
+            intent.interactionId,
+            intent.response,
+          ),
+        );
+        return;
+      }
       case "authenticate": {
         const operationId = lens?.operation_id;
         if (!operationId) return;

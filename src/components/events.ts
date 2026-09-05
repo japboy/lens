@@ -1,4 +1,4 @@
-import type { AgentKind, AgentPromptTemplate } from "../types";
+import type { AgentKind, AgentPromptTemplate, AgentDefaults, InteractionResponse } from "../types";
 
 export const AGENT_INTENT_EVENT = "lens-agent-intent";
 export const PROMPT_INTENT_EVENT = "lens-prompt-intent";
@@ -9,6 +9,7 @@ export const AGENT_OUTPUT_INTENT_EVENT = "lens-agent-output-intent";
 export const OVERLAY_INTENT_EVENT = "lens-overlay-intent";
 
 export type AgentIntent =
+  | { type: "save-defaults"; defaults: AgentDefaults }
   | { type: "select"; agent: AgentKind }
   | { type: "authenticate"; methodId: string }
   | { type: "reauthenticate" }
@@ -19,6 +20,7 @@ export type PromptIntent =
   | { type: "reset" };
 
 export type SettingsIntent =
+  | { type: "save-agent-defaults"; defaults: AgentDefaults }
   | { type: "select-agent"; agent: AgentKind }
   | { type: "authenticate-agent-selection"; methodId: string }
   | { type: "reauthenticate-agent-selection" }
@@ -38,6 +40,19 @@ export type AgentOutputIntent =
   | { type: "report-error"; message: string };
 
 export type OverlayIntent =
+  | {
+      type: "set-session-option";
+      instanceId: string;
+      revision: number;
+      configId: string;
+      value: string;
+    }
+  | {
+      type: "respond-interaction";
+      instanceId: string;
+      interactionId: string;
+      response: InteractionResponse;
+    }
   | { type: "authenticate"; methodId: string }
   | { type: "retry" }
   | { type: "cancel" }

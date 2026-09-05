@@ -76,6 +76,7 @@ type SettingsCommandType = Extract<CommandIdentity, { scope: "settings" }>["type
 
 function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestination {
   switch (command) {
+    case "save-agent-defaults":
     case "select-agent":
     case "authenticate-agent-selection":
     case "reauthenticate-agent-selection":

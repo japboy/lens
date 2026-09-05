@@ -8,6 +8,7 @@ import type {
 } from "../application/view-models";
 import { sharedApplicationStyles, viewHostStyles } from "../styles/component-styles";
 import "./lens-agent-settings";
+import "./lens-agent-defaults";
 import "./lens-prompt-settings";
 import { renderSettingsFeedback } from "./settings-feedback";
 import {
@@ -108,6 +109,11 @@ export class LensSettingsView extends LitElement {
                 .runtime=${model.agentRuntime}
                 .disabled=${model.pending}
               ></lens-agent-settings>
+              <lens-agent-defaults
+                .selection=${model.agentSelection}
+                .defaults=${model.config?.agent_preferences?.[model.config.agent]}
+                .disabled=${model.pending}
+              ></lens-agent-defaults>
 
               <section class="settings-group" aria-labelledby="cwd-heading">
                 <h2 id="cwd-heading">Working Directory</h2>
@@ -188,6 +194,8 @@ export class LensSettingsView extends LitElement {
     event.stopPropagation();
     const intent: SettingsIntent = (() => {
       switch (event.detail.type) {
+        case "save-defaults":
+          return { type: "save-agent-defaults", defaults: event.detail.defaults };
         case "select":
           return { type: "select-agent", agent: event.detail.agent };
         case "authenticate":
