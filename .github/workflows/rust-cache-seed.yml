@@ -16,8 +16,8 @@ on:
       - package.json
       - rust-toolchain
       - rust-toolchain.toml
-      - src-tauri/**/.cargo/config.toml
-      - src-tauri/**/Cargo.toml
+      - apps/desktop/src-tauri/**/.cargo/config.toml
+      - apps/desktop/src-tauri/**/Cargo.toml
       - packages/**/Cargo.toml
   workflow_dispatch:
     inputs:

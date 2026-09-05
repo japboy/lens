@@ -53,13 +53,13 @@ jobs:
       # No restore/save action: these measurements start without a repository Rust cache.
       # Normal checks precede tests so development-only Tauri features cannot prove them.
       - name: Measure cold normal common-library check
-        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case -p lens --lib --no-default-features --target x86_64-unknown-linux-gnu
+        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case -p desktop --lib --no-default-features --target x86_64-unknown-linux-gnu
 
       - name: Measure warm normal common-library check
-        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case -p lens --lib --no-default-features --target x86_64-unknown-linux-gnu
+        run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case -p desktop --lib --no-default-features --target x86_64-unknown-linux-gnu
 
       - name: Run common contracts and actual shell integration tests
-        run: /usr/bin/time -v cargo test --locked -p domain -p port-platform -p use-case -p lens --lib --no-default-features --target x86_64-unknown-linux-gnu
+        run: /usr/bin/time -v cargo test --locked -p domain -p port-platform -p use-case -p desktop --lib --no-default-features --target x86_64-unknown-linux-gnu
 
       - name: Check portable libraries for the Apple target
         run: /usr/bin/time -v cargo check --locked -p domain -p port-platform -p use-case --lib --target aarch64-apple-darwin

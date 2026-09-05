@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "src-tauri",
+  "apps/desktop/src-tauri",
   "packages/domain",
   "packages/use-case",
   "packages/port-platform",

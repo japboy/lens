@@ -1,5 +1,6 @@
 packages:
   - "."
+  - "apps/desktop"
 
 # Mermaid's declared range accepts this trusted-publisher release; newer
 # Cytoscape releases are rejected by the workspace's no-downgrade policy.

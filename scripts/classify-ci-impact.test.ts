@@ -6,6 +6,8 @@ describe("CI impact classification", () => {
     [["src/lens-app.ts"], "portable-only"],
     [["README.md", "src/styles/global.css", "scripts/check-product-identity.ts"], "portable-only"],
     [["src-tauri/src/lib.rs"], "native-or-control-plane"],
+    [["apps/desktop/src/lens-app.ts"], "native-or-control-plane"],
+    [["apps/desktop/src-tauri/tauri.macos.conf.json"], "native-or-control-plane"],
     [["package.json"], "native-or-control-plane"],
     [["Cargo.toml"], "native-or-control-plane"],
     [["Cargo.lock"], "native-or-control-plane"],

@@ -1,5 +1,5 @@
 [package]
-name = "lens"
+name = "desktop"
 version = "0.1.0"
 description = "Accessibility-first personal information lens for macOS"
 authors = ["Lens contributors"]

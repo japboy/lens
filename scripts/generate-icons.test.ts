@@ -12,9 +12,15 @@ import {
   validateCanonicalSource,
 } from "./generate-icons.ts";
 
-const source = readFileSync(new URL("../src-tauri/icons/icon.svg", import.meta.url), "utf8");
+const source = readFileSync(
+  new URL("../apps/desktop/src-tauri/icons/icon.svg", import.meta.url),
+  "utf8",
+);
 const rawContract = JSON.parse(
-  readFileSync(new URL("../src-tauri/icons/icon-family.json", import.meta.url), "utf8"),
+  readFileSync(
+    new URL("../apps/desktop/src-tauri/icons/icon-family.json", import.meta.url),
+    "utf8",
+  ),
 ) as Record<string, unknown>;
 const contract = parseContract(rawContract);
 const pathData = (svg: string) => [...svg.matchAll(/<path [^>]*\bd="([^"]+)"/gu)].map((m) => m[1]);

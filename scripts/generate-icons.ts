@@ -15,7 +15,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const ICON_DIRECTORY = resolve(REPOSITORY_ROOT, "src-tauri/icons");
+const DESKTOP_DIRECTORY = resolve(REPOSITORY_ROOT, "apps/desktop");
+const ICON_DIRECTORY = resolve(DESKTOP_DIRECTORY, "src-tauri/icons");
 const FAMILY_CONTRACT_PATH = resolve(ICON_DIRECTORY, "icon-family.json");
 const APPEARANCE_NAMES = ["light", "dark", "monochrome"] as const;
 const OBSOLETE_PROJECTION_FILES = [
@@ -379,7 +380,7 @@ function filesRecursively(root: string, directory = root): string[] {
 function runTauriIcon(arguments_: string[]): void {
   const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   execFileSync(executable, ["exec", "tauri", "icon", ...arguments_], {
-    cwd: REPOSITORY_ROOT,
+    cwd: DESKTOP_DIRECTORY,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });

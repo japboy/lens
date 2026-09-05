@@ -167,7 +167,7 @@ async def probe(name, version, safe):
                     {
                         "name": "lens_fixture",
                         "command": str(node),
-                        "args": [str(REPO / "tests/fixtures/mcp-interactions.mjs")],
+                        "args": [str(REPO / "apps/desktop/tests/fixtures/mcp-interactions.mjs")],
                         "env": [
                             {
                                 "name": "LENS_FIXTURE_TRACE",

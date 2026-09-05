@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src-tauri/icons/icon-macos.svg" alt="Lens app icon" width="128" height="128">
+  <img src="apps/desktop/src-tauri/icons/icon-macos.svg" alt="Lens app icon" width="128" height="128">
 </p>
 
 <h1 align="center">Lens</h1>
@@ -33,9 +33,17 @@ macOS 15.2 is the minimum because it is the first version that provides the publ
 
 ### Icon resources
 
-The [canonical monochrome SVG](src-tauri/icons/icon.svg) is the single source for the Lens mark. The application uses a derived smoked-glass treatment; the menu bar uses the undecorated template symbol. Run `pnpm run generate:icons` after changing the source or its generation contract. `pnpm run check:icons` verifies every generated resource and also runs in portable CI. See [icon resources](src-tauri/icons/README.md) for appearance and platform boundaries.
+The [canonical monochrome SVG](apps/desktop/src-tauri/icons/icon.svg) is the single source for the Lens mark. The application uses a derived smoked-glass treatment; the menu bar uses the undecorated template symbol. Run `pnpm run generate:icons` after changing the source or its generation contract. `pnpm run check:icons` verifies every generated resource and also runs in portable CI. See [icon resources](apps/desktop/src-tauri/icons/README.md) for appearance and platform boundaries.
 
 ### Build and run
+
+The repository uses peer Cargo and pnpm workspaces. `apps/desktop` owns the private
+`desktop` JavaScript package and nested Tauri Cargo package; `packages/domain`,
+`packages/use-case`, `packages/port-platform`, and `packages/adapter-platform-macos`
+own shared Rust responsibilities. Root `repo` owns repository tooling. Package-role
+names do not change the `Lens` product, `lens` executable or `lens_lib` Rust library.
+The two development pnpm members share the root lock; embedded Agent runtime
+manifests, policies and locks remain independent under `apps/desktop/src-tauri/agent-runtime`.
 
 ```sh
 mise trust
@@ -51,6 +59,11 @@ mise installs the checksummed development toolchain from `mise.lock`: Node.js `2
 hk installs repository-local `pre-commit` and `commit-msg` hooks through mise. The pre-commit hook checks staged frontend and configuration files with Oxfmt and Oxlint and activates Cargo formatting checks for staged Rust changes. It is check-only: it neither stashes, rewrites, nor stages files. The commit-message hook enforces Conventional Commits. Run `pnpm run fix` explicitly to apply available Oxfmt, Oxlint, and rustfmt fixes. Full tests and dependency checks remain authoritative in the required Code Quality workflow rather than a state-dependent pre-push hook.
 
 The root TypeScript solution declares shared strict, no-emit checks and explicitly references separate application and Node.js tooling projects. Repository policy scripts are strict TypeScript executed through Node.js 24's stable native type stripping; the Node.js project admits only erasable syntax and type-checks policy scripts and tool configuration without exposing Node.js globals to browser source code. No third-party TypeScript execution loader is required.
+
+Root `dev`, `build`, and `tauri` commands delegate to `desktop`; `test` runs repository
+tests and then desktop tests. `pnpm --filter desktop run build` and
+`pnpm --filter desktop run tauri dev` are the corresponding app-local entry points.
+Tauri's pre-build/pre-dev hooks call only the frontend tasks in that package.
 
 The application bundle does not contain Claude, Codex, their ACP adapters, or a separate Node.js runtime. The first explicit selection of an Agent installs only that Agent's approved runtime under the application-local data directory. Lens validates the official ACP Registry package identity, downloads an application-managed pnpm from Takumi Guard, verifies its pinned SHA-512 digest and executable-file hashes, and installs from an embedded exact pnpm lock with an empty lifecycle-script allowlist. It also verifies the pinned Node.js `24.19.0` archive SHA-256 digest and the Developer ID team and signing identifier of Node and the provider executable before launch. Managed installation does not require mise, Corepack, or pnpm in the user environment and never falls back to `PATH`, globally installed packages, or `npx @latest`.
 

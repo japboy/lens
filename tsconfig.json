@@ -5,9 +5,5 @@
     "skipLibCheck": true
   },
   "files": [],
-  "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" },
-    { "path": "./tsconfig.test.json" }
-  ]
+  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./apps/desktop" }]
 }

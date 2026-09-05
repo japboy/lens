@@ -897,6 +897,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop"
+version = "0.1.0"
+dependencies = [
+ "adapter-platform-macos",
+ "agent-client-protocol",
+ "base64 0.22.1",
+ "dirs",
+ "flate2",
+ "port-platform",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.11.0",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "thiserror 2.0.20",
+ "tokio",
+ "use-case",
+ "uuid",
+]
+
+[[package]]
 name = "diff"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2290,33 +2317,6 @@ dependencies = [
  "bitflags 2.13.1",
  "serde",
  "unicode-segmentation",
-]
-
-[[package]]
-name = "lens"
-version = "0.1.0"
-dependencies = [
- "adapter-platform-macos",
- "agent-client-protocol",
- "base64 0.22.1",
- "dirs",
- "flate2",
- "port-platform",
- "pretty_assertions",
- "reqwest",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.11.0",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "thiserror 2.0.20",
- "tokio",
- "use-case",
- "uuid",
 ]
 
 [[package]]

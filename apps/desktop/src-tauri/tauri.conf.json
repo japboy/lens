@@ -19,14 +19,6 @@
   "bundle": {
     "active": true,
     "category": "Productivity",
-    "copyright": "Copyright © 2026 Yu Inao",
-    "icon": ["icons/icon.icns"],
-    "targets": ["app"],
-    "macOS": {
-      "signingIdentity": "-",
-      "minimumSystemVersion": "15.2",
-      "entitlements": "Entitlements.plist",
-      "infoPlist": "Info.plist"
-    }
+    "copyright": "Copyright © 2026 Yu Inao"
   }
 }

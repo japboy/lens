@@ -4,13 +4,18 @@ import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const PRODUCT_PATHS = new Set(["README.md", "index.html", "src-tauri/tauri.conf.json"]);
+const PRODUCT_PATHS = new Set([
+  "README.md",
+  "apps/desktop/index.html",
+  "apps/desktop/src-tauri/tauri.conf.json",
+  "apps/desktop/src-tauri/tauri.macos.conf.json",
+]);
 const PRODUCT_PREFIXES = [
-  "src/",
-  "src-tauri/src/",
-  "src-tauri/native/",
+  "apps/desktop/src/",
+  "apps/desktop/src-tauri/src/",
+  "apps/desktop/src-tauri/native/",
   "packages/",
-  "public/",
+  "apps/desktop/public/",
 ] as const;
 const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const LEGACY_OUTPUT_TERM = /translation/iu;

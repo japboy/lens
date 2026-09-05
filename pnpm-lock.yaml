@@ -10,6 +10,24 @@ overrides:
 importers:
 
   .:
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      oxfmt:
+        specifier: 0.64.0
+        version: 0.64.0
+      oxlint:
+        specifier: 1.79.0
+        version: 1.79.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3))
+
+  apps/desktop:
     dependencies:
       '@fortawesome/fontawesome-free':
         specifier: 7.3.1
@@ -75,12 +93,6 @@ importers:
       jsdom:
         specifier: 30.0.1
         version: 30.0.1
-      oxfmt:
-        specifier: 0.64.0
-        version: 0.64.0
-      oxlint:
-        specifier: 1.79.0
-        version: 1.79.0
       typescript:
         specifier: 7.0.2
         version: 7.0.2

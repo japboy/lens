@@ -15,14 +15,14 @@ export default defineConfig({
   },
   overrides: [
     {
-      files: ["*.config.ts", "scripts/**/*.ts"],
+      files: ["*.config.ts", "apps/desktop/*.config.ts", "scripts/**/*.ts"],
       env: {
         browser: false,
         node: true,
       },
     },
     {
-      files: ["src/**/*.test.ts"],
+      files: ["apps/desktop/src/**/*.test.ts"],
       env: {
         vitest: true,
       },
