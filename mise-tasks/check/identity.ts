@@ -36,7 +36,9 @@ function scanFile(relativePath: string): string[] {
   ) {
     violations.push(`${relativePath}: file path uses a legacy product identity`);
   }
-  if (BINARY_EXTENSIONS.has(extname(relativePath).toLowerCase())) return violations;
+  // Historical commit subjects retain the product names used at the time.
+  if (relativePath === "CHANGELOG.md" || BINARY_EXTENSIONS.has(extname(relativePath).toLowerCase()))
+    return violations;
 
   const content = readFileSync(resolve(REPOSITORY_ROOT, relativePath));
   let text: string;
