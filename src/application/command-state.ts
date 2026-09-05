@@ -20,6 +20,8 @@ export function canStartCommand(state: CommandState, next: CommandIdentity): boo
     return false;
   }
   if (
+    next.type === "respond-interaction" ||
+    next.type === "set-session-option" ||
     next.type === "close" ||
     next.type === "pause" ||
     next.type === "resume" ||

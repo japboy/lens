@@ -335,6 +335,7 @@ async fn extract_target_set_for_operation(
         error: None,
     });
     let next = LensState {
+        session_controls: None,
         operation_id: Some(operation_id),
         stage: if input.is_some() {
             LensStage::Ready
@@ -926,6 +927,7 @@ async fn publish_target_selection(
     selection: LensTargetSelection,
 ) -> Result<LensState, String> {
     let next = LensState {
+        session_controls: None,
         operation_id: Some(operation_id),
         stage: LensStage::Selecting,
         selection: Some(selection.clone()),
@@ -1296,6 +1298,47 @@ fn replace_operation_state(
     update_lens_state(app, operation_id, |state| *state = next)
 }
 
+/// Resolve model-dependent settings without persisting a draft or touching the live actor.
+#[tauri::command]
+pub async fn preview_agent_model(
+    app: AppHandle,
+    selection_id: Uuid,
+    config_id: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let expected = state.snapshot()?;
+    if expected.agent_selection.operation_id != Some(selection_id)
+        || expected.agent_selection.selected_agent() != Some(expected.config.agent)
+        || !expected.agent_selection.config_options.as_ref().is_some_and(|options| options.iter().any(|o|
+            o.id.to_string() == config_id && o.category == Some(agent_client_protocol::schema::v1::SessionConfigOptionCategory::Model)))
+    { return Err("Agent model selection changed".into()); }
+    let defaults = crate::agent_preferences::AgentDefaults {
+        choices: value
+            .map(|value| crate::agent_preferences::SavedChoice { config_id, value })
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
+    let snapshot = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if snapshot.config != expected.config
+            || snapshot.agent_selection != expected.agent_selection
+        {
+            return Err("Agent settings changed during model lookup".into());
+        }
+        snapshot.revision = next_revision(&snapshot)?;
+        snapshot.agent_selection.config_options = options;
+        snapshot.clone()
+    };
+    emit_app_snapshot(&app, snapshot, true)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1454,4 +1497,90 @@ mod tests {
         assert_eq!(live.last_outcome, None);
         assert_eq!(live.error, None);
     }
+}
+
+#[tauri::command]
+pub fn set_session_option(
+    app: AppHandle,
+    operation_id: Uuid,
+    instance_id: Uuid,
+    config_revision: u32,
+    config_id: String,
+    value: String,
+) -> Result<(), String> {
+    let controls = crate::session_controls::active_controls(&app, operation_id)?;
+    controls.queue_change(instance_id, config_revision, config_id, value)?;
+    controls.publish(&app)
+}
+
+#[tauri::command]
+pub fn respond_agent_interaction(
+    app: AppHandle,
+    operation_id: Uuid,
+    instance_id: Uuid,
+    interaction_id: Uuid,
+    response: crate::session_controls::InteractionResponse,
+) -> Result<(), String> {
+    let controls = crate::session_controls::active_controls(&app, operation_id)?;
+    controls.respond(&app, instance_id, interaction_id, response)?;
+    controls.publish(&app)
+}
+
+#[tauri::command]
+pub async fn set_agent_defaults(
+    app: AppHandle,
+    selection_id: Uuid,
+    defaults: crate::agent_preferences::AgentDefaults,
+    confirm_privilege: bool,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let expected = state.snapshot()?;
+    if expected.agent_selection.operation_id != Some(selection_id)
+        || expected.agent_selection.selected_agent() != Some(expected.config.agent)
+    {
+        return Err("Agent selection changed".into());
+    }
+    let mode_id = expected
+        .agent_selection
+        .config_options
+        .as_deref()
+        .map(crate::session_controls::mode_option)
+        .transpose()
+        .map_err(|_| "Ambiguous Agent modes")?
+        .flatten()
+        .map(|o| o.id.to_string())
+        .unwrap_or_else(|| "mode".into());
+    let elevated = defaults.choices.iter().any(|c| {
+        c.config_id == mode_id && Some(&c.value) != expected.agent_selection.policy_default.as_ref()
+    });
+    if elevated && !confirm_privilege {
+        return Err("Confirm the shared mode policy before saving".into());
+    }
+    let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
+    // Cancel the old configuration's actor before changing persisted authority.
+    state.agent_control.cancel_active()?;
+    let snapshot = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if snapshot.config != expected.config
+            || snapshot.agent_selection.operation_id != Some(selection_id)
+        {
+            return Err("Agent settings changed during validation".into());
+        }
+        let mut config = snapshot.config.clone();
+        config.agent_preferences.set(config.agent, defaults);
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to save Agent defaults")?;
+        snapshot.config = config;
+        snapshot.agent_selection.config_options = options;
+        snapshot.revision = revision;
+        snapshot.clone()
+    };
+    emit_app_snapshot(&app, snapshot, true)?;
+    Ok(())
 }

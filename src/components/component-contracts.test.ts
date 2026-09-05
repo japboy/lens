@@ -928,3 +928,66 @@ describe("progress notification visibility", () => {
     );
   });
 });
+
+it("keeps Agent diagnostics out of the Lens interpretation layout", async () => {
+  const element = document.createElement("lens-overlay-view") as HTMLElement & {
+    model: OverlayViewModel;
+    updateComplete: Promise<boolean>;
+  };
+  element.model = {
+    platform: "macos",
+    pending: false,
+    cancelPending: false,
+    message: "",
+    lens: {
+      stage: "ready",
+      output_blocks: [],
+      session_controls: {
+        instance_id: "fixture",
+        operation_id: "operation",
+        session_id: "session",
+        agent_name: "Fixture Agent",
+        active: true,
+        config_revision: 1,
+        modes: [],
+        config_options: [],
+        effective_mode: "safe",
+        policy_default: "safe",
+        interactions: [],
+      },
+    },
+  };
+  document.body.append(element);
+  await element.updateComplete;
+  const root = element.shadowRoot!;
+  expect(root.querySelector("lens-session-controls")).toBeNull();
+  expect(root.querySelector(".session-mode-label")).toBeNull();
+  root.querySelector<HTMLButtonElement>("#diagnostics-tab")!.click();
+  await element.updateComplete;
+  expect(root.querySelector("#diagnostics-panel lens-session-controls")).not.toBeNull();
+  expect(root.querySelector("#diagnostics-panel select")).toBeNull();
+  element.model = {
+    ...element.model,
+    lens: {
+      ...element.model.lens,
+      session_controls: {
+        ...element.model.lens.session_controls!,
+        interactions: [
+          {
+            id: "request",
+            sequence: 1,
+            status: "pending",
+            details: {
+              kind: "url",
+              message: "Consent",
+              elicitation_id: "consent",
+              url: "https://example.com/consent",
+            },
+          },
+        ],
+      },
+    },
+  };
+  await element.updateComplete;
+  expect(root.querySelector(".lens-progress-region")?.textContent).toContain("Open Diagnostics");
+});

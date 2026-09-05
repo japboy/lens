@@ -1,0 +1,99 @@
+{
+  "date": "2026-09-05T03:32:22.582961+00:00",
+  "sdk": "2.1.0",
+  "schema": "1.7.0",
+  "source_sha256": {
+    "src-tauri/src/agent.rs": "76301534c1d913eede9ead67cc4e830672145dfd5a2f703a37c7f0bee5d0f5c7",
+    "src-tauri/src/session_controls.rs": "db4616093336da14216285a5be4c14598bca88815fc196227f6fd82435b0cd1c",
+    "src-tauri/src/session_controls_validation.rs": "ec667fe87656adc6e0f94afbeb4433b9c6758a0f2dc67d69960cde449d7306f8",
+    "scripts/validate-agent-interactions.py": "7f80df04f44b9ebfe1cbcfcc5975227336ac3b692e0aa87484a8303179ace4b2",
+    "tests/fixtures/mcp-interactions.mjs": "5a2efe69866c2a8613a041933403cd65b61ee67de8aaed24610e49eb60efb373",
+    "src-tauri/src/agent_preferences.rs": "1852797476371afd5bc61b1362c73bf70db000dc6d127f40ef8f83a9ec940133",
+    "src/components/lens-agent-defaults.ts": "491c2532635a53f1a6a6215e5f958a32fa8cbf8005c4a41f3f5b7bdb6ecc879a"
+  },
+  "native": {
+    "status": "passed",
+    "cases": [
+      "permission_fixture-allow",
+      "permission_fixture-deny",
+      "permission_cancelled",
+      "automatic_fixture-allow",
+      "automatic_fixture-deny",
+      "form_accept",
+      "form_decline",
+      "form_cancel",
+      "url_decline",
+      "sdk_request_cancellation",
+      "wrong_session",
+      "concurrent_reverse_response_and_wrong_operation",
+      "elicitation_approval_extension_denied",
+      "active_session_tool_permission_ordering",
+      "turn_end",
+      "disconnect",
+      "supersession",
+      "lens_close",
+      "app_shutdown",
+      "expiry"
+    ],
+    "layer": "Production controls, Tauri command, native WKWebView and synthetic ACP; includes ActiveSession FIFO dispatch and actual close-button/window destruction."
+  },
+  "codex": {
+    "status": "passed",
+    "version": "1.6.2",
+    "layer": "Separate on-device provider transport probe with inert MCP server; complementary to native production-controller tests.",
+    "cases": [
+      {
+        "case": "fixture_read",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "I\u2019ll invoke the fixture reader once and return its text verbatim.LENS_FIXTURE_READ_7B4A"
+      },
+      {
+        "case": "fixture_form",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "LENS_FIXTURE_FORM_ACCEPTED_7B4A"
+      },
+      {
+        "case": "fixture_url",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "LENS_FIXTURE_URL_DECLINED_7B4A"
+      },
+      {
+        "case": "fixture_approval",
+        "passed": true,
+        "stopReason": "end_turn",
+        "output": "user cancelled MCP tool call"
+      }
+    ],
+    "counts": {
+      "permission": 0,
+      "form": 2,
+      "url": 1
+    },
+    "evidence_date": "2026-09-05T02:28:15.738979+00:00",
+    "evidence_commit": "d36874ab69ad9a9d8d5ea78078b43c0bc7b5ad6e"
+  },
+  "claude": {
+    "status": "authentication_required",
+    "version": "0.70.0",
+    "error": "ACP error -32000: Authentication required",
+    "cli_logged_in": false
+  },
+  "closure": "Request-response contract verified locally. Await current PR review/merge; Claude authenticated provider validation remains deferred by the user to another environment after merge, and #17 remains open until recorded.",
+  "tool_policy_enforcement": {
+    "status": "request_response_contract_verified",
+    "scope": "User-approved per-Agent saved Ask/Allow/Deny response policy applies only to received ACP permission requests. Execution without requests remains Agent-owned.",
+    "review": "https://github.com/japboy/lens/pull/39#discussion_r3939250921",
+    "automatic_response": "Select only an exact unambiguous allow_once/reject_once option. Unknown effects require confirmation. Unsupported requests never auto-approve; forms and URLs remain explicit.",
+    "native_evidence": "Serialized saved policies are restored into production controls; SDK requests receive exact automatic outcomes without creating pending dialogs. Existing manual/lifecycle cases pass.",
+    "provider_evidence": "Historical provider cases establish transport compatibility, not all-tool policy enforcement. Such enforcement is outside the accepted contract."
+  },
+  "verification": {
+    "frontend_passed": 141,
+    "rust_passed": 152,
+    "rust_existing_opt_in_ignored": 1,
+    "full_verify": "passed"
+  }
+}

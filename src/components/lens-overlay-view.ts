@@ -18,6 +18,7 @@ import {
   supportedAuthMethods,
 } from "../view-model";
 import "./lens-agent-output";
+import "./lens-session-controls";
 import "./lens-extraction-diagnostics";
 import "./lens-media-gallery";
 import {
@@ -49,6 +50,17 @@ interface OverlayNotification {
 }
 
 function overlayNotification(lens: LensState): OverlayNotification | undefined {
+  if (
+    lens.session_controls?.active &&
+    lens.session_controls.interactions.some((i) => i.status === "pending")
+  ) {
+    return {
+      title: "Agent response required",
+      detail: "Open Diagnostics to respond to the Agent request.",
+      busy: false,
+      prominent: true,
+    };
+  }
   const liveStatus = lensLiveStatus(lens.live);
   if (lens.representation) return liveStatus;
   const progress = lensProgressSnackbar(lens.stage);
@@ -384,6 +396,7 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="diagnostics-tab"
           tabindex="0"
         >
+          <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
           ${
             lens.context
               ? html`<lens-extraction-diagnostics

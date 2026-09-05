@@ -2316,3 +2316,42 @@ lens-output-media {
     backdrop-filter: none;
   }
 }
+
+lens-session-controls {
+  display: block;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.session-controls {
+  padding: 0 14px 8px;
+  border-bottom: 1px solid Separator;
+}
+.session-controls label,
+.session-form-field,
+lens-agent-defaults .settings-field {
+  display: grid;
+  gap: 4px;
+  margin-block: 8px;
+}
+.session-controls select,
+.session-controls input,
+lens-agent-defaults select {
+  max-width: 100%;
+  min-width: 0;
+}
+.session-controls pre,
+.elicitation-url {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+}
+.session-controls button {
+  margin-inline-end: 6px;
+  margin-block: 4px;
+}
+
+lens-agent-defaults {
+  display: contents;
+}

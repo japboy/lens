@@ -3,11 +3,36 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentKind, AgentPromptTemplate, AppSnapshot } from "../types";
+import type {
+  AgentKind,
+  AgentPromptTemplate,
+  AppSnapshot,
+  AgentDefaults,
+  InteractionResponse,
+} from "../types";
 
 export type Unlisten = () => void;
 
 export interface WebviewPort {
+  previewAgentModel(selectionId: string, configId: string, value?: string): Promise<void>;
+  setAgentDefaults(
+    selectionId: string,
+    defaults: AgentDefaults,
+    confirmPrivilege: boolean,
+  ): Promise<void>;
+  setSessionOption(
+    operationId: string,
+    instanceId: string,
+    configRevision: number,
+    configId: string,
+    value: string,
+  ): Promise<void>;
+  respondAgentInteraction(
+    operationId: string,
+    instanceId: string,
+    interactionId: string,
+    response: InteractionResponse,
+  ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
   getAppSnapshot(): Promise<AppSnapshot>;
   getAccessibilityPermission(): Promise<boolean>;
@@ -35,6 +60,24 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  async previewAgentModel(selectionId, configId, value) {
+    await invoke("preview_agent_model", { selectionId, configId, value });
+  },
+  async setAgentDefaults(selectionId, defaults, confirmPrivilege) {
+    await invoke("set_agent_defaults", { selectionId, defaults, confirmPrivilege });
+  },
+  async setSessionOption(operationId, instanceId, configRevision, configId, value) {
+    await invoke("set_session_option", {
+      operationId,
+      instanceId,
+      configRevision,
+      configId,
+      value,
+    });
+  },
+  async respondAgentInteraction(operationId, instanceId, interactionId, response) {
+    await invoke("respond_agent_interaction", { operationId, instanceId, interactionId, response });
+  },
   async subscribeToAppSnapshot(listener) {
     return listen<AppSnapshot>("app-state-changed", ({ payload }) => listener(payload));
   },

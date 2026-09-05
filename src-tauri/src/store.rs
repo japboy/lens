@@ -62,6 +62,7 @@ mod tests {
             agent: AgentKind::Codex,
             working_directory: test_root.join("unmounted"),
             agent_prompt_template: agent_prompt_template.clone(),
+            agent_preferences: Default::default(),
         };
         fs::write(
             &store.path,
