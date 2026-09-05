@@ -58,26 +58,11 @@ function click(element: HTMLElement, label: string) {
   button!.click();
 }
 describe("session control boundary", () => {
-  it("renders Agent order and sends exact IDs with session revision", async () => {
+  it("shows diagnostics without session setting controls", async () => {
     const element = await mount(snapshot());
-    const intents: OverlayIntent[] = [];
-    element.addEventListener("lens-overlay-intent", (e) =>
-      intents.push((e as CustomEvent<OverlayIntent>).detail),
-    );
-    const select = element.querySelector("select")!;
-    expect([...select.options].map((o) => o.value)).toEqual(["second", "first"]);
-    expect(select.value).toBe("second");
-    select.value = "first";
-    select.dispatchEvent(new Event("change"));
-    expect(intents).toEqual([
-      {
-        type: "set-session-option",
-        instanceId: "instance",
-        revision: 4,
-        configId: "model",
-        value: "first",
-      },
-    ]);
+    expect(element.querySelector("select")).toBeNull();
+    expect(element.textContent).not.toContain("Session settings");
+    expect(element.textContent).toContain("Synthetic Agent");
   });
   it("renders permission arguments as escaped text and only sends an advertised option ID", async () => {
     const controls = snapshot();
@@ -103,7 +88,7 @@ describe("session control boundary", () => {
     );
     expect(element.querySelector("img")).toBeNull();
     expect(element.querySelector("pre")?.textContent).toContain("<img");
-    expect(element.querySelector("select")?.disabled).toBe(true);
+    expect(element.querySelector("select")).toBeNull();
     click(element, "Allow Once");
     expect(intents).toEqual([
       {
@@ -206,7 +191,7 @@ describe("session control boundary", () => {
     controls.active = false;
     controls.interactions = [{ id: "done", sequence: 1, status: "expired" }];
     const element = await mount(controls);
-    expect(element.querySelector("select")?.disabled).toBe(true);
+    expect(element.querySelector("select")).toBeNull();
     expect(element.querySelector("form")).toBeNull();
     expect(element.textContent).toContain("expired");
   });
@@ -234,13 +219,42 @@ describe("shared Agent defaults", () => {
     model.value = "first";
     model.dispatchEvent(new Event("change"));
     await element.updateComplete;
+    expect(
+      element.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort default"]')
+        ?.disabled,
+    ).toBe(true);
+    element.selection = {
+      ...element.selection,
+      config_options: [
+        ...snapshot().config_options!,
+        {
+          id: "reasoning_effort",
+          name: "Reasoning effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    };
+    await element.updateComplete;
+    const reasoning = element.querySelector<HTMLSelectElement>(
+      'select[aria-label="Reasoning effort default"]',
+    )!;
+    expect(reasoning.disabled).toBe(false);
+    reasoning.value = "high";
+    reasoning.dispatchEvent(new Event("change"));
+    await element.updateComplete;
     const policy = element.querySelector<HTMLSelectElement>(
       'select[aria-label="Read files or data policy"]',
     )!;
     policy.value = "deny";
     policy.dispatchEvent(new Event("change"));
     await element.updateComplete;
-    expect(intents).toEqual([]);
+    expect(intents).toEqual([{ type: "preview-model", configId: "model", value: "first" }]);
     const { DEFAULT_AGENT_DEFAULTS } = await import("./lens-agent-defaults");
     element.defaults = structuredClone(DEFAULT_AGENT_DEFAULTS);
     element.selection = structuredClone(element.selection);
@@ -248,10 +262,13 @@ describe("shared Agent defaults", () => {
     expect(model.value).toBe("first");
     expect(policy.value).toBe("deny");
     click(element, "Save Shared Settings");
-    expect(intents[0]).toMatchObject({
+    expect(intents[1]).toMatchObject({
       type: "save-defaults",
       defaults: {
-        choices: [{ config_id: "model", value: "first" }],
+        choices: [
+          { config_id: "model", value: "first" },
+          { config_id: "reasoning_effort", value: "high" },
+        ],
         tools: { read: "deny", execute: "deny" },
       },
     });

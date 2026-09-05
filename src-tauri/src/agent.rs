@@ -570,9 +570,21 @@ async fn probe_agent_authentication(
                 .block_task()
                 .start_session()
                 .await?;
-            let options = session.config_options().map(<[_]>::to_vec);
+            let mut options = session.config_options().map(<[_]>::to_vec);
             if let Some(options) = &options {
                 session_controls::validate_options(options)?;
+            }
+            // A persisted model determines which dependent selectors Settings must expose.
+            let config = app.state::<AppState>().snapshot().map_err(state_error)?.config;
+            let model_choices = config.agent_preferences.get(descriptor.kind).choices.iter()
+                .filter(|choice| options.as_ref().is_some_and(|catalog| catalog.iter().any(|option|
+                    option.id.to_string() == choice.config_id && option.category == Some(agent_client_protocol::schema::v1::SessionConfigOptionCategory::Model))))
+                .cloned().collect::<Vec<_>>();
+            if !model_choices.is_empty() {
+                let model_defaults = crate::agent_preferences::AgentDefaults { choices: model_choices, ..Default::default() };
+                if let Ok((resolved, _)) = session_controls::apply_defaults(&connection, session.session_id(), options.clone(), session.modes(), &model_defaults, descriptor.safe_mode_id).await {
+                    options = resolved;
+                }
             }
             update_agent_selection(&app, operation_id, |selection| {
                 selection.config_options = options;

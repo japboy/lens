@@ -52,12 +52,16 @@ export class LensAgentDefaults extends LitElement {
     if (this.selection.stage !== "selected") return nothing;
     const options = this.selection.config_options;
     const modes = this.selection.modes ?? [];
+    const model = options?.find((o) => o.category === "model");
+    const savedModel = this.draft.choices.find((c) => c.config_id === model?.id)?.value;
+    const unresolvedModel = savedModel && savedModel !== model?.currentValue;
     return html`<section class="settings-group" aria-labelledby="agent-defaults-heading">
       <h2 id="agent-defaults-heading">Shared Agent Settings</h2>
       <p class="help">
         Defaults apply to new Lens sessions for this Agent. Saving ends its current session. Choices
         are supplied by the Agent.
       </p>
+      ${unresolvedModel ? html`<p role="status">Model settings have not been loaded for this selection. Select the model again to refresh its reasoning levels.</p>` : nothing}
       <fieldset ?disabled=${this.disabled}>
         <legend>Session defaults</legend>
         ${
@@ -92,6 +96,18 @@ export class LensAgentDefaults extends LitElement {
                 </select></label
               >`
         }
+        ${
+          !options?.some((o) => o.category === "thought_level")
+            ? html`<label class="settings-field"
+                ><span>Reasoning effort</span
+                ><select aria-label="Reasoning effort default" disabled>
+                  <option>Unavailable for the selected model</option></select
+                ><span class="help"
+                  >Choose a model to load its supported reasoning levels.</span
+                ></label
+              >`
+            : nothing
+        }
       </fieldset>
       <fieldset ?disabled=${this.disabled}>
         <legend>Tool approval policy</legend>
@@ -124,6 +140,13 @@ export class LensAgentDefaults extends LitElement {
         ?disabled=${this.disabled}
         @click=${() => {
           this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
+          const model = this.selection.config_options?.find((o) => o.category === "model");
+          if (model)
+            dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, {
+              type: "preview-model",
+              configId: model.id,
+              value: this.draft.choices.find((c) => c.config_id === model.id)?.value,
+            });
         }}
       >
         Revert
@@ -131,9 +154,23 @@ export class LensAgentDefaults extends LitElement {
     </section>`;
   }
   private choose(configId: string, value: string) {
-    const choices = this.draft.choices.filter((c) => c.config_id !== configId);
+    const isModel = this.selection.config_options?.some(
+      (o) => o.id === configId && o.category === "model",
+    );
+    const reasoningIds = new Set(
+      this.selection.config_options?.filter((o) => o.category === "thought_level").map((o) => o.id),
+    );
+    const choices = this.draft.choices.filter(
+      (c) => c.config_id !== configId && !(isModel && reasoningIds.has(c.config_id)),
+    );
     if (value) choices.push({ config_id: configId, value });
     this.draft = { ...this.draft, choices };
+    if (isModel)
+      dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, {
+        type: "preview-model",
+        configId,
+        value: value || undefined,
+      });
   }
   private setPolicy(key: keyof ToolPolicies, value: ToolPolicy) {
     this.draft = { ...this.draft, tools: { ...this.draft.tools, [key]: value } };

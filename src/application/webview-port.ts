@@ -14,6 +14,7 @@ import type {
 export type Unlisten = () => void;
 
 export interface WebviewPort {
+  previewAgentModel(selectionId: string, configId: string, value?: string): Promise<void>;
   setAgentDefaults(
     selectionId: string,
     defaults: AgentDefaults,
@@ -59,6 +60,9 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  async previewAgentModel(selectionId, configId, value) {
+    await invoke("preview_agent_model", { selectionId, configId, value });
+  },
   async setAgentDefaults(selectionId, defaults, confirmPrivilege) {
     await invoke("set_agent_defaults", { selectionId, defaults, confirmPrivilege });
   },

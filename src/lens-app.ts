@@ -94,6 +94,14 @@ export class LensApp extends LitElement {
     const intent = event.detail;
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
+      case "preview-agent-model": {
+        const selectionId = this.snapshots.snapshot?.agent_selection.operation_id;
+        if (!selectionId) return;
+        await this.runCommand(identity, () =>
+          this.port.previewAgentModel(selectionId, intent.configId, intent.value),
+        );
+        return;
+      }
       case "save-agent-defaults": {
         const snapshot = this.snapshots.snapshot;
         const selection = snapshot?.agent_selection;

@@ -9,6 +9,7 @@ export const AGENT_OUTPUT_INTENT_EVENT = "lens-agent-output-intent";
 export const OVERLAY_INTENT_EVENT = "lens-overlay-intent";
 
 export type AgentIntent =
+  | { type: "preview-model"; configId: string; value?: string }
   | { type: "save-defaults"; defaults: AgentDefaults }
   | { type: "select"; agent: AgentKind }
   | { type: "authenticate"; methodId: string }
@@ -20,6 +21,7 @@ export type PromptIntent =
   | { type: "reset" };
 
 export type SettingsIntent =
+  | { type: "preview-agent-model"; configId: string; value?: string }
   | { type: "save-agent-defaults"; defaults: AgentDefaults }
   | { type: "select-agent"; agent: AgentKind }
   | { type: "authenticate-agent-selection"; methodId: string }

@@ -50,6 +50,17 @@ interface OverlayNotification {
 }
 
 function overlayNotification(lens: LensState): OverlayNotification | undefined {
+  if (
+    lens.session_controls?.active &&
+    lens.session_controls.interactions.some((i) => i.status === "pending")
+  ) {
+    return {
+      title: "Agent response required",
+      detail: "Open Diagnostics to respond to the Agent request.",
+      busy: false,
+      prominent: true,
+    };
+  }
   const liveStatus = lensLiveStatus(lens.live);
   if (lens.representation) return liveStatus;
   const progress = lensProgressSnackbar(lens.stage);
@@ -150,7 +161,6 @@ export class LensOverlayView extends LitElement {
           <div class="overlay-brand">
             <img class="overlay-app-icon" src=${appIconUrl} alt="" />
             <h1 class="overlay-title visually-hidden">Lens</h1>
-            ${lens.session_controls ? html`<span class="session-mode-label">Mode: ${lens.session_controls.effective_mode}</span>` : nothing}
           </div>
           <div class="overlay-header-actions">
             ${
@@ -213,7 +223,6 @@ export class LensOverlayView extends LitElement {
           </div>
         </header>
 
-        <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
         <section class="overlay-source-summary" aria-label="Selected source context">
           <span class="overlay-source-icon" aria-hidden="true">
             <i class="fa-solid fa-window-maximize"></i>
@@ -387,6 +396,7 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="diagnostics-tab"
           tabindex="0"
         >
+          <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
           ${
             lens.context
               ? html`<lens-extraction-diagnostics

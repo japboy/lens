@@ -1298,6 +1298,47 @@ fn replace_operation_state(
     update_lens_state(app, operation_id, |state| *state = next)
 }
 
+/// Resolve model-dependent settings without persisting a draft or touching the live actor.
+#[tauri::command]
+pub async fn preview_agent_model(
+    app: AppHandle,
+    selection_id: Uuid,
+    config_id: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let expected = state.snapshot()?;
+    if expected.agent_selection.operation_id != Some(selection_id)
+        || expected.agent_selection.selected_agent() != Some(expected.config.agent)
+        || !expected.agent_selection.config_options.as_ref().is_some_and(|options| options.iter().any(|o|
+            o.id.to_string() == config_id && o.category == Some(agent_client_protocol::schema::v1::SessionConfigOptionCategory::Model)))
+    { return Err("Agent model selection changed".into()); }
+    let defaults = crate::agent_preferences::AgentDefaults {
+        choices: value
+            .map(|value| crate::agent_preferences::SavedChoice { config_id, value })
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
+    let snapshot = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if snapshot.config != expected.config
+            || snapshot.agent_selection != expected.agent_selection
+        {
+            return Err("Agent settings changed during model lookup".into());
+        }
+        snapshot.revision = next_revision(&snapshot)?;
+        snapshot.agent_selection.config_options = options;
+        snapshot.clone()
+    };
+    emit_app_snapshot(&app, snapshot, true)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

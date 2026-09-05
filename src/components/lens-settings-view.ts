@@ -194,6 +194,12 @@ export class LensSettingsView extends LitElement {
     event.stopPropagation();
     const intent: SettingsIntent = (() => {
       switch (event.detail.type) {
+        case "preview-model":
+          return {
+            type: "preview-agent-model",
+            configId: event.detail.configId,
+            value: event.detail.value,
+          };
         case "save-defaults":
           return { type: "save-agent-defaults", defaults: event.detail.defaults };
         case "select":

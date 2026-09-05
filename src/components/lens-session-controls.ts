@@ -7,7 +7,6 @@ import type {
   ElicitationField,
 } from "../types";
 import { OVERLAY_INTENT_EVENT, dispatchComponentEvent, type OverlayIntent } from "./events";
-import { agentOptionChoices } from "./agent-option-choices";
 
 @customElement("lens-session-controls")
 export class LensSessionControls extends LitElement {
@@ -19,48 +18,12 @@ export class LensSessionControls extends LitElement {
     const controls = this.controls;
     if (!controls) return nothing;
     const pending = controls.interactions.filter((i) => i.status === "pending");
-    const disabled =
-      !controls.active || controls.change?.status === "pending" || pending.length > 0;
     return html`<section aria-label="Agent session controls" class="session-controls">
       <p>
         ${controls.agent_name} · Mode:
         <strong>${controls.effective_mode}</strong>${!controls.active ? " · Session ended" : ""}
       </p>
       ${controls.notice ? html`<p role="status">${controls.notice}</p>` : nothing}
-      <details>
-        <summary>Session settings</summary>
-        <p class="help">
-          Changes here apply only to this session. Shared defaults are available in Settings.
-        </p>
-        ${
-          controls.config_options
-            ? controls.config_options.map(
-                (option) =>
-                  html`<label
-                    ><span>${option.name}</span
-                    ><select
-                      aria-label=${option.name}
-                      .value=${String(option.currentValue)}
-                      ?disabled=${disabled || option.type !== "select"}
-                      @change=${(event: Event) => this.choose(option.id, (event.target as HTMLSelectElement).value)}
-                    >
-                      ${agentOptionChoices(option)}</select
-                    ><span class="help">${option.description ?? ""}</span></label
-                  >`,
-              )
-            : html`<label
-                >Mode<select
-                  aria-label="Mode"
-                  .value=${controls.effective_mode}
-                  ?disabled=${disabled}
-                  @change=${(event: Event) => this.choose("mode", (event.target as HTMLSelectElement).value)}
-                >
-                  ${controls.modes.map((mode) => html`<option value=${mode.id}>${mode.name}</option>`)}
-                </select></label
-              >`
-        }
-        ${controls.change ? html`<p role="status">Settings change: ${controls.change.status}</p>` : nothing}
-      </details>
       ${pending.map((interaction) => {
         const details = interaction.details;
         if (!details) return nothing;
@@ -173,17 +136,6 @@ export class LensSessionControls extends LitElement {
       }
     }
     this.respond(id, { action: "submit", content });
-  }
-  private choose(configId: string, value: string) {
-    const controls = this.controls;
-    if (controls)
-      this.emit({
-        type: "set-session-option",
-        instanceId: controls.instance_id,
-        revision: controls.config_revision,
-        configId,
-        value,
-      });
   }
   private respond(interactionId: string, response: InteractionResponse) {
     if (this.controls)

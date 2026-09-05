@@ -126,6 +126,7 @@ pub fn run() {
             commands::cancel_agent,
             commands::set_session_option,
             commands::set_agent_defaults,
+            commands::preview_agent_model,
             commands::respond_agent_interaction,
             commands::show_settings,
         ])
