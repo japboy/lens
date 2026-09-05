@@ -1786,7 +1786,6 @@ fn auth_method_model(method: &AuthMethod) -> AgentAuthMethod {
     let (kind, supported) = match method {
         AuthMethod::Agent(_) => (AgentAuthMethodKind::Agent, true),
         AuthMethod::Terminal(_) => (AgentAuthMethodKind::Terminal, true),
-        AuthMethod::EnvVar(_) => (AgentAuthMethodKind::EnvironmentVariable, false),
         _ => (AgentAuthMethodKind::Agent, false),
     };
     AgentAuthMethod {
@@ -2043,6 +2042,113 @@ mod tests {
     };
     use agent_client_protocol::schema::v1::SessionMode;
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
+
+    async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
+        use agent_client_protocol::{
+            schema::v1::{NewSessionRequest, NewSessionResponse},
+            Client, Responder,
+        };
+
+        let expected: NewSessionResponse =
+            serde_json::from_value(expected_json.clone()).expect("valid synthetic session state");
+        // Ensure tolerant schema decoding cannot silently weaken the fixture.
+        assert_eq!(serde_json::to_value(&expected).unwrap(), expected_json);
+        let agent_response = expected.clone();
+        let working_directory = std::env::current_dir().unwrap();
+        let expected_directory = working_directory.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: NewSessionRequest,
+                        responder: Responder<NewSessionResponse>,
+                        _connection: ConnectionTo<Client>| {
+                assert_eq!(request.cwd, expected_directory);
+                responder.respond(agent_response.clone())
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let client = Client
+            .builder()
+            .connect_with(agent, async move |connection| {
+                // Exercise the same high-level session boundary as the production actor.
+                let session = connection
+                    .build_session(&working_directory)
+                    .block_task()
+                    .start_session()
+                    .await?;
+
+                assert_eq!(session.config_options(), expected.config_options.as_deref());
+                assert_eq!(session.response(), expected);
+                assert_eq!(
+                    serde_json::to_value(session.response()).unwrap(),
+                    expected_json
+                );
+                Ok(())
+            });
+
+        tokio::time::timeout(Duration::from_secs(5), client)
+            .await
+            .expect("synthetic session setup must finish")
+            .expect("synthetic session connection must succeed");
+    }
+
+    #[tokio::test]
+    async fn initial_session_config_preserves_complete_agent_ordered_state() {
+        assert_initial_session_config_preserved(serde_json::json!({
+            "sessionId": "ordered-config-session",
+            "_meta": { "fixture": "initial-session" },
+            "modes": {
+                "currentModeId": "inspect",
+                "availableModes": [{ "id": "inspect", "name": "Inspect" }]
+            },
+            "configOptions": [
+                {
+                    "id": "z-model", "name": "Model", "description": "Agent model choices",
+                    "category": "model", "type": "select", "currentValue": "a-current",
+                    "_meta": { "fixture": "model" },
+                    "options": [
+                        {
+                            "group": "z-group", "name": "Primary group",
+                            "_meta": { "fixture": "group" },
+                            "options": [
+                                { "value": "z-other", "name": "Other", "description": "First choice" },
+                                { "value": "a-current", "name": "Current", "description": "Second choice",
+                                  "_meta": { "fixture": "value" } }
+                            ]
+                        },
+                        {
+                            "group": "a-group", "name": "Secondary group",
+                            "options": [{ "value": "third", "name": "Third" }]
+                        }
+                    ]
+                },
+                {
+                    "id": "a-reasoning", "name": "Reasoning", "description": "Model-dependent choices",
+                    "category": "thought_level", "type": "select", "currentValue": "low",
+                    "options": [
+                        { "value": "high", "name": "High" },
+                        { "value": "low", "name": "Low" }
+                    ]
+                },
+                {
+                    "id": "future-selector", "name": "Future selector",
+                    "category": "future-category", "type": "select", "currentValue": "custom",
+                    "options": [{ "value": "custom", "name": "Custom", "description": "Agent-defined value" }]
+                }
+            ]
+        }))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn initial_session_config_distinguishes_absent_from_empty_options() {
+        assert_initial_session_config_preserved(serde_json::json!({
+            "sessionId": "absent-config-session"
+        }))
+        .await;
+        assert_initial_session_config_preserved(serde_json::json!({
+            "sessionId": "empty-config-session", "configOptions": []
+        }))
+        .await;
+    }
 
     fn sample_input(source_text: &str) -> LensInput {
         LensInput {
