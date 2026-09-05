@@ -1025,7 +1025,7 @@ mod tests {
         let config = AppConfig {
             agent: AgentKind::Codex,
             working_directory: PathBuf::from("/Users/example/Work"),
-            agent_prompt_template: AppConfig::default().agent_prompt_template,
+            agent_prompt_template: crate::store::default_config().agent_prompt_template,
             agent_preferences: Default::default(),
         };
         let selected = AgentSelectionState {

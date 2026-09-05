@@ -1296,7 +1296,7 @@ mod tests {
     fn active_run_authority_is_independent_from_the_latest_projection() {
         let operation_id = Uuid::from_u128(1);
         let run_id = Uuid::from_u128(2);
-        let config = AppConfig::default();
+        let config = crate::store::default_config();
         let projection = |revision, digit: char| {
             ProjectionRef::new(
                 std::num::NonZeroU64::new(revision).expect("non-zero projection revision"),

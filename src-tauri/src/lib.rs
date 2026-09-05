@@ -4,7 +4,7 @@ mod agent_preferences;
 mod agent_runtime;
 mod app_state;
 mod commands;
-mod confirm_targets;
+use use_case::confirm_targets;
 #[cfg(test)]
 mod contract_tests;
 use use_case::elicitation;

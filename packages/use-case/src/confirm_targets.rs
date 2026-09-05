@@ -1,15 +1,15 @@
 //! Confirmation ordering, independent of native presentation and task drivers.
 
-use crate::lens::LensTargetSet;
 use crate::model::{LensStage, LensState, LensTargetSelection, LensTargetSelectionStage};
+use domain::lens::LensTargetSet;
 use std::future::Future;
 use uuid::Uuid;
 
-pub(crate) const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
+pub const OPERATION_SUPERSEDED: &str = "Lens operation was superseded by a newer selection";
 
 /// App-owned effects required by confirmation, not a general platform adapter.
 /// State writes and extraction commits must check the supplied operation identity.
-pub(crate) trait ConfirmationHost {
+pub trait ConfirmationHost {
     fn selection(&self, operation: Uuid) -> Result<LensTargetSelection, String>;
     fn dismiss_preview(&self) -> impl Future<Output = Result<(), String>> + Send;
     fn replace_state(&self, operation: Uuid, next: LensState) -> Result<bool, String>;
@@ -24,7 +24,7 @@ pub(crate) trait ConfirmationHost {
     fn request_refresh(&self, operation: Uuid);
 }
 
-pub(crate) async fn confirm_targets(
+pub async fn confirm_targets(
     host: &impl ConfirmationHost,
     operation: Uuid,
 ) -> Result<LensState, String> {
@@ -153,7 +153,7 @@ mod tests {
                     LensTargetSelectionStage::Reviewing
                 },
                 anchor: Some(window.facts.frame),
-                maximum_targets: crate::lens::MAX_LENS_TARGETS,
+                maximum_targets: domain::lens::MAX_LENS_TARGETS,
                 items: if self.scenario == Scenario::EmptySelection {
                     Vec::new()
                 } else {

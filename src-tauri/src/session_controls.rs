@@ -1,7 +1,6 @@
 //! Operation-scoped ACP controls. Protocol responders never cross the WebView boundary.
 use crate::app_state::{update_lens_state, AppState};
 use agent_client_protocol::{schema::v1::*, Agent, ConnectionTo, Error, Responder};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -9,110 +8,12 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, oneshot, watch};
+pub use use_case::session_controls::*;
 use uuid::Uuid;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_INTERACTIONS: usize = 32;
-const MAX_CONFIG_BYTES: usize = 128 * 1024;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InteractionStatus {
-    Pending,
-    Accepted,
-    Declined,
-    Cancelled,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InteractionDetails {
-    ModeTransition {
-        from: String,
-        to: String,
-    },
-    Form {
-        message: String,
-        schema: serde_json::Value,
-    },
-    Url {
-        message: String,
-        elicitation_id: String,
-        url: String,
-    },
-    Permission {
-        tool_call_id: String,
-        title: String,
-        effect: String,
-        arguments: serde_json::Value,
-        options: Vec<PermissionOption>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentInteraction {
-    pub id: Uuid,
-    pub run_id: Option<Uuid>,
-    pub sequence: u32,
-    pub status: InteractionStatus,
-    pub details: Option<InteractionDetails>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ChangeStatus {
-    Pending,
-    Succeeded,
-    Rejected,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ConfigChange {
-    pub config_id: String,
-    pub value: String,
-    pub status: ChangeStatus,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModeOrigin {
-    Policy,
-    User,
-    Agent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentSessionControlState {
-    pub instance_id: Uuid,
-    pub operation_id: Uuid,
-    pub session_id: String,
-    pub agent_name: String,
-    pub active: bool,
-    pub config_revision: u32,
-    pub config_options: Option<Vec<SessionConfigOption>>,
-    pub modes: Vec<SessionMode>,
-    pub effective_mode: String,
-    pub configured_mode: String,
-    pub configured_origin: ModeOrigin,
-    pub last_mode_origin: ModeOrigin,
-    pub policy_default: String,
-    pub change: Option<ConfigChange>,
-    pub notice: Option<String>,
-    pub interactions: Vec<AgentInteraction>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum InteractionResponse {
-    Accept,
-    Decline,
-    Cancel,
-    Select { option_id: String },
-    Submit { content: serde_json::Value },
-}
 
 enum PermissionAdmission {
     Automatic(RequestPermissionOutcome),
@@ -143,72 +44,6 @@ fn invalid(message: &str) -> Error {
 }
 fn lock_error() -> String {
     "Agent session controls are unavailable".into()
-}
-
-pub fn mode_option(options: &[SessionConfigOption]) -> Result<Option<&SessionConfigOption>, Error> {
-    let mut modes = options
-        .iter()
-        .filter(|o| o.category == Some(SessionConfigOptionCategory::Mode));
-    let result = modes.next();
-    if modes.next().is_some() {
-        return Err(invalid("Agent supplied ambiguous mode selectors"));
-    }
-    Ok(result)
-}
-fn values(option: &SessionConfigOption) -> Result<Vec<&SessionConfigSelectOption>, Error> {
-    match &option.kind {
-        SessionConfigKind::Select(select) => Ok(match &select.options {
-            SessionConfigSelectOptions::Ungrouped(options) => options.iter().collect(),
-            SessionConfigSelectOptions::Grouped(groups) => {
-                groups.iter().flat_map(|g| g.options.iter()).collect()
-            }
-            _ => return Err(invalid("Unsupported Agent selector choices")),
-        }),
-        _ => Err(invalid("Unsupported Agent selector type")),
-    }
-}
-fn current_value(option: &SessionConfigOption) -> Result<String, Error> {
-    match &option.kind {
-        SessionConfigKind::Select(select) => Ok(select.current_value.to_string()),
-        _ => Err(invalid("Unsupported Agent selector type")),
-    }
-}
-pub fn validate_options(options: &[SessionConfigOption]) -> Result<(), Error> {
-    if options.len() > 32
-        || serde_json::to_vec(options)
-            .map_err(|_| invalid("Invalid Agent options"))?
-            .len()
-            > MAX_CONFIG_BYTES
-    {
-        return Err(invalid("Agent options exceed the session control budget"));
-    }
-    let mut ids = BTreeSet::new();
-    for option in options {
-        if option.id.to_string().is_empty() || !ids.insert(option.id.to_string()) {
-            return Err(invalid("Ambiguous Agent option IDs"));
-        }
-        match &option.kind {
-            SessionConfigKind::Select(_) => {
-                let mut choices = BTreeSet::new();
-                for choice in values(option)? {
-                    if choice.value.to_string().is_empty()
-                        || !choices.insert(choice.value.to_string())
-                    {
-                        return Err(invalid("Ambiguous Agent option values"));
-                    }
-                }
-                if !choices.contains(&current_value(option)?) {
-                    return Err(invalid("Agent current value is not an advertised choice"));
-                }
-            }
-            SessionConfigKind::Boolean(_) => {}
-            _ => return Err(invalid("Unknown Agent option type")),
-        }
-    }
-    if let Some(mode) = mode_option(options)? {
-        let _ = values(mode)?;
-    }
-    Ok(())
 }
 
 impl SessionControls {

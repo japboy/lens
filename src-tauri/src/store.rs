@@ -1,6 +1,10 @@
 use crate::model::AppConfig;
 use std::{fs, io, path::PathBuf};
 
+pub(crate) fn default_config() -> AppConfig {
+    AppConfig::new(dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+}
+
 #[derive(Debug)]
 pub struct ConfigStore {
     path: PathBuf,
@@ -17,12 +21,14 @@ impl ConfigStore {
     }
 
     pub fn load(&self) -> AppConfig {
+        let defaults = default_config();
+        let default_directory = defaults.working_directory.clone();
         let mut config: AppConfig = fs::read(&self.path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+            .and_then(|bytes| AppConfig::decode_settings(&bytes, default_directory.clone()).ok())
+            .unwrap_or(defaults);
         if !config.working_directory.is_dir() {
-            config.working_directory = AppConfig::default().working_directory;
+            config.working_directory = default_directory;
         }
         config.agent_prompt_template = std::mem::take(&mut config.agent_prompt_template)
             .normalize()
@@ -55,7 +61,7 @@ mod tests {
         let store = ConfigStore {
             path: test_root.join("settings.json"),
         };
-        let mut agent_prompt_template = AppConfig::default().agent_prompt_template;
+        let mut agent_prompt_template = crate::store::default_config().agent_prompt_template;
         agent_prompt_template.common =
             "Summarize the source.\n\n{turn_instruction}\n\nUse only attached observations.".into();
         let config = AppConfig {
@@ -76,7 +82,7 @@ mod tests {
         assert_eq!(loaded.agent_prompt_template, agent_prompt_template);
         assert_eq!(
             loaded.working_directory,
-            AppConfig::default().working_directory
+            crate::store::default_config().working_directory
         );
         fs::remove_dir_all(test_root).expect("remove test settings directory");
     }
@@ -102,7 +108,7 @@ mod tests {
 
         assert_eq!(
             loaded.agent_prompt_template,
-            AppConfig::default().agent_prompt_template
+            crate::store::default_config().agent_prompt_template
         );
         fs::remove_dir_all(test_root).expect("remove test settings directory");
     }
@@ -147,7 +153,7 @@ mod tests {
         };
         let config = AppConfig {
             working_directory: test_root.clone(),
-            ..AppConfig::default()
+            ..crate::store::default_config()
         };
 
         store.save(&config).expect("save settings");
