@@ -48,6 +48,23 @@ pub(crate) fn invoke(
 }
 
 #[test]
+fn about_ipc_embeds_exact_documents_and_window_is_reused() {
+    let app = app(test_support::state());
+    let settings = window(&app);
+    crate::ui::show_about(app.handle()).unwrap();
+    let about = app.get_webview_window("about").unwrap();
+    let info = invoke(&about, "get_about_info", json!({})).unwrap();
+    assert_eq!(info["name"], "Lens");
+    assert_eq!(info["version"], app.package_info().version.to_string());
+    assert_eq!(info["copyright"], "Copyright © 2026 Yu Inao");
+    assert_eq!(info["license"], include_str!("../../../../LICENSE"));
+    assert_eq!(info["notice"], include_str!("../../../../NOTICE"));
+    crate::ui::show_about(app.handle()).unwrap();
+    assert_eq!(app.webview_windows().len(), 2);
+    assert!(app.get_webview_window(settings.label()).is_some());
+}
+
+#[test]
 fn production_snapshot_ipc_preserves_the_complete_state_and_permission_result() {
     let state = test_support::state();
     let expected = serde_json::to_value(state.snapshot().unwrap()).unwrap();

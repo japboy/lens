@@ -15,7 +15,7 @@ function model(
   return settingsViewModel("macos", undefined, PERMISSION, command, connection);
 }
 
-function succeeded(type: SettingsIntent["type"]): CommandState {
+function succeeded(type: Exclude<SettingsIntent["type"], "open-about">): CommandState {
   return {
     stage: "succeeded",
     command: { scope: "settings", type },

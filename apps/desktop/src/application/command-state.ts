@@ -1,7 +1,7 @@
 import type { OverlayIntent, SettingsIntent, TargetSelectionIntent } from "../components/events";
 
 export type CommandIdentity =
-  | { scope: "settings"; type: SettingsIntent["type"] }
+  | { scope: "settings"; type: Exclude<SettingsIntent["type"], "open-about"> }
   | { scope: "target-selection"; type: TargetSelectionIntent["type"] }
   | { scope: "overlay"; type: OverlayIntent["type"] };
 

@@ -1,0 +1,6 @@
+{
+  "identifier": "about",
+  "description": "About window with embedded license text.",
+  "windows": ["about"],
+  "permissions": ["core:default"]
+}
