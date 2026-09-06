@@ -29,7 +29,7 @@
     "dompurify": "3.4.14",
     "lit": "3.3.3",
     "marked": "18.0.10",
-    "mermaid": "11.17.0"
+    "mermaid": "11.17.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
