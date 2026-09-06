@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { LensOverlayView } from "./components/lens-overlay-view";
-import { LensSettingsView } from "./components/lens-settings-view";
+import { LensOverlayView } from "../src/components/lens-overlay-view";
+import { LensSettingsView } from "../src/components/lens-settings-view";
 
 const overlayStyles = LensOverlayView.styles.map((style) => style.cssText).join("\n");
 const settingsStyles = LensSettingsView.styles.map((style) => style.cssText).join("\n");
-const documentStyles = readFileSync(new URL("./styles/document.css", import.meta.url), "utf8");
+const documentStyles = readFileSync(new URL("../src/styles/document.css", import.meta.url), "utf8");
 
 describe("canonical application icon presentation", () => {
   it("preserves the generated composition without another mask or shadow", () => {

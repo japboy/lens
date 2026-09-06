@@ -6,7 +6,7 @@ import { PAGE_ENTRIES } from "./src/page-entries.js";
 export default defineConfig({
   clearScreen: false,
   test: {
-    include: ["src/**/*.test.ts", "tooling/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "tooling/**/*.test.ts", "tests/*.ts"],
     globalSetup: ["./tooling/prerender/test-setup.ts"],
   },
   build: {
