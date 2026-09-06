@@ -78,6 +78,13 @@ pub(crate) fn state() -> AppState {
 
 pub(crate) struct UnusedPresentation;
 impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
+    fn settings_background(
+        &self,
+        _: &tauri::AppHandle<R>,
+    ) -> Result<tauri::utils::config::Color, PlatformError> {
+        Ok(tauri::utils::config::Color(238, 238, 238, 255))
+    }
+
     fn present(&self, _: &tauri::WebviewWindow<R>) -> Result<(), PlatformError> {
         panic!("unexpected native presentation")
     }

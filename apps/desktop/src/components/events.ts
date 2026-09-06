@@ -74,3 +74,12 @@ export function dispatchComponentEvent<T>(target: EventTarget, type: string, det
     }),
   );
 }
+
+/** Semantic events emitted by the independent window views. */
+declare global {
+  interface HTMLElementEventMap {
+    "lens-settings-intent": CustomEvent<SettingsIntent>;
+    "lens-overlay-intent": CustomEvent<OverlayIntent>;
+    "lens-target-selection-intent": CustomEvent<TargetSelectionIntent>;
+  }
+}

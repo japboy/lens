@@ -4,7 +4,7 @@ import { isProductTerminologyPath, productTerminologyViolations } from "./termin
 describe("product terminology policy", () => {
   it.each([
     ["README.md", true],
-    ["apps/desktop/index.html", true],
+    ["apps/desktop/src/about.html", true],
     ["apps/desktop/src-tauri/tauri.conf.json", true],
     ["apps/desktop/src-tauri/tauri.macos.conf.json", true],
     ["apps/desktop/src/components/new-output.ts", true],

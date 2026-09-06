@@ -62,6 +62,7 @@ fn command_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         about::get_about_info,
+        about::get_about_documents,
         about::show_about,
         commands::get_app_snapshot,
         commands::set_agent,
@@ -101,6 +102,8 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
     let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();
     let validate_acp = std::env::var_os("LENS_VALIDATE_ACP").is_some();
+    let validate_target_selection =
+        cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_TARGET_SELECTION").is_some();
     let validate_rich_output =
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_RICH_OUTPUT").is_some();
     let validation_runtime =
@@ -157,6 +160,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 && std::env::var_os("LENS_VALIDATE_ACP").is_none()
                 && std::env::var_os("LENS_VALIDATE_RUNTIME").is_none()
                 && !validate_rich_output
+                && !validate_target_selection
                 && !validate_interactions
             {
                 let handle = app.handle().clone();
@@ -201,6 +205,16 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             tauri::RunEvent::ExitRequested { code: Some(_), .. } | tauri::RunEvent::Exit => {
                 session_controls::close_active(app);
                 let _ = app.state::<app_state::AppState>().agent_control.cancel_active();
+            }
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if validate_target_selection => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = show_target_selection_validation(&app).await {
+                        eprintln!("Unable to show target-selection validation: {error}");
+                        app.exit(1);
+                    }
+                });
             }
             tauri::RunEvent::Ready if validation_runtime.is_some() => {
                 let handle = app.clone();
@@ -397,6 +411,58 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             }
             _ => {}
         });
+}
+
+/// A source-free native preview fixture: no picker, capture, credentials or Agent process.
+#[cfg(debug_assertions)]
+async fn show_target_selection_validation<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let operation_id = uuid::Uuid::new_v4();
+    let frame = model::Bounds {
+        x: 120.0,
+        y: 100.0,
+        width: 640.0,
+        height: 480.0,
+    };
+    let selection = model::LensTargetSelection {
+        selection_id: operation_id,
+        stage: model::LensTargetSelectionStage::Reviewing,
+        maximum_targets: lens::MAX_LENS_TARGETS,
+        anchor: Some(frame),
+        items: (1..=2)
+            .map(|ordinal| model::LensTargetSelectionItem {
+                id: format!("validation-{ordinal}"),
+                window: model::SelectedWindow {
+                    identity: model::WindowIdentity {
+                        window_id: ordinal,
+                        bundle_id: "com.github.japboy.lens.fixture".into(),
+                        pid: std::process::id() as i32,
+                    },
+                    facts: model::WindowObservableFacts {
+                        title: format!("Preview fixture {ordinal}"),
+                        application_name: "Lens Fixture".into(),
+                        frame,
+                    },
+                },
+                preview_uri: None,
+                preview_error: Some("Source-free validation fixture".into()),
+            })
+            .collect(),
+        notice: None,
+    };
+    app_state::publish_lens_state(
+        app,
+        model::LensState {
+            operation_id: Some(operation_id),
+            stage: model::LensStage::Selecting,
+            selection: Some(selection.clone()),
+            ..model::LensState::default()
+        },
+    )?;
+    ui::show_target_selection_window(app, &selection)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(debug_assertions)]
@@ -608,9 +674,7 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
             let script = r#"
           (() => {
             const overlayRoot = () => document
-              .querySelector('lens-app')
-              ?.shadowRoot
-              ?.querySelector('lens-overlay-view')
+              .querySelector('lens-overlay-view')
               ?.shadowRoot;
             const root = overlayRoot();
             const snackbar = root?.querySelector('.lens-progress-snackbar');

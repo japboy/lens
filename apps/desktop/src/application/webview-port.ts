@@ -17,12 +17,16 @@ export interface AboutInfo {
   name: string;
   version: string;
   copyright: string;
+}
+
+export interface AboutDocuments {
   license: string;
   notice: string;
 }
 
 export interface WebviewPort {
   getAboutInfo(): Promise<AboutInfo>;
+  getAboutDocuments(): Promise<AboutDocuments>;
   showAbout(): Promise<void>;
   previewAgentModel(selectionId: string, configId: string, value?: string): Promise<void>;
   setAgentDefaults(
@@ -71,6 +75,7 @@ export interface WebviewPort {
 
 export const tauriWebviewPort: WebviewPort = {
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
+  getAboutDocuments: () => invoke<AboutDocuments>("get_about_documents"),
   showAbout: () => invoke<void>("show_about"),
   async previewAgentModel(selectionId, configId, value) {
     await invoke("preview_agent_model", { selectionId, configId, value });

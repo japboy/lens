@@ -3,6 +3,8 @@
 //MISE dir = "{{config_root}}"
 //MISE wait_for = ["frontend:build", "verify:native"]
 
+import { BUILD_PATHS } from "../../apps/desktop/tooling/build-paths.ts";
+import { PAGE_ENTRIES } from "../../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -17,8 +19,10 @@ export function verifyNativeBundle(root = ROOT, kind = "app"): string {
     throw new Error("Bundle verification requires the admitted Apple-silicon host");
   const application = join(root, "apps/desktop");
   const contract = bundleContract(root);
-  if (!existsSync(join(application, "dist/index.html")))
-    throw new Error("Prebuilt frontend artifact is required");
+  for (const entry of Object.values(PAGE_ENTRIES)) {
+    if (!existsSync(join(application, BUILD_PATHS.webview, entry)))
+      throw new Error(`Prebuilt frontend entry is required: ${entry}`);
+  }
   const directory = join(root, "target/aarch64-apple-darwin/release/bundle");
   const previous = process.env.MACOSX_DEPLOYMENT_TARGET;
   try {

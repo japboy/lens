@@ -1,3 +1,7 @@
+import { BUILD_PATHS } from "../apps/desktop/tooling/build-paths.ts";
+import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
+import { verifyGeneration } from "../apps/desktop/tooling/prerender/verify.ts";
+import { sourceDigest, sourceInputs } from "../apps/desktop/tooling/prerender/source.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -20,7 +24,9 @@ export function frontendFiles(directory: string): Record<string, string> {
     }
   };
   visit("");
-  if (!result["index.html"]) throw new Error("Frontend entry asset is missing");
+  for (const entry of Object.values(PAGE_ENTRIES)) {
+    if (!result[entry]) throw new Error(`Frontend entry asset is missing: ${entry}`);
+  }
   return result;
 }
 
@@ -33,9 +39,17 @@ export function frontendArtifact(mode: string, root: string): void {
   )
     throw new Error("Frontend artifact requires a clean source checkout");
   const source = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-  const manifest = { version: 1, source, files: frontendFiles(join(root, "apps/desktop/dist")) };
+  const manifest = {
+    version: 1,
+    source,
+    files: frontendFiles(join(root, "apps/desktop", BUILD_PATHS.webview)),
+  };
   const destination = join(root, "target/ci/frontend-manifest.json");
   if (mode === "write") {
+    verifyGeneration(
+      join(root, "apps/desktop", BUILD_PATHS.webview),
+      sourceDigest(sourceInputs(root)),
+    );
     mkdirSync(join(root, "target/ci"), { recursive: true });
     writeFileSync(destination, `${JSON.stringify(manifest, null, 2)}\n`);
   } else if (
@@ -43,6 +57,11 @@ export function frontendArtifact(mode: string, root: string): void {
   )
     throw new Error(
       "Frontend artifact source, file set or digest does not match the tested checkout",
+    );
+  if (mode === "check")
+    verifyGeneration(
+      join(root, "apps/desktop", BUILD_PATHS.webview),
+      sourceDigest(sourceInputs(root)),
     );
   process.stdout.write(
     `${JSON.stringify({ mode, source, files: Object.keys(manifest.files).length })}\n`,

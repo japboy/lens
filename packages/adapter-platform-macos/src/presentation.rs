@@ -6,6 +6,7 @@ use tokio::sync::oneshot;
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 
 unsafe extern "C" {
+    fn lens_window_background_rgba(rgba: *mut u8) -> bool;
     fn lens_dismiss_window_to_screen_right(
         window: *mut c_void,
         callback: WindowTransitionCallback,
@@ -21,6 +22,22 @@ unsafe extern "C" {
         callback: WindowTransitionCallback,
         context: *mut c_void,
     ) -> bool;
+}
+
+/// Resolve the system window background in the current application appearance.
+///
+/// # Safety
+/// Call on the AppKit main thread after NSApplication initialization.
+pub unsafe fn window_background_rgba() -> Result<[u8; 4], PlatformError> {
+    let mut rgba = [0; 4];
+    // SAFETY: The caller guarantees AppKit affinity; the bridge writes exactly four bytes.
+    if unsafe { lens_window_background_rgba(rgba.as_mut_ptr()) } {
+        Ok(rgba)
+    } else {
+        Err(PlatformError::Operation(
+            "unable to resolve system window background".into(),
+        ))
+    }
 }
 
 struct WindowTransitionContext {

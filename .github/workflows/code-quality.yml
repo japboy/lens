@@ -57,8 +57,9 @@ jobs:
         with:
           name: frontend-${{ github.sha }}
           path: |
-            apps/desktop/dist
+            apps/desktop/.build/webview
             target/ci/frontend-manifest.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 

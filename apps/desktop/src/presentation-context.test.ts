@@ -5,14 +5,14 @@ import {
   applyPresentationContext,
   APP_VIEWS,
   DESKTOP_PLATFORMS,
-  presentationContextFromSearch,
+  presentationContextForPage,
 } from "./presentation-context";
 
 describe("presentation context", () => {
   it("accepts every finite view and desktop platform pair", () => {
     for (const view of APP_VIEWS) {
       for (const platform of DESKTOP_PLATFORMS) {
-        expect(presentationContextFromSearch(`?view=${view}&platform=${platform}`)).toEqual({
+        expect(presentationContextForPage(view, view, `?platform=${platform}`)).toEqual({
           view,
           platform,
         });
@@ -21,12 +21,15 @@ describe("presentation context", () => {
   });
 
   it.each([
-    ["missing view", "?platform=macos", "Invalid view presentation state"],
-    ["unknown view", "?view=main&platform=macos", "Invalid view presentation state"],
-    ["missing platform", "?view=settings", "Invalid platform presentation state"],
-    ["unknown platform", "?view=settings&platform=ios", "Invalid platform presentation state"],
-  ])("rejects %s", (_name, search, expectedMessage) => {
-    expect(() => presentationContextFromSearch(search)).toThrow(expectedMessage);
+    ["wrong document", "overlay", "?platform=macos", "Page identity mismatch"],
+    ["missing document", undefined, "?platform=macos", "Page identity mismatch"],
+    ["query view", "settings", "?view=settings&platform=macos", "Query-based view routing"],
+    ["missing platform", "settings", "", "Invalid platform"],
+    ["unknown platform", "settings", "?platform=ios", "Invalid platform"],
+  ])("rejects %s", (_name, documentView, search, expectedMessage) => {
+    expect(() => presentationContextForPage("settings", documentView, search!)).toThrow(
+      expectedMessage,
+    );
   });
 
   it("publishes the explicit context to every presentation boundary", () => {

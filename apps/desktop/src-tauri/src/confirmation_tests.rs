@@ -258,6 +258,13 @@ impl Observation for Observer {
 }
 
 impl platform::WindowPresentation<MockRuntime> for Fixture {
+    fn settings_background(
+        &self,
+        _: &tauri::AppHandle<MockRuntime>,
+    ) -> Result<tauri::utils::config::Color, PlatformError> {
+        panic!("unexpected settings background")
+    }
+
     fn present(&self, _: &tauri::WebviewWindow<MockRuntime>) -> Result<(), PlatformError> {
         panic!("the selected preview already exists")
     }

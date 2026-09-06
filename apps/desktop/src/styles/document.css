@@ -1,5 +1,3 @@
-@import "@fortawesome/fontawesome-free/css/solid.css";
-
 :root {
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
@@ -8,10 +6,10 @@
   background: transparent;
   accent-color: AccentColor;
   font-synthesis: none;
-  --settings-backdrop: Canvas;
-  --settings-group-background: Canvas;
+  --settings-backdrop: transparent;
+  --settings-group-background: transparent;
   --settings-group-border: ButtonBorder;
-  --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+  --settings-sidebar-background: transparent;
   --settings-selection-background: SelectedItem;
   --settings-selection-foreground: SelectedItemText;
   --settings-selection-unemphasized-background: color-mix(in srgb, CanvasText 12%, Canvas);
@@ -19,7 +17,13 @@
   --settings-focus-ring: Highlight;
 }
 
-html[data-view="settings"][data-platform="macos"] {
+html[data-platform] {
+  --settings-backdrop: Canvas;
+  --settings-group-background: Canvas;
+  --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+}
+
+html:is([data-view="settings"], [data-view="about"])[data-platform="macos"] {
   --settings-backdrop: Window;
   --settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);
   --settings-group-border: color-mix(in srgb, -apple-system-separator 50%, transparent 50%);
@@ -49,7 +53,31 @@ body {
 }
 
 body {
+  background: transparent;
+}
+
+html[data-platform][data-view="settings"] body,
+html[data-platform][data-view="about"] body {
   background: var(--settings-backdrop);
+}
+
+lens-about-page,
+lens-settings-page,
+lens-overlay-page,
+lens-target-selection-page {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+[data-page-error] {
+  position: fixed;
+  bottom: 12px;
+  inset-inline: 12px;
+  padding: 12px;
+  color: CanvasText;
+  background: Canvas;
+  border: 1px solid ButtonBorder;
 }
 
 html[data-view="overlay"],

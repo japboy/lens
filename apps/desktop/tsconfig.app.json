@@ -6,8 +6,9 @@
     "useDefineForClassFields": false,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "tsBuildInfoFile": "./.build/cache/typescript/app.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-helper.ts"]
 }

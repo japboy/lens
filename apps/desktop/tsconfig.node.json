@@ -1,7 +1,9 @@
 {
   "extends": "typescript-config/node.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": ["node"],
+    "tsBuildInfoFile": "./.build/cache/typescript/node.tsbuildinfo"
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "tooling/prerender/*.ts"],
+  "exclude": ["tooling/prerender/render-entry.ts"]
 }

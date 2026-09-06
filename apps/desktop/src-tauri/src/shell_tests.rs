@@ -57,8 +57,11 @@ fn about_ipc_embeds_exact_documents_and_window_is_reused() {
     assert_eq!(info["name"], "Lens");
     assert_eq!(info["version"], app.package_info().version.to_string());
     assert_eq!(info["copyright"], "Copyright © 2026 Yu Inao");
-    assert_eq!(info["license"], include_str!("../../../../LICENSE"));
-    assert_eq!(info["notice"], include_str!("../../../../NOTICE"));
+    assert!(info.get("license").is_none());
+    assert!(info.get("notice").is_none());
+    let documents = invoke(&about, "get_about_documents", json!({})).unwrap();
+    assert_eq!(documents["license"], include_str!("../../../../LICENSE"));
+    assert_eq!(documents["notice"], include_str!("../../../../NOTICE"));
     crate::ui::show_about(app.handle()).unwrap();
     assert_eq!(app.webview_windows().len(), 2);
     assert!(app.get_webview_window(settings.label()).is_some());

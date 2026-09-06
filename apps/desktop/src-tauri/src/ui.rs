@@ -58,24 +58,18 @@ enum WebviewView {
 }
 
 impl WebviewView {
-    const fn as_query_value(self) -> &'static str {
+    const fn entry_path(self) -> &'static str {
         match self {
-            Self::About => "about",
-            Self::Settings => "settings",
-            Self::Overlay => "overlay",
-            Self::TargetSelection => "target-selection",
+            Self::About => "about.html",
+            Self::Settings => "settings.html",
+            Self::Overlay => "overlay.html",
+            Self::TargetSelection => "target-selection.html",
         }
     }
 }
 
 fn webview_url(view: WebviewView) -> WebviewUrl {
-    WebviewUrl::App(
-        format!(
-            "index.html?view={}&platform={DESKTOP_PLATFORM}",
-            view.as_query_value()
-        )
-        .into(),
-    )
+    WebviewUrl::App(format!("{}?platform={DESKTOP_PLATFORM}", view.entry_path()).into())
 }
 
 const SETTINGS_WINDOW_SIZE_POLICY: WindowSizePolicy = WindowSizePolicy {
@@ -638,13 +632,43 @@ fn menu_safe_path(path: &str) -> String {
     path.replace('&', "&&").replace(['\r', '\n'], " ")
 }
 
+fn settings_background<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<tauri::utils::config::Color> {
+    app.state::<crate::platform::Presentation<R>>()
+        .0
+        .settings_background(app)
+        .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))
+}
+
+/// Keep the native and WebView surfaces in the same appearance as HTML system colors.
+/// Store a label rather than retaining a window in its own event listener.
+fn track_settings_background<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    window.on_window_event(move |event| {
+        if !matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
+            return;
+        }
+        if let Some(window) = app.get_webview_window(&label) {
+            if let Err(error) =
+                settings_background(&app).and_then(|color| window.set_background_color(Some(color)))
+            {
+                eprintln!("Unable to update {label} background: {error}");
+            }
+        }
+    });
+}
+
 pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("about") {
         window.show().map_err(|error| error.to_string())?;
         window.unminimize().map_err(|error| error.to_string())?;
         return window.set_focus().map_err(|error| error.to_string());
     }
-    WebviewWindowBuilder::new(app, "about", webview_url(WebviewView::About))
+    let background = settings_background(app).map_err(|error| error.to_string())?;
+    let window = WebviewWindowBuilder::new(app, "about", webview_url(WebviewView::About))
+        .background_color(background)
         .title("About Lens")
         .minimizable(false)
         .inner_size(640.0, 560.0)
@@ -653,6 +677,7 @@ pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .center()
         .build()
         .map_err(|error| error.to_string())?;
+    track_settings_background(&window);
     Ok(())
 }
 
@@ -671,14 +696,18 @@ pub fn show_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()>
         })
         .unwrap_or(SETTINGS_WINDOW_SIZE_POLICY.preferred);
 
-    WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
+    let background = settings_background(app)?;
+    let window = WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
+        .background_color(background)
         .title("Lens Settings")
+        .minimizable(false)
         .inner_size(size.width, size.height)
         .inner_size_constraints(SETTINGS_WINDOW_SIZE_POLICY.constraints())
         .resizable(true)
         .maximizable(SETTINGS_WINDOW_SIZE_POLICY.maximizable)
         .center()
         .build()?;
+    track_settings_background(&window);
     Ok(())
 }
 
@@ -874,6 +903,13 @@ mod tests {
 
     #[test]
     fn webview_urls_publish_explicit_finite_presentation_state() {
+        let WebviewUrl::App(about) = webview_url(WebviewView::About) else {
+            panic!("About must use an application WebView URL");
+        };
+        assert_eq!(
+            about,
+            std::path::PathBuf::from(format!("about.html?platform={DESKTOP_PLATFORM}"))
+        );
         let WebviewUrl::App(settings) = webview_url(WebviewView::Settings) else {
             panic!("Settings must use an application WebView URL");
         };
@@ -886,21 +922,15 @@ mod tests {
 
         assert_eq!(
             settings,
-            std::path::PathBuf::from(format!(
-                "index.html?view=settings&platform={DESKTOP_PLATFORM}"
-            ))
+            std::path::PathBuf::from(format!("settings.html?platform={DESKTOP_PLATFORM}"))
         );
         assert_eq!(
             overlay,
-            std::path::PathBuf::from(format!(
-                "index.html?view=overlay&platform={DESKTOP_PLATFORM}"
-            ))
+            std::path::PathBuf::from(format!("overlay.html?platform={DESKTOP_PLATFORM}"))
         );
         assert_eq!(
             target_selection,
-            std::path::PathBuf::from(format!(
-                "index.html?view=target-selection&platform={DESKTOP_PLATFORM}"
-            ))
+            std::path::PathBuf::from(format!("target-selection.html?platform={DESKTOP_PLATFORM}"))
         );
         assert!(matches!(DESKTOP_PLATFORM, "macos" | "windows" | "linux"));
     }

@@ -1,12 +1,16 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const componentStyles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-const documentStyles = readFileSync(new URL("./styles/document.css", import.meta.url), "utf8");
+import { LensOverlayView } from "../src/components/lens-overlay-view";
+import { LensSettingsView } from "../src/components/lens-settings-view";
+
+const overlayStyles = LensOverlayView.styles.map((style) => style.cssText).join("\n");
+const settingsStyles = LensSettingsView.styles.map((style) => style.cssText).join("\n");
+const documentStyles = readFileSync(new URL("../src/styles/document.css", import.meta.url), "utf8");
 
 describe("canonical application icon presentation", () => {
   it("preserves the generated composition without another mask or shadow", () => {
-    const declarations = componentStyles.match(/\.overlay-app-icon \{([^}]+)\}/u)?.[1];
+    const declarations = overlayStyles.match(/\.overlay-app-icon \{([^}]+)\}/u)?.[1];
     expect(declarations).toContain("object-fit: contain;");
     expect(declarations).not.toMatch(/border-radius|box-shadow/u);
   });
@@ -14,10 +18,10 @@ describe("canonical application icon presentation", () => {
 
 describe("macOS Settings surface colors", () => {
   it("derives low-contrast groups from AppKit's dynamic window and content colors", () => {
-    const macosSettingsColors = componentStyles.match(
-      /html\[data-view="settings"\]\[data-platform="macos"\] \{(?<declarations>.*?)\n\}/s,
+    const macosSettingsColors = documentStyles.match(
+      /html:is\(\[data-view="settings"\], \[data-view="about"\]\)\[data-platform="macos"\] \{(?<declarations>.*?)\n\s*\}/s,
     )?.groups?.declarations;
-    const macosSelectionColors = componentStyles.match(
+    const macosSelectionColors = documentStyles.match(
       /@supports \(color: -apple-system-selected-content-background\) \{[\s\S]*?html\[data-view="settings"\]\[data-platform="macos"\] \{(?<declarations>.*?)\n  \}/s,
     )?.groups?.declarations;
 
@@ -39,15 +43,15 @@ describe("macOS Settings surface colors", () => {
   });
 
   it("uses one persistent sidebar throughout the native window width range", () => {
-    const shell = componentStyles.match(/\.settings-shell \{(?<declarations>.*?)\n\}/s)?.groups
+    const shell = settingsStyles.match(/\.settings-shell \{(?<declarations>.*?)\n\s*\}/s)?.groups
       ?.declarations;
-    const sidebar = componentStyles.match(/\.settings-sidebar \{(?<declarations>.*?)\n\}/s)?.groups
-      ?.declarations;
-    const sidebarNavigation = componentStyles.match(
-      /\.settings-sidebar nav \{(?<declarations>.*?)\n\}/s,
+    const sidebar = settingsStyles.match(/\.settings-sidebar \{(?<declarations>.*?)\n\s*\}/s)
+      ?.groups?.declarations;
+    const sidebarNavigation = settingsStyles.match(
+      /\.settings-sidebar nav \{(?<declarations>.*?)\n\s*\}/s,
     )?.groups?.declarations;
-    const selectedNavigation = componentStyles.match(
-      /\.settings-nav-item\[aria-current="page"\] \{(?<declarations>.*?)\n\}/s,
+    const selectedNavigation = settingsStyles.match(
+      /\.settings-nav-item\[aria-current="page"\] \{(?<declarations>.*?)\n\s*\}/s,
     )?.groups?.declarations;
 
     expect(shell).toContain("grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr);");
@@ -55,31 +59,31 @@ describe("macOS Settings surface colors", () => {
     expect(shell).toContain("--settings-detail-inline-padding: 26px;");
     expect(shell).toContain("--settings-content-max-width: 680px;");
     expect(shell).toContain("grid-template-rows: minmax(0, 1fr);");
-    expect(sidebar).toContain("grid-template-rows: minmax(0, 1fr) auto;");
+    expect(sidebar).toContain("grid-template-rows: minmax(0, 1fr) auto auto;");
     expect(sidebar).toContain("overflow: hidden;");
     expect(sidebarNavigation).toContain("overflow-y: auto;");
-    expect(componentStyles).toContain(".settings-sidebar-status {");
-    expect(componentStyles).not.toContain(".settings-footer");
+    expect(settingsStyles).toContain(".settings-sidebar-status {");
+    expect(settingsStyles).not.toContain(".settings-footer");
     expect(selectedNavigation).toContain("background: var(--settings-selection-background);");
     expect(selectedNavigation).toContain("color: var(--settings-selection-foreground);");
     expect(documentStyles).toContain("--settings-sidebar-background:");
     expect(documentStyles).toContain(
       "--settings-selection-background: -apple-system-selected-content-background;",
     );
-    expect(componentStyles).toContain(
+    expect(settingsStyles).toContain(
       '.settings-shell[data-window-emphasis="unemphasized"] .settings-nav-item[aria-current="page"]',
     );
-    expect(componentStyles).toContain(
+    expect(settingsStyles).toContain(
       '.settings-nav-item:hover:not(:disabled):not([aria-current="page"])',
     );
-    expect(componentStyles).not.toContain(".settings-compact-navigation");
-    expect(componentStyles).not.toMatch(/\.settings-sidebar \{[^}]*display: none;/s);
+    expect(settingsStyles).not.toContain(".settings-compact-navigation");
+    expect(settingsStyles).not.toMatch(/\.settings-sidebar \{[^}]*display: none;/s);
   });
 
   it("keeps the rendered prompt visible in a bounded static section", () => {
-    const header = componentStyles.match(/\.prompt-preview-header \{(?<declarations>.*?)\n\}/s)
+    const header = settingsStyles.match(/\.prompt-preview-header \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
-    const output = componentStyles.match(/\.prompt-preview-output \{(?<declarations>.*?)\n\}/s)
+    const output = settingsStyles.match(/\.prompt-preview-output \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
 
     expect(header).toContain("display: flex;");
@@ -88,16 +92,16 @@ describe("macOS Settings surface colors", () => {
     expect(output).toContain("min-height: 180px;");
     expect(output).toContain("max-height: 420px;");
     expect(output).toContain("overflow: auto;");
-    expect(componentStyles).not.toContain("prompt-preview-disclosure");
-    expect(componentStyles).not.toContain("prompt-preview-disclosure-icon");
+    expect(settingsStyles).not.toContain("prompt-preview-disclosure");
+    expect(settingsStyles).not.toContain("prompt-preview-disclosure-icon");
   });
 });
 
 describe("Lens overlay presentation", () => {
   it("uses equal header edge spacing around the app icon and close control", () => {
-    const overlayHeader = componentStyles.match(/\.overlay-header \{(?<declarations>.*?)\n\}/s)
+    const overlayHeader = overlayStyles.match(/\.overlay-header \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
-    const closeButton = componentStyles.match(/\.close-button \{(?<declarations>.*?)\n\}/s)?.groups
+    const closeButton = overlayStyles.match(/\.close-button \{(?<declarations>.*?)\n\s*\}/s)?.groups
       ?.declarations;
 
     expect(overlayHeader).toContain("padding: 7px 14px;");
@@ -107,15 +111,15 @@ describe("Lens overlay presentation", () => {
   });
 
   it("keeps the WebView surface transparent with an opaque accessibility fallback", () => {
-    const overlayShell = componentStyles.match(/\.overlay-shell \{(?<declarations>.*?)\n\}/s)
+    const overlayShell = overlayStyles.match(/\.overlay-shell \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
-    const sourceSummary = componentStyles.match(
-      /\.overlay-source-summary \{(?<declarations>.*?)\n\}/s,
+    const sourceSummary = overlayStyles.match(
+      /\.overlay-source-summary \{(?<declarations>.*?)\n\s*\}/s,
     )?.groups?.declarations;
-    const progressSnackbar = componentStyles.match(
-      /\.lens-progress-snackbar \{(?<declarations>.*?)\n\}/s,
+    const progressSnackbar = overlayStyles.match(
+      /\.lens-progress-snackbar \{(?<declarations>.*?)\n\s*\}/s,
     )?.groups?.declarations;
-    const overlayFooter = componentStyles.match(/\.overlay-footer \{(?<declarations>.*?)\n\}/s)
+    const overlayFooter = overlayStyles.match(/\.overlay-footer \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
 
     expect(overlayShell).toContain("background: transparent;");
@@ -123,10 +127,10 @@ describe("Lens overlay presentation", () => {
     expect(progressSnackbar).toContain("background: color-mix(in srgb, Canvas 82%, transparent);");
     expect(progressSnackbar).toContain("backdrop-filter: blur(18px) saturate(150%);");
     expect(overlayFooter).toContain("position: relative;");
-    expect(componentStyles).toMatch(
+    expect(overlayStyles).toMatch(
       /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{\s*\.overlay-shell \{[^}]*background: Canvas;/s,
     );
-    expect(componentStyles).toMatch(
+    expect(overlayStyles).toMatch(
       /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{[\s\S]*\.lens-progress-snackbar \{[^}]*background: Canvas;[^}]*backdrop-filter: none;/,
     );
   });

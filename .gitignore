@@ -1,20 +1,19 @@
 # AI agent specific directories/files ignored for now
-ARCHITECTURE.md
 /.agents/
 /.serena/
 /.worktreeinclude
 /AGENTS.md
 /docs/
+ARCHITECTURE.md
 
 # Common ignores
 *.log
-/*.tsbuildinfo
-/apps/desktop/*.tsbuildinfo
 /.DS_Store
+/.build/
 
 # Tauri project ignores
-node_modules/
-/apps/desktop/dist/
-/target/
+/apps/desktop/.build/
 /apps/desktop/src-tauri/binaries/*-aarch64-apple-darwin
 /apps/desktop/src-tauri/binaries/*-x86_64-apple-darwin
+/target/
+node_modules/

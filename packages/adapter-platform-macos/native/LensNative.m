@@ -25,6 +25,25 @@ static void LensPerformOnMainThread(dispatch_block_t block) {
     dispatch_async(dispatch_get_main_queue(), block);
 }
 
+bool lens_window_background_rgba(uint8_t *rgba) {
+    if (![NSThread isMainThread] || rgba == NULL || NSApp == nil) {
+        return false;
+    }
+    __block bool resolved = false;
+    [NSApp.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        NSColor *color = [NSColor.windowBackgroundColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+        if (color == nil) {
+            return;
+        }
+        rgba[0] = (uint8_t)lround(color.redComponent * 255.0);
+        rgba[1] = (uint8_t)lround(color.greenComponent * 255.0);
+        rgba[2] = (uint8_t)lround(color.blueComponent * 255.0);
+        rgba[3] = (uint8_t)lround(color.alphaComponent * 255.0);
+        resolved = true;
+    }];
+    return resolved;
+}
+
 static char *LensCopyJSONString(id object) {
     NSError *error = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];

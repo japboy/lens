@@ -68,8 +68,9 @@ jobs:
         with:
           name: release-frontend-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            apps/desktop/dist
+            apps/desktop/.build/webview
             target/ci/frontend-manifest.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
 

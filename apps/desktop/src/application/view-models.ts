@@ -31,16 +31,6 @@ export type SettingsFeedback =
 
 export type SettingsFeedbackMessage = Exclude<SettingsFeedback, { stage: "none" }>;
 
-const DEFAULT_AGENT_SELECTION: AgentSelectionState = {
-  stage: "unselected",
-  auth_methods: [],
-};
-const DEFAULT_AGENT_RUNTIME: AgentRuntimeState = {
-  stage: "not_installed",
-  downloaded_bytes: 0,
-};
-const DEFAULT_LENS: LensState = { stage: "idle", output_blocks: [] };
-
 export interface SettingsViewModel {
   platform: DesktopPlatform;
   config?: AppConfig;
@@ -138,17 +128,17 @@ function settingsFeedback(
 
 export function settingsViewModel(
   platform: DesktopPlatform,
-  snapshot: AppSnapshot | undefined,
+  snapshot: AppSnapshot,
   permission: AccessibilityPermissionState,
   command: CommandState,
   connection: SnapshotConnectionState,
 ): SettingsViewModel {
-  const lens = snapshot?.lens ?? DEFAULT_LENS;
+  const lens = snapshot.lens;
   return {
     platform,
-    config: snapshot?.config,
-    agentSelection: snapshot?.agent_selection ?? DEFAULT_AGENT_SELECTION,
-    agentRuntime: snapshot?.agent_runtime ?? DEFAULT_AGENT_RUNTIME,
+    config: snapshot.config,
+    agentSelection: snapshot.agent_selection,
+    agentRuntime: snapshot.agent_runtime,
     permission,
     pending: command.stage === "pending",
     promptSynchronization:
@@ -164,13 +154,13 @@ export function settingsViewModel(
 
 export function targetSelectionViewModel(
   platform: DesktopPlatform,
-  snapshot: AppSnapshot | undefined,
+  snapshot: AppSnapshot,
   command: CommandState,
   connectionMessage: string,
 ): TargetSelectionViewModel {
   return {
     platform,
-    lens: snapshot?.lens ?? DEFAULT_LENS,
+    lens: snapshot.lens,
     pending: command.stage === "pending",
     message: presentationMessage(command, connectionMessage),
   };
@@ -178,13 +168,13 @@ export function targetSelectionViewModel(
 
 export function overlayViewModel(
   platform: DesktopPlatform,
-  snapshot: AppSnapshot | undefined,
+  snapshot: AppSnapshot,
   command: CommandState,
   connectionMessage: string,
 ): OverlayViewModel {
   return {
     platform,
-    lens: snapshot?.lens ?? DEFAULT_LENS,
+    lens: snapshot.lens,
     pending: command.stage === "pending",
     cancelPending: isPendingCommand(command, "overlay", "cancel"),
     message: presentationMessage(command, connectionMessage),
