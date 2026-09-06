@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { BUILD_PATHS } from "./tooling/build-paths.ts";
 import { PAGE_ENTRIES } from "./src/page-entries.js";
 
 export default defineConfig({
@@ -9,6 +10,7 @@ export default defineConfig({
     globalSetup: ["./tooling/prerender/test-setup.ts"],
   },
   build: {
+    outDir: BUILD_PATHS.webview,
     manifest: true,
     rolldownOptions: {
       input: Object.fromEntries(

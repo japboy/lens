@@ -3,6 +3,7 @@
 //MISE dir = "{{config_root}}"
 //MISE wait_for = ["frontend:build", "verify:native"]
 
+import { BUILD_PATHS } from "../../apps/desktop/tooling/build-paths.ts";
 import { PAGE_ENTRIES } from "../../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
@@ -19,7 +20,7 @@ export function verifyNativeBundle(root = ROOT, kind = "app"): string {
   const application = join(root, "apps/desktop");
   const contract = bundleContract(root);
   for (const entry of Object.values(PAGE_ENTRIES)) {
-    if (!existsSync(join(application, "dist", entry)))
+    if (!existsSync(join(application, BUILD_PATHS.webview, entry)))
       throw new Error(`Prebuilt frontend entry is required: ${entry}`);
   }
   const directory = join(root, "target/aarch64-apple-darwin/release/bundle");

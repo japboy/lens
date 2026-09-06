@@ -9,13 +9,11 @@ ARCHITECTURE.md
 # Common ignores
 *.log
 /*.tsbuildinfo
-/apps/desktop/*.tsbuildinfo
 /.DS_Store
 
 # Tauri project ignores
 node_modules/
-/apps/desktop/dist/
-/apps/desktop/.prerender/
+/apps/desktop/.build/
 /target/
 /apps/desktop/src-tauri/binaries/*-aarch64-apple-darwin
 /apps/desktop/src-tauri/binaries/*-x86_64-apple-darwin

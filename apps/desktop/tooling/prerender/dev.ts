@@ -4,11 +4,12 @@ import { readFile, mkdir, mkdtemp, rm, rename } from "node:fs/promises";
 import { resolve, dirname, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { BUILD_PATHS } from "../build-paths.ts";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const repo = resolve(app, "../..");
-const generations = resolve(app, ".prerender/development");
+const generations = resolve(app, BUILD_PATHS.development);
 await mkdir(generations, { recursive: true });
 const directory = await mkdtemp(resolve(generations, "run-"));
 const clients = new Set<ServerResponse>();

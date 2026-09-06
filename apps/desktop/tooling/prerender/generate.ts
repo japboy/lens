@@ -11,7 +11,8 @@ import {
   symlink,
   readdir,
 } from "node:fs/promises";
-import { dirname, join, resolve, relative } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { BUILD_PATHS, assertGenerationOutput } from "../build-paths.ts";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
@@ -37,12 +38,10 @@ async function filesUnder(directory: string): Promise<string[]> {
 }
 
 export async function generate(output: string, development = false): Promise<string> {
-  const relativeOutput = relative(desktop, output).replaceAll("\\", "/");
-  if (relativeOutput !== "dist" && !relativeOutput.startsWith(".prerender/"))
-    throw new Error("Output must be dist or an owned .prerender directory");
+  assertGenerationOutput(desktop, output);
   const source = sourceInputs(repository);
   const generation = sourceDigest(source);
-  const workspace = join(desktop, ".prerender");
+  const workspace = join(desktop, BUILD_PATHS.staging);
   await mkdir(workspace, { recursive: true });
   const staging = await mkdtemp(join(workspace, "generation-"));
   const app = join(staging, "apps/desktop");

@@ -1,10 +1,11 @@
+import { BUILD_PATHS } from "../../tooling/build-paths";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppView } from "../presentation-context";
 
 /** jsdom does not parse native DSD. Only the test adapter performs this parser step. */
 export function installGeneratedPage(view: AppView): HTMLElement {
-  const html = readFileSync(resolve(".prerender/tests", `${view}.html`), "utf8");
+  const html = readFileSync(resolve(BUILD_PATHS.tests, `${view}.html`), "utf8");
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const page = parsed.querySelector<HTMLElement>(`lens-${view}-page`);
   if (!page) throw new Error("Missing generated page");

@@ -1,3 +1,4 @@
+import { BUILD_PATHS } from "../apps/desktop/tooling/build-paths.ts";
 import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -40,10 +41,10 @@ function fixture(work: (root: string, assets: string) => void) {
     );
   try {
     git(["init", "-q"]);
-    writeFileSync(join(root, ".gitignore"), "/target/\n/apps/desktop/dist/\n");
+    writeFileSync(join(root, ".gitignore"), "/target/\n/apps/desktop/.build/\n");
     git(["add", ".gitignore"]);
     git(["commit", "-qm", "fixture"]);
-    const assets = join(root, "apps/desktop/dist");
+    const assets = join(root, "apps/desktop", BUILD_PATHS.webview);
     mkdirSync(assets, { recursive: true });
     for (const [view, entry] of Object.entries(PAGE_ENTRIES))
       writeFileSync(join(assets, entry), page(view));
