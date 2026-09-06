@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import aboutHtml from "../about.html?raw";
+import settingsHtml from "../settings.html?raw";
+import overlayHtml from "../overlay.html?raw";
+import targetSelectionHtml from "../target-selection.html?raw";
 import type { AppView } from "./presentation-context";
 import type { AppSnapshot } from "./types";
 
@@ -159,6 +163,9 @@ vi.mock("@tauri-apps/api/core", () => ({
         name: "Lens",
         version: "0.1.0",
         copyright: "Copyright © 2026 Yu Inao",
+      };
+    if (command === "get_about_documents")
+      return {
         license: "Apache text\n<not-markup>",
         notice: "Original project by Yu Inao",
       };
@@ -198,55 +205,167 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-interface TestLensApp extends HTMLElement {
-  context: { view: AppView; platform: "macos" };
-  updateComplete: Promise<boolean>;
+interface TestPage extends HTMLElement {
+  readonly updateComplete: Promise<boolean>;
 }
 
-async function createLensApp(view: AppView): Promise<TestLensApp> {
-  window.history.replaceState({}, "", `/?view=${view}&platform=macos`);
-  await import("./lens-app");
-  const element = document.createElement("lens-app") as TestLensApp;
-  element.context = { view, platform: "macos" };
-  document.body.append(element);
+async function createPage(view: AppView): Promise<TestPage> {
+  window.history.replaceState({}, "", `/${view}.html?platform=macos`);
+  const html = {
+    about: aboutHtml,
+    settings: settingsHtml,
+    overlay: overlayHtml,
+    "target-selection": targetSelectionHtml,
+  }[view];
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  document.documentElement.dataset.view = view;
+  document.body.innerHTML = parsed.body.innerHTML;
+  const loaders = {
+    about: () => import("./pages/about-page"),
+    settings: () => import("./pages/settings-page"),
+    overlay: () => import("./pages/overlay-page"),
+    "target-selection": () => import("./pages/target-selection-page"),
+  };
+  await loaders[view]();
+  const element = document.querySelector(`lens-${view}-page`) as TestPage;
   await element.updateComplete;
   return element;
 }
 
-function viewRoot(element: TestLensApp, selector: string): ShadowRoot | undefined {
-  return element.shadowRoot?.querySelector<HTMLElement>(selector)?.shadowRoot ?? undefined;
+function viewRoot(element: TestPage, selector: string): ShadowRoot | HTMLElement | undefined {
+  return element.querySelector<HTMLElement>(selector)?.shadowRoot ?? undefined;
 }
 
 describe("About", () => {
   it("loads embedded documents without snapshots or permission checks, and switches read-only text", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
-    const element = await createLensApp("about");
+    const element = await createPage("about");
     await vi.waitFor(() =>
-      expect(viewRoot(element, "lens-about-view")?.querySelector("textarea")).toBeTruthy(),
+      expect(element?.querySelector(".document-text")?.getAttribute("aria-busy")).toBe("false"),
     );
-    const root = viewRoot(element, "lens-about-view")!;
-    const textarea = root.querySelector("textarea")!;
-    expect(textarea.value).toBe("Apache text\n<not-markup>");
-    expect(textarea.readOnly).toBe(true);
-    expect(textarea.disabled).toBe(false);
+    const root = element!;
+    const documentText = root.querySelector<HTMLElement>(".document-text")!;
+    expect(documentText.textContent).toBe("Apache text\n<not-markup>");
+    expect(documentText.isContentEditable).not.toBe(true);
+    expect(documentText.tabIndex).toBe(0);
     expect(root.querySelector("not-markup")).toBeNull();
     expect(listen).not.toHaveBeenCalled();
-    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual(["get_about_info"]);
+    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual([
+      "get_about_info",
+      "get_about_documents",
+    ]);
     const select = root.querySelector("select")!;
-    textarea.scrollTop = 100;
+    documentText.scrollTop = 100;
     select.value = "notice";
-    select.dispatchEvent(new Event("change"));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() =>
-      expect(root.querySelector("textarea")?.value).toBe("Original project by Yu Inao"),
+      expect(root.querySelector<HTMLElement>(".document-text")?.textContent).toBe(
+        "Original project by Yu Inao",
+      ),
     );
-    expect(root.querySelector("textarea")).not.toBe(textarea);
-    expect(root.querySelector("textarea")?.scrollTop).toBe(0);
+    expect(root.querySelector<HTMLElement>(".document-text")).toBe(documentText);
+    expect(root.querySelector<HTMLElement>(".document-text")?.scrollTop).toBe(0);
+  });
+
+  it("preserves line endings, blank lines and literal text across document blocks", async () => {
+    const element = await createPage("about");
+    await vi.waitFor(() =>
+      expect(element?.querySelector(".document-text")?.getAttribute("aria-busy")).toBe("false"),
+    );
+    const view = element.querySelector(
+      "lens-license-document",
+    ) as import("./components/lens-license-document").LensLicenseDocument;
+    const license =
+      Array.from({ length: 100 }, (_, index) =>
+        index % 3 === 0 ? "\r\n" : `Line ${index} <not-markup>\n`,
+      ).join("") + "Final line";
+    view.model = { stage: "ready", value: { license, notice: "" } };
+    await view.updateComplete;
+    const root = element;
+    expect(root.querySelectorAll(".document-chunk").length).toBeGreaterThan(1);
+    expect(root.querySelector(".document-text")?.textContent).toBe(license);
+    expect(root.querySelector("not-markup")).toBeNull();
+    const select = root.querySelector("select")!;
+    select.value = "notice";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await view.updateComplete;
+    expect(root.querySelector(".document-text")?.textContent).toBe("");
+  });
+
+  it("keeps the shell and metadata visible while documents are pending and preserves the pending selection", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveInfo!: (value: unknown) => void;
+    let resolveDocuments!: (value: unknown) => void;
+    const info = new Promise<unknown>((resolve) => {
+      resolveInfo = resolve;
+    });
+    const documents = new Promise<unknown>((resolve) => {
+      resolveDocuments = resolve;
+    });
+    vi.mocked(invoke)
+      .mockImplementationOnce(() => info)
+      .mockImplementationOnce(() => documents);
+    const element = await createPage("about");
+    await vi.waitFor(() => expect(element?.querySelector("select")).toBeTruthy());
+    const root = element!;
+    const header = root.querySelector("header")!;
+    expect(header.querySelector("h1")?.textContent).toBe("Lens");
+    expect(root.textContent).not.toContain("Loading About");
+    expect(root.querySelector(".document-text")?.getAttribute("aria-busy")).toBe("true");
+    expect(invoke).not.toHaveBeenCalledWith("get_about_documents");
+    resolveInfo({ name: "Lens", version: "1.2.3", copyright: "Copyright" });
+    await vi.waitFor(() => expect(header.textContent).toContain("Version 1.2.3"));
+    expect(root.querySelector(".document-text")?.textContent).toBe("");
+    const select = root.querySelector("select")!;
+    select.value = "notice";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() =>
+      expect(root.querySelector(".document-text")?.getAttribute("aria-label")).toBe("NOTICE"),
+    );
+    const region = root.querySelector(".document-text");
+    resolveDocuments({ license: "License", notice: "Notice" });
+    await vi.waitFor(() => expect(region?.textContent).toBe("Notice"));
+    expect(root.querySelector("header")).toBe(header);
+    expect(root.querySelector(".document-text")).toBe(region);
+    expect(region?.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("contains document failures within the document region", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({ name: "Lens", version: "1.2.3", copyright: "Copyright" })
+      .mockRejectedValueOnce(new Error("Document unavailable"));
+    const element = await createPage("about");
+    await vi.waitFor(() =>
+      expect(element?.querySelector(".document-text [role=alert]")?.textContent).toContain(
+        "Document unavailable",
+      ),
+    );
+    const root = element!;
+    expect(root.querySelector("header")?.textContent).toContain("Version 1.2.3");
+    expect(root.querySelector("select")?.disabled).toBe(false);
+    expect(root.querySelector(".document-text")?.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("still loads documents when app metadata fails", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("Metadata unavailable"));
+    const element = await createPage("about");
+    await vi.waitFor(() =>
+      expect(element?.querySelector(".document-text")?.textContent).toBe(
+        "Apache text\n<not-markup>",
+      ),
+    );
+    const root = element!;
+    expect(root.querySelector("header [role=alert]")?.textContent).toContain(
+      "Metadata unavailable",
+    );
   });
 
   it("opens About from Settings without changing the selected page", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
-    const element = await createLensApp("settings");
+    const element = await createPage("settings");
     await vi.waitFor(() =>
       expect(
         viewRoot(element, "lens-settings-view")?.querySelector(".about-entry button"),
@@ -304,7 +423,7 @@ describe("Lens target selection preview", () => {
       output_blocks: [],
     };
     const { invoke } = await import("@tauri-apps/api/core");
-    const element = await createLensApp("target-selection");
+    const element = await createPage("target-selection");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-target-selection-view")?.querySelectorAll(".target-selection-card"),
@@ -355,7 +474,7 @@ describe("Lens target selection preview", () => {
 
 describe("Lens rich Agent output", () => {
   it("declares the titlebar as the Lens window drag region", async () => {
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-source-count")?.textContent,
@@ -387,15 +506,15 @@ describe("Lens rich Agent output", () => {
   });
 
   it("pairs Interpretation, Source, and Diagnostics with their keyboard-selected panels", async () => {
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-source-count")?.textContent,
       ).toContain("2 selected windows");
     });
-    const overlayView = element.shadowRoot?.querySelector<
-      HTMLElement & { updateComplete: Promise<boolean> }
-    >("lens-overlay-view");
+    const overlayView = element.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
+      "lens-overlay-view",
+    );
     const overlayRoot = overlayView?.shadowRoot;
     const tabs = Array.from(overlayRoot?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
 
@@ -463,7 +582,7 @@ describe("Lens rich Agent output", () => {
   });
 
   it("presents ACP images in the Hero while preserving narrative block order", async () => {
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-overlay-view")?.querySelector(".lens-output img"),
@@ -489,15 +608,15 @@ describe("Lens rich Agent output", () => {
   });
 
   it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-overlay-view")?.querySelector(".overlay-source-count")?.textContent,
       ).toContain("2 selected windows");
     });
-    const overlayView = element.shadowRoot?.querySelector<
-      HTMLElement & { updateComplete: Promise<boolean> }
-    >("lens-overlay-view");
+    const overlayView = element.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
+      "lens-overlay-view",
+    );
     const overlayRoot = overlayView?.shadowRoot;
     overlayRoot?.querySelector<HTMLButtonElement>("#source-tab")?.click();
     await overlayView?.updateComplete;
@@ -578,7 +697,7 @@ describe("Lens rich Agent output", () => {
       },
     };
     const { invoke } = await import("@tauri-apps/api/core");
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         Array.from(viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? []).some(
@@ -620,7 +739,7 @@ describe("Lens rich Agent output", () => {
       },
     };
     const { invoke } = await import("@tauri-apps/api/core");
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         Array.from(viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? []).some(
@@ -638,7 +757,7 @@ describe("Lens rich Agent output", () => {
   });
 
   it("keeps the window open when Stop fails", async () => {
-    const element = await createLensApp("overlay");
+    const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-overlay-view")?.querySelector('[aria-label="Stop Lens and close"]'),
@@ -671,7 +790,7 @@ describe("Lens rich Agent output", () => {
 
 describe("Lens Settings", () => {
   it("uses one System Settings-style navigation authority and one detail destination", async () => {
-    const element = await createLensApp("settings");
+    const element = await createPage("settings");
     const settingsRoot = viewRoot(element, "lens-settings-view");
 
     const main = settingsRoot?.querySelector("main");
@@ -721,7 +840,7 @@ describe("Lens Settings", () => {
     });
 
     try {
-      const element = await createLensApp("settings");
+      const element = await createPage("settings");
       const settingsRoot = viewRoot(element, "lens-settings-view");
       await vi.waitFor(() => {
         expect(
@@ -755,7 +874,7 @@ describe("Lens Settings", () => {
   });
 
   it("preserves native controls and saves the complete prompt template atomically", async () => {
-    const element = await createLensApp("settings");
+    const element = await createPage("settings");
     await vi.waitFor(() => {
       expect(
         viewRoot(element, "lens-settings-view")?.querySelector<HTMLInputElement>(".directory-field")
@@ -809,9 +928,9 @@ describe("Lens Settings", () => {
 
 it("correlates notification submissions, rejects duplicate clicks, and permits retry after failure", async () => {
   const { invoke } = await import("@tauri-apps/api/core");
-  const element = await createLensApp("overlay");
+  const element = await createPage("overlay");
   await vi.waitFor(() => {
-    const view = element.shadowRoot!.querySelector("lens-overlay-view") as HTMLElement & {
+    const view = element.querySelector("lens-overlay-view") as HTMLElement & {
       model: { lens: { operation_id?: string } };
     };
     expect(view.model.lens.operation_id).toBe(operationId);
@@ -831,7 +950,7 @@ it("correlates notification submissions, rejects duplicate clicks, and permits r
   };
   const send = () =>
     element
-      .shadowRoot!.querySelector("lens-overlay-view")!
+      .querySelector("lens-overlay-view")!
       .dispatchEvent(
         new CustomEvent("lens-overlay-intent", { detail: intent, bubbles: true, composed: true }),
       );
@@ -842,7 +961,7 @@ it("correlates notification submissions, rejects duplicate clicks, and permits r
   ).toHaveLength(1);
   rejectResponse(new Error("Transport failed"));
   await vi.waitFor(() => {
-    const view = element.shadowRoot!.querySelector("lens-overlay-view") as HTMLElement & {
+    const view = element.querySelector("lens-overlay-view") as HTMLElement & {
       model: { interactionSubmission?: { stage: string } };
     };
     expect(view.model.interactionSubmission?.stage).toBe("failed");

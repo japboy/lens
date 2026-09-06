@@ -1,3 +1,4 @@
+import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -20,7 +21,9 @@ export function frontendFiles(directory: string): Record<string, string> {
     }
   };
   visit("");
-  if (!result["index.html"]) throw new Error("Frontend entry asset is missing");
+  for (const entry of Object.values(PAGE_ENTRIES)) {
+    if (!result[entry]) throw new Error(`Frontend entry asset is missing: ${entry}`);
+  }
   return result;
 }
 

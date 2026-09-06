@@ -17,7 +17,7 @@ const pathChange = (path: string): Change => ({ path, before: "before", after: "
 
 describe("finite Linux-first change plans", () => {
   it.each([
-    ["apps/desktop/src/lens-app.ts", "frontend-only"],
+    ["apps/desktop/src/pages/about-page.ts", "frontend-only"],
     ["apps/desktop/src/styles.css", "frontend-only"],
     ["apps/desktop/tests/fixtures/README.html", "frontend-only"],
     ["apps/desktop/src/application/webview-port.ts", "native-code"],

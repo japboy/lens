@@ -15,6 +15,9 @@ typedef void (*LensWindowObservationCallback)(const char *json, void *context);
 bool lens_accessibility_is_trusted(void);
 bool lens_accessibility_request_trust(void);
 
+/* Resolve the current application appearance to four sRGB bytes on the main thread. */
+bool lens_window_background_rgba(uint8_t *rgba);
+
 bool lens_present_window_from_screen_right(void *windowPointer);
 bool lens_dismiss_window_to_screen_right(
     void *windowPointer,

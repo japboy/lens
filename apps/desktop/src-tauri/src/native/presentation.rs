@@ -25,6 +25,25 @@ fn on_main_thread<R: tauri::Runtime, T: Send + 'static>(
 }
 
 impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresentation {
+    fn settings_background(
+        &self,
+        app: &tauri::AppHandle<R>,
+    ) -> Result<tauri::utils::config::Color, PlatformError> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            // SAFETY: Tauri has initialized NSApplication and dispatches this closure to AppKit.
+            let result = unsafe { presentation::window_background_rgba() }
+                .map(|[r, g, b, a]| tauri::utils::config::Color(r, g, b, a));
+            let _ = sender.send(result);
+        })
+        .map_err(|error| {
+            PlatformError::Operation(format!("unable to dispatch background resolution: {error}"))
+        })?;
+        receiver.recv().map_err(|_| {
+            PlatformError::Operation("background resolution dispatch was dropped".into())
+        })?
+    }
+
     fn present(&self, window: &WebviewWindow<R>) -> Result<(), PlatformError> {
         on_main_thread(window, |window| {
             let native_window = window.ns_window().map_err(|error| {

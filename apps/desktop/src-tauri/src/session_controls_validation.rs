@@ -68,7 +68,7 @@ fn ui_response<R: tauri::Runtime>(
       const marker = {marker}; const button = {button}; let attempts = 0;
       const timer = setInterval(async () => {{
         if (++attempts > 200) {{ clearInterval(timer); return; }}
-        const view = document.querySelector('lens-app')?.shadowRoot?.querySelector('lens-overlay-view');
+        const view = document.querySelector('lens-overlay-view');
         const root = view?.shadowRoot;
         if (!root) return;
         if (root.querySelector('.overlay-header lens-session-controls,.session-mode-label,.overlay-shell > lens-session-controls')) {{clearInterval(timer); return;}}
@@ -268,7 +268,7 @@ async fn lifecycle<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
                 let operation = serde_json::to_string(&old.operation_id).unwrap();
                 let script = format!(
                     r#"(() => {{let attempts=0; const timer=setInterval(() => {{
-                    const view=document.querySelector('lens-app')?.shadowRoot?.querySelector('lens-overlay-view');
+                    const view=document.querySelector('lens-overlay-view');
                     if (++attempts > 100) {{clearInterval(timer); return;}}
                     if (view?.model?.lens?.operation_id !== {operation}) return;
                     const button=view.shadowRoot?.querySelector('button[aria-label="Stop Lens and close"]');
@@ -412,7 +412,7 @@ pub async fn run<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
     tauri::WebviewWindowBuilder::new(
         app,
         crate::ui::LENS_WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html?view=overlay&platform=macos".into()),
+        tauri::WebviewUrl::App("overlay.html?platform=macos".into()),
     )
     .title("Lens interaction validation")
     .inner_size(720.0, 680.0)

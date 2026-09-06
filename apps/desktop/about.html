@@ -1,0 +1,52 @@
+<!doctype html>
+<html data-view="about">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>About Lens</title>
+    <link rel="stylesheet" href="/src/styles/document.css" />
+    <link rel="stylesheet" href="/src/styles/about.css" />
+  </head>
+  <body>
+    <lens-about-page>
+      <main aria-label="About">
+        <header>
+          <img
+            class="app-icon"
+            src="/src-tauri/icons/128x128@2x.png"
+            alt=""
+            width="96"
+            height="96"
+          />
+          <div>
+            <h1 data-about-name>Lens</h1>
+            <p data-about-version></p>
+            <p data-about-copyright></p>
+            <p data-about-error role="alert" hidden></p>
+          </div>
+        </header>
+        <div class="documents">
+          <label for="document">License documents</label>
+          <select id="document">
+            <option value="license">LICENSE</option>
+            <option value="notice">NOTICE</option>
+          </select>
+        </div>
+        <lens-license-document
+          class="document-text"
+          role="region"
+          aria-label="LICENSE"
+          aria-busy="true"
+          tabindex="0"
+        ></lens-license-document>
+      </main>
+    </lens-about-page>
+    <aside data-page-error hidden>
+      <p role="alert">Unable to open this page.</p>
+      <button type="button">Reload</button>
+    </aside>
+    <noscript>This window needs JavaScript to load its interactive content.</noscript>
+    <script type="module" src="/src/entries/about.ts"></script>
+  </body>
+</html>

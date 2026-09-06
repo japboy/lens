@@ -1,3 +1,4 @@
+import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +29,8 @@ function fixture(work: (root: string, assets: string) => void) {
     git(["commit", "-qm", "fixture"]);
     const assets = join(root, "apps/desktop/dist");
     mkdirSync(assets, { recursive: true });
-    writeFileSync(join(assets, "index.html"), "<main>fixture</main>");
+    for (const entry of Object.values(PAGE_ENTRIES))
+      writeFileSync(join(assets, entry), "<main>fixture</main>");
     work(root, assets);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -36,6 +38,12 @@ function fixture(work: (root: string, assets: string) => void) {
 }
 
 describe("same-source frontend artifact integrity", () => {
+  it.each(Object.values(PAGE_ENTRIES))("rejects a build missing %s", (entry) =>
+    fixture((_root, assets) => {
+      rmSync(join(assets, entry));
+      expect(() => frontendFiles(assets)).toThrow(entry);
+    }),
+  );
   it("checks the complete source-bound file set, including reserved property names", () =>
     fixture((root, assets) => {
       writeFileSync(join(assets, "__proto__"), "asset");
@@ -46,12 +54,13 @@ describe("same-source frontend artifact integrity", () => {
   it("rejects missing, modified and extra asset contents", () =>
     fixture((root, assets) => {
       frontendArtifact("write", root);
-      writeFileSync(join(assets, "index.html"), "modified");
+      writeFileSync(join(assets, "about.html"), "modified");
       expect(() => frontendArtifact("check", root)).toThrow("does not match");
-      writeFileSync(join(assets, "index.html"), "<main>fixture</main>");
+      for (const entry of Object.values(PAGE_ENTRIES))
+        writeFileSync(join(assets, entry), "<main>fixture</main>");
       writeFileSync(join(assets, "extra.js"), "extra");
       expect(() => frontendArtifact("check", root)).toThrow("does not match");
-      rmSync(join(assets, "index.html"));
+      rmSync(join(assets, "about.html"));
       expect(() => frontendArtifact("check", root)).toThrow("entry asset is missing");
     }));
   it("rejects a different source commit and dirty source state", () =>

@@ -1,3 +1,5 @@
+// Font faces must be registered in the document, independently of shadow-root icon rules.
+import "@fortawesome/fontawesome-free/css/solid.css";
 import fontAwesomeStyles from "@fortawesome/fontawesome-free/css/fontawesome.css?inline";
 import fontAwesomeSolidStyles from "@fortawesome/fontawesome-free/css/solid.css?inline";
 import { css, unsafeCSS } from "lit";

@@ -94,7 +94,7 @@ export function classifyChange(change: Change): CiPlan {
     /^apps\/desktop\/(?:public|tests\/fixtures)\/.+\.(?:html|css|ts|js|json|svg|png|jpg|webp)$/u.test(
       path,
     ) ||
-    path === "apps/desktop/index.html" ||
+    /^apps\/desktop\/[^/]+\.html$/u.test(path) ||
     path === "README.md" ||
     path === "LICENSE"
   )

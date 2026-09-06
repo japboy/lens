@@ -5,6 +5,10 @@ pub(crate) struct AboutInfo {
     name: String,
     version: String,
     copyright: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct AboutDocuments {
     license: &'static str,
     notice: &'static str,
 }
@@ -21,9 +25,15 @@ pub(crate) fn get_about_info<R: tauri::Runtime>(
             .unwrap_or_else(|| app.package_info().name.clone()),
         version: app.package_info().version.to_string(),
         copyright: build_copyright()?,
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_about_documents() -> AboutDocuments {
+    AboutDocuments {
         license: include_str!("../../../../LICENSE"),
         notice: include_str!("../../../../NOTICE"),
-    })
+    }
 }
 
 fn build_copyright() -> Result<String, String> {

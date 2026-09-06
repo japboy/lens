@@ -22,6 +22,10 @@ pub struct Services {
 
 /// Tauri-owned presentation effects, separate from portable source capabilities.
 pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
+    fn settings_background(
+        &self,
+        app: &tauri::AppHandle<R>,
+    ) -> Result<tauri::utils::config::Color, PlatformError>;
     fn present(&self, window: &tauri::WebviewWindow<R>) -> Result<(), PlatformError>;
     fn dismiss<'a>(&'a self, window: &'a tauri::WebviewWindow<R>) -> PresentationFuture<'a>;
     fn transition<'a>(

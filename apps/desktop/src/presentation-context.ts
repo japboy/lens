@@ -1,5 +1,5 @@
-export const APP_VIEWS = ["settings", "overlay", "target-selection", "about"] as const;
-export type AppView = (typeof APP_VIEWS)[number];
+import { APP_VIEWS, type AppView } from "./page-entries";
+export { APP_VIEWS, type AppView };
 
 export const DESKTOP_PLATFORMS = ["macos", "windows", "linux"] as const;
 export type DesktopPlatform = (typeof DESKTOP_PLATFORMS)[number];
@@ -22,12 +22,24 @@ function parseFiniteValue<const T extends readonly string[]>(
   );
 }
 
-export function presentationContextFromSearch(search: string): PresentationContext {
-  const parameters = new URLSearchParams(search);
-  return {
-    view: parseFiniteValue("view", parameters.get("view"), APP_VIEWS),
-    platform: parseFiniteValue("platform", parameters.get("platform"), DESKTOP_PLATFORMS),
-  };
+export function platformFromSearch(search: string): DesktopPlatform {
+  return parseFiniteValue(
+    "platform",
+    new URLSearchParams(search).get("platform"),
+    DESKTOP_PLATFORMS,
+  );
+}
+
+export function presentationContextForPage(
+  view: AppView,
+  documentView: string | undefined,
+  search: string,
+): PresentationContext {
+  if (documentView !== view)
+    throw new Error(`Page identity mismatch: expected ${view}, received ${documentView}`);
+  if (new URLSearchParams(search).has("view"))
+    throw new Error("Query-based view routing is not supported");
+  return { view, platform: platformFromSearch(search) };
 }
 
 export function applyPresentationContext(
