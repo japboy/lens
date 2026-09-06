@@ -5,8 +5,8 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "24.13.3",
-    "oxfmt": "0.64.0",
-    "oxlint": "1.79.0",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.81.0",
     "typescript": "7.0.2",
     "typescript-config": "workspace:*",
     "vitest": "4.1.11"
