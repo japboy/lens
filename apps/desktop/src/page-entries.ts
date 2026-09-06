@@ -1,4 +1,4 @@
-/** Every production WebView has an independent document and module entry. */
+/** Document paths relative to the client source root (src/) and generated WebView root. */
 export const PAGE_ENTRIES = {
   about: "about.html",
   settings: "settings.html",

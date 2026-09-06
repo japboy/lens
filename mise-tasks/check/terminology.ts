@@ -10,10 +10,6 @@ import { fileURLToPath } from "node:url";
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const PRODUCT_PATHS = new Set([
   "README.md",
-  "apps/desktop/about.html",
-  "apps/desktop/settings.html",
-  "apps/desktop/overlay.html",
-  "apps/desktop/target-selection.html",
   "apps/desktop/src-tauri/tauri.conf.json",
   "apps/desktop/src-tauri/tauri.macos.conf.json",
 ]);

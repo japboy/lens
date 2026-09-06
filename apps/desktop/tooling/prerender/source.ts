@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { PAGE_ENTRIES } from "../../src/page-entries.ts";
 
 export const SOURCE_PATHS = [
   "apps/desktop/src",
@@ -14,7 +13,6 @@ export const SOURCE_PATHS = [
   "apps/desktop/tsconfig.node.json",
   "apps/desktop/tsconfig.test.json",
   "apps/desktop/tsconfig.prerender.json",
-  ...Object.values(PAGE_ENTRIES).map((file) => `apps/desktop/${file}`),
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "package.json",

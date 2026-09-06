@@ -83,9 +83,7 @@ async function rebuild(): Promise<void> {
 }
 
 const watchedAppFile = (file: string) =>
-  /^(src\/|tooling\/|src-tauri\/icons\/|[^/]+\.html$|package\.json$|tsconfig[^/]*\.json$)/.test(
-    file,
-  );
+  /^(src\/|tooling\/|src-tauri\/icons\/|package\.json$|tsconfig[^/]*\.json$)/.test(file);
 const watchers = [
   watch(app, { recursive: true }, (_event, file) => {
     if (file && watchedAppFile(file.toString().replaceAll("\\", "/"))) void rebuild();

@@ -90,11 +90,10 @@ export function classifyChange(change: Change): CiPlan {
       : "native-code";
   }
   if (
-    /^apps\/desktop\/src\/.+\.(?:ts|css|svg)$/u.test(path) ||
+    /^apps\/desktop\/src\/.+\.(?:html|ts|css|svg)$/u.test(path) ||
     /^apps\/desktop\/(?:public|tests\/fixtures)\/.+\.(?:html|css|ts|js|json|svg|png|jpg|webp)$/u.test(
       path,
     ) ||
-    /^apps\/desktop\/[^/]+\.html$/u.test(path) ||
     path === "README.md" ||
     path === "LICENSE"
   )

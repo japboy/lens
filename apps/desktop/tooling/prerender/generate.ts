@@ -45,6 +45,7 @@ export async function generate(output: string, development = false): Promise<str
   await mkdir(workspace, { recursive: true });
   const staging = await mkdtemp(join(workspace, "generation-"));
   const app = join(staging, "apps/desktop");
+  const clientRoot = join(app, "src");
   try {
     for (const [file, bytes] of source) {
       const destination = join(staging, file);
@@ -75,7 +76,7 @@ export async function generate(output: string, development = false): Promise<str
     const base = development ? `/_generations/${generation}/` : "/";
     const rendered = JSON.parse(await readFile(renderedFile, "utf8")) as Record<string, string>;
     for (const [view, file] of Object.entries(PAGE_ENTRIES)) {
-      const htmlPath = join(app, file);
+      const htmlPath = join(clientRoot, file);
       const envelope = await readFile(htmlPath, "utf8");
       const marker = `<!-- lens-prerender:${view} -->`;
       if (envelope.split(marker).length !== 2 || !rendered[view])
@@ -88,7 +89,7 @@ export async function generate(output: string, development = false): Promise<str
     const client = join(app, ".client");
     await build({
       configFile: false,
-      root: app,
+      root: clientRoot,
       base,
       logLevel: "warn",
       build: {
@@ -100,7 +101,7 @@ export async function generate(output: string, development = false): Promise<str
         sourcemap: development,
         rolldownOptions: {
           input: Object.fromEntries(
-            Object.entries(PAGE_ENTRIES).map(([view, file]) => [view, join(app, file)]),
+            Object.entries(PAGE_ENTRIES).map(([view, file]) => [view, join(clientRoot, file)]),
           ),
         },
       },
@@ -125,7 +126,7 @@ export async function generate(output: string, development = false): Promise<str
       const built = await readFile(join(client, file), "utf8");
       const comments = (text: string) =>
         [...text.matchAll(/<!--[\s\S]*?-->/g)].map((match) => match[0]);
-      const initial = await readFile(join(app, file), "utf8");
+      const initial = await readFile(join(clientRoot, file), "utf8");
       if (JSON.stringify(comments(initial)) !== JSON.stringify(comments(built)))
         throw new Error(`Hydration markers changed: ${view}`);
       if (!built.includes('shadowrootmode="open"')) throw new Error(`Missing built DSD: ${view}`);
