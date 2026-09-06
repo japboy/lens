@@ -1,3 +1,5 @@
+import { snapshotStatus } from "../rendering/snapshot-status";
+import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
@@ -20,6 +22,40 @@ export class SettingsPage extends ReactiveElement {
   @state() private aboutOpenError = "";
   private readonly accessibility = new AccessibilityPermissionController(this, this.port);
 
+  private readonly attachment = new PageAttachment(
+    this,
+    () => this.view,
+    () => {
+      this.view.activate();
+    },
+    [
+      {
+        name: "agent",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () =>
+          Promise.all([
+            import("../components/lens-agent-settings"),
+            import("../components/lens-agent-defaults"),
+          ]),
+      },
+      {
+        name: "prompt",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () => import("../components/lens-prompt-settings"),
+      },
+    ],
+  );
+
+  initialize(): Promise<void> {
+    return this.attachment.initialize();
+  }
+
+  private get view(): LensSettingsView {
+    const view = this.querySelector("lens-settings-view");
+    if (!(view instanceof LensSettingsView)) throw new Error("Missing settings view");
+    return view;
+  }
+
   protected createRenderRoot(): HTMLElement {
     return this;
   }
@@ -35,21 +71,28 @@ export class SettingsPage extends ReactiveElement {
   }
   protected update(changed: Map<PropertyKey, unknown>): void {
     super.update(changed);
-    const view = this.querySelector("lens-settings-view");
-    if (!(view instanceof LensSettingsView)) throw new Error("Missing settings view");
+    if (this.attachment.stage !== "active") return;
+    const view = this.view;
+    const snapshot = this.snapshots.snapshot;
     view.dataset.platform = this.platform;
-    view.model = settingsViewModel(
-      this.platform,
-      this.snapshots.snapshot,
-      this.accessibility.state,
-      this.commands.state,
-      this.snapshots.connection,
-    );
+    view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
+    view.model = snapshot
+      ? settingsViewModel(
+          this.platform,
+          snapshot,
+          this.accessibility.state,
+          this.commands.state,
+          this.snapshots.connection,
+        )
+      : undefined;
     view.aboutOpenError = this.aboutOpenError;
+    view.permission = this.accessibility.state;
+    view.commandPending = this.commands.state.stage === "pending";
   }
 
   private handleSettingsIntent = async (event: CustomEvent<SettingsIntent>): Promise<void> => {
     event.stopPropagation();
+    if (this.attachment.stage !== "active") return;
     const intent = event.detail;
     if (intent.type === "open-about") {
       this.aboutOpenError = "";
@@ -60,6 +103,7 @@ export class SettingsPage extends ReactiveElement {
       }
       return;
     }
+    if (!this.snapshots.snapshot && intent.type !== "request-accessibility-permission") return;
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
       case "preview-agent-model": {

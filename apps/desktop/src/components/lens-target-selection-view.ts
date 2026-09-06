@@ -1,3 +1,5 @@
+import { initialTargetSelectionState } from "../rendering/initial-state";
+import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { customElement, property, state } from "lit/decorators.js";
@@ -8,7 +10,6 @@ import {
   sharedIconStyles,
   viewHostStyles,
 } from "../styles/component-styles";
-import "./lens-target-card";
 import {
   dispatchComponentEvent,
   TARGET_SELECTION_INTENT_EVENT,
@@ -33,10 +34,11 @@ export class LensTargetSelectionView extends LitElement {
   static styles = [viewHostStyles, sharedApplicationStyles, ...sharedIconStyles];
 
   @property({ attribute: false })
-  model: TargetSelectionViewModel | undefined;
+  model: TargetSelectionViewModel | undefined = initialTargetSelectionState().model;
+  @property({ attribute: false }) snapshotStatus = initialTargetSelectionState().snapshotStatus;
 
   @state()
-  private cardMotion: TargetCardMotion = { stage: "settled" };
+  private cardMotion: TargetCardMotion = initialTargetSelectionState().cardMotion;
 
   private removeMotionFallback: number | undefined;
 
@@ -79,12 +81,11 @@ export class LensTargetSelectionView extends LitElement {
 
   protected render() {
     const model = this.model;
-    if (!model) return nothing;
-    const selection = model.lens.selection;
+    const selection = model?.lens.selection;
     const items = selection?.items ?? [];
     const renderedItems = this.itemsIncludingRemovingCard(items);
     const pickerActive = selection?.stage === "picking";
-    const operationAvailable = Boolean(model.lens.operation_id && selection);
+    const operationAvailable = Boolean(model?.lens.operation_id && selection);
     const motionSettled = this.cardMotion.stage === "settled";
     const canAdd = Boolean(
       operationAvailable &&
@@ -92,7 +93,9 @@ export class LensTargetSelectionView extends LitElement {
       motionSettled &&
       items.length < (selection?.maximum_targets ?? 0),
     );
-    const canEdit = Boolean(operationAvailable && !pickerActive && motionSettled && !model.pending);
+    const canEdit = Boolean(
+      operationAvailable && !pickerActive && motionSettled && !model?.pending,
+    );
 
     return html`
       <section
@@ -102,7 +105,9 @@ export class LensTargetSelectionView extends LitElement {
       >
         <header class="target-selection-toolbar">
           <output class="target-selection-count" aria-label="Selected window count">
-            ${items.length}<span aria-hidden="true"> / ${selection?.maximum_targets ?? 0}</span>
+            ${selection ? items.length : "…"}<span aria-hidden="true"
+              >${selection ? ` / ${selection.maximum_targets}` : nothing}</span
+            >
           </output>
           <div class="target-selection-actions" aria-label="Selection actions">
             <button
@@ -110,7 +115,7 @@ export class LensTargetSelectionView extends LitElement {
               class="target-selection-icon-button"
               aria-label="Add another window"
               title="Add another window"
-              ?disabled=${!canAdd || model.pending}
+              ?disabled=${!canAdd || model?.pending}
               @click=${() => this.emit({ type: "add" })}
             >
               <i class="fa-solid fa-plus" aria-hidden="true"></i>
@@ -128,6 +133,8 @@ export class LensTargetSelectionView extends LitElement {
           </div>
         </header>
 
+        ${renderSnapshotFailure(this.snapshotStatus)}
+        <div data-region-error="preview"></div>
         <ol class="target-selection-list" aria-label="Window previews">
           ${repeat(
             renderedItems,
@@ -147,9 +154,9 @@ export class LensTargetSelectionView extends LitElement {
 
         <p class="visually-hidden" role="status" aria-live="polite">
           ${
-            model.message ||
+            model?.message ||
             selection?.notice ||
-            (pickerActive ? "Choose one window in the system picker." : "")
+            (pickerActive ? "Choose one window in the system picker." : nothing)
           }
         </p>
       </section>

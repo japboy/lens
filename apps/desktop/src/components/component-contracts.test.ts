@@ -63,6 +63,11 @@ beforeAll(async () => {
   await import("./lens-prompt-settings");
   await import("./lens-target-selection-view");
   await import("./lens-overlay-view");
+  await import("./lens-target-card");
+  await import("./lens-agent-output");
+  await import("./lens-session-controls");
+  await import("./lens-extraction-diagnostics");
+  await import("./lens-media-gallery");
 });
 
 afterEach(() => {
@@ -91,6 +96,7 @@ describe("component property and event contracts", () => {
       pending: false,
       message: "",
     };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -106,6 +112,7 @@ describe("component property and event contracts", () => {
     element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
     const received = vi.fn<EventListener>();
     document.body.addEventListener(PROMPT_INTENT_EVENT, received, { once: true });
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -139,6 +146,7 @@ describe("component property and event contracts", () => {
       updateComplete: Promise<boolean>;
     };
     element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -157,6 +165,7 @@ describe("component property and event contracts", () => {
       updateComplete: Promise<boolean>;
     };
     element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -197,6 +206,7 @@ describe("component property and event contracts", () => {
       updateComplete: Promise<boolean>;
     };
     element.agentPromptTemplate = promptTemplate("Original prompt\n\n{turn_instruction}");
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -266,6 +276,7 @@ describe("component property and event contracts", () => {
     document.body.addEventListener(TARGET_SELECTION_INTENT_EVENT, received, {
       once: true,
     });
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
     await vi.waitFor(() => {
@@ -346,6 +357,7 @@ describe("component property and event contracts", () => {
       pending: true,
       message: "",
     };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -390,6 +402,7 @@ describe("component property and event contracts", () => {
       updateComplete: Promise<boolean>;
     };
     element.model = model;
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -459,6 +472,7 @@ describe("component property and event contracts", () => {
       updateComplete: Promise<boolean>;
     };
     element.model = readyModel;
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -505,6 +519,7 @@ describe("component property and event contracts", () => {
       updateComplete: Promise<boolean>;
     };
     element.lens = { stage: "failed", output_blocks: [] };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
     expect(element.querySelector(".empty-state")?.textContent).toBe(
@@ -522,6 +537,7 @@ describe("component property and event contracts", () => {
       stage: "transforming",
       output_blocks: [{ type: "markdown", text: "Unpublished stream" }],
     };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -576,6 +592,7 @@ describe("component property and event contracts", () => {
       cancelPending: false,
       message: "",
     };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -616,6 +633,7 @@ describe("component property and event contracts", () => {
       cancelPending: false,
       message: "",
     };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
     element.shadowRoot?.querySelector<HTMLButtonElement>("#source-tab")?.click();
@@ -657,6 +675,7 @@ describe("component property and event contracts", () => {
         cancelPending: false,
         message: "",
       };
+      if ("active" in element) element.active = true;
       document.body.append(element);
       await vi.waitFor(() =>
         expect(element.shadowRoot?.querySelector(".lens-output")).not.toBeNull(),
@@ -708,6 +727,7 @@ describe("component property and event contracts", () => {
         cancelPending: false,
         message: "",
       };
+      if ("active" in element) element.active = true;
       document.body.append(element);
       await vi.waitFor(() =>
         expect(element.shadowRoot?.querySelector(".lens-output.has-media")).not.toBeNull(),
@@ -742,6 +762,7 @@ describe("component property and event contracts", () => {
       cancelPending: false,
       message: "",
     };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await vi.waitFor(() => {
       expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
@@ -788,6 +809,7 @@ describe("component property and event contracts", () => {
     document.body.addEventListener(OVERLAY_INTENT_EVENT, (event) => {
       received.push((event as CustomEvent<OverlayIntent>).detail);
     });
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
 
@@ -831,6 +853,7 @@ describe("progress notification visibility", () => {
       updateComplete: Promise<boolean>;
     };
     element.model = { platform: "macos", lens, pending: false, cancelPending: false, message: "" };
+    if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
     return element;
@@ -985,6 +1008,7 @@ it("keeps Agent diagnostics out of the Lens interpretation layout", async () => 
       },
     },
   };
+  if ("active" in element) element.active = true;
   document.body.append(element);
   await element.updateComplete;
   const root = element.shadowRoot!;

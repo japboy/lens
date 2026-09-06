@@ -28,10 +28,7 @@ const EFFECTS: { key: keyof ToolPolicies; label: string }[] = [
 
 @customElement("lens-agent-defaults")
 export class LensAgentDefaults extends LitElement {
-  @property({ attribute: false }) selection: AgentSelectionState = {
-    stage: "unselected",
-    auth_methods: [],
-  };
+  @property({ attribute: false }) selection: AgentSelectionState | undefined;
   @property({ attribute: false }) defaults: AgentDefaults | undefined;
   @property({ type: Boolean }) disabled = false;
   @state() private draft: AgentDefaults = structuredClone(DEFAULT_AGENT_DEFAULTS);
@@ -43,15 +40,16 @@ export class LensAgentDefaults extends LitElement {
       (changed.has("defaults") &&
         JSON.stringify(changed.get("defaults") ?? DEFAULT_AGENT_DEFAULTS) !==
           JSON.stringify(this.defaults ?? DEFAULT_AGENT_DEFAULTS)) ||
-      (changed.has("selection") && changed.get("selection")?.candidate !== this.selection.candidate)
+      (changed.has("selection") &&
+        changed.get("selection")?.candidate !== this.selection?.candidate)
     ) {
       this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
     }
   }
   protected render() {
-    if (this.selection.stage !== "selected") return nothing;
-    const options = this.selection.config_options;
-    const modes = this.selection.modes ?? [];
+    if (this.selection?.stage !== "selected") return nothing;
+    const options = this.selection?.config_options;
+    const modes = this.selection?.modes ?? [];
     const model = options?.find((o) => o.category === "model");
     const savedModel = this.draft.choices.find((c) => c.config_id === model?.id)?.value;
     const unresolvedModel = savedModel && savedModel !== model?.currentValue;
@@ -143,7 +141,7 @@ export class LensAgentDefaults extends LitElement {
         ?disabled=${this.disabled}
         @click=${() => {
           this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
-          const model = this.selection.config_options?.find((o) => o.category === "model");
+          const model = this.selection?.config_options?.find((o) => o.category === "model");
           if (model)
             dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, {
               type: "preview-model",
@@ -157,11 +155,13 @@ export class LensAgentDefaults extends LitElement {
     </section>`;
   }
   private choose(configId: string, value: string) {
-    const isModel = this.selection.config_options?.some(
+    const isModel = this.selection?.config_options?.some(
       (o) => o.id === configId && o.category === "model",
     );
     const reasoningIds = new Set(
-      this.selection.config_options?.filter((o) => o.category === "thought_level").map((o) => o.id),
+      this.selection?.config_options
+        ?.filter((o) => o.category === "thought_level")
+        .map((o) => o.id),
     );
     const choices = this.draft.choices.filter(
       (c) => c.config_id !== configId && !(isModel && reasoningIds.has(c.config_id)),

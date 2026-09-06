@@ -1,3 +1,5 @@
+import { snapshotStatus } from "../rendering/snapshot-status";
+import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
 import { customElement } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
@@ -16,6 +18,30 @@ export class TargetSelectionPage extends ReactiveElement {
   private readonly commands = new CommandController(this);
   private readonly platform = platformFromSearch(window.location.search);
 
+  private readonly attachment = new PageAttachment(
+    this,
+    () => this.view,
+    () => {},
+    [
+      {
+        name: "preview",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () => import("../components/lens-target-card"),
+      },
+    ],
+  );
+
+  initialize(): Promise<void> {
+    return this.attachment.initialize();
+  }
+
+  private get view(): LensTargetSelectionView {
+    const view = this.querySelector("lens-target-selection-view");
+    if (!(view instanceof LensTargetSelectionView))
+      throw new Error("Missing target-selection view");
+    return view;
+  }
+
   protected createRenderRoot(): HTMLElement {
     return this;
   }
@@ -31,22 +57,26 @@ export class TargetSelectionPage extends ReactiveElement {
   }
   protected update(changed: Map<PropertyKey, unknown>): void {
     super.update(changed);
-    const view = this.querySelector("lens-target-selection-view");
-    if (!(view instanceof LensTargetSelectionView))
-      throw new Error("Missing target-selection view");
+    if (this.attachment.stage !== "active") return;
+    const view = this.view;
+    const snapshot = this.snapshots.snapshot;
     view.dataset.platform = this.platform;
-    view.model = targetSelectionViewModel(
-      this.platform,
-      this.snapshots.snapshot,
-      this.commands.state,
-      this.snapshots.message(),
-    );
+    view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
+    view.model = snapshot
+      ? targetSelectionViewModel(
+          this.platform,
+          snapshot,
+          this.commands.state,
+          this.snapshots.message(),
+        )
+      : undefined;
   }
 
   private handleTargetSelectionIntent = async (
     event: CustomEvent<TargetSelectionIntent>,
   ): Promise<void> => {
     event.stopPropagation();
+    if (this.attachment.stage !== "active") return;
     const intent = event.detail;
     const identity: CommandIdentity = { scope: "target-selection", type: intent.type };
     const operationId = this.snapshots.snapshot?.lens.operation_id;

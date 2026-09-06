@@ -401,6 +401,7 @@ fieldset {
 }
 
 .prompt-workspace {
+  position: relative;
   width: 100%;
   min-width: 0;
   min-height: 100%;
@@ -411,10 +412,14 @@ fieldset {
 }
 
 .prompt-detail-header {
+  padding-inline-end: 112px;
   margin-bottom: 0;
 }
 
 .prompt-draft-status {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: 0;
   flex: 0 0 auto;
   padding: 3px 7px;
   border-radius: 999px;

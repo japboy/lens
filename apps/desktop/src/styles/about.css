@@ -1,4 +1,4 @@
-lens-about-page main {
+main {
   box-sizing: border-box;
   height: 100%;
   padding: 24px;
@@ -6,7 +6,7 @@ lens-about-page main {
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 18px;
 }
-lens-about-page header {
+header {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
   align-items: center;
@@ -19,11 +19,11 @@ lens-about-page header {
   height: 96px;
   object-fit: contain;
 }
-lens-about-page h1 {
+h1 {
   margin: 0 0 8px;
   font-size: 24px;
 }
-lens-about-page p {
+p {
   margin: 4px 0;
   min-height: 1lh;
 }
@@ -35,7 +35,16 @@ lens-about-page p {
 .documents select {
   font: inherit;
 }
+.document-region {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+[data-region-error]:empty {
+  display: none;
+}
 lens-license-document {
+  grid-row: 2;
   display: block;
   box-sizing: border-box;
   width: 100%;

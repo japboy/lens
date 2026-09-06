@@ -1,11 +1,13 @@
-// Font faces must be registered in the document, independently of shadow-root icon rules.
-import "@fortawesome/fontawesome-free/css/solid.css";
 import fontAwesomeStyles from "@fortawesome/fontawesome-free/css/fontawesome.css?inline";
 import fontAwesomeSolidStyles from "@fortawesome/fontawesome-free/css/solid.css?inline";
 import { css, unsafeCSS } from "lit";
 import applicationStyles from "../styles.css?inline";
 
 export const viewHostStyles = css`
+  [data-region-error]:empty {
+    display: none;
+  }
+
   :host {
     display: block;
     width: 100%;
@@ -23,11 +25,7 @@ export const viewHostStyles = css`
   }
 
   lens-prompt-settings {
-    display: block;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
+    display: contents;
   }
 `;
 

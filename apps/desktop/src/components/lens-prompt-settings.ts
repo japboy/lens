@@ -104,37 +104,26 @@ export class LensPromptSettings extends LitElement {
     const invalid = Object.keys(errors).length > 0;
 
     return html`
-      <section class="prompt-workspace" aria-labelledby="agent-prompt-heading">
-        <header class="settings-detail-header prompt-detail-header">
-          <div>
-            <h1 id="agent-prompt-heading">Agent Prompt</h1>
-            <p>
-              Edit every natural-language instruction Lens can send, and inspect the exact composed
-              result.
-            </p>
-          </div>
-          <span class="prompt-draft-status" data-dirty=${this.dirty ? "true" : "false"}>
-            ${this.dirty ? "Unsaved Changes" : "Saved"}
-          </span>
-        </header>
+      <span class="prompt-draft-status" data-dirty=${this.dirty ? "true" : "false"}>
+        ${template ? (this.dirty ? "Unsaved Changes" : "Saved") : nothing}
+      </span>
 
-        ${renderSettingsFeedback(this.feedback)}
-        ${
-          !template
-            ? html`<p class="settings-empty-state">Loading the Agent prompt template…</p>`
-            : html`
-                ${this.renderComposition()}
-                ${this.renderEditor(
-                  template,
-                  activeSection,
-                  descriptor,
-                  errors[activeSection],
-                  invalid,
-                )}
-                ${this.renderPreview(template, errors)}
-              `
-        }
-      </section>
+      ${renderSettingsFeedback(this.feedback)}
+      ${
+        !template
+          ? html`<p class="settings-empty-state">Loading the Agent prompt template…</p>`
+          : html`
+              ${this.renderComposition()}
+              ${this.renderEditor(
+                template,
+                activeSection,
+                descriptor,
+                errors[activeSection],
+                invalid,
+              )}
+              ${this.renderPreview(template, errors)}
+            `
+      }
     `;
   }
 

@@ -1,3 +1,5 @@
+import { snapshotStatus } from "../rendering/snapshot-status";
+import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
@@ -18,6 +20,45 @@ export class OverlayPage extends ReactiveElement {
   private readonly platform = platformFromSearch(window.location.search);
   @state() private interactionSubmission: InteractionSubmission | undefined;
 
+  private readonly attachment = new PageAttachment(
+    this,
+    () => this.view,
+    () => {
+      this.view.active = true;
+    },
+    [
+      {
+        name: "output",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () => import("../components/lens-agent-output"),
+      },
+      {
+        name: "session",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () => import("../components/lens-session-controls"),
+      },
+      {
+        name: "source",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () =>
+          Promise.all([
+            import("../components/lens-extraction-diagnostics"),
+            import("../components/lens-media-gallery"),
+          ]),
+      },
+    ],
+  );
+
+  initialize(): Promise<void> {
+    return this.attachment.initialize();
+  }
+
+  private get view(): LensOverlayView {
+    const view = this.querySelector("lens-overlay-view");
+    if (!(view instanceof LensOverlayView)) throw new Error("Missing overlay view");
+    return view;
+  }
+
   protected createRenderRoot(): HTMLElement {
     return this;
   }
@@ -33,23 +74,29 @@ export class OverlayPage extends ReactiveElement {
   }
   protected update(changed: Map<PropertyKey, unknown>): void {
     super.update(changed);
-    const view = this.querySelector("lens-overlay-view");
-    if (!(view instanceof LensOverlayView)) throw new Error("Missing overlay view");
+    if (this.attachment.stage !== "active") return;
+    const view = this.view;
+    const snapshot = this.snapshots.snapshot;
     view.dataset.platform = this.platform;
-    view.model = {
-      ...overlayViewModel(
-        this.platform,
-        this.snapshots.snapshot,
-        this.commands.state,
-        this.snapshots.message(),
-      ),
-      interactionSubmission: this.interactionSubmission,
-    };
+    view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
+    view.model = snapshot
+      ? {
+          ...overlayViewModel(
+            this.platform,
+            snapshot,
+            this.commands.state,
+            this.snapshots.message(),
+          ),
+          interactionSubmission: this.interactionSubmission,
+        }
+      : undefined;
   }
 
   private handleOverlayIntent = async (event: CustomEvent<OverlayIntent>): Promise<void> => {
     event.stopPropagation();
+    if (this.attachment.stage !== "active") return;
     const intent = event.detail;
+    if (!this.snapshots.snapshot) return;
     const identity: CommandIdentity = { scope: "overlay", type: intent.type };
     const lens = this.snapshots.snapshot?.lens;
     switch (intent.type) {

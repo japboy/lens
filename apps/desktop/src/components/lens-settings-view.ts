@@ -1,3 +1,5 @@
+import { initialSettingsState } from "../rendering/initial-state";
+import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { SettingsDestination } from "../agent-prompt-template";
@@ -7,9 +9,6 @@ import type {
   SettingsViewModel,
 } from "../application/view-models";
 import { sharedApplicationStyles, viewHostStyles } from "../styles/component-styles";
-import "./lens-agent-settings";
-import "./lens-agent-defaults";
-import "./lens-prompt-settings";
 import { renderSettingsFeedback } from "./settings-feedback";
 import {
   dispatchComponentEvent,
@@ -40,15 +39,21 @@ export class LensSettingsView extends LitElement {
   ];
 
   @property() aboutOpenError = "";
+  @property({ attribute: false })
+  permission: import("../application/accessibility-permission-controller").AccessibilityPermissionState =
+    { stage: "inactive" };
+  @property({ type: Boolean }) commandPending = false;
+  @property({ type: Boolean }) active = initialSettingsState().active;
 
   @property({ attribute: false })
-  model: SettingsViewModel | undefined;
+  model: SettingsViewModel | undefined = initialSettingsState().model;
+  @property({ attribute: false }) snapshotStatus = initialSettingsState().snapshotStatus;
 
   @state()
-  private destination: SettingsDestination = "general";
+  private destination: SettingsDestination = initialSettingsState().destination;
 
   @state()
-  private windowEmphasis: "emphasized" | "unemphasized" = "emphasized";
+  private windowEmphasis: "emphasized" | "unemphasized" = initialSettingsState().windowEmphasis;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -67,9 +72,9 @@ export class LensSettingsView extends LitElement {
 
   protected render() {
     const model = this.model;
-    if (!model) return nothing;
+    const permission = model?.permission ?? this.permission;
     const permissionLabel = (() => {
-      switch (model.permission.stage) {
+      switch (permission.stage) {
         case "inactive":
         case "checking":
           return "Checking…";
@@ -81,9 +86,11 @@ export class LensSettingsView extends LitElement {
           return "Permission check failed";
       }
     })();
-    const permissionAllowed = model.permission.stage === "allowed";
-    const generalFeedback = feedbackForDestination(model.feedback, "general");
-    const promptFeedback = feedbackForDestination(model.feedback, "agent-prompt");
+    const permissionAllowed = permission.stage === "allowed";
+    const generalFeedback = model ? feedbackForDestination(model?.feedback, "general") : undefined;
+    const promptFeedback = model
+      ? feedbackForDestination(model?.feedback, "agent-prompt")
+      : undefined;
     return html`
       <main
         class="settings-shell"
@@ -106,13 +113,14 @@ export class LensSettingsView extends LitElement {
               role="status"
               aria-labelledby="lens-status-label"
             >
-              ${model.lensStageLabel}
+              ${model?.lensStageLabel ?? nothing}
             </span>
           </div>
           <div class="about-entry">${this.aboutButton()}</div>
         </aside>
 
         <section class="settings-detail">
+          ${renderSnapshotFailure(this.snapshotStatus)}
           ${this.aboutOpenError ? html`<p role="alert">${this.aboutOpenError}</p>` : nothing}
           <div class="settings-detail-panel" ?hidden=${this.destination !== "general"}>
             <header class="settings-detail-header">
@@ -124,15 +132,19 @@ export class LensSettingsView extends LitElement {
             ${renderSettingsFeedback(generalFeedback)}
 
             <div class="settings-detail-groups">
-              <lens-agent-settings
-                .selection=${model.agentSelection}
-                .runtime=${model.agentRuntime}
-                .disabled=${model.pending}
-              ></lens-agent-settings>
+              <section class="settings-group" aria-labelledby="agent-heading">
+                <h2 id="agent-heading">AI Agent</h2>
+                <div data-region-error="agent"></div>
+                <lens-agent-settings
+                  .selection=${model?.agentSelection}
+                  .runtime=${model?.agentRuntime}
+                  .disabled=${!this.active || !model || model.pending}
+                ></lens-agent-settings>
+              </section>
               <lens-agent-defaults
-                .selection=${model.agentSelection}
-                .defaults=${model.config?.agent_preferences?.[model.config.agent]}
-                .disabled=${model.pending}
+                .selection=${model?.agentSelection}
+                .defaults=${model?.config?.agent_preferences?.[model?.config.agent]}
+                .disabled=${!this.active || !model || model.pending}
               ></lens-agent-defaults>
 
               <section class="settings-group" aria-labelledby="cwd-heading">
@@ -143,11 +155,11 @@ export class LensSettingsView extends LitElement {
                     class="directory-field"
                     aria-label="Working Directory"
                     readonly
-                    .value=${model.config?.working_directory ?? ""}
+                    .value=${model?.config?.working_directory ?? ""}
                   />
                   <button
                     @click=${() => this.emit({ type: "choose-directory" })}
-                    ?disabled=${model.pending || !model.config}
+                    ?disabled=${!this.active || !model || model.pending || !model?.config}
                   >
                     Choose…
                   </button>
@@ -165,11 +177,11 @@ export class LensSettingsView extends LitElement {
                     ${permissionLabel}
                   </output>
                   ${
-                    permissionAllowed || model.permission.stage === "checking"
+                    permissionAllowed || permission.stage === "checking"
                       ? nothing
                       : html`<button
                           @click=${() => this.emit({ type: "request-accessibility-permission" })}
-                          ?disabled=${model.pending}
+                          ?disabled=${!this.active || this.commandPending || permission.stage === "inactive"}
                         >
                           Open System Settings
                         </button>`
@@ -180,12 +192,24 @@ export class LensSettingsView extends LitElement {
           </div>
 
           <div class="settings-detail-panel" ?hidden=${this.destination !== "agent-prompt"}>
-            <lens-prompt-settings
-              .agentPromptTemplate=${model.config?.agent_prompt_template}
-              .synchronization=${model.promptSynchronization}
-              .feedback=${promptFeedback}
-              .disabled=${model.pending}
-            ></lens-prompt-settings>
+            <section class="prompt-workspace" aria-labelledby="agent-prompt-heading">
+              <header class="settings-detail-header prompt-detail-header">
+                <div>
+                  <h1 id="agent-prompt-heading">Agent Prompt</h1>
+                  <p>
+                    Edit every natural-language instruction Lens can send, and inspect the exact
+                    composed result.
+                  </p>
+                </div>
+              </header>
+              <div data-region-error="prompt"></div>
+              <lens-prompt-settings
+                .agentPromptTemplate=${model?.config?.agent_prompt_template}
+                .synchronization=${model?.promptSynchronization}
+                .feedback=${promptFeedback}
+                .disabled=${!this.active || !model || model.pending}
+              ></lens-prompt-settings>
+            </section>
           </div>
         </section>
       </main>
@@ -193,7 +217,11 @@ export class LensSettingsView extends LitElement {
   }
 
   private aboutButton() {
-    return html`<button type="button" @click=${() => this.emit({ type: "open-about" })}>
+    return html`<button
+      type="button"
+      ?disabled=${!this.active}
+      @click=${() => this.emit({ type: "open-about" })}
+    >
       About
     </button>`;
   }
@@ -202,6 +230,7 @@ export class LensSettingsView extends LitElement {
     return html`<button
       type="button"
       class="settings-nav-item"
+      ?disabled=${!this.active}
       aria-current=${this.destination === destination ? "page" : nothing}
       @click=${() => {
         this.destination = destination;
@@ -211,7 +240,13 @@ export class LensSettingsView extends LitElement {
     </button>`;
   }
 
+  activate(): void {
+    this.active = true;
+    this.updateWindowEmphasis();
+  }
+
   private updateWindowEmphasis = (): void => {
+    if (!this.active) return;
     this.windowEmphasis =
       document.visibilityState === "visible" && document.hasFocus() ? "emphasized" : "unemphasized";
   };

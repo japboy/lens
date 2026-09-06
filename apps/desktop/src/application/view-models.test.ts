@@ -4,6 +4,25 @@ import type { AccessibilityPermissionState } from "./accessibility-permission-co
 import type { SnapshotConnectionState } from "./app-snapshot-controller";
 import type { CommandState } from "./command-state";
 import { settingsViewModel } from "./view-models";
+import type { AppSnapshot } from "../types";
+
+const SNAPSHOT: AppSnapshot = {
+  revision: 1,
+  config: {
+    agent: "codex",
+    working_directory: "/tmp",
+    agent_prompt_template: {
+      schema_version: 1,
+      common: "{turn_instruction}",
+      full_projection: "Initial",
+      source_checkpoint: "{base_revision} {target_revision}",
+      current_projection_retry: "{applied_revision}",
+    },
+  },
+  agent_selection: { stage: "unselected", auth_methods: [] },
+  agent_runtime: { stage: "not_installed", downloaded_bytes: 0 },
+  lens: { stage: "idle", output_blocks: [] },
+};
 
 const PERMISSION: AccessibilityPermissionState = { stage: "allowed" };
 const READY_CONNECTION: SnapshotConnectionState = { stage: "ready" };
@@ -12,7 +31,7 @@ function model(
   command: CommandState = { stage: "idle" },
   connection: SnapshotConnectionState = READY_CONNECTION,
 ) {
-  return settingsViewModel("macos", undefined, PERMISSION, command, connection);
+  return settingsViewModel("macos", SNAPSHOT, PERMISSION, command, connection);
 }
 
 function succeeded(type: Exclude<SettingsIntent["type"], "open-about">): CommandState {

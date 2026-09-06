@@ -2,10 +2,8 @@ import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { AboutDocuments } from "../application/webview-port";
 
-export type AboutResource<T> =
-  | { stage: "loading" }
-  | { stage: "ready"; value: T }
-  | { stage: "failed"; message: string };
+import type { Resource } from "../rendering/initial-state";
+export type AboutResource<T> = Resource<T>;
 
 @customElement("lens-license-document")
 export class LensLicenseDocument extends LitElement {

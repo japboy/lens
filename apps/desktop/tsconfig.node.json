@@ -3,5 +3,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "tooling/prerender/*.ts"],
+  "exclude": ["tooling/prerender/render-entry.ts"]
 }

@@ -1,3 +1,5 @@
+import { initialOverlayState } from "../rendering/initial-state";
+import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
@@ -17,10 +19,6 @@ import {
   STAGE_LABEL,
   supportedAuthMethods,
 } from "../view-model";
-import "./lens-agent-output";
-import "./lens-session-controls";
-import "./lens-extraction-diagnostics";
-import "./lens-media-gallery";
 import {
   dispatchComponentEvent,
   OVERLAY_INTENT_EVENT,
@@ -81,11 +79,14 @@ function overlayNotification(lens: LensState): OverlayNotification | undefined {
 export class LensOverlayView extends LitElement {
   static styles = [viewHostStyles, sharedApplicationStyles, ...sharedIconStyles];
 
+  @property({ type: Boolean }) active = initialOverlayState().active;
+
   @property({ attribute: false })
-  model: OverlayViewModel | undefined;
+  model: OverlayViewModel | undefined = initialOverlayState().model;
+  @property({ attribute: false }) snapshotStatus = initialOverlayState().snapshotStatus;
 
   @state()
-  private activeTab: LensTab = "interpretation";
+  private activeTab: LensTab = initialOverlayState().activeTab;
 
   @state()
   private displayedRepresentation: LensRepresentation | undefined;
@@ -97,7 +98,7 @@ export class LensOverlayView extends LitElement {
   private notificationIdentity: string | undefined;
 
   @state()
-  private notificationVisibility: "open" | "closed" = "closed";
+  private notificationVisibility: "open" | "closed" = initialOverlayState().notificationVisibility;
 
   protected willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("model")) return;
@@ -127,41 +128,48 @@ export class LensOverlayView extends LitElement {
 
   protected render() {
     const model = this.model;
-    if (!model) return nothing;
-    const lens = model.lens;
-    const context = lens.context;
-    const targets = lens.target_set?.targets ?? [];
-    const sourceJson = lensSourceJson(lens);
-    const activeAgent = lens.agent;
-    const authenticationMethods = supportedAuthMethods(lens);
+    const lens = model?.lens;
+    const context = lens?.context;
+    const targets = lens?.target_set?.targets ?? [];
+    const sourceJson = lens ? lensSourceJson(lens) : "";
+    const activeAgent = lens?.agent;
+    const authenticationMethods = lens ? supportedAuthMethods(lens) : [];
     const targetLabels = targets.map(({ facts }) =>
       facts.title ? `${facts.application_name} — ${facts.title}` : facts.application_name,
     );
-    const sourceCountLabel =
-      targets.length === 0
+    const sourceCountLabel = !lens
+      ? nothing
+      : targets.length === 0
         ? "No selected windows"
         : `${targets.length} selected ${targets.length === 1 ? "window" : "windows"}`;
-    const sourceContext = targetLabels.length
-      ? targetLabels.join(" · ")
-      : "No source context is available.";
-    const sourceContextTitle = targetLabels.length
-      ? targetLabels.join("\n")
-      : "No source context is available.";
-    const canCancel = lens.stage === "connecting" || lens.stage === "transforming";
+    const sourceContext = !lens
+      ? nothing
+      : targetLabels.length
+        ? targetLabels.join(" · ")
+        : "No source context is available.";
+    const sourceContextTitle = !lens
+      ? ""
+      : targetLabels.length
+        ? targetLabels.join("\n")
+        : "No source context is available.";
+    const canCancel = lens?.stage === "connecting" || lens?.stage === "transforming";
     const canRetry =
-      Boolean(lens.input) && (lens.stage === "authentication_required" || lens.stage === "failed");
-    const liveStatus = lensLiveStatus(lens.live);
-    const displayLens = this.lensWithDisplayedRepresentation(lens);
-    const announcedStatus = overlayNotification(displayLens);
+      Boolean(lens?.input) &&
+      (lens?.stage === "authentication_required" || lens?.stage === "failed");
+    const liveStatus = lensLiveStatus(lens?.live);
+    const displayLens = lens ? this.lensWithDisplayedRepresentation(lens) : undefined;
+    const announcedStatus = displayLens ? overlayNotification(displayLens) : undefined;
     const interactive = Boolean(
-      lens.session_controls?.active &&
-      lens.session_controls.interactions.some((i) => i.status === "pending"),
+      lens?.session_controls?.active &&
+      lens?.session_controls.interactions.some((i) => i.status === "pending"),
     );
     const showStatusSnackbar = Boolean(
       announcedStatus && (interactive || this.notificationVisibility === "open"),
     );
     const persistentStatus = liveStatus;
-    const outputMedia = composeOutputMedia(lensOutputPresentation(displayLens));
+    const outputMedia = displayLens
+      ? composeOutputMedia(lensOutputPresentation(displayLens))
+      : { media: [], narrative: [] };
     const hasMediaCue =
       this.activeTab === "interpretation" &&
       outputMedia.media.length > 0 &&
@@ -186,7 +194,7 @@ export class LensOverlayView extends LitElement {
                     type="button"
                     class="overlay-header-action"
                     data-tauri-drag-region="false"
-                    ?disabled=${model.cancelPending}
+                    ?disabled=${model?.cancelPending}
                     @click=${() => this.emit({ type: "cancel" })}
                   >
                     Cancel
@@ -199,7 +207,7 @@ export class LensOverlayView extends LitElement {
                     type="button"
                     class="overlay-header-action"
                     data-tauri-drag-region="false"
-                    ?disabled=${model.pending}
+                    ?disabled=${model?.pending}
                     @click=${() => this.emit({ type: "retry" })}
                   >
                     Retry with Agent
@@ -207,7 +215,7 @@ export class LensOverlayView extends LitElement {
                 : nothing
             }
             ${
-              lens.live?.lifecycle === "watching"
+              lens?.live?.lifecycle === "watching"
                 ? html`<button
                     type="button"
                     class="overlay-header-action"
@@ -216,7 +224,7 @@ export class LensOverlayView extends LitElement {
                   >
                     Pause Updates
                   </button>`
-                : lens.live?.lifecycle === "paused"
+                : lens?.live?.lifecycle === "paused"
                   ? html`<button
                       type="button"
                       class="overlay-header-action"
@@ -230,9 +238,10 @@ export class LensOverlayView extends LitElement {
             <button
               type="button"
               class="close-button"
+              ?disabled=${!this.active || !model}
               data-tauri-drag-region="false"
-              aria-label=${lens.operation_id ? "Stop Lens and close" : "Close Lens"}
-              title=${lens.operation_id ? "Stop Lens and close" : "Close Lens"}
+              aria-label=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
+              title=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
               @click=${() => this.emit({ type: "close" })}
             >
               <i class="fa-solid fa-xmark" aria-hidden="true"></i>
@@ -257,21 +266,25 @@ export class LensOverlayView extends LitElement {
         </nav>
 
         <main class="overlay-main">
-          ${model.message ? html`<p class="error" role="alert">${model.message}</p>` : nothing}
-          ${lens.error ? html`<p class="error" role="alert">${lens.error}</p>` : nothing}
+          ${renderSnapshotFailure(this.snapshotStatus)}
+          <div data-region-error="output"></div>
+          <div data-region-error="session"></div>
+          <div data-region-error="source"></div>
+          ${model?.message ? html`<p class="error" role="alert">${model?.message}</p>` : nothing}
+          ${lens?.error ? html`<p class="error" role="alert">${lens?.error}</p>` : nothing}
           ${
             activeAgent?.authentication_message
               ? html`<p class="notice" role="status">${activeAgent.authentication_message}</p>`
               : nothing
           }
           ${
-            lens.stage === "authentication_required"
+            lens?.stage === "authentication_required"
               ? html`<section class="overlay-actions" aria-label="Agent authentication">
                   ${
                     authenticationMethods.length
                       ? authenticationMethods.map(
                           (method) => html`<button
-                            ?disabled=${model.pending}
+                            ?disabled=${model?.pending}
                             @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
                           >
                             Authenticate with ${method.name}…
@@ -308,7 +321,7 @@ export class LensOverlayView extends LitElement {
                     ></i>
                     <span class="lens-progress-copy">
                       <strong>${announcedStatus.title}</strong>
-                      ${interactive ? nothing : html`<span aria-hidden=${lens.stage === "transforming" ? "true" : "false"}>${announcedStatus.detail}</span>`}
+                      ${interactive ? nothing : html`<span aria-hidden=${lens?.stage === "transforming" ? "true" : "false"}>${announcedStatus.detail}</span>`}
                     </span>
                   </div>
                   ${
@@ -328,8 +341,8 @@ export class LensOverlayView extends LitElement {
                     interactive
                       ? html`<lens-session-controls
                           presentation="interaction"
-                          .controls=${lens.session_controls}
-                          .submission=${model.interactionSubmission}
+                          .controls=${lens?.session_controls}
+                          .submission=${model?.interactionSubmission}
                         ></lens-session-controls>`
                       : nothing
                   }
@@ -355,11 +368,11 @@ export class LensOverlayView extends LitElement {
                 </button>`
               : html`<div
                   class="overlay-footer-status"
-                  title=${persistentStatus?.detail ?? STAGE_LABEL[lens.stage]}
+                  title=${persistentStatus?.detail ?? (lens ? STAGE_LABEL[lens.stage] : nothing)}
                 >
                   <span class="overlay-stage-indicator" aria-hidden="true"></span>
                   <span class="overlay-stage"
-                    >${interactive ? "Agent response required" : (persistentStatus?.title ?? STAGE_LABEL[lens.stage])}</span
+                    >${interactive ? "Agent response required" : (persistentStatus?.title ?? (lens ? STAGE_LABEL[lens.stage] : nothing))}</span
                   >
                 </div>`
           }
@@ -374,11 +387,20 @@ export class LensOverlayView extends LitElement {
   }
 
   private renderActivePanel(
-    lens: OverlayViewModel["lens"],
-    displayLens: LensState,
+    lens: OverlayViewModel["lens"] | undefined,
+    displayLens: LensState | undefined,
     sourceJson: string,
   ) {
     const activeTab = this.activeTab;
+    if (!lens || !displayLens)
+      return html`<section
+        id="${activeTab}-panel"
+        class="lens-panel"
+        role="tabpanel"
+        aria-labelledby="${activeTab}-tab"
+        aria-busy="true"
+        tabindex="0"
+      ></section>`;
     switch (activeTab) {
       case "interpretation":
         return html`<section
@@ -444,6 +466,7 @@ export class LensOverlayView extends LitElement {
       type="button"
       id="${tab}-tab"
       class="lens-tab"
+      ?disabled=${!this.active}
       role="tab"
       aria-selected=${selected ? "true" : "false"}
       aria-controls="${tab}-panel"

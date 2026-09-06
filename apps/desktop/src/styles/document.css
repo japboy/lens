@@ -6,15 +6,21 @@
   background: transparent;
   accent-color: AccentColor;
   font-synthesis: none;
-  --settings-backdrop: Canvas;
-  --settings-group-background: Canvas;
+  --settings-backdrop: transparent;
+  --settings-group-background: transparent;
   --settings-group-border: ButtonBorder;
-  --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+  --settings-sidebar-background: transparent;
   --settings-selection-background: SelectedItem;
   --settings-selection-foreground: SelectedItemText;
   --settings-selection-unemphasized-background: color-mix(in srgb, CanvasText 12%, Canvas);
   --settings-selection-unemphasized-foreground: CanvasText;
   --settings-focus-ring: Highlight;
+}
+
+html[data-platform] {
+  --settings-backdrop: Canvas;
+  --settings-group-background: Canvas;
+  --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
 }
 
 html:is([data-view="settings"], [data-view="about"])[data-platform="macos"] {

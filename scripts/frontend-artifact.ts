@@ -1,4 +1,6 @@
 import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
+import { verifyGeneration } from "../apps/desktop/tooling/prerender/verify.ts";
+import { sourceDigest, sourceInputs } from "../apps/desktop/tooling/prerender/source.ts";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -39,6 +41,7 @@ export function frontendArtifact(mode: string, root: string): void {
   const manifest = { version: 1, source, files: frontendFiles(join(root, "apps/desktop/dist")) };
   const destination = join(root, "target/ci/frontend-manifest.json");
   if (mode === "write") {
+    verifyGeneration(join(root, "apps/desktop/dist"), sourceDigest(sourceInputs(root)));
     mkdirSync(join(root, "target/ci"), { recursive: true });
     writeFileSync(destination, `${JSON.stringify(manifest, null, 2)}\n`);
   } else if (
@@ -47,6 +50,8 @@ export function frontendArtifact(mode: string, root: string): void {
     throw new Error(
       "Frontend artifact source, file set or digest does not match the tested checkout",
     );
+  if (mode === "check")
+    verifyGeneration(join(root, "apps/desktop/dist"), sourceDigest(sourceInputs(root)));
   process.stdout.write(
     `${JSON.stringify({ mode, source, files: Object.keys(manifest.files).length })}\n`,
   );
