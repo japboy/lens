@@ -1,7 +1,8 @@
 {
   "extends": "typescript-config/node.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": ["node"],
+    "tsBuildInfoFile": "./.build/cache/typescript/node.tsbuildinfo"
   },
   "include": ["scripts/**/*.ts", "mise-tasks/**/*.ts", "*.config.ts"]
 }
