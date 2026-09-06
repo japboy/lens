@@ -1679,7 +1679,7 @@ export class LensOverlayView extends LitElement {
             <button
               type="button"
               class="close-button"
-              ?disabled=${!this.active || !model}
+              ?disabled=${!this.active}
               data-tauri-drag-region="false"
               aria-label=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
               title=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}

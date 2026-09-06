@@ -96,9 +96,17 @@ export class OverlayPage extends ReactiveElement {
     event.stopPropagation();
     if (this.attachment.stage !== "active") return;
     const intent = event.detail;
-    if (!this.snapshots.snapshot) return;
     const identity: CommandIdentity = { scope: "overlay", type: intent.type };
     const lens = this.snapshots.snapshot?.lens;
+    if (intent.type === "close") {
+      const operationId = lens?.operation_id;
+      await this.commands.run(identity, async () => {
+        if (operationId) await this.port.stopLens(operationId);
+        await this.port.closeCurrentWindow();
+      });
+      return;
+    }
+    if (!this.snapshots.snapshot) return;
     switch (intent.type) {
       case "set-session-option": {
         if (!lens?.operation_id) return;
@@ -173,14 +181,6 @@ export class OverlayPage extends ReactiveElement {
         const operationId = lens?.operation_id;
         if (!operationId) return;
         await this.commands.run(identity, () => this.port.resumeLens(operationId));
-        return;
-      }
-      case "close": {
-        const operationId = lens?.operation_id;
-        await this.commands.run(identity, async () => {
-          if (operationId) await this.port.stopLens(operationId);
-          await this.port.closeCurrentWindow();
-        });
         return;
       }
       case "open-external-url":
