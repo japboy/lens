@@ -3,7 +3,18 @@ import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { PresentedOutputImage } from "../output-media";
 
-type MediaOverlay = "none" | "details" | "expanded";
+type MediaOverlay = "none" | "details";
+interface FullscreenSession {
+  readonly element: HTMLElement;
+  readonly root: Document | ShadowRoot;
+  readonly image: PresentedOutputImage;
+}
+type FullscreenState =
+  | { readonly status: "idle" }
+  | {
+      readonly status: "entering" | "active" | "exiting" | "cancelled";
+      readonly session: FullscreenSession;
+    };
 type ImageLoadState =
   | { readonly status: "loading" }
   | { readonly status: "failed" }
@@ -31,6 +42,17 @@ export class LensOutputMedia extends LitElement {
   @state()
   private loadedImages: ReadonlyMap<string, LoadedImage> = new Map();
 
+  @state()
+  private fullscreen: FullscreenState = { status: "idle" };
+
+  @state()
+  private fullscreenError = "";
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this.ownerDocument.addEventListener("fullscreenchange", this.handleFullscreenChange);
+  }
+
   private resizeObserver: ResizeObserver | undefined;
   private scrollFrame: number | undefined;
   private alignAfterUpdate = false;
@@ -52,8 +74,10 @@ export class LensOutputMedia extends LitElement {
     const retained = this.media.find((item) => item.id === this.selectedId);
     const oldSelected = previous.find((item) => item.id === this.selectedId);
     if (!retained || retained.source !== oldSelected?.source) {
+      this.closeExpanded();
       this.selectedId = this.media[0]?.id;
       this.overlay = "none";
+      this.fullscreenError = "";
     }
     this.loadedImages = new Map(
       this.media.flatMap((item) => {
@@ -74,11 +98,6 @@ export class LensOutputMedia extends LitElement {
       this.alignAfterUpdate = false;
       this.alignSelection();
     }
-    const dialog = this.querySelector<HTMLDialogElement>(".output-media-expanded");
-    if (dialog) {
-      if (this.overlay === "expanded" && !dialog.open) dialog.showModal();
-      if (this.overlay !== "expanded" && dialog.open) dialog.close();
-    }
   }
 
   disconnectedCallback(): void {
@@ -86,8 +105,8 @@ export class LensOutputMedia extends LitElement {
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
     if (this.scrollFrame !== undefined) cancelAnimationFrame(this.scrollFrame);
-    const dialog = this.querySelector<HTMLDialogElement>("dialog");
-    if (dialog?.open) dialog.close();
+    this.ownerDocument.removeEventListener("fullscreenchange", this.handleFullscreenChange);
+    this.closeExpanded();
   }
 
   private get selectedIndex(): number {
@@ -108,6 +127,7 @@ export class LensOutputMedia extends LitElement {
     const count = this.media.length;
     const ordinal = this.selectedIndex + 1;
     const loaded = this.imageState(item);
+    const expandedImage = this.fullscreen.status === "idle" ? item : this.fullscreen.session.image;
     return html`
       <section
         class="output-media-hero"
@@ -118,135 +138,138 @@ export class LensOutputMedia extends LitElement {
         @pointerdown=${this.handlePointerDown}
       >
         ${
-          loaded.status === "ready"
-            ? html`<div class="output-media-ambient" aria-hidden="true">
-                <img src=${item.source} alt="" />
-              </div>`
+          this.fullscreenError && this.fullscreen.status === "idle"
+            ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>`
             : nothing
         }
-        <div class="output-media-rail" @scroll=${this.handleScroll}>
-          ${repeat(
-            this.media,
-            (image) => image.id,
-            (image, index) => this.renderSlide(image, index),
-          )}
-        </div>
-        <div class="output-media-overlay">
+        <div class="output-media-stage">
           ${
-            count > 1
-              ? html`<span
-                  class="output-media-counter"
-                  role="status"
-                  aria-live="polite"
-                  aria-atomic="true"
-                >
-                  <span class="visually-hidden">Media </span>${String(ordinal).padStart(2, "0")}
-                  <span aria-hidden="true"> / </span
-                  ><span class="visually-hidden"> of </span>${String(count).padStart(2, "0")}
-                </span>`
+            loaded.status === "ready"
+              ? html`<div class="output-media-ambient" aria-hidden="true">
+                  <img src=${item.source} alt="" />
+                </div>`
               : nothing
           }
-          <div class="output-media-tools">
-            <button
-              type="button"
-              class="output-media-tool output-media-details-toggle"
-              aria-label="Media details"
-              title="Details"
-              aria-expanded=${this.overlay === "details" ? "true" : "false"}
-              aria-controls=${this.detailsId}
-              @click=${() => {
-                this.overlay = this.overlay === "details" ? "none" : "details";
-              }}
-            >
-              <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-            </button>
-            <button
-              type="button"
-              class="output-media-tool output-media-expand"
-              aria-label="Expand media"
-              title="Expand"
-              ?disabled=${loaded.status !== "ready"}
-              @click=${() => {
-                this.overlay = "expanded";
-              }}
-            >
-              <i class="fa-solid fa-expand" aria-hidden="true"></i>
-            </button>
+          <div class="output-media-rail" @scroll=${this.handleScroll}>
+            ${repeat(
+              this.media,
+              (image) => image.id,
+              (image, index) => this.renderSlide(image, index),
+            )}
           </div>
-        </div>
-        ${
-          count > 1
-            ? html` <button
-                  type="button"
-                  class="output-media-arrow output-media-previous"
-                  aria-label="Previous media"
-                  title="Previous media"
-                  ?disabled=${this.selectedIndex === 0}
-                  @click=${() => this.select(this.selectedIndex - 1)}
-                >
-                  <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                </button>
-                <button
-                  type="button"
-                  class="output-media-arrow output-media-next"
-                  aria-label="Next media"
-                  title="Next media"
-                  ?disabled=${this.selectedIndex === count - 1}
-                  @click=${() => this.select(this.selectedIndex + 1)}
-                >
-                  <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
-                </button>`
-            : nothing
-        }
-        <section
-          id=${this.detailsId}
-          class="output-media-details"
-          aria-label="Media details"
-          ?hidden=${this.overlay !== "details"}
-        >
-          <h2>Media details</h2>
-          <dl>
-            <dt>Declared format</dt>
-            <dd>${item.mimeType}</dd>
+          <div class="output-media-overlay">
             ${
-              loaded.status === "ready"
-                ? html`
-                    <dt>Intrinsic size</dt>
-                    <dd>${loaded.width} × ${loaded.height} CSS px</dd>
-                    <dt>Orientation</dt>
-                    <dd>
-                      ${loaded.width === loaded.height ? "Square" : loaded.width > loaded.height ? "Landscape" : "Portrait"}
-                    </dd>
-                  `
+              count > 1
+                ? html`<span
+                    class="output-media-counter"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    <span class="visually-hidden">Media </span>${String(ordinal).padStart(2, "0")}
+                    <span aria-hidden="true"> / </span
+                    ><span class="visually-hidden"> of </span>${String(count).padStart(2, "0")}
+                  </span>`
                 : nothing
             }
-          </dl>
-        </section>
-        <dialog
+            <div class="output-media-tools">
+              <button
+                type="button"
+                class="output-media-tool output-media-details-toggle"
+                aria-label="Media details"
+                title="Details"
+                aria-expanded=${this.overlay === "details" ? "true" : "false"}
+                aria-controls=${this.detailsId}
+                @click=${() => {
+                  this.overlay = this.overlay === "details" ? "none" : "details";
+                }}
+              >
+                <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                class="output-media-tool output-media-expand"
+                aria-label="Expand media"
+                title="View fullscreen"
+                ?disabled=${loaded.status !== "ready" || this.fullscreen.status !== "idle"}
+                @click=${this.expandMedia}
+              >
+                <i class="fa-solid fa-expand" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+          ${
+            count > 1
+              ? html` <button
+                    type="button"
+                    class="output-media-arrow output-media-previous"
+                    aria-label="Previous media"
+                    title="Previous media"
+                    ?disabled=${this.selectedIndex === 0}
+                    @click=${() => this.select(this.selectedIndex - 1)}
+                  >
+                    <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="output-media-arrow output-media-next"
+                    aria-label="Next media"
+                    title="Next media"
+                    ?disabled=${this.selectedIndex === count - 1}
+                    @click=${() => this.select(this.selectedIndex + 1)}
+                  >
+                    <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+                  </button>`
+              : nothing
+          }
+          <section
+            id=${this.detailsId}
+            class="output-media-details"
+            aria-label="Media details"
+            ?hidden=${this.overlay !== "details"}
+          >
+            <h2>Media details</h2>
+            <dl>
+              <dt>Declared format</dt>
+              <dd>${item.mimeType}</dd>
+              ${
+                loaded.status === "ready"
+                  ? html`
+                      <dt>Intrinsic size</dt>
+                      <dd>${loaded.width} × ${loaded.height} CSS px</dd>
+                      <dt>Orientation</dt>
+                      <dd>
+                        ${loaded.width === loaded.height ? "Square" : loaded.width > loaded.height ? "Landscape" : "Portrait"}
+                      </dd>
+                    `
+                  : nothing
+              }
+            </dl>
+          </section>
+        </div>
+        <div
           class="output-media-expanded"
+          role="dialog"
+          aria-modal="true"
           aria-label="Expanded media"
-          @cancel=${this.closeExpanded}
-          @close=${this.handleDialogClose}
+          @keydown=${this.handleExpandedKeyDown}
         >
           <header>
             <span>Media ${ordinal} of ${count}</span>
             <button
               type="button"
-              class="output-media-tool"
+              class="output-media-tool output-media-expanded-close"
               aria-label="Close expanded media"
               title="Close expanded media"
-              autofocus
+              ?disabled=${this.fullscreen.status === "exiting"}
               @click=${this.closeExpanded}
             >
               <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
           </header>
-          ${
-            this.overlay === "expanded"
-              ? html`<img src=${item.source} alt="Agent image ${ordinal} of ${count}" />`
-              : nothing
-          }
-        </dialog>
+          ${this.fullscreenError ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
+          <img src=${expandedImage.source} alt="Agent image ${ordinal} of ${count}" />
+        </div>
       </section>
     `;
   }
@@ -303,6 +326,7 @@ export class LensOutputMedia extends LitElement {
   }
 
   private select(index: number): void {
+    if (this.fullscreen.status !== "idle") return;
     const next = this.media[Math.max(0, Math.min(this.media.length - 1, index))];
     if (!next) return;
     const focused = (this.getRootNode() as Document | ShadowRoot).activeElement;
@@ -331,6 +355,7 @@ export class LensOutputMedia extends LitElement {
   private handleScroll = (): void => {
     if (this.scrollFrame !== undefined) cancelAnimationFrame(this.scrollFrame);
     this.scrollFrame = requestAnimationFrame(() => {
+      if (this.fullscreen.status !== "idle") return;
       const rail = this.querySelector<HTMLElement>(".output-media-rail");
       if (!rail?.clientWidth) return;
       const index = Math.round(rail.scrollLeft / rail.clientWidth);
@@ -344,7 +369,7 @@ export class LensOutputMedia extends LitElement {
   };
 
   private handleKeyDown = (event: KeyboardEvent): void => {
-    if (this.overlay === "expanded") return;
+    if (this.fullscreen.status !== "idle") return;
     if (event.key === "Escape" && this.overlay === "details") {
       event.preventDefault();
       this.overlay = "none";
@@ -381,13 +406,128 @@ export class LensOutputMedia extends LitElement {
     }
   };
 
-  private closeExpanded = (event: Event): void => {
-    event.preventDefault();
+  private ownsFullscreen(session: FullscreenSession): boolean {
+    return session.root.fullscreenElement === session.element;
+  }
+
+  private finishFullscreen(session: FullscreenSession): void {
+    if (this.fullscreen.status === "idle" || this.fullscreen.session !== session) return;
+    this.fullscreen = { status: "idle" };
+    if (this.isConnected) {
+      void this.updateComplete.then(() => {
+        if (this.isConnected && this.fullscreen.status === "idle") {
+          this.querySelector<HTMLButtonElement>(".output-media-expand")?.focus({
+            preventScroll: true,
+          });
+        }
+      });
+    }
+  }
+
+  private expandMedia = async (): Promise<void> => {
+    if (this.fullscreen.status !== "idle") return;
+    const element = this.querySelector<HTMLElement>(".output-media-expanded");
+    const image = this.media[this.selectedIndex];
+    if (!element || !image || this.imageState(image).status !== "ready") return;
     this.overlay = "none";
+    this.fullscreenError = "";
+    if (
+      typeof element.requestFullscreen !== "function" ||
+      this.ownerDocument.fullscreenEnabled === false
+    ) {
+      this.fullscreenError = "Fullscreen is unavailable. You can try again.";
+      return;
+    }
+    const session: FullscreenSession = {
+      element,
+      root: element.getRootNode() as Document | ShadowRoot,
+      image,
+    };
+    this.fullscreen = { status: "entering", session };
+    try {
+      // Request directly in the click handler while transient user activation is available.
+      await element.requestFullscreen();
+      this.reconcileFullscreen(session);
+    } catch {
+      this.failFullscreen(session);
+    }
   };
 
-  private handleDialogClose = (): void => {
-    this.overlay = "none";
-    this.querySelector<HTMLButtonElement>(".output-media-expand")?.focus({ preventScroll: true });
+  private failFullscreen(session: FullscreenSession): void {
+    if (this.fullscreen.status === "idle" || this.fullscreen.session !== session) return;
+    if (this.fullscreen.status !== "cancelled" && this.isConnected) {
+      this.fullscreenError = "Unable to open fullscreen. Please try again.";
+    }
+    this.finishFullscreen(session);
+  }
+
+  private reconcileFullscreen(session: FullscreenSession): void {
+    if (this.fullscreen.status === "idle" || this.fullscreen.session !== session) return;
+    if (!this.ownsFullscreen(session)) {
+      this.finishFullscreen(session);
+      return;
+    }
+    if (this.fullscreen.status === "cancelled" || !this.isConnected) {
+      this.closeExpanded();
+    } else if (this.fullscreen.status === "entering") {
+      this.fullscreen = { status: "active", session };
+      void this.updateComplete.then(() => {
+        if (this.fullscreen.status === "active" && this.fullscreen.session === session) {
+          session.element
+            .querySelector<HTMLButtonElement>("button")
+            ?.focus({ preventScroll: true });
+        }
+      });
+    }
+  }
+
+  private handleFullscreenChange = (): void => {
+    if (this.fullscreen.status === "idle") return;
+    const { session, status } = this.fullscreen;
+    // Unrelated fullscreen events must not cancel an outstanding entry request.
+    if (this.ownsFullscreen(session) || status === "active" || status === "exiting") {
+      this.reconcileFullscreen(session);
+    }
+  };
+
+  private closeExpanded = (): void => {
+    if (this.fullscreen.status === "idle" || this.fullscreen.status === "exiting") return;
+    const { session } = this.fullscreen;
+    if (!this.ownsFullscreen(session)) {
+      if (this.fullscreen.status === "entering" || this.fullscreen.status === "cancelled") {
+        this.fullscreen = { status: "cancelled", session };
+      } else {
+        this.finishFullscreen(session);
+      }
+      return;
+    }
+    this.fullscreen = { status: "exiting", session };
+    this.fullscreenError = "";
+    void this.ownerDocument.exitFullscreen().then(
+      () => this.reconcileFullscreen(session),
+      () => {
+        if (this.fullscreen.status === "idle" || this.fullscreen.session !== session) return;
+        if (this.ownsFullscreen(session)) {
+          this.fullscreen = { status: "active", session };
+          this.fullscreenError = "Unable to leave fullscreen. Press Escape or try again.";
+        } else {
+          this.finishFullscreen(session);
+        }
+      },
+    );
+  };
+
+  private handleExpandedKeyDown = (event: KeyboardEvent): void => {
+    if (this.fullscreen.status === "idle") return;
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.closeExpanded();
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      this.fullscreen.session.element
+        .querySelector<HTMLButtonElement>("button")
+        ?.focus({ preventScroll: true });
+    }
   };
 }
