@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PresentedOutputImage } from "../output-media";
 import type { LensState } from "../types";
 import type { LensOutputMedia } from "./lens-output-media";
@@ -15,20 +15,59 @@ const images: readonly PresentedOutputImage[] = [
 beforeAll(async () => {
   window.matchMedia ??= () => ({ matches: false }) as MediaQueryList;
   HTMLElement.prototype.scrollTo ??= () => undefined;
-  HTMLDialogElement.prototype.showModal ??= function () {
-    this.open = true;
-  };
-  HTMLDialogElement.prototype.close ??= function () {
-    if (!this.open) return;
-    this.open = false;
-    this.dispatchEvent(new Event("close"));
-  };
+  HTMLElement.prototype.requestFullscreen ??= async () => undefined;
+  document.exitFullscreen ??= async () => undefined;
+  for (const target of [document, ShadowRoot.prototype]) {
+    if (!("fullscreenElement" in target)) {
+      Object.defineProperty(target, "fullscreenElement", {
+        configurable: true,
+        get: () => null,
+      });
+    }
+  }
   await import("./lens-output-media");
   await import("./lens-agent-output");
 });
 
+let fullscreenElement: Element | null = null;
+let resolveRequest: () => void;
+let rejectRequest: (reason: Error) => void;
+const requestFullscreen = vi.fn<HTMLElement["requestFullscreen"]>(function (this: HTMLElement) {
+  return new Promise<void>((resolve, reject) => {
+    resolveRequest = resolve;
+    rejectRequest = reject;
+  });
+});
+const exitFullscreen = vi.fn<Document["exitFullscreen"]>(async () => {
+  setFullscreen(null);
+});
+
+function setFullscreen(element: Element | null): void {
+  fullscreenElement = element;
+  document.dispatchEvent(new Event("fullscreenchange"));
+}
+
+beforeEach(() => {
+  fullscreenElement = null;
+  requestFullscreen.mockClear();
+  exitFullscreen.mockClear();
+  vi.spyOn(document, "fullscreenElement", "get").mockImplementation(() => {
+    const root = fullscreenElement?.getRootNode();
+    return root instanceof ShadowRoot ? root.host : fullscreenElement;
+  });
+  vi.spyOn(ShadowRoot.prototype, "fullscreenElement", "get").mockImplementation(
+    function (this: ShadowRoot) {
+      return fullscreenElement?.getRootNode() === this ? fullscreenElement : null;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "requestFullscreen").mockImplementation(requestFullscreen);
+  vi.spyOn(document, "exitFullscreen").mockImplementation(exitFullscreen);
+});
+
 afterEach(() => {
+  fullscreenElement = null;
   document.body.replaceChildren();
+  vi.restoreAllMocks();
 });
 
 async function mount(media = images): Promise<LensOutputMedia> {
@@ -128,23 +167,266 @@ describe("Interpretation media interactions", () => {
     expect(expand.disabled).toBe(true);
   });
 
-  it("closes expanded media without changing selection or the native close action", async () => {
+  it("requests fullscreen in the click and restores selection and focus on native exit", async () => {
     const element = await mount();
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
     await load(element, 1, 750, 1200);
     const expand = element.querySelector<HTMLButtonElement>(".output-media-expand")!;
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    expect(expanded.tagName).toBe("DIV");
+    expect(expanded.querySelector("img")?.getAttribute("src")).toBe(images[1]?.source);
+    expand.focus();
     expand.click();
+    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+    expect(requestFullscreen.mock.contexts[0]).toBe(expanded);
     await element.updateComplete;
-    const dialog = element.querySelector<HTMLDialogElement>("dialog")!;
-    expect(dialog.open).toBe(true);
-    expect(dialog.querySelector("img")?.getAttribute("src")).toBe(images[1]?.source);
-    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    expect(expand.disabled).toBe(true);
+    expand.click();
+    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+
+    setFullscreen(expanded);
+    resolveRequest();
     await element.updateComplete;
-    expect(dialog.open).toBe(false);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(expanded.querySelector(".output-media-expanded-close"));
+
+    // Escape, the browser's exit control, and OS exits all report fullscreenchange.
+    setFullscreen(null);
+    await element.updateComplete;
+    await Promise.resolve();
+    expect(document.activeElement).toBe(expand);
+    expect(expand.disabled).toBe(false);
+    expect(exitFullscreen).not.toHaveBeenCalled();
     expect(
       element.querySelector('[aria-hidden="false"].output-media-slide')?.getAttribute("aria-label"),
     ).toBe("Media 2 of 3");
+  });
+
+  it("reports a rejected request and allows retry without stale failure state", async () => {
+    const element = await mount();
+    await load(element, 0, 1200, 750);
+    const expand = element.querySelector<HTMLButtonElement>(".output-media-expand")!;
+    expand.click();
+    rejectRequest(new Error("Fullscreen denied"));
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(element.querySelector('[role="alert"]')?.textContent).toMatch(/fullscreen/i);
+    expect(expand.disabled).toBe(false);
+
+    expand.click();
+    expect(requestFullscreen).toHaveBeenCalledTimes(2);
+    setFullscreen(element.querySelector(".output-media-expanded"));
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(element.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("closes owned fullscreen inside a shadow root through the standard exit API", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    const element = document.createElement("lens-output-media") as LensOutputMedia;
+    element.media = images;
+    shadow.append(element);
+    await element.updateComplete;
+    await load(element, 0, 1200, 750);
+    const expand = element.querySelector<HTMLButtonElement>(".output-media-expand")!;
+    expand.click();
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    setFullscreen(expanded);
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(document.fullscreenElement).toBe(host);
+    expect(shadow.fullscreenElement).toBe(expanded);
+    expect(shadow.activeElement).toBe(expanded.querySelector(".output-media-expanded-close"));
+
+    expanded.querySelector<HTMLButtonElement>(".output-media-expanded-close")!.click();
+    expect(exitFullscreen).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(shadow.activeElement).toBe(expand);
+  });
+
+  it("keeps fullscreen available for retry when exiting fails", async () => {
+    const element = await mount();
+    await load(element, 0, 1200, 750);
+    const expand = element.querySelector<HTMLButtonElement>(".output-media-expand")!;
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    expand.click();
+    setFullscreen(expanded);
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+
+    const close = expanded.querySelector<HTMLButtonElement>(".output-media-expanded-close")!;
+    let rejectExit!: (reason: Error) => void;
+    exitFullscreen.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectExit = reject;
+        }),
+    );
+    close.click();
+    await element.updateComplete;
+    expect(close.disabled).toBe(true);
+    rejectExit(new Error("Exit denied"));
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(document.fullscreenElement).toBe(expanded);
+    expect(close.disabled).toBe(false);
+    expect(expand.disabled).toBe(true);
+    expect(expanded.querySelector('[role="alert"]')?.textContent).toContain(
+      "Unable to leave fullscreen",
+    );
+
+    close.click();
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(exitFullscreen).toHaveBeenCalledTimes(2);
+    expect(document.fullscreenElement).toBeNull();
+    expect(element.querySelector('[role="alert"]')).toBeNull();
+    expect(document.activeElement).toBe(expand);
+  });
+
+  it("reports unavailable fullscreen without starting a request", async () => {
+    const element = await mount();
+    await load(element, 0, 1200, 750);
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    Object.defineProperty(expanded, "requestFullscreen", { value: undefined });
+    const expand = element.querySelector<HTMLButtonElement>(".output-media-expand")!;
+    expand.click();
+    await element.updateComplete;
+    expect(requestFullscreen).not.toHaveBeenCalled();
+    expect(expand.disabled).toBe(false);
+    expect(element.querySelector('[role="alert"]')?.textContent).toContain(
+      "Fullscreen is unavailable",
+    );
+  });
+
+  it("keeps keyboard focus in fullscreen and exits on Escape without paging", async () => {
+    const element = await mount();
+    await load(element, 0, 1200, 750);
+    const expand = element.querySelector<HTMLButtonElement>(".output-media-expand")!;
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    expand.click();
+    setFullscreen(expanded);
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    const close = expanded.querySelector<HTMLButtonElement>(".output-media-expanded-close")!;
+    for (const shiftKey of [false, true]) {
+      const tab = new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      close.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(close);
+    }
+    close.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    expect(
+      element.querySelector('[aria-hidden="false"].output-media-slide')?.getAttribute("aria-label"),
+    ).toBe("Media 1 of 3");
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    close.dispatchEvent(escape);
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(escape.defaultPrevented).toBe(true);
+    expect(exitFullscreen).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(expand);
+  });
+
+  it("preserves fullscreen for equivalent snapshots and updates to other media", async () => {
+    const element = await mount();
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    await load(element, 1, 750, 1200);
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    setFullscreen(expanded);
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    for (const media of [
+      images.map((item) => ({ ...item })),
+      [images[0]!, images[1]!, { ...images[2]!, source: "data:image/webp;base64,bmV3" }],
+    ]) {
+      element.media = media;
+      await element.updateComplete;
+      expect(exitFullscreen).not.toHaveBeenCalled();
+      expect(document.fullscreenElement).toBe(expanded);
+      expect(expanded.querySelector("img")?.getAttribute("src")).toBe(images[1]!.source);
+      expect(
+        element
+          .querySelector('[aria-hidden="false"].output-media-slide')
+          ?.getAttribute("aria-label"),
+      ).toBe("Media 2 of 3");
+    }
+  });
+
+  it.each(["replacement", "removal", "disconnect"] as const)(
+    "exits owned fullscreen on media %s",
+    async (change) => {
+      const element = await mount();
+      await load(element, 0, 1200, 750);
+      element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+      setFullscreen(element.querySelector(".output-media-expanded"));
+      resolveRequest();
+      await Promise.resolve();
+      await element.updateComplete;
+
+      if (change === "disconnect") element.remove();
+      else {
+        element.media =
+          change === "removal" ? [] : [{ ...images[0]!, source: "data:image/png;base64,bmV3" }];
+        await element.updateComplete;
+      }
+      expect(exitFullscreen).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("ignores a stale rejected request after media replacement", async () => {
+    const element = await mount();
+    await load(element, 0, 1200, 750);
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    element.media = [{ ...images[0]!, source: "data:image/png;base64,bmV3" }];
+    await element.updateComplete;
+    rejectRequest(new Error("Old request failed"));
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(element.querySelector('[role="alert"]')).toBeNull();
+    expect(exitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("exits a request that enters fullscreen after the media was replaced", async () => {
+    const element = await mount();
+    await load(element, 0, 1200, 750);
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    element.media = [{ ...images[0]!, source: "data:image/png;base64,bmV3" }];
+    await element.updateComplete;
+    setFullscreen(expanded);
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(exitFullscreen).toHaveBeenCalledTimes(1);
+    expect(element.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("does not exit another element's fullscreen when media changes or disconnects", async () => {
+    const element = await mount();
+    const other = document.createElement("div");
+    document.body.append(other);
+    setFullscreen(other);
+    element.media = [];
+    await element.updateComplete;
+    element.remove();
+    expect(exitFullscreen).not.toHaveBeenCalled();
   });
 });
 

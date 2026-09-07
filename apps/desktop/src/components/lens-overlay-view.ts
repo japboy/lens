@@ -1038,6 +1038,7 @@ export class LensOverlayView extends LitElement {
       }
 
       .output-media-expanded {
+        display: none;
         position: fixed;
         inset: 0;
         width: 100%;
@@ -1051,7 +1052,7 @@ export class LensOverlayView extends LitElement {
         color: CanvasText;
       }
 
-      .output-media-expanded[open] {
+      .output-media-expanded:fullscreen {
         display: flex;
         flex-direction: column;
       }
