@@ -90,6 +90,13 @@ wrapper(
   join(root, "target/release-please-conformance"),
 );
 type Version = { toString(): string };
+type ReleaseProposal = {
+  headRefName: string;
+  title: { toString(): string };
+  body: { toString(): string };
+  labels: string[];
+  updates: Updater[];
+};
 type Updater = {
   path: string;
   createIfMissing?: boolean;
@@ -123,14 +130,8 @@ const bundled = module.exports as {
         manifestFile: string,
         options: unknown,
       ): Promise<{
-        buildPullRequests(): Promise<
-          {
-            headRefName: string;
-            title: { toString(): string };
-            labels: string[];
-            updates: Updater[];
-          }[]
-        >;
+        buildPullRequests(): Promise<ReleaseProposal[]>;
+        createPullRequests(): Promise<unknown[]>;
       }>;
     };
   };
@@ -285,6 +286,11 @@ assert.equal(config["bootstrap-sha"], undefined);
 assert.equal(config["pull-request-header"], undefined);
 assert.ok(!config["pull-request-footer"].includes("— Codex"));
 for (const message of ["feat: first supported capability", "docs: maintenance"]) {
+  let existing:
+    | { number: number; headBranchName: string; body: string; labels: string[] }
+    | undefined;
+  let maintenanceMerged = false;
+  let updateCount = 0;
   const github = {
     repository: { owner: "fixture", repo: "lens" },
     async getFileJson(path: string) {
@@ -298,6 +304,12 @@ for (const message of ["feat: first supported capability", "docs: maintenance"])
       yield* [];
     },
     async *mergeCommitIterator() {
+      if (maintenanceMerged)
+        yield {
+          sha: "f".repeat(40),
+          message: "test: isolate release fixtures",
+          files: ["scripts/release/control.test.ts"],
+        };
       yield { sha: "d".repeat(40), message, files: ["packages/domain/src/lib.rs"] };
       yield {
         sha: "e".repeat(40),
@@ -306,6 +318,18 @@ for (const message of ["feat: first supported capability", "docs: maintenance"])
           : "docs: oldest maintenance",
         files: ["README.md"],
       };
+    },
+    async *pullRequestIterator(branch: string, state: string) {
+      assert.equal(branch, "main");
+      if (state === "OPEN" && existing) yield existing;
+    },
+    async updatePullRequest(number: number, proposal: ReleaseProposal, branch: string) {
+      assert.equal(number, existing!.number);
+      assert.equal(branch, "main");
+      assert.equal(proposal.headRefName, existing!.headBranchName);
+      assert.equal(proposal.body.toString(), existing!.body);
+      updateCount++;
+      return existing;
     },
   };
   const manifest = await bundled.library.Manifest.fromManifest(
@@ -367,6 +391,17 @@ for (const message of ["feat: first supported capability", "docs: maintenance"])
       JSON.parse(updates.get(".release-please-manifest.json")!.updater.updateContent("{}")),
       { ".": "0.1.0" },
     );
+    existing = {
+      number: 53,
+      headBranchName: proposal.headRefName,
+      body: proposal.body.toString(),
+      labels: proposal.labels,
+    };
+    maintenanceMerged = true;
+    assert.equal((await manifest.buildPullRequests())[0]!.body.toString(), existing.body);
+    assert.equal((await manifest.createPullRequests()).length, 1);
+    assert.equal(updateCount, 1, "Update the existing release PR even when only tests changed");
+    cases++;
   }
   cases++;
 }
