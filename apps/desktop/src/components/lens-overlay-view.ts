@@ -798,11 +798,32 @@ export class LensOverlayView extends LitElement {
       }
 
       .output-media-hero {
-        position: relative;
-        isolation: isolate;
+        display: grid;
+        grid-template-rows: auto minmax(144px, 1fr);
         height: max(144px, calc(100cqh - var(--output-media-cue-height)));
+        min-height: min-content;
         overflow: hidden;
         background: color-mix(in srgb, Canvas 94%, CanvasText);
+      }
+
+      .output-media-stage {
+        grid-row: 2;
+        position: relative;
+        isolation: isolate;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .output-media-error {
+        flex: 0 0 auto;
+        margin: 0;
+        padding: 8px 12px;
+        background: Canvas;
+        color: CanvasText;
+        font-size: 12px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
       }
 
       .output-media-ambient {

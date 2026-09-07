@@ -138,113 +138,115 @@ export class LensOutputMedia extends LitElement {
         @pointerdown=${this.handlePointerDown}
       >
         ${
-          loaded.status === "ready"
-            ? html`<div class="output-media-ambient" aria-hidden="true">
-                <img src=${item.source} alt="" />
-              </div>`
+          this.fullscreenError && this.fullscreen.status === "idle"
+            ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>`
             : nothing
         }
-        <div class="output-media-rail" @scroll=${this.handleScroll}>
-          ${repeat(
-            this.media,
-            (image) => image.id,
-            (image, index) => this.renderSlide(image, index),
-          )}
-        </div>
-        <div class="output-media-overlay">
+        <div class="output-media-stage">
           ${
-            count > 1
-              ? html`<span
-                  class="output-media-counter"
-                  role="status"
-                  aria-live="polite"
-                  aria-atomic="true"
-                >
-                  <span class="visually-hidden">Media </span>${String(ordinal).padStart(2, "0")}
-                  <span aria-hidden="true"> / </span
-                  ><span class="visually-hidden"> of </span>${String(count).padStart(2, "0")}
-                </span>`
+            loaded.status === "ready"
+              ? html`<div class="output-media-ambient" aria-hidden="true">
+                  <img src=${item.source} alt="" />
+                </div>`
               : nothing
           }
-          <div class="output-media-tools">
-            <button
-              type="button"
-              class="output-media-tool output-media-details-toggle"
-              aria-label="Media details"
-              title="Details"
-              aria-expanded=${this.overlay === "details" ? "true" : "false"}
-              aria-controls=${this.detailsId}
-              @click=${() => {
-                this.overlay = this.overlay === "details" ? "none" : "details";
-              }}
-            >
-              <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-            </button>
-            <button
-              type="button"
-              class="output-media-tool output-media-expand"
-              aria-label="Expand media"
-              title="View fullscreen"
-              ?disabled=${loaded.status !== "ready" || this.fullscreen.status !== "idle"}
-              @click=${this.expandMedia}
-            >
-              <i class="fa-solid fa-expand" aria-hidden="true"></i>
-            </button>
+          <div class="output-media-rail" @scroll=${this.handleScroll}>
+            ${repeat(
+              this.media,
+              (image) => image.id,
+              (image, index) => this.renderSlide(image, index),
+            )}
           </div>
-        </div>
-        ${
-          count > 1
-            ? html` <button
-                  type="button"
-                  class="output-media-arrow output-media-previous"
-                  aria-label="Previous media"
-                  title="Previous media"
-                  ?disabled=${this.selectedIndex === 0}
-                  @click=${() => this.select(this.selectedIndex - 1)}
-                >
-                  <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                </button>
-                <button
-                  type="button"
-                  class="output-media-arrow output-media-next"
-                  aria-label="Next media"
-                  title="Next media"
-                  ?disabled=${this.selectedIndex === count - 1}
-                  @click=${() => this.select(this.selectedIndex + 1)}
-                >
-                  <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
-                </button>`
-            : nothing
-        }
-        <section
-          id=${this.detailsId}
-          class="output-media-details"
-          aria-label="Media details"
-          ?hidden=${this.overlay !== "details"}
-        >
-          <h2>Media details</h2>
-          <dl>
-            <dt>Declared format</dt>
-            <dd>${item.mimeType}</dd>
+          <div class="output-media-overlay">
             ${
-              loaded.status === "ready"
-                ? html`
-                    <dt>Intrinsic size</dt>
-                    <dd>${loaded.width} × ${loaded.height} CSS px</dd>
-                    <dt>Orientation</dt>
-                    <dd>
-                      ${loaded.width === loaded.height ? "Square" : loaded.width > loaded.height ? "Landscape" : "Portrait"}
-                    </dd>
-                  `
+              count > 1
+                ? html`<span
+                    class="output-media-counter"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    <span class="visually-hidden">Media </span>${String(ordinal).padStart(2, "0")}
+                    <span aria-hidden="true"> / </span
+                    ><span class="visually-hidden"> of </span>${String(count).padStart(2, "0")}
+                  </span>`
                 : nothing
             }
-          </dl>
-        </section>
-        ${
-          this.fullscreenError && this.fullscreen.status === "idle"
-            ? html`<p role="alert">${this.fullscreenError}</p>`
-            : nothing
-        }
+            <div class="output-media-tools">
+              <button
+                type="button"
+                class="output-media-tool output-media-details-toggle"
+                aria-label="Media details"
+                title="Details"
+                aria-expanded=${this.overlay === "details" ? "true" : "false"}
+                aria-controls=${this.detailsId}
+                @click=${() => {
+                  this.overlay = this.overlay === "details" ? "none" : "details";
+                }}
+              >
+                <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+              </button>
+              <button
+                type="button"
+                class="output-media-tool output-media-expand"
+                aria-label="Expand media"
+                title="View fullscreen"
+                ?disabled=${loaded.status !== "ready" || this.fullscreen.status !== "idle"}
+                @click=${this.expandMedia}
+              >
+                <i class="fa-solid fa-expand" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+          ${
+            count > 1
+              ? html` <button
+                    type="button"
+                    class="output-media-arrow output-media-previous"
+                    aria-label="Previous media"
+                    title="Previous media"
+                    ?disabled=${this.selectedIndex === 0}
+                    @click=${() => this.select(this.selectedIndex - 1)}
+                  >
+                    <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                  </button>
+                  <button
+                    type="button"
+                    class="output-media-arrow output-media-next"
+                    aria-label="Next media"
+                    title="Next media"
+                    ?disabled=${this.selectedIndex === count - 1}
+                    @click=${() => this.select(this.selectedIndex + 1)}
+                  >
+                    <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+                  </button>`
+              : nothing
+          }
+          <section
+            id=${this.detailsId}
+            class="output-media-details"
+            aria-label="Media details"
+            ?hidden=${this.overlay !== "details"}
+          >
+            <h2>Media details</h2>
+            <dl>
+              <dt>Declared format</dt>
+              <dd>${item.mimeType}</dd>
+              ${
+                loaded.status === "ready"
+                  ? html`
+                      <dt>Intrinsic size</dt>
+                      <dd>${loaded.width} × ${loaded.height} CSS px</dd>
+                      <dt>Orientation</dt>
+                      <dd>
+                        ${loaded.width === loaded.height ? "Square" : loaded.width > loaded.height ? "Landscape" : "Portrait"}
+                      </dd>
+                    `
+                  : nothing
+              }
+            </dl>
+          </section>
+        </div>
         <div
           class="output-media-expanded"
           role="dialog"
@@ -265,7 +267,7 @@ export class LensOutputMedia extends LitElement {
               <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
           </header>
-          ${this.fullscreenError ? html`<p role="alert">${this.fullscreenError}</p>` : nothing}
+          ${this.fullscreenError ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
           <img src=${expandedImage.source} alt="Agent image ${ordinal} of ${count}" />
         </div>
       </section>
