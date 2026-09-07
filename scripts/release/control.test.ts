@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,14 @@ import { VERSION_FILES } from "./version.ts";
 import { annotation } from "./source.ts";
 
 function fixture(unrelatedCount = 0) {
+  const files = {
+    "apps/desktop/src-tauri/tauri.conf.json": '{"version":"0.1.0"}',
+    "package.json": '{"version":"0.1.0"}',
+    "apps/desktop/package.json": '{"version":"0.1.0"}',
+    "apps/desktop/src-tauri/Cargo.toml": '[package]\nname = "desktop"\nversion = "0.1.0"\n',
+    "Cargo.lock": '[[package]]\nname = "desktop"\nversion = "0.1.0"\n',
+    ".release-please-manifest.json": "{}\n",
+  } satisfies Record<(typeof VERSION_FILES)[number], string>;
   const root = mkdtempSync(join(tmpdir(), "lens-release-control-"));
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
@@ -27,9 +35,8 @@ function fixture(unrelatedCount = 0) {
   git("init", "-b", "main");
   for (const path of VERSION_FILES) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), readFileSync(path));
+    writeFileSync(join(root, path), files[path]);
   }
-  writeFileSync(join(root, ".release-please-manifest.json"), "{}\n");
   git("add", ".");
   git("commit", "-m", "feat: initial source");
   const initial = git("rev-parse", "HEAD");
