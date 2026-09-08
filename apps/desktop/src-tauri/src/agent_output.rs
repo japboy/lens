@@ -1,7 +1,8 @@
 use crate::model::LensOutputBlock;
 use agent_client_protocol::{
     schema::v1::{
-        ContentBlock, ContentChunk, SessionUpdate, ToolCallContent, ToolCallId, ToolCallStatus,
+        ContentBlock, ContentChunk, EmbeddedResourceResource, SessionUpdate, ToolCallContent,
+        ToolCallId, ToolCallStatus,
     },
     Error,
 };
@@ -10,8 +11,9 @@ use base64::prelude::*;
 const MAX_INLINE_IMAGE_DECODED_BYTES: usize = 10 * 1024 * 1024;
 const MAX_INLINE_IMAGE_ENCODED_BYTES: usize = MAX_INLINE_IMAGE_DECODED_BYTES.div_ceil(3) * 4;
 const MAX_TOOL_CALLS: usize = 256;
-const MAX_TOOL_IMAGE_BLOCKS: usize = 32;
+const MAX_TOOL_MEDIA_BLOCKS: usize = 32;
 const MAX_TOOL_IMAGE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_HTML_BYTES: usize = 512 * 1024;
 
 /// One prompt turn owns the ordered message segments and tool-result snapshots.
 /// Tool updates replace their content at the first notification's position.
@@ -62,13 +64,13 @@ enum OutputEntry {
 struct ToolOutput {
     id: ToolCallId,
     status: ToolCallStatus,
-    images: Vec<LensOutputBlock>,
+    media: Vec<LensOutputBlock>,
 }
 
 impl ToolOutput {
-    fn visible_images(&self) -> &[LensOutputBlock] {
+    fn visible_media(&self) -> &[LensOutputBlock] {
         if self.status == ToolCallStatus::Completed {
-            &self.images
+            &self.media
         } else {
             &[]
         }
@@ -96,7 +98,8 @@ impl AgentOutputCandidate {
         }
         match update {
             SessionUpdate::AgentMessageChunk(chunk) => {
-                let block = lens_output_block(chunk);
+                let mut block = lens_output_block(chunk);
+                enforce_html_limit(&mut block, self.retained_html_count(None));
                 if matches!(&block, LensOutputBlock::Markdown { text, .. } if text.is_empty()) {
                     return Ok(false);
                 }
@@ -132,43 +135,74 @@ impl AgentOutputCandidate {
         status: Option<ToolCallStatus>,
         content: Option<Vec<ToolCallContent>>,
     ) -> Result<bool, Error> {
-        // Keep only typed images, never revised prompts, rawOutput, resources,
-        // tool arguments, diffs, or terminal output. Image URIs are provenance.
-        let images = content.map(|content| {
+        // Keep only typed images and explicitly HTML resources. Other tool
+        // resources remain private diagnostics, not Interpretation output. Never dereference URIs
+        // or inspect rawOutput, tool arguments, diffs, or terminal output.
+        let existing = self
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, OutputEntry::Tool(tool) if tool.id == id));
+        let mut html_count = self.retained_html_count(existing);
+        let media = content.map(|content| {
             content
                 .into_iter()
                 .filter_map(|content| match content {
-                    ToolCallContent::Content(content)
-                        if matches!(content.content, ContentBlock::Image(_)) =>
-                    {
-                        Some(lens_output_block(ContentChunk::new(content.content)))
+                    ToolCallContent::Content(content) if is_tool_media(&content.content) => {
+                        let mut block = lens_output_block(ContentChunk::new(content.content));
+                        enforce_html_limit(&mut block, html_count);
+                        if let (
+                            Some(index),
+                            LensOutputBlock::Html {
+                                resource_id,
+                                text,
+                                uri,
+                                ..
+                            },
+                        ) = (existing, &mut block)
+                        {
+                            if let OutputEntry::Tool(tool) = &self.entries[index] {
+                                if let Some(previous_id) =
+                                    tool.media.iter().find_map(|previous| match previous {
+                                        LensOutputBlock::Html {
+                                            resource_id,
+                                            text: previous_text,
+                                            uri: previous_uri,
+                                            ..
+                                        } if previous_text == text && previous_uri == uri => {
+                                            Some(resource_id)
+                                        }
+                                        _ => None,
+                                    })
+                                {
+                                    resource_id.clone_from(previous_id);
+                                }
+                            }
+                        }
+                        html_count += usize::from(matches!(block, LensOutputBlock::Html { .. }));
+                        Some(block)
                     }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
         });
-        let existing = self
-            .entries
-            .iter()
-            .position(|entry| matches!(entry, OutputEntry::Tool(tool) if tool.id == id));
         let mut tool_count = 0;
-        let mut image_count = 0;
+        let mut media_count = 0;
         let mut image_bytes = 0;
         for (index, entry) in self.entries.iter().enumerate() {
             if let OutputEntry::Tool(tool) = entry {
                 tool_count += 1;
-                if Some(index) != existing || images.is_none() {
-                    image_count += tool.images.len();
-                    image_bytes += encoded_image_bytes(&tool.images);
+                if Some(index) != existing || media.is_none() {
+                    media_count += tool.media.len();
+                    image_bytes += encoded_image_bytes(&tool.media);
                 }
             }
         }
-        if let Some(images) = &images {
-            image_count += images.len();
+        if let Some(images) = &media {
+            media_count += images.len();
             image_bytes += encoded_image_bytes(images);
         }
         if (existing.is_none() && tool_count >= MAX_TOOL_CALLS)
-            || image_count > MAX_TOOL_IMAGE_BLOCKS
+            || media_count > MAX_TOOL_MEDIA_BLOCKS
             || image_bytes > MAX_TOOL_IMAGE_ENCODED_BYTES
         {
             return Err(
@@ -182,25 +216,34 @@ impl AgentOutputCandidate {
             };
             let next_status = status.unwrap_or(tool.status);
             let next_visible = if next_status == ToolCallStatus::Completed {
-                images.as_deref().unwrap_or(&tool.images)
+                media.as_deref().unwrap_or(&tool.media)
             } else {
                 &[]
             };
-            let changed = tool.visible_images() != next_visible;
+            let changed = tool.visible_media() != next_visible;
             tool.status = next_status;
-            if let Some(images) = images {
+            if let Some(images) = media {
                 // Omitted content preserves the snapshot; an explicit empty
                 // collection clears it, as required by ACP ToolCallUpdate.
-                tool.images = images;
+                tool.media = images;
+            }
+            if tool.status == ToolCallStatus::Failed {
+                // Failed tools cannot publish HTML, so release its bounded slot.
+                tool.media
+                    .retain(|block| !matches!(block, LensOutputBlock::Html { .. }));
             }
             Ok(changed)
         } else {
-            let tool = ToolOutput {
+            let mut tool = ToolOutput {
                 id,
                 status: status.unwrap_or_default(),
-                images: images.unwrap_or_default(),
+                media: media.unwrap_or_default(),
             };
-            let changed = !tool.visible_images().is_empty();
+            if tool.status == ToolCallStatus::Failed {
+                tool.media
+                    .retain(|block| !matches!(block, LensOutputBlock::Html { .. }));
+            }
+            let changed = !tool.visible_media().is_empty();
             self.entries.push(OutputEntry::Tool(tool));
             Ok(changed)
         }
@@ -216,7 +259,7 @@ impl AgentOutputCandidate {
         for entry in &self.entries {
             let content = match entry {
                 OutputEntry::Message(content) => content,
-                OutputEntry::Tool(tool) => tool.visible_images(),
+                OutputEntry::Tool(tool) => tool.visible_media(),
             };
             for block in content {
                 push_output_block(&mut blocks, block.clone());
@@ -229,10 +272,30 @@ impl AgentOutputCandidate {
         self.entries.iter().any(|entry| match entry {
             OutputEntry::Message(blocks) => blocks.iter().any(|block| match block {
                 LensOutputBlock::Markdown { text, .. } => !text.trim().is_empty(),
-                LensOutputBlock::Image { .. } | LensOutputBlock::Unsupported { .. } => true,
+                LensOutputBlock::Image { .. }
+                | LensOutputBlock::Html { .. }
+                | LensOutputBlock::Unsupported { .. } => true,
             }),
-            OutputEntry::Tool(tool) => !tool.visible_images().is_empty(),
+            OutputEntry::Tool(tool) => !tool.visible_media().is_empty(),
         })
+    }
+
+    fn retained_html_count(&self, exclude: Option<usize>) -> usize {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != exclude)
+            .map(|(_, entry)| {
+                let blocks = match entry {
+                    OutputEntry::Message(blocks) => blocks,
+                    OutputEntry::Tool(tool) => &tool.media,
+                };
+                blocks
+                    .iter()
+                    .filter(|block| matches!(block, LensOutputBlock::Html { .. }))
+                    .count()
+            })
+            .sum()
     }
 
     #[cfg(test)]
@@ -304,14 +367,70 @@ fn lens_output_block(chunk: ContentChunk) -> LensOutputBlock {
             message_id,
             content_type: "resource_link".into(),
         },
-        ContentBlock::Resource(_) => LensOutputBlock::Unsupported {
-            message_id,
-            content_type: "resource".into(),
+        ContentBlock::Resource(resource) => match resource.resource {
+            EmbeddedResourceResource::TextResourceContents(content)
+                if is_html_mime_type(content.mime_type.as_deref()) =>
+            {
+                if content.text.len() > MAX_HTML_BYTES {
+                    LensOutputBlock::Unsupported {
+                        message_id,
+                        content_type: "html (size limit exceeded)".into(),
+                    }
+                } else {
+                    LensOutputBlock::Html {
+                        message_id,
+                        resource_id: uuid::Uuid::new_v4().to_string(),
+                        mime_type: "text/html".into(),
+                        uri: content.uri,
+                        byte_length: content.text.len(),
+                        text: content.text,
+                    }
+                }
+            }
+            _ => LensOutputBlock::Unsupported {
+                message_id,
+                content_type: "resource".into(),
+            },
         },
         _ => LensOutputBlock::Unsupported {
             message_id,
             content_type: "unknown".into(),
         },
+    }
+}
+
+fn is_html_mime_type(mime_type: Option<&str>) -> bool {
+    mime_type.is_some_and(|mime| {
+        mime.split(';')
+            .next()
+            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("text/html"))
+    })
+}
+
+fn is_tool_media(content: &ContentBlock) -> bool {
+    match content {
+        ContentBlock::Image(_) => true,
+        ContentBlock::Resource(resource) => match &resource.resource {
+            EmbeddedResourceResource::TextResourceContents(content) => {
+                is_html_mime_type(content.mime_type.as_deref())
+            }
+            EmbeddedResourceResource::BlobResourceContents(content) => {
+                is_html_mime_type(content.mime_type.as_deref())
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn enforce_html_limit(block: &mut LensOutputBlock, retained: usize) {
+    if retained > 0 {
+        if let LensOutputBlock::Html { message_id, .. } = block {
+            *block = LensOutputBlock::Unsupported {
+                message_id: message_id.clone(),
+                content_type: "html (one resource per turn limit exceeded)".into(),
+            };
+        }
     }
 }
 
@@ -339,6 +458,194 @@ mod tests {
     };
 
     const SAFE_MODE: &str = "read-only";
+
+    fn html_resource(value: &str, mime: &str) -> ContentBlock {
+        use agent_client_protocol::schema::v1::{EmbeddedResource, TextResourceContents};
+        ContentBlock::Resource(EmbeddedResource::new(
+            EmbeddedResourceResource::TextResourceContents(
+                TextResourceContents::new(value, "urn:test:html").mime_type(mime),
+            ),
+        ))
+    }
+
+    #[test]
+    fn html_is_bounded_private_and_counts_as_output() {
+        let mut candidate = AgentOutputCandidate::default();
+        candidate
+            .record_update(
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
+                    "<p>\u{65e5}\u{672c}\u{8a9e}</p>",
+                    " Text/HTML; charset=utf-8",
+                ))),
+                SAFE_MODE,
+            )
+            .unwrap();
+        assert!(candidate.has_output());
+        let blocks = candidate.blocks();
+        let LensOutputBlock::Html {
+            text: private_text,
+            byte_length,
+            mime_type,
+            resource_id,
+            ..
+        } = &blocks[0]
+        else {
+            panic!("expected HTML")
+        };
+        assert_eq!(*byte_length, private_text.len());
+        assert_eq!(mime_type, "text/html");
+        assert!(uuid::Uuid::parse_str(resource_id).is_ok());
+        let public = serde_json::to_value(&blocks).unwrap();
+        assert!(public[0].get("text").is_none());
+        assert!(!public.to_string().contains("\u{65e5}\u{672c}\u{8a9e}"));
+        candidate
+            .record_update(
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
+                    "second",
+                    "text/html",
+                ))),
+                SAFE_MODE,
+            )
+            .unwrap();
+        assert!(matches!(
+            candidate.blocks()[1],
+            LensOutputBlock::Unsupported { .. }
+        ));
+        candidate
+            .record_update(text("ordinary result", "message-2"), SAFE_MODE)
+            .unwrap();
+        assert!(matches!(
+            candidate.blocks().last(),
+            Some(LensOutputBlock::Markdown { .. })
+        ));
+        for resource in [
+            html_resource(&"x".repeat(MAX_HTML_BYTES + 1), "text/html"),
+            html_resource("x", "text/plain"),
+        ] {
+            assert!(matches!(
+                lens_output_block(ContentChunk::new(resource)),
+                LensOutputBlock::Unsupported { .. }
+            ));
+        }
+        assert!(matches!(
+            lens_output_block(ContentChunk::new(html_resource(
+                &"x".repeat(MAX_HTML_BYTES),
+                "text/html"
+            ))),
+            LensOutputBlock::Html { .. }
+        ));
+    }
+
+    #[test]
+    fn blob_html_is_not_decoded_or_rendered() {
+        use agent_client_protocol::schema::v1::{BlobResourceContents, EmbeddedResource};
+        let resource = ContentBlock::Resource(EmbeddedResource::new(
+            EmbeddedResourceResource::BlobResourceContents(
+                BlobResourceContents::new("PGgxPkhlbGxvPC9oMT4=", "urn:blob")
+                    .mime_type("text/html"),
+            ),
+        ));
+        assert!(matches!(
+            lens_output_block(ContentChunk::new(resource)),
+            LensOutputBlock::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn failed_tools_release_the_html_slot_for_the_agent_result() {
+        for initial_status in [ToolCallStatus::InProgress, ToolCallStatus::Failed] {
+            let mut candidate = AgentOutputCandidate::default();
+            candidate
+                .update_tool(
+                    "failed-html".into(),
+                    Some(initial_status),
+                    Some(vec![html_resource("<p>partial</p>", "text/html").into()]),
+                )
+                .unwrap();
+            candidate
+                .update_tool("failed-html".into(), Some(ToolCallStatus::Failed), None)
+                .unwrap();
+            assert_eq!(candidate.retained_html_count(None), 0);
+            candidate
+                .record_update(
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
+                        "<p>final</p>",
+                        "text/html",
+                    ))),
+                    SAFE_MODE,
+                )
+                .unwrap();
+            assert!(matches!(
+                candidate.blocks().as_slice(),
+                [LensOutputBlock::Html { .. }]
+            ));
+        }
+    }
+
+    #[test]
+    fn non_html_tool_resources_remain_private_and_do_not_count_as_output() {
+        let mut candidate = AgentOutputCandidate::default();
+        candidate
+            .update_tool(
+                "resource-tool".into(),
+                Some(ToolCallStatus::Completed),
+                Some(vec![
+                    html_resource("private resource", "text/plain").into(),
+                    html_resource("{\"private\":true}", "application/json").into(),
+                ]),
+            )
+            .unwrap();
+        assert!(candidate.blocks().is_empty());
+        assert!(!candidate.has_output());
+        candidate
+            .update_tool(
+                "resource-tool".into(),
+                None,
+                Some(vec![html_resource(
+                    "<p>result</p>",
+                    "Text/HTML; charset=utf-8",
+                )
+                .into()]),
+            )
+            .unwrap();
+        assert!(candidate.has_output());
+        assert!(matches!(
+            candidate.blocks()[0],
+            LensOutputBlock::Html { .. }
+        ));
+    }
+
+    #[test]
+    fn html_tool_snapshots_are_only_visible_when_completed_and_replace() {
+        let mut candidate = AgentOutputCandidate::default();
+        let content = || vec![html_resource("<p>tool</p>", "text/html").into()];
+        candidate
+            .update_tool(
+                "html-tool".into(),
+                Some(ToolCallStatus::InProgress),
+                Some(content()),
+            )
+            .unwrap();
+        assert!(!candidate.has_output());
+        candidate
+            .update_tool("html-tool".into(), Some(ToolCallStatus::Completed), None)
+            .unwrap();
+        assert!(matches!(
+            candidate.blocks()[0],
+            LensOutputBlock::Html { .. }
+        ));
+        assert!(!candidate
+            .update_tool("html-tool".into(), None, Some(content()))
+            .unwrap());
+        assert!(matches!(
+            candidate.blocks()[0],
+            LensOutputBlock::Html { .. }
+        ));
+        candidate
+            .update_tool("html-tool".into(), None, Some(vec![]))
+            .unwrap();
+        assert!(!candidate.has_output());
+    }
 
     #[test]
     fn public_progress_accumulates_deltas_without_becoming_interpretation() {
@@ -538,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_tools_keep_creation_order_and_failed_tools_have_no_visible_images() {
+    fn interleaved_tools_keep_creation_order_and_failed_tools_have_no_visible_media() {
         let mut candidate = AgentOutputCandidate::default();
         candidate
             .record_update(
@@ -692,7 +999,7 @@ mod tests {
         assert_eq!(image_data(&candidate), ["aW1hZ2U="]);
         assert!(candidate
             .record_update(
-                completed("0", vec![image("aW1hZ2U="); MAX_TOOL_IMAGE_BLOCKS + 1]),
+                completed("0", vec![image("aW1hZ2U="); MAX_TOOL_MEDIA_BLOCKS + 1]),
                 SAFE_MODE
             )
             .is_err());

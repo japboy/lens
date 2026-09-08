@@ -3,6 +3,32 @@ import { composeOutputMedia } from "./output-media";
 import { lensOutputPresentation } from "./view-model";
 
 describe("output media composition", () => {
+  it("promotes only published HTML, preserving mixed media order", () => {
+    const blocks = [
+      { type: "image" as const, mime_type: "image/png", data: "aGVsbG8=" },
+      {
+        type: "html" as const,
+        resource_id: "html",
+        mime_type: "text/html" as const,
+        uri: "lens:html",
+        byte_length: 3,
+      },
+      { type: "markdown" as const, text: "Explanation" },
+    ];
+    const output = { blocks, identity: "rep", mode: "settled" as const };
+    expect(composeOutputMedia(output).media.map((item) => item.kind)).toEqual(["image"]);
+    expect(composeOutputMedia(output).narrative.map((item) => item.index)).toEqual([2]);
+    const published = { operationId: "operation", representationId: "rep" };
+    expect(composeOutputMedia({ ...output, published }).media.map((item) => item.kind)).toEqual([
+      "image",
+      "html",
+    ]);
+    expect(
+      composeOutputMedia({ ...output, published, mode: "initial-stream" }).media.map(
+        (item) => item.kind,
+      ),
+    ).toEqual(["image"]);
+  });
   it("promotes standalone typed images while retaining narrative order and inline Markdown", () => {
     const output = {
       identity: "settled-1",
@@ -22,7 +48,10 @@ describe("output media composition", () => {
     ]);
     expect(composition.narrative.map(({ index }) => index)).toEqual([0, 2, 4]);
     expect(composition.narrative[0]?.block).toBe(output.blocks[0]);
-    expect(composition.media[0]?.source).toBe("data:image/png;base64,aGVsbG8=");
+    expect(composition.media[0]).toMatchObject({
+      kind: "image",
+      source: "data:image/png;base64,aGVsbG8=",
+    });
     expect(composeOutputMedia({ ...output, identity: "settled-2" }).media[0]?.id).not.toBe(
       composition.media[0]?.id,
     );

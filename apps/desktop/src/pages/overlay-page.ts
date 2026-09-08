@@ -4,6 +4,7 @@ import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
+import { HtmlOutputController } from "../application/html-output-controller";
 import type { CommandIdentity } from "../application/command-state";
 import { overlayViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
@@ -17,6 +18,7 @@ export class OverlayPage extends ReactiveElement {
   private readonly port = tauriWebviewPort;
   private readonly snapshots = new AppSnapshotController(this, this.port);
   private readonly commands = new CommandController(this);
+  private readonly htmlOutput = new HtmlOutputController(this, this.port);
   private readonly platform = platformFromSearch(window.location.search);
   @state() private interactionSubmission: InteractionSubmission | undefined;
 
@@ -77,6 +79,8 @@ export class OverlayPage extends ReactiveElement {
     if (this.attachment.stage !== "active") return;
     const view = this.view;
     const snapshot = this.snapshots.snapshot;
+    this.htmlOutput.synchronize(snapshot?.lens);
+    view.htmlContent = this.htmlOutput.content;
     view.dataset.platform = this.platform;
     view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
     view.model = snapshot

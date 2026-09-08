@@ -4,6 +4,6 @@
     "types": ["vite/client", "node"],
     "tsBuildInfoFile": "./.build/cache/typescript/test.tsbuildinfo"
   },
-  "include": ["src/**/*.test.ts", "tests/*.ts"],
+  "include": ["src/**/*.test.ts", "tests/*.ts", "src-tauri/agent-runtime/**/*.test.ts"],
   "exclude": []
 }

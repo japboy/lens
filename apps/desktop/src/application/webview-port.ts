@@ -25,6 +25,7 @@ export interface AboutDocuments {
 }
 
 export interface WebviewPort {
+  getHtmlOutput(operationId: string, representationId: string, resourceId: string): Promise<string>;
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
   showAbout(): Promise<void>;
@@ -74,6 +75,8 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  getHtmlOutput: (operationId, representationId, resourceId) =>
+    invoke<string>("get_html_output", { operationId, representationId, resourceId }),
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
   getAboutDocuments: () => invoke<AboutDocuments>("get_about_documents"),
   showAbout: () => invoke<void>("show_about"),

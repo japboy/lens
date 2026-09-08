@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: lens:; font-src 'self' data:; media-src 'self' data:; style-src 'self' 'unsafe-inline'">
+<title>Lens static HTML preview verification</title>
+<style>html,body,lens-overlay-view{display:block;margin:0;width:100%;height:100%}</style>
+<lens-overlay-view></lens-overlay-view>
+<script type="module" src="./html-preview.js"></script>
+</html>

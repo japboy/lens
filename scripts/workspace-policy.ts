@@ -7,7 +7,7 @@ export type Member = {
   directory: string;
   role: "repository" | "application" | "domain" | "usecase" | "port" | "adapter" | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
-  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview";
+  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "sidecar";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
 };
 
@@ -127,6 +127,18 @@ export const MEMBERS: readonly Member[] = [
   },
   {
     ecosystem: "cargo",
+    name: "adapter-output-mcp",
+    directory: "packages/adapter-output-mcp",
+    role: "adapter",
+    capability: "desktop",
+    implementation: "sidecar",
+    dependencies: {
+      normal: ["rmcp", "serde", "uuid", "tokio"],
+      dev: ["serde_json", "tokio"],
+    },
+  },
+  {
+    ecosystem: "cargo",
     name: "adapter-platform-macos",
     directory: "packages/adapter-platform-macos",
     role: "adapter",
@@ -166,8 +178,8 @@ export type BuildVariant = {
   targets: "lib" | "lib-and-bins";
 };
 
-const common = ["domain", "port-platform", "usecase", "desktop"];
-const portable = ["domain", "port-platform", "usecase"];
+const common = ["domain", "port-platform", "usecase", "desktop", "adapter-output-mcp"];
+const portable = ["domain", "port-platform", "usecase", "adapter-output-mcp"];
 const native = [...common, "adapter-platform-macos"];
 
 export const BUILD_VARIANTS: readonly BuildVariant[] = [

@@ -1,15 +1,30 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PresentedOutputImage } from "../output-media";
+import type { PresentedOutputImage, PresentedOutputMedia } from "../output-media";
 import type { LensState } from "../types";
 import type { LensOutputMedia } from "./lens-output-media";
 import type { LensAgentOutput } from "./lens-agent-output";
 
 const images: readonly PresentedOutputImage[] = [
-  { id: "result:image:0", source: "data:image/png;base64,aA==", mimeType: "image/png" },
-  { id: "result:image:1", source: "data:image/jpeg;base64,dw==", mimeType: "image/jpeg" },
-  { id: "result:image:2", source: "data:image/webp;base64,eA==", mimeType: "image/webp" },
+  {
+    kind: "image",
+    id: "result:image:0",
+    source: "data:image/png;base64,aA==",
+    mimeType: "image/png",
+  },
+  {
+    kind: "image",
+    id: "result:image:1",
+    source: "data:image/jpeg;base64,dw==",
+    mimeType: "image/jpeg",
+  },
+  {
+    kind: "image",
+    id: "result:image:2",
+    source: "data:image/webp;base64,eA==",
+    mimeType: "image/webp",
+  },
 ];
 
 beforeAll(async () => {
@@ -70,7 +85,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function mount(media = images): Promise<LensOutputMedia> {
+async function mount(media: readonly PresentedOutputMedia[] = images): Promise<LensOutputMedia> {
   const element = document.createElement("lens-output-media") as LensOutputMedia;
   element.media = media;
   document.body.append(element);
@@ -94,6 +109,154 @@ async function load(
 }
 
 describe("Interpretation media interactions", () => {
+  const htmlMedia: PresentedOutputMedia = {
+    kind: "html",
+    id: "result:html:1",
+    resourceId: "resource-1",
+    mimeType: "text/html",
+    uri: "urn:lens:test:html",
+    byteLength: 100,
+  };
+
+  async function loadHtml(element: LensOutputMedia): Promise<HTMLIFrameElement> {
+    element.htmlContent = {
+      resourceId: "resource-1",
+      status: "ready",
+      content: '<h1>Readable result</h1><p><a href="https://example.com/">Reference</a></p>',
+    };
+    await element.updateComplete;
+    const renderer = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
+    renderer.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    return renderer;
+  }
+
+  it("mixes HTML and images without borrowing image dimensions or changing the controls", async () => {
+    const element = await mount([images[0]!, htmlMedia]);
+    const renderer = await loadHtml(element);
+    expect(renderer.srcdoc).toContain("Readable result");
+    expect(renderer.getAttribute("sandbox")).toBe("allow-popups");
+    expect(renderer.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(renderer.title).toBe("HTML content");
+    expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(true);
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(false);
+    expect(element.querySelector(".output-media-ambient")).toBeNull();
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
+    element.querySelector<HTMLButtonElement>(".output-media-details-toggle")!.click();
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-details")?.textContent).toContain("text/html");
+    expect(element.querySelector(".output-media-details")?.textContent).not.toContain(
+      "Intrinsic size",
+    );
+    expect(element.querySelector(".output-media-overlay .fa-expand")).not.toBeNull();
+  });
+
+  it("preserves the iframe and keeps native-handled external links in its document", async () => {
+    const element = await mount([images[0]!, htmlMedia]);
+    const renderer = await loadHtml(element);
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    expect(renderer.closest(".output-media-slide")?.getAttribute("aria-hidden")).toBe("false");
+    const preview = new DOMParser().parseFromString(renderer.srcdoc, "text/html");
+    const anchor = preview.querySelector("a")!;
+    expect(anchor.getAttribute("href")).toBe("https://example.com/");
+    expect(anchor.getAttribute("target")).toBe("_blank");
+    expect(anchor.getAttribute("rel")?.split(/\s+/)).toEqual(
+      expect.arrayContaining(["noopener", "noreferrer"]),
+    );
+    expect(element.querySelector(".output-media-details button")).toBeNull();
+    element.querySelector<HTMLButtonElement>(".output-media-previous")!.click();
+    await element.updateComplete;
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+  });
+
+  it("fullscreens the existing HTML slide and does not trap Tab on the close control", async () => {
+    const element = await mount([htmlMedia]);
+    const renderer = await loadHtml(element);
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    await element.updateComplete;
+    const slide = element.querySelector<HTMLElement>(".output-media-html-slide")!;
+    expect(requestFullscreen.mock.contexts[0]).toBe(slide);
+    setFullscreen(slide);
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    const tab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    });
+    element.querySelector<HTMLButtonElement>(".output-html-expanded-close")!.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+    expect(element.querySelectorAll(".output-html-frame")).toHaveLength(1);
+    element.querySelector<HTMLButtonElement>(".output-html-expanded-close")!.click();
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(exitFullscreen).toHaveBeenCalledOnce();
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+  });
+
+  it("dismisses HTML details through a temporary backdrop without replacing the frame", async () => {
+    const element = await mount([images[0]!, htmlMedia]);
+    const frame = await loadHtml(element);
+    const toggle = element.querySelector<HTMLButtonElement>(".output-media-details-toggle")!;
+    toggle.click();
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-details-backdrop")).toBeNull();
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    toggle.click();
+    await element.updateComplete;
+    const backdrop = element.querySelector<HTMLElement>(".output-media-details-backdrop")!;
+    expect(backdrop).not.toBeNull();
+    backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-details-backdrop")).toBeNull();
+    expect(element.querySelector<HTMLElement>(".output-media-details")!.hidden).toBe(true);
+    expect(element.querySelector(".output-html-frame")).toBe(frame);
+  });
+
+  it("keeps HTML failures local and disables expansion until safe content is ready", async () => {
+    const element = await mount([htmlMedia]);
+    element.htmlContent = {
+      resourceId: "resource-1",
+      status: "failed",
+      message: "Resource expired",
+    };
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-state")!.textContent).toContain("Resource expired");
+    expect(element.querySelector("iframe")).toBeNull();
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+  });
+
+  it("ignores old iframe loads and retains the current document across equivalent snapshots", async () => {
+    const element = await mount([htmlMedia]);
+    const oldFrame = await loadHtml(element);
+    element.htmlContent = {
+      resourceId: "resource-1",
+      status: "ready",
+      content: "<p>New content</p>",
+    };
+    await element.updateComplete;
+    const frame = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
+    expect(frame).not.toBe(oldFrame);
+    oldFrame.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    frame.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
+    element.media = [{ ...htmlMedia }];
+    await element.updateComplete;
+    expect(element.querySelector(".output-html-frame")).toBe(frame);
+  });
+
   it("uses labeled Font Awesome controls and reports only loaded, known metadata", async () => {
     const element = await mount();
     const details = element.querySelector<HTMLButtonElement>('[aria-label="Media details"]')!;

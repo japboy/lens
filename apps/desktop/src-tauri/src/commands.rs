@@ -76,6 +76,53 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Strin
     state.snapshot()
 }
 
+#[tauri::command]
+pub fn get_html_output<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    state: State<'_, AppState>,
+    operation_id: Uuid,
+    representation_id: Uuid,
+    resource_id: String,
+) -> Result<String, String> {
+    if webview.label() != "lens-overlay" {
+        return Err("HTML output is only available to the Lens overlay".into());
+    }
+    html_output(
+        &state.lens()?,
+        operation_id,
+        representation_id,
+        &resource_id,
+    )
+}
+
+fn html_output(
+    lens: &LensState,
+    operation_id: Uuid,
+    representation_id: Uuid,
+    resource_id: &str,
+) -> Result<String, String> {
+    let representation = lens
+        .representation
+        .as_ref()
+        .filter(|representation| {
+            lens.operation_id == Some(operation_id)
+                && representation.representation_id == representation_id
+        })
+        .ok_or("HTML output representation is no longer available")?;
+    representation
+        .output_blocks
+        .iter()
+        .find_map(|block| match block {
+            crate::model::LensOutputBlock::Html {
+                resource_id: id,
+                text,
+                ..
+            } if id == resource_id => Some(text.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| "HTML output resource is no longer available".into())
+}
+
 pub async fn select_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     candidate: AgentKind,

@@ -119,6 +119,7 @@ export function lensOutputBlocks(lens: LensState): LensOutputBlock[] {
 export type LensOutputMode = "empty" | "initial-stream" | "settled";
 
 export interface LensOutputPresentation {
+  readonly published?: { operationId: string; representationId: string };
   readonly blocks: LensOutputBlock[];
   readonly identity?: string;
   readonly mode: LensOutputMode;
@@ -129,6 +130,14 @@ export function lensOutputPresentation(lens: LensState): LensOutputPresentation 
   if (representation) {
     return {
       blocks: representation.output_blocks,
+      ...(lens.operation_id
+        ? {
+            published: {
+              operationId: lens.operation_id,
+              representationId: representation.representation_id,
+            },
+          }
+        : {}),
       identity: representation.representation_id,
       mode: representation.output_blocks.length ? "settled" : "empty",
     };

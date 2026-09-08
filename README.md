@@ -38,6 +38,8 @@ Automatic updates are spaced at least three minutes apart.
 
 To tailor the result, edit **Settings → Agent Prompt**. Set **Working Directory** if you want the Agent to use instructions and memory from a particular project.
 
+Your Agent may present results as HTML alongside images in **Interpretation**, with no additional setup. You can request an HTML presentation in **Settings → Agent Prompt**. These previews support static content only; scripts and external assets do not load. Links open in your default browser.
+
 ## Content access
 
 Lens reads the windows you explicitly select and sends their text and captured images to your chosen Agent. Available content depends on what each application exposes to macOS Accessibility. If readable content is unavailable, Lens attempts to use a window image instead. Text remains usable without Screen Recording permission when Accessibility content is available.

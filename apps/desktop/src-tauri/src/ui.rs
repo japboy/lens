@@ -743,7 +743,9 @@ pub fn show_lens_window<R: tauri::Runtime>(
         }
         (None, LensWindowPlacementDecision::Apply) => {
             let geometry = lens_window_geometry(app, target_set)?;
+            let link_app = app.clone();
             WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
+                .on_new_window(move |url, _| crate::html_preview::open_link(&link_app, &url))
                 .title("Lens")
                 .inner_size(geometry.width, geometry.height)
                 .position(geometry.x, geometry.y)
