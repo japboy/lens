@@ -4,7 +4,7 @@
   "private": true,
   "description": "Locked managed runtime inputs for Codex ACP",
   "dependencies": {
-    "@agentclientprotocol/codex-acp": "1.6.2",
+    "@agentclientprotocol/codex-acp": "1.10.0",
     "@agentclientprotocol/sdk": "1.4.0"
   },
   "engines": {
