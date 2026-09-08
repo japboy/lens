@@ -65,6 +65,7 @@ fn command_handler<R: tauri::Runtime>(
         about::get_about_documents,
         about::show_about,
         commands::get_app_snapshot,
+        commands::get_html_output,
         commands::set_agent,
         commands::set_working_directory,
         commands::set_agent_prompt_template,
@@ -336,6 +337,13 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                                         "mime_type": mime_type,
                                         "data_bytes": data.len(),
                                         "uri": uri,
+                                    }),
+                                    model::LensOutputBlock::Html { message_id, resource_id, mime_type, byte_length, .. } => serde_json::json!({
+                                        "type": "html",
+                                        "message_id": message_id,
+                                        "resource_id": resource_id,
+                                        "mime_type": mime_type,
+                                        "byte_length": byte_length,
                                     }),
                                     model::LensOutputBlock::Unsupported {
                                         message_id,

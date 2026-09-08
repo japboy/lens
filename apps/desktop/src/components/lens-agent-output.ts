@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { composeOutputMedia } from "../output-media";
+import type { HtmlOutputContent } from "../application/html-output-controller";
 import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
 import { externalMarkdownUrl } from "../markdown";
@@ -17,6 +18,7 @@ import {
 export class LensAgentOutput extends LitElement {
   @property({ attribute: false })
   lens: LensState = { stage: "idle", output_blocks: [] };
+  @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
   protected createRenderRoot(): HTMLElement {
     return this;
@@ -51,7 +53,7 @@ export class LensAgentOutput extends LitElement {
         data-auto-scroll-container
         role="document"
       >
-        ${media.length ? html`<lens-output-media .media=${media}></lens-output-media>` : nothing}
+        ${media.length ? html`<lens-output-media .media=${media} .htmlContent=${this.htmlContent}></lens-output-media>` : nothing}
         ${
           media.length && narrative.length
             ? html`
@@ -159,6 +161,8 @@ export class LensAgentOutput extends LitElement {
       }
       case "unsupported":
         return this.renderUnsupported(block.content_type);
+      case "html":
+        return nothing;
     }
   }
 

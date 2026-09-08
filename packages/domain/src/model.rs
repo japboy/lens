@@ -121,6 +121,17 @@ pub enum LensOutputBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uri: Option<String>,
     },
+    Html {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        resource_id: String,
+        mime_type: String,
+        uri: String,
+        byte_length: usize,
+        /// Private content is fetched through the representation-scoped command.
+        #[serde(skip_serializing, default)]
+        text: String,
+    },
     Unsupported {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,

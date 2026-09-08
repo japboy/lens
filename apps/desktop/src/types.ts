@@ -360,9 +360,18 @@ export interface LensUnsupportedOutputBlock extends LensOutputBlockBase {
   content_type: string;
 }
 
+export interface LensHtmlOutputBlock extends LensOutputBlockBase {
+  type: "html";
+  resource_id: string;
+  mime_type: "text/html";
+  uri: string;
+  byte_length: number;
+}
+
 export type LensOutputBlock =
   | LensMarkdownOutputBlock
   | LensImageOutputBlock
+  | LensHtmlOutputBlock
   | LensUnsupportedOutputBlock;
 
 export interface ProjectionRef {

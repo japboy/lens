@@ -36,6 +36,8 @@ You will need:
 
 Automatic updates are spaced at least three minutes apart.
 
+When an Agent supplies an embedded HTML resource, Lens can display it alongside images in the Interpretation's media area, using the same navigation and expand controls. The initial HTML profile supports one static document up to 512 KiB per response, with restricted styling and no scripts, forms, or embedded network content. This requires the Agent's ACP adapter to emit a typed HTML resource; ordinary Markdown, HTML code fences, and file links are not converted automatically.
+
 To tailor the result, edit **Settings → Agent Prompt**. Set **Working Directory** if you want the Agent to use instructions and memory from a particular project.
 
 ## Content access

@@ -1,13 +1,24 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { PresentedOutputImage } from "../output-media";
+import type {
+  PresentedOutputImage,
+  PresentedOutputHtml,
+  PresentedOutputMedia,
+} from "../output-media";
+import type { HtmlOutputContent } from "../application/html-output-controller";
+import {
+  AGENT_OUTPUT_INTENT_EVENT,
+  dispatchComponentEvent,
+  type AgentOutputIntent,
+} from "./events";
+import "./lens-html-output";
 
 type MediaOverlay = "none" | "details";
 interface FullscreenSession {
   readonly element: HTMLElement;
   readonly root: Document | ShadowRoot;
-  readonly image: PresentedOutputImage;
+  readonly media: PresentedOutputMedia;
 }
 type FullscreenState =
   | { readonly status: "idle" }
@@ -31,7 +42,15 @@ export class LensOutputMedia extends LitElement {
   private readonly detailsId = `lens-output-media-details-${++LensOutputMedia.nextId}`;
 
   @property({ attribute: false })
-  media: readonly PresentedOutputImage[] = [];
+  media: readonly PresentedOutputMedia[] = [];
+
+  @property({ attribute: false })
+  htmlContent: HtmlOutputContent | undefined;
+
+  @state()
+  private renderedHtml:
+    | { resourceId: string; content: string; status: "ready" | "failed"; message?: string }
+    | undefined;
 
   @state()
   private selectedId: string | undefined;
@@ -66,14 +85,12 @@ export class LensOutputMedia extends LitElement {
     const previous = changed.get("media") ?? [];
     if (
       this.media.length === previous.length &&
-      this.media.every(
-        (item, index) => item.id === previous[index]?.id && item.source === previous[index]?.source,
-      )
+      this.media.every((item, index) => this.sameMedia(item, previous[index]))
     )
       return;
     const retained = this.media.find((item) => item.id === this.selectedId);
     const oldSelected = previous.find((item) => item.id === this.selectedId);
-    if (!retained || retained.source !== oldSelected?.source) {
+    if (!retained || !this.sameMedia(retained, oldSelected)) {
       this.closeExpanded();
       this.selectedId = this.media[0]?.id;
       this.overlay = "none";
@@ -81,6 +98,7 @@ export class LensOutputMedia extends LitElement {
     }
     this.loadedImages = new Map(
       this.media.flatMap((item) => {
+        if (item.kind !== "image") return [];
         const loaded = this.loadedImages.get(item.id);
         return loaded?.source === item.source ? [[item.id, loaded] as const] : [];
       }),
@@ -121,18 +139,37 @@ export class LensOutputMedia extends LitElement {
     return loaded?.source === item.source ? loaded.state : { status: "loading" };
   }
 
+  private sameMedia(item: PresentedOutputMedia, previous?: PresentedOutputMedia): boolean {
+    if (!previous || item.id !== previous.id || item.kind !== previous.kind) return false;
+    return item.kind === "image"
+      ? previous.kind === "image" && item.source === previous.source
+      : previous.kind === "html" && item.resourceId === previous.resourceId;
+  }
+
+  private htmlState(item: PresentedOutputHtml): "loading" | "ready" | "failed" {
+    const content = this.htmlContent;
+    if (content?.resourceId !== item.resourceId) return "loading";
+    if (content.status !== "ready") return content.status;
+    const rendered = this.renderedHtml;
+    return rendered?.resourceId === item.resourceId && rendered.content === content.content
+      ? rendered.status
+      : "loading";
+  }
+
   protected render() {
     const item = this.media[this.selectedIndex];
     if (!item) return nothing;
     const count = this.media.length;
     const ordinal = this.selectedIndex + 1;
-    const loaded = this.imageState(item);
-    const expandedImage = this.fullscreen.status === "idle" ? item : this.fullscreen.session.image;
+    const loaded = item.kind === "image" ? this.imageState(item) : undefined;
+    const ready =
+      item.kind === "image" ? loaded?.status === "ready" : this.htmlState(item) === "ready";
+    const expandedMedia = this.fullscreen.status === "idle" ? item : this.fullscreen.session.media;
     return html`
       <section
         class="output-media-hero"
         aria-label="Interpretation media"
-        aria-roledescription=${count > 1 ? "carousel" : "image presentation"}
+        aria-roledescription=${count > 1 ? "carousel" : "media presentation"}
         data-count=${count}
         @keydown=${this.handleKeyDown}
         @pointerdown=${this.handlePointerDown}
@@ -144,7 +181,7 @@ export class LensOutputMedia extends LitElement {
         }
         <div class="output-media-stage">
           ${
-            loaded.status === "ready"
+            item.kind === "image" && loaded?.status === "ready"
               ? html`<div class="output-media-ambient" aria-hidden="true">
                   <img src=${item.source} alt="" />
                 </div>`
@@ -153,8 +190,8 @@ export class LensOutputMedia extends LitElement {
           <div class="output-media-rail" @scroll=${this.handleScroll}>
             ${repeat(
               this.media,
-              (image) => image.id,
-              (image, index) => this.renderSlide(image, index),
+              (media) => media.id,
+              (media, index) => this.renderSlide(media, index),
             )}
           </div>
           <div class="output-media-overlay">
@@ -191,7 +228,7 @@ export class LensOutputMedia extends LitElement {
                 class="output-media-tool output-media-expand"
                 aria-label="Expand media"
                 title="View fullscreen"
-                ?disabled=${loaded.status !== "ready" || this.fullscreen.status !== "idle"}
+                ?disabled=${!ready || this.fullscreen.status !== "idle"}
                 @click=${this.expandMedia}
               >
                 <i class="fa-solid fa-expand" aria-hidden="true"></i>
@@ -233,7 +270,7 @@ export class LensOutputMedia extends LitElement {
               <dt>Declared format</dt>
               <dd>${item.mimeType}</dd>
               ${
-                loaded.status === "ready"
+                loaded?.status === "ready"
                   ? html`
                       <dt>Intrinsic size</dt>
                       <dd>${loaded.width} × ${loaded.height} CSS px</dd>
@@ -242,6 +279,12 @@ export class LensOutputMedia extends LitElement {
                         ${loaded.width === loaded.height ? "Square" : loaded.width > loaded.height ? "Landscape" : "Portrait"}
                       </dd>
                     `
+                  : nothing
+              }
+              ${
+                item.kind === "html"
+                  ? html`<dt>Content size</dt>
+                      <dd>${item.byteLength.toLocaleString()} bytes</dd>`
                   : nothing
               }
             </dl>
@@ -268,19 +311,21 @@ export class LensOutputMedia extends LitElement {
             </button>
           </header>
           ${this.fullscreenError ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
-          <img src=${expandedImage.source} alt="Agent image ${ordinal} of ${count}" />
+          ${expandedMedia.kind === "image" ? html`<img src=${expandedMedia.source} alt="Agent image ${ordinal} of ${count}" />` : nothing}
         </div>
       </section>
     `;
   }
 
-  private renderSlide(item: PresentedOutputImage, index: number) {
+  private renderSlide(item: PresentedOutputMedia, index: number) {
+    if (item.kind === "html") return this.renderHtmlSlide(item, index);
     const loaded = this.imageState(item);
     return html`<figure
       class="output-media-slide"
       aria-roledescription="slide"
       aria-label="Media ${index + 1} of ${this.media.length}"
       aria-hidden=${index !== this.selectedIndex ? "true" : "false"}
+      ?inert=${index !== this.selectedIndex}
       data-load-state=${loaded.status}
     >
       <img
@@ -302,11 +347,82 @@ export class LensOutputMedia extends LitElement {
     </figure>`;
   }
 
+  private renderHtmlSlide(item: PresentedOutputHtml, index: number) {
+    const content = this.htmlContent?.resourceId === item.resourceId ? this.htmlContent : undefined;
+    return html`<section
+      class="output-media-slide output-media-html-slide"
+      aria-roledescription="slide"
+      aria-label="HTML ${index + 1} of ${this.media.length}"
+      aria-hidden=${index !== this.selectedIndex ? "true" : "false"}
+      ?inert=${index !== this.selectedIndex}
+      @keydown=${this.handleExpandedKeyDown}
+    >
+      <header class="output-html-expanded-header">
+        <span>Media ${index + 1} of ${this.media.length}</span>
+        <button
+          type="button"
+          class="output-media-tool output-html-expanded-close"
+          aria-label="Close expanded HTML"
+          title="Close expanded media"
+          ?disabled=${this.fullscreen.status === "exiting"}
+          @click=${this.closeExpanded}
+        >
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </header>
+      ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
+      <lens-html-output
+        .resourceId=${item.resourceId}
+        .content=${content?.status === "ready" ? content.content : undefined}
+        .status=${content?.status ?? "loading"}
+        .failureMessage=${content?.status === "failed" ? content.message : undefined}
+        @html-render-ready=${this.handleHtmlReady}
+        @html-render-error=${this.handleHtmlError}
+        @html-open-link=${this.handleHtmlLink}
+      ></lens-html-output>
+    </section>`;
+  }
+
+  private handleHtmlReady = (event: CustomEvent<{ resourceId: string }>): void => {
+    event.stopPropagation();
+    const content = this.htmlContent;
+    if (
+      content?.resourceId !== event.detail.resourceId ||
+      content.status !== "ready" ||
+      content.content === undefined
+    )
+      return;
+    this.renderedHtml = {
+      resourceId: content.resourceId,
+      content: content.content,
+      status: "ready",
+    };
+  };
+
+  private handleHtmlError = (event: CustomEvent<{ resourceId: string; message: string }>): void => {
+    event.stopPropagation();
+    const content = this.htmlContent;
+    if (content?.resourceId !== event.detail.resourceId || content.status !== "ready") return;
+    this.renderedHtml = {
+      resourceId: content.resourceId,
+      content: content.content,
+      status: "failed",
+      message: event.detail.message,
+    };
+  };
+
+  private handleHtmlLink = (event: CustomEvent<{ url: string }>): void => {
+    event.stopPropagation();
+    dispatchComponentEvent<AgentOutputIntent>(this, AGENT_OUTPUT_INTENT_EVENT, {
+      type: "open-external-url",
+      url: event.detail.url,
+    });
+  };
+
   private handleImageLoad(item: PresentedOutputImage, event: Event): void {
     const image = event.currentTarget as HTMLImageElement;
     if (image.currentSrc && image.currentSrc !== item.source) return;
-    if (!this.media.some((current) => current.id === item.id && current.source === item.source))
-      return;
+    if (!this.media.some((current) => this.sameMedia(current, item))) return;
     const state: ImageLoadState =
       image.naturalWidth > 0 && image.naturalHeight > 0
         ? { status: "ready", width: image.naturalWidth, height: image.naturalHeight }
@@ -317,8 +433,7 @@ export class LensOutputMedia extends LitElement {
   private handleImageError(item: PresentedOutputImage, event: Event): void {
     const image = event.currentTarget as HTMLImageElement;
     if (image.getAttribute("src") !== item.source) return;
-    if (!this.media.some((current) => current.id === item.id && current.source === item.source))
-      return;
+    if (!this.media.some((current) => this.sameMedia(current, item))) return;
     this.loadedImages = new Map(this.loadedImages).set(item.id, {
       source: item.source,
       state: { status: "failed" },
@@ -370,6 +485,12 @@ export class LensOutputMedia extends LitElement {
 
   private handleKeyDown = (event: KeyboardEvent): void => {
     if (this.fullscreen.status !== "idle") return;
+    if (
+      event
+        .composedPath()
+        .some((node) => node instanceof HTMLElement && node.localName === "lens-html-output")
+    )
+      return;
     if (event.key === "Escape" && this.overlay === "details") {
       event.preventDefault();
       this.overlay = "none";
@@ -426,9 +547,17 @@ export class LensOutputMedia extends LitElement {
 
   private expandMedia = async (): Promise<void> => {
     if (this.fullscreen.status !== "idle") return;
-    const element = this.querySelector<HTMLElement>(".output-media-expanded");
-    const image = this.media[this.selectedIndex];
-    if (!element || !image || this.imageState(image).status !== "ready") return;
+    const media = this.media[this.selectedIndex];
+    const element =
+      media?.kind === "html"
+        ? this.querySelector<HTMLElement>(".output-media-html-slide")
+        : this.querySelector<HTMLElement>(".output-media-expanded");
+    if (
+      !element ||
+      !media ||
+      (media.kind === "image" ? this.imageState(media).status : this.htmlState(media)) !== "ready"
+    )
+      return;
     this.overlay = "none";
     this.fullscreenError = "";
     if (
@@ -441,7 +570,7 @@ export class LensOutputMedia extends LitElement {
     const session: FullscreenSession = {
       element,
       root: element.getRootNode() as Document | ShadowRoot,
-      image,
+      media,
     };
     this.fullscreen = { status: "entering", session };
     try {
@@ -523,7 +652,7 @@ export class LensOutputMedia extends LitElement {
     if (event.key === "Escape") {
       event.preventDefault();
       this.closeExpanded();
-    } else if (event.key === "Tab") {
+    } else if (event.key === "Tab" && this.fullscreen.session.media.kind === "image") {
       event.preventDefault();
       this.fullscreen.session.element
         .querySelector<HTMLButtonElement>("button")

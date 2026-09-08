@@ -6,6 +6,7 @@ import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel } from "../application/view-models";
 import type { LensRepresentation, LensState } from "../types";
 import { composeOutputMedia } from "../output-media";
+import type { HtmlOutputContent } from "../application/html-output-controller";
 import {
   accessibilityStyles,
   controlStyles,
@@ -879,6 +880,46 @@ export class LensOverlayView extends LitElement {
         filter: drop-shadow(0 10px 18px color-mix(in srgb, CanvasText 15%, transparent));
       }
 
+      .output-media-slide.output-media-html-slide,
+      .output-media-hero[data-count="1"] .output-media-html-slide {
+        padding: 0;
+        contain: layout paint;
+        background: Canvas;
+        color: CanvasText;
+      }
+
+      lens-html-output {
+        display: block;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+      }
+
+      .output-html-expanded-header {
+        display: none;
+      }
+
+      .output-media-html-slide:fullscreen {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        --html-output-padding: 12px 24px 24px;
+      }
+
+      .output-media-html-slide:fullscreen > .output-html-expanded-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        font-size: 12px;
+        flex: 0 0 auto;
+      }
+
+      .output-media-html-slide:fullscreen > lens-html-output {
+        flex: 1 1 auto;
+      }
+
       .output-media-slide[data-load-state="failed"] > img {
         visibility: hidden;
       }
@@ -1543,6 +1584,7 @@ export class LensOverlayView extends LitElement {
   ];
 
   @property({ type: Boolean }) active = initialOverlayState().active;
+  @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
   @property({ attribute: false })
   model: OverlayViewModel | undefined = initialOverlayState().model;
@@ -1873,7 +1915,10 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="interpretation-tab"
           tabindex="0"
         >
-          <lens-agent-output .lens=${displayLens}></lens-agent-output>
+          <lens-agent-output
+            .lens=${displayLens}
+            .htmlContent=${this.htmlContent}
+          ></lens-agent-output>
         </section>`;
       case "source":
         return html`<section

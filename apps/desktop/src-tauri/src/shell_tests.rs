@@ -48,6 +48,60 @@ pub(crate) fn invoke(
 }
 
 #[test]
+fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
+    let state = test_support::state();
+    let operation = Uuid::from_u128(501);
+    let representation = Uuid::from_u128(502);
+    state.runtime.write().unwrap().lens = LensState {
+        operation_id: Some(operation),
+        representation: Some(LensRepresentation {
+            representation_id: representation,
+            context_id: Uuid::nil(),
+            context_revision: 1,
+            projection: crate::live_sync::ProjectionRef::new(
+                std::num::NonZeroU64::new(1).unwrap(),
+                "0".repeat(64).parse().unwrap(),
+            ),
+            run_id: Uuid::nil(),
+            output_blocks: vec![LensOutputBlock::Html {
+                message_id: None,
+                resource_id: "html-fixture".into(),
+                mime_type: "text/html".into(),
+                uri: "urn:fixture".into(),
+                byte_length: 14,
+                text: "<p>private</p>".into(),
+            }],
+        }),
+        ..LensState::default()
+    };
+    let app = app(state);
+    let settings = window(&app);
+    let overlay = tauri::WebviewWindowBuilder::new(&app, "lens-overlay", Default::default())
+        .build()
+        .unwrap();
+    let args = json!({"operationId": operation, "representationId": representation, "resourceId": "html-fixture"});
+    assert!(invoke(&settings, "get_html_output", args.clone()).is_err());
+    assert_eq!(
+        invoke(&overlay, "get_html_output", args.clone()).unwrap(),
+        json!("<p>private</p>")
+    );
+    let snapshot = invoke(&overlay, "get_app_snapshot", json!({})).unwrap();
+    assert!(!snapshot.to_string().contains("<p>private</p>"));
+    for field in ["operationId", "representationId", "resourceId"] {
+        let mut stale = args.clone();
+        stale[field] = json!(Uuid::new_v4());
+        assert!(invoke(&overlay, "get_html_output", stale).is_err());
+    }
+    app.state::<AppState>()
+        .runtime
+        .write()
+        .unwrap()
+        .lens
+        .representation = None;
+    assert!(invoke(&overlay, "get_html_output", args).is_err());
+}
+
+#[test]
 fn about_ipc_embeds_exact_documents_and_window_is_reused() {
     let app = app(test_support::state());
     let settings = window(&app);

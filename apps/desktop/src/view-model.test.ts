@@ -149,6 +149,7 @@ describe("Lens view model", () => {
 
     expect(lensOutputBlocks(lens)).toEqual(lens.representation.output_blocks);
     expect(lensOutputPresentation(lens)).toEqual({
+      published: { operationId: "operation", representationId: "representation-2" },
       blocks: lens.representation.output_blocks,
       identity: "representation-2",
       mode: "settled",
