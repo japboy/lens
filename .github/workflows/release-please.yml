@@ -51,7 +51,7 @@ jobs:
 
       - name: Propose the next version and committed changelog
         if: steps.control.outputs.state == 'update-pr'
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.3.0
         with:
           token: ${{ steps.app.outputs.token }}
           target-branch: main
