@@ -4,7 +4,7 @@
   "private": true,
   "description": "Locked managed runtime inputs for Claude Agent ACP",
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.70.0"
+    "@agentclientprotocol/claude-agent-acp": "0.74.0"
   },
   "engines": {
     "node": "24.19.0",
