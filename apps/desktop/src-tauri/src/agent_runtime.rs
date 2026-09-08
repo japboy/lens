@@ -50,9 +50,9 @@ const CLAUDE_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/claude/pnp
 const CLAUDE_HTML_FORWARDING: &str =
     include_str!("../agent-runtime/claude/lens-html-forwarding.js");
 const CLAUDE_ORIGINAL_SHA256: &str =
-    "b9f6e42e59047bfc0554f862c0d71354cb6af54299f8947963886171657ee230";
+    "d8053c7880d61a0ffa25c8bd367eb2d5adc78ee7c0a3eb65b4d33be3a6c07ab4";
 const CLAUDE_PATCHED_SHA256: &str =
-    "ca130420645ba99dbfd9bc68a8114d7de831d2c12154ac3eb379a9d925473bc1";
+    "b33bae689875210ba1e5bbfde5f4554710bf5c49f6cc0730ff7eebce55c81213";
 const CLAUDE_TOOLS_PATH: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/tools.js";
 const CLAUDE_TOOL_ANCHOR: &str = "export function toolUpdateFromToolResult(toolResult, toolUse, supportsTerminalOutput = false, toolUseResult) {";
 const CODEX_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/codex/package.json");
@@ -60,9 +60,9 @@ const CODEX_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-lock.
 const CODEX_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-workspace.yaml");
 const CODEX_HTML_FORWARDING: &str = include_str!("../agent-runtime/codex/lens-html-forwarding.js");
 const CODEX_ORIGINAL_SHA256: &str =
-    "8c7fc8af156596668a95ce23d52309f70ad576e75bac6dc209d30378bdbb8ebe";
+    "4602784c5896fbf05a7d89b09655bacc768d0bf281e0d03a10333ff81da45268";
 const CODEX_PATCHED_SHA256: &str =
-    "7b4618adef5f8acac11e1a8c5bac77d0d663a78abcc6fc0a1ce6692452c09e46";
+    "3eac125dbe1f8fbc58bf4eb4c4030cabc59646b555ddeac190e9cfdb587cf076";
 const CODEX_REPLAY_ANCHOR: &str = "    _meta: { is_mcp_tool_call: true }";
 const CODEX_LIVE_ANCHOR: &str =
     "          rawOutput: createMcpRawOutput(event.item.result, event.item.error)";
@@ -101,7 +101,7 @@ struct AgentRuntimePolicy {
 }
 
 const CLAUDE_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[SignedExecutablePolicy {
-    relative_path: "node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-darwin-arm64@0.3.232/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
+    relative_path: "node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-darwin-arm64@0.3.257/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
     team_id: CLAUDE_TEAM_ID,
     signing_identifier: "com.anthropic.claude-code",
     label: "Claude runtime",
@@ -109,13 +109,13 @@ const CLAUDE_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[SignedExecutableP
 
 const CODEX_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[
     SignedExecutablePolicy {
-        relative_path: "node_modules/.pnpm/@openai+codex@0.148.0-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex",
+        relative_path: "node_modules/.pnpm/@openai+codex@0.153.4-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex",
         team_id: OPENAI_TEAM_ID,
         signing_identifier: "codex",
         label: "Codex runtime",
     },
     SignedExecutablePolicy {
-        relative_path: "node_modules/.pnpm/@openai+codex@0.148.0-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
+        relative_path: "node_modules/.pnpm/@openai+codex@0.153.4-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
         team_id: OPENAI_TEAM_ID,
         signing_identifier: "codex-code-mode-host",
         label: "Codex code-mode host",
@@ -128,8 +128,8 @@ fn policy(kind: AgentKind) -> AgentRuntimePolicy {
             kind,
             registry_id: "claude-acp",
             adapter_name: "@agentclientprotocol/claude-agent-acp",
-            adapter_version: "0.70.0",
-            adapter_version_output: "0.70.0",
+            adapter_version: "0.74.0",
+            adapter_version_output: "0.74.0",
             safe_mode_id: "plan",
             package_json: CLAUDE_PACKAGE_JSON,
             pnpm_lock: CLAUDE_PNPM_LOCK,
@@ -141,8 +141,8 @@ fn policy(kind: AgentKind) -> AgentRuntimePolicy {
             kind,
             registry_id: "codex-acp",
             adapter_name: "@agentclientprotocol/codex-acp",
-            adapter_version: "1.6.2",
-            adapter_version_output: "@agentclientprotocol/codex-acp 1.6.2",
+            adapter_version: "1.10.0",
+            adapter_version_output: "@agentclientprotocol/codex-acp 1.10.0",
             safe_mode_id: "read-only",
             package_json: CODEX_PACKAGE_JSON,
             pnpm_lock: CODEX_PNPM_LOCK,
@@ -151,6 +151,40 @@ fn policy(kind: AgentKind) -> AgentRuntimePolicy {
             signed_executables: CODEX_SIGNED_EXECUTABLES,
         },
     }
+}
+
+/// Reject inconsistent embedded policy before consulting caches or downloading.
+fn validate_policy_inputs(approved: AgentRuntimePolicy) -> Result<(), String> {
+    let package: serde_json::Value = serde_json::from_slice(approved.package_json)
+        .map_err(|error| format!("invalid embedded Agent package policy: {error}"))?;
+    let manifest_version = package["dependencies"][approved.adapter_name].as_str();
+    if manifest_version != Some(approved.adapter_version) {
+        return Err(format!(
+            "{} runtime policy version {} does not match embedded package version {:?}",
+            approved.adapter_name, approved.adapter_version, manifest_version
+        ));
+    }
+    let expected_output = match approved.kind {
+        AgentKind::Codex => format!("{} {}", approved.adapter_name, approved.adapter_version),
+        AgentKind::Claude => approved.adapter_version.to_owned(),
+    };
+    if approved.adapter_version_output != expected_output {
+        return Err("Agent runtime version-output policy is inconsistent".into());
+    }
+    let lock = std::str::from_utf8(approved.pnpm_lock)
+        .map_err(|error| format!("invalid embedded Agent lock encoding: {error}"))?;
+    for executable in approved.signed_executables {
+        let locked_package = executable
+            .relative_path
+            .strip_prefix("node_modules/.pnpm/")
+            .and_then(|path| path.split('/').next())
+            .ok_or_else(|| "Agent signature policy has no managed package path".to_string())?
+            .replace('+', "/");
+        if !lock.contains(&format!("  '{locked_package}':")) {
+            return Err(format!("{} signature policy references a package absent from the embedded lock: {locked_package}", approved.adapter_name));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +322,7 @@ async fn resolve_inner<R: tauri::Runtime>(
 ) -> Result<ResolvedAgentRuntime, String> {
     ensure_supported_target()?;
     let approved = policy(kind);
+    validate_policy_inputs(approved)?;
     let root = runtime_root(app)?;
 
     match verify_installed_runtime(&root, approved, operation_id, app).await {
@@ -442,11 +477,11 @@ fn adapter_patch_sha256(kind: AgentKind) -> Option<String> {
 }
 
 fn patched_codex_source(source: &str) -> Result<String, String> {
-    if sha256_bytes(source.as_bytes()) != CODEX_ORIGINAL_SHA256
-        || source.matches(CODEX_REPLAY_ANCHOR).count() != 1
-        || source.matches(CODEX_LIVE_ANCHOR).count() != 1
-    {
-        return Err("Codex adapter does not match the approved HTML compatibility patch".into());
+    let actual = sha256_bytes(source.as_bytes());
+    let replay_count = source.matches(CODEX_REPLAY_ANCHOR).count();
+    let live_count = source.matches(CODEX_LIVE_ANCHOR).count();
+    if actual != CODEX_ORIGINAL_SHA256 || replay_count != 1 || live_count != 1 {
+        return Err(format!("Codex adapter does not match the approved HTML compatibility patch (version {}; expected SHA-256 {CODEX_ORIGINAL_SHA256}; actual {actual}; replay anchors {replay_count}; live anchors {live_count})", policy(AgentKind::Codex).adapter_version));
     }
     let patched = patch_unique_anchors(
         source,
@@ -462,8 +497,9 @@ fn patched_codex_source(source: &str) -> Result<String, String> {
         ],
         CODEX_HTML_FORWARDING,
     )?;
-    if sha256_bytes(patched.as_bytes()) != CODEX_PATCHED_SHA256 {
-        return Err("Codex HTML compatibility patch output checksum mismatch".into());
+    let patched_hash = sha256_bytes(patched.as_bytes());
+    if patched_hash != CODEX_PATCHED_SHA256 {
+        return Err(format!("Codex HTML compatibility patch output checksum mismatch (version {}; expected SHA-256 {CODEX_PATCHED_SHA256}; actual {patched_hash})", policy(AgentKind::Codex).adapter_version));
     }
     Ok(patched)
 }
@@ -497,8 +533,9 @@ fn verify_adapter_patch(agent_root: &Path, approved: AgentRuntimePolicy) -> Resu
         AgentKind::Codex => CODEX_PATCHED_SHA256,
         AgentKind::Claude => CLAUDE_PATCHED_SHA256,
     };
-    if sha256_bytes(&bytes) != expected {
-        return Err("patched Agent adapter checksum mismatch".into());
+    let actual = sha256_bytes(&bytes);
+    if actual != expected {
+        return Err(format!("patched Agent adapter checksum mismatch ({} {}; expected SHA-256 {expected}; actual {actual})", approved.adapter_name, approved.adapter_version));
     }
     Ok(())
 }
@@ -511,15 +548,16 @@ fn adapter_patch_path(approved: AgentRuntimePolicy) -> &'static str {
 }
 
 fn patched_claude_source(source: &str) -> Result<String, String> {
-    if sha256_bytes(source.as_bytes()) != CLAUDE_ORIGINAL_SHA256
-        || source.matches(CLAUDE_TOOL_ANCHOR).count() != 1
-    {
-        return Err("Claude adapter does not match the approved HTML compatibility patch".into());
+    let actual = sha256_bytes(source.as_bytes());
+    let anchor_count = source.matches(CLAUDE_TOOL_ANCHOR).count();
+    if actual != CLAUDE_ORIGINAL_SHA256 || anchor_count != 1 {
+        return Err(format!("Claude adapter does not match the approved HTML compatibility patch (version {}; expected SHA-256 {CLAUDE_ORIGINAL_SHA256}; actual {actual}; tool anchors {anchor_count})", policy(AgentKind::Claude).adapter_version));
     }
     let patched = patch_unique_anchors(source, &[(CLAUDE_TOOL_ANCHOR,
         format!("{CLAUDE_TOOL_ANCHOR}\n    const lensHtmlUpdate = lensHtmlToolUpdate(toolResult, toolUse);\n    if (lensHtmlUpdate) return lensHtmlUpdate;"))], CLAUDE_HTML_FORWARDING)?;
-    if sha256_bytes(patched.as_bytes()) != CLAUDE_PATCHED_SHA256 {
-        return Err("Claude HTML compatibility patch output checksum mismatch".into());
+    let patched_hash = sha256_bytes(patched.as_bytes());
+    if patched_hash != CLAUDE_PATCHED_SHA256 {
+        return Err(format!("Claude HTML compatibility patch output checksum mismatch (version {}; expected SHA-256 {CLAUDE_PATCHED_SHA256}; actual {patched_hash})", policy(AgentKind::Claude).adapter_version));
     }
     Ok(patched)
 }
@@ -1460,7 +1498,7 @@ mod tests {
         let approved = policy(AgentKind::Claude);
         let record = install_record(approved);
         assert_eq!(record.schema_version, AGENT_INSTALL_RECORD_VERSION);
-        assert_eq!(record.adapter_version, "0.70.0");
+        assert_eq!(record.adapter_version, "0.74.0");
         assert_eq!(record.pnpm_lock_sha256, sha256_bytes(CLAUDE_PNPM_LOCK));
         assert_eq!(record.pnpm_version, "11.22.0");
         assert_eq!(
@@ -1517,5 +1555,104 @@ mod tests {
         );
         assert!(patch_unique_anchors("missing", &replacements, "helper").is_err());
         assert!(patch_unique_anchors("original original", &replacements, "helper").is_err());
+    }
+
+    #[test]
+    fn adapter_policy_matches_embedded_package_versions() {
+        for kind in [AgentKind::Codex, AgentKind::Claude] {
+            let approved = policy(kind);
+            let package: serde_json::Value = serde_json::from_slice(approved.package_json).unwrap();
+            assert_eq!(
+                package["dependencies"][approved.adapter_name].as_str(),
+                Some(approved.adapter_version),
+                "{} policy is stale",
+                approved.adapter_name
+            );
+            let expected_output = match kind {
+                AgentKind::Codex => {
+                    format!("{} {}", approved.adapter_name, approved.adapter_version)
+                }
+                AgentKind::Claude => approved.adapter_version.to_string(),
+            };
+            assert_eq!(approved.adapter_version_output, expected_output);
+            validate_policy_inputs(approved).unwrap();
+        }
+    }
+
+    #[test]
+    fn policy_validation_rejects_version_and_signature_drift_before_install() {
+        let mut stale = policy(AgentKind::Codex);
+        stale.adapter_version = "1.6.2";
+        assert!(validate_policy_inputs(stale)
+            .unwrap_err()
+            .contains("does not match"));
+        let mut stale = policy(AgentKind::Codex);
+        stale.adapter_version_output = "@agentclientprotocol/codex-acp 1.6.2";
+        assert!(validate_policy_inputs(stale)
+            .unwrap_err()
+            .contains("version-output"));
+        let mut stale = policy(AgentKind::Claude);
+        stale.signed_executables = CODEX_SIGNED_EXECUTABLES;
+        assert!(validate_policy_inputs(stale)
+            .unwrap_err()
+            .contains("absent from the embedded lock"));
+    }
+
+    #[test]
+    fn signature_policy_packages_exist_in_the_embedded_lock() {
+        for kind in [AgentKind::Codex, AgentKind::Claude] {
+            let approved = policy(kind);
+            let lock = std::str::from_utf8(approved.pnpm_lock).unwrap();
+            for executable in approved.signed_executables {
+                let package = executable
+                    .relative_path
+                    .strip_prefix("node_modules/.pnpm/")
+                    .unwrap()
+                    .split('/')
+                    .next()
+                    .unwrap()
+                    .replace('+', "/");
+                assert!(
+                    lock.contains(&format!("  '{package}':")),
+                    "{} signature policy references an unlocked package: {package}",
+                    approved.adapter_name
+                );
+            }
+        }
+    }
+
+    /// Explicit acceptance test against fresh, disposable installs of the checked-in
+    /// manifests. It applies production patches and verifies signatures/CLI versions.
+    #[tokio::test]
+    #[ignore = "requires LENS_PATCH_CODEX_ROOT, LENS_PATCH_CLAUDE_ROOT and LENS_PATCH_NODE_ROOT"]
+    async fn freshly_installed_adapters_pass_production_patch_and_runtime_verification() {
+        let node = PathBuf::from(std::env::var_os("LENS_PATCH_NODE_ROOT").unwrap());
+        for (kind, variable) in [
+            (AgentKind::Codex, "LENS_PATCH_CODEX_ROOT"),
+            (AgentKind::Claude, "LENS_PATCH_CLAUDE_ROOT"),
+        ] {
+            let root =
+                fs::canonicalize(PathBuf::from(std::env::var_os(variable).unwrap())).unwrap();
+            let temporary = fs::canonicalize(std::env::temp_dir()).unwrap();
+            assert!(root.starts_with(&temporary) || root.starts_with("/private/tmp"));
+            assert!(root
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("lens-"));
+            let approved = policy(kind);
+            assert_eq!(
+                fs::read(root.join("package.json")).unwrap(),
+                approved.package_json
+            );
+            assert_eq!(
+                fs::read(root.join("pnpm-lock.yaml")).unwrap(),
+                approved.pnpm_lock
+            );
+            apply_adapter_patch(&root, approved).unwrap();
+            verify_adapter_patch(&root, approved).unwrap();
+            verify_runtime_paths(&node, &root, approved).await.unwrap();
+        }
     }
 }

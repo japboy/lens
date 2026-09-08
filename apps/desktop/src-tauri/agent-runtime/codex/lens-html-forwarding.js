@@ -1,4 +1,4 @@
-// Lens compatibility patch for codex-acp 1.6.2. Only our explicit publisher
+// Lens compatibility patch for the pinned Codex ACP distribution. Only our explicit publisher
 // is eligible; arbitrary tool text and links must never become HTML resources.
 // Invoked by the pinned upstream call sites added during managed installation.
 // eslint-disable-next-line no-unused-vars

@@ -19,7 +19,13 @@ OUT = args.output
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-async def probe(name, version, safe):
+async def probe(name, safe):
+    package_name = "claude-agent-acp" if name == "claude" else "codex-acp"
+    manifest = json.loads(
+        (REPO / f"apps/desktop/src-tauri/agent-runtime/{name}/package.json").read_text()
+    )
+    version = manifest["dependencies"][f"@agentclientprotocol/{package_name}"]
+    node_version = manifest["engines"]["node"]
     cwd = Path(tempfile.mkdtemp(prefix="lens-provider-"))
     (cwd / ".claude").mkdir()
     (cwd / ".claude/settings.json").write_text(
@@ -35,10 +41,10 @@ async def probe(name, version, safe):
             }
         )
     )
-    node = ROOT / "node/v24.19.0-darwin-arm64/bin/node"
+    node = ROOT / f"node/v{node_version}-darwin-arm64/bin/node"
     entry = (
         ROOT
-        / f"agents/{name}-acp/{version}/node_modules/@agentclientprotocol/{'claude-agent-acp' if name == 'claude' else 'codex-acp'}/dist/index.js"
+        / f"agents/{name}-acp/{version}/node_modules/@agentclientprotocol/{package_name}/dist/index.js"
     )
     proc = await asyncio.create_subprocess_exec(
         str(node),
@@ -271,9 +277,9 @@ async def probe(name, version, safe):
 async def main():
     results = []
     if args.agent in ["codex", "both"]:
-        results.append(await probe("codex", "1.6.2", "read-only"))
+        results.append(await probe("codex", "read-only"))
     if args.agent in ["claude", "both"]:
-        results.append(await probe("claude", "0.70.0", "plan"))
+        results.append(await probe("claude", "plan"))
     return all(results)
 
 
