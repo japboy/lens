@@ -40,6 +40,7 @@ export const CONFIGURATION_FILES = [
   "apps/desktop/src-tauri/tauri.conf.json",
   "apps/desktop/src-tauri/tauri.macos.conf.json",
   "apps/desktop/src-tauri/tauri.release.conf.json",
+  "apps/desktop/src-tauri/tauri.output.conf.json",
 ];
 
 export function releaseNotes(

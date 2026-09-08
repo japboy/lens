@@ -67,6 +67,7 @@ export function classifyChange(change: Change): CiPlan {
   if (FRONTEND_CONTRACTS.has(path)) return "native-code";
   if (
     path.startsWith("packages/adapter-platform-macos/") ||
+    path.startsWith("packages/adapter-output-mcp/") ||
     path.startsWith("apps/desktop/src-tauri/src/native/") ||
     path === "apps/desktop/src-tauri/src/lib.rs" ||
     path === "apps/desktop/src-tauri/src/main.rs"

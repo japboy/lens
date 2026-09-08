@@ -5,6 +5,7 @@ members = [
   "packages/usecase",
   "packages/port-platform",
   "packages/adapter-platform-macos",
+  "packages/adapter-output-mcp",
 ]
 resolver = "2"
 

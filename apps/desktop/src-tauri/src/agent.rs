@@ -161,6 +161,7 @@ pub(crate) type HostFuture<'a, T> =
 
 /// Approved runtime acquisition and ACP transport, not session or output policy.
 pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
+    fn output_server(&self) -> Result<PathBuf, String>;
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -182,6 +183,10 @@ pub(crate) struct AgentServices<R: tauri::Runtime>(pub Arc<dyn AgentHost<R>>);
 pub(crate) struct ManagedAgentHost;
 
 impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
+    fn output_server(&self) -> Result<PathBuf, String> {
+        crate::output_mcp::bundled_executable()
+    }
+
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -982,6 +987,11 @@ async fn run_persistent_session<R: tauri::Runtime>(
     mailbox: Arc<AgentSessionMailbox>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Error> {
+    let output_server = app
+        .state::<AgentServices<R>>()
+        .0
+        .output_server()
+        .map_err(state_error)?;
     let process = transport(&app, &descriptor);
     agent_client_protocol::Client
         .builder()
@@ -1005,7 +1015,10 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 .map(|info| (info.name.clone(), info.version.clone()));
             let mut session = tokio::select! {
                 result = connection
-                    .build_session(&identity.config.working_directory)
+                    .build_session_from(crate::output_mcp::session_request(
+                        &identity.config.working_directory,
+                        output_server,
+                    ))
                     .block_task()
                     .start_session() => result?,
                 changed = shutdown.changed() => {
@@ -2281,11 +2294,16 @@ mod tests {
         let agent_response = expected.clone();
         let working_directory = std::env::current_dir().unwrap();
         let expected_directory = working_directory.clone();
+        let output_server = PathBuf::from("/bundle/lens-output-mcp");
+        let expected_servers =
+            crate::output_mcp::session_request(&working_directory, output_server.clone())
+                .mcp_servers;
         let agent = Agent.builder().on_receive_request(
             async move |request: NewSessionRequest,
                         responder: Responder<NewSessionResponse>,
                         _connection: ConnectionTo<Client>| {
                 assert_eq!(request.cwd, expected_directory);
+                assert_eq!(request.mcp_servers, expected_servers);
                 responder.respond(agent_response.clone())
             },
             agent_client_protocol::on_receive_request!(),
@@ -2295,7 +2313,10 @@ mod tests {
             .connect_with(agent, async move |connection| {
                 // Exercise the same high-level session boundary as the production actor.
                 let session = connection
-                    .build_session(&working_directory)
+                    .build_session_from(crate::output_mcp::session_request(
+                        &working_directory,
+                        output_server,
+                    ))
                     .block_task()
                     .start_session()
                     .await?;

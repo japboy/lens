@@ -17,6 +17,7 @@ mod media_protocol;
 mod model;
 #[cfg(target_os = "macos")]
 mod native;
+mod output_mcp;
 #[cfg(target_os = "macos")]
 pub use native::run;
 mod platform;

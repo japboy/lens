@@ -56,6 +56,10 @@ export function verifyApp(bundle: string, contract: ReturnType<typeof bundleCont
   )
     throw new Error("Unexpected bundle architecture");
   execFileSync("codesign", ["--verify", "--deep", "--strict", bundle], { stdio: "inherit" });
+  const sidecar = join(bundle, "Contents/MacOS/lens-output-mcp");
+  if (execFileSync("lipo", ["-archs", sidecar], { encoding: "utf8" }).trim() !== "arm64")
+    throw new Error("Unexpected output sidecar architecture");
+  execFileSync("codesign", ["--verify", "--strict", sidecar], { stdio: "inherit" });
   const signature = spawnSync("codesign", ["-d", "--verbose=4", bundle], { encoding: "utf8" });
   if (
     signature.status !== 0 ||

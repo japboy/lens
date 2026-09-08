@@ -89,6 +89,7 @@ dir = "{{config_root}}"
 depends = ["rust:clippy"]
 run = [
   "node scripts/run-workspace-variant.ts macos-test",
+  "cargo test --locked -p adapter-output-mcp --test stdio --target aarch64-apple-darwin",
   "cargo test --locked --workspace --doc --target aarch64-apple-darwin",
 ]
 
@@ -108,7 +109,7 @@ run = "node scripts/run-workspace-variant.ts linux-common-check"
 description = "Lint the actual Linux common libraries and tests"
 dir = "{{config_root}}"
 depends = ["check:rust:linux"]
-run = "cargo clippy --locked -p domain -p port-platform -p usecase -p desktop --lib --tests --no-default-features --target x86_64-unknown-linux-gnu -- -D warnings"
+run = "cargo clippy --locked -p domain -p port-platform -p usecase -p desktop -p adapter-output-mcp --lib --tests --no-default-features --target x86_64-unknown-linux-gnu -- -D warnings"
 
 [tasks."rust:test:linux"]
 description = "Run the declared Linux contracts and common-shell tests"
@@ -116,7 +117,8 @@ dir = "{{config_root}}"
 depends = ["rust:clippy:linux"]
 run = [
   "node scripts/run-workspace-variant.ts linux-common-test",
-  "cargo test --locked -p domain -p port-platform -p usecase -p desktop --doc --no-default-features --target x86_64-unknown-linux-gnu",
+  "cargo test --locked -p adapter-output-mcp --test stdio --target x86_64-unknown-linux-gnu",
+  "cargo test --locked -p domain -p port-platform -p usecase -p desktop -p adapter-output-mcp --doc --no-default-features --target x86_64-unknown-linux-gnu",
 ]
 
 [tasks."check:rust:apple"]

@@ -36,7 +36,9 @@ You will need:
 
 Automatic updates are spaced at least three minutes apart.
 
-When an Agent supplies an embedded HTML resource, Lens can display it alongside images in the Interpretation's media area, using the same navigation and expand controls. The initial HTML profile supports one static document up to 512 KiB per response, with restricted styling and no scripts, forms, or embedded network content. This requires the Agent's ACP adapter to emit a typed HTML resource; ordinary Markdown, HTML code fences, and file links are not converted automatically.
+Lens includes a small Rust MCP server that provides the optional `publish_html` tool to its Agent sessions over stdio. No user MCP configuration or additional language runtime is needed. The Agent decides whether an HTML presentation is useful; Lens does not force tool calls or retry ordinary text answers.
+
+Published HTML appears alongside images in the Interpretation's media area, using the same navigation and expand controls. The initial HTML profile supports one static document up to 512 KiB per response, with restricted styling and no scripts, forms, or embedded network content. Ordinary Markdown, HTML code fences, and file links are not converted automatically. The publisher returns HTML directly and does not read or write files or access the network. Existing Agent permission controls still apply.
 
 To tailor the result, edit **Settings → Agent Prompt**. Set **Working Directory** if you want the Agent to use instructions and memory from a particular project.
 

@@ -306,6 +306,10 @@ impl ui::TrayOutput<MockRuntime> for Fixture {
 
 struct AgentFixture(Arc<Fixture>);
 impl agent::AgentHost<MockRuntime> for AgentFixture {
+    fn output_server(&self) -> Result<std::path::PathBuf, String> {
+        Ok("/fixture/lens-output-mcp".into())
+    }
+
     fn resolve<'a>(
         &'a self,
         _: &'a tauri::AppHandle<MockRuntime>,
@@ -583,7 +587,12 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             }
         })
         .unwrap();
-    assert_eq!(request, &json!({"cwd":"/fixture","mcpServers":[]}));
+    assert_eq!(
+        request,
+        &json!({"cwd":"/fixture","mcpServers":[{
+            "name":"lens_output", "command":"/fixture/lens-output-mcp", "args":[], "env":[]
+        }]})
+    );
     let prompt = effects
         .iter()
         .find_map(|e| {

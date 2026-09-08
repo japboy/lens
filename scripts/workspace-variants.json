@@ -4,7 +4,7 @@
   "hosts": {
     "aarch64-apple-darwin": {
       "linux-common-check": {
-        "graphDigest": "03c47ed7f95f59d432469c0d1851b12888431b4b4dda019c69bd04f346eb5aa3",
+        "graphDigest": "19e0f112f72b06d3db441da713100f42a7e0595f1a3bed4af774771c6fa13512",
         "arguments": [
           "check",
           "--locked",
@@ -18,6 +18,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--lib",
           "--profile",
           "dev",
@@ -25,7 +27,7 @@
         ]
       },
       "linux-common-test": {
-        "graphDigest": "bc0a84f9823bcc7529adbba4977f751a3bfe69efa8ec9902292f342c59acb3b0",
+        "graphDigest": "d2384bd10045ceb254da2ef5dfc61ab8ec1282c67fe1cab5ee877466fa55e369",
         "arguments": [
           "test",
           "--locked",
@@ -39,6 +41,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--lib",
           "--profile",
           "test",
@@ -46,7 +50,7 @@
         ]
       },
       "apple-portable-check": {
-        "graphDigest": "b6c324f2f485f321096983c392a58f2ffc88991023b2cc1ac13cb795135685a2",
+        "graphDigest": "95dc6ee9c6b2fdf9ac0ca37aa383bf89880950b3ac4c83d0db8f9df2cbfe46af",
         "arguments": [
           "check",
           "--locked",
@@ -58,13 +62,15 @@
           "port-platform",
           "--package",
           "usecase",
+          "--package",
+          "adapter-output-mcp",
           "--lib",
           "--profile",
           "dev"
         ]
       },
       "macos-production-check": {
-        "graphDigest": "5951070cfd29d2524b5ec7cdeb9234d6170069c58b83be763125901e1fe100c1",
+        "graphDigest": "04a8b9dadbc8fafdd48b95366e28f8e2488af910191463a92990add896769d8a",
         "arguments": [
           "check",
           "--locked",
@@ -78,6 +84,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--package",
           "adapter-platform-macos",
           "--lib",
@@ -87,7 +95,7 @@
         ]
       },
       "macos-production-release": {
-        "graphDigest": "5951070cfd29d2524b5ec7cdeb9234d6170069c58b83be763125901e1fe100c1",
+        "graphDigest": "04a8b9dadbc8fafdd48b95366e28f8e2488af910191463a92990add896769d8a",
         "arguments": [
           "check",
           "--locked",
@@ -102,6 +110,8 @@
           "--package",
           "desktop",
           "--package",
+          "adapter-output-mcp",
+          "--package",
           "adapter-platform-macos",
           "--lib",
           "--bins",
@@ -110,7 +120,7 @@
         ]
       },
       "macos-test": {
-        "graphDigest": "085cc113f662b42188b4171257dcf898d818f01361ad9f7039195f783f4bb312",
+        "graphDigest": "f74bbbfbeb4743f80b9ad28cedded7b823736c0a80fb214baf47955262913761",
         "arguments": [
           "test",
           "--locked",
@@ -125,6 +135,8 @@
           "--package",
           "desktop",
           "--package",
+          "adapter-output-mcp",
+          "--package",
           "adapter-platform-macos",
           "--lib",
           "--bins",
@@ -133,7 +145,7 @@
         ]
       },
       "macos-bundle-build": {
-        "graphDigest": "f3636b08262b37481d6c01664cd766dc4825448bb2b946a8a514f508f251c200",
+        "graphDigest": "3a9a0d0ae2610c84dc2808deea14e21438b466de34275738e8376050e8bfb260",
         "arguments": [
           "build",
           "--locked",
@@ -147,6 +159,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--package",
           "adapter-platform-macos",
           "--lib",
@@ -160,7 +174,7 @@
     },
     "x86_64-unknown-linux-gnu": {
       "linux-common-check": {
-        "graphDigest": "d734bf5e7d23878a6b8a8785a0853884035f7e6d017ee90fbd587b4e8f2963d6",
+        "graphDigest": "3a8ecde32357f2caa1f44542ffca5616728eb6689ae899f43e593892a1b87867",
         "arguments": [
           "check",
           "--locked",
@@ -174,6 +188,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--lib",
           "--profile",
           "dev",
@@ -181,7 +197,7 @@
         ]
       },
       "linux-common-test": {
-        "graphDigest": "283e9c2bdf813376dd14deab87c23c990365de27c57e38a5c660350a97a2d621",
+        "graphDigest": "589d29bd14945092cb946cd85c1eb16a055328f1ec5947f57918b2dd8ab32a53",
         "arguments": [
           "test",
           "--locked",
@@ -195,6 +211,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--lib",
           "--profile",
           "test",
@@ -202,7 +220,7 @@
         ]
       },
       "apple-portable-check": {
-        "graphDigest": "b6c324f2f485f321096983c392a58f2ffc88991023b2cc1ac13cb795135685a2",
+        "graphDigest": "95dc6ee9c6b2fdf9ac0ca37aa383bf89880950b3ac4c83d0db8f9df2cbfe46af",
         "arguments": [
           "check",
           "--locked",
@@ -214,13 +232,15 @@
           "port-platform",
           "--package",
           "usecase",
+          "--package",
+          "adapter-output-mcp",
           "--lib",
           "--profile",
           "dev"
         ]
       },
       "macos-production-check": {
-        "graphDigest": "00357f72c4b3508e4fad9ab393d79d07970a2b062d7775fdd378c32c1332bbbb",
+        "graphDigest": "6c4dd76fff6c5b396282c5e80f7d76179e63010c0e8c5468f75afe749c948a83",
         "arguments": [
           "check",
           "--locked",
@@ -234,6 +254,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--package",
           "adapter-platform-macos",
           "--lib",
@@ -243,7 +265,7 @@
         ]
       },
       "macos-production-release": {
-        "graphDigest": "00357f72c4b3508e4fad9ab393d79d07970a2b062d7775fdd378c32c1332bbbb",
+        "graphDigest": "6c4dd76fff6c5b396282c5e80f7d76179e63010c0e8c5468f75afe749c948a83",
         "arguments": [
           "check",
           "--locked",
@@ -258,6 +280,8 @@
           "--package",
           "desktop",
           "--package",
+          "adapter-output-mcp",
+          "--package",
           "adapter-platform-macos",
           "--lib",
           "--bins",
@@ -266,7 +290,7 @@
         ]
       },
       "macos-test": {
-        "graphDigest": "81050291e3f5c5c369c0de46c723a81d6bd83882c759cec46fc3f9150e3cc9d0",
+        "graphDigest": "054761afbf7289339ffaf7cdeac450ed0569ee159c1ceacabb8da4d065a3f7ed",
         "arguments": [
           "test",
           "--locked",
@@ -281,6 +305,8 @@
           "--package",
           "desktop",
           "--package",
+          "adapter-output-mcp",
+          "--package",
           "adapter-platform-macos",
           "--lib",
           "--bins",
@@ -289,7 +315,7 @@
         ]
       },
       "macos-bundle-build": {
-        "graphDigest": "0af077a852e7666bd9c42dc4ba0a8145dc3f39032cd8c071dc947cfc045034c0",
+        "graphDigest": "92dfe83ab6d3b864721cf562cb2baa6429b6a4c49d13c05ee8c6980ba1f509b5",
         "arguments": [
           "build",
           "--locked",
@@ -303,6 +329,8 @@
           "usecase",
           "--package",
           "desktop",
+          "--package",
+          "adapter-output-mcp",
           "--package",
           "adapter-platform-macos",
           "--lib",

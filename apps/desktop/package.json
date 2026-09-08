@@ -8,7 +8,7 @@
     "build": "pnpm run check:types && node tooling/prerender/build.ts",
     "build:assets": "node tooling/prerender/build.ts",
     "check:types": "tsc --build",
-    "tauri": "tauri",
+    "tauri": "node ../../scripts/output-sidecar.ts",
     "test": "vitest run"
   },
   "dependencies": {
