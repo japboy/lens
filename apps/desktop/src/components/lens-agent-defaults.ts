@@ -46,6 +46,22 @@ export class LensAgentDefaults extends LitElement {
       this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
     }
   }
+  protected updated() {
+    // Native selection must be applied after every dynamic option has been committed.
+    // The draft is authoritative; synchronizing the DOM must not emit an edit.
+    for (const select of this.querySelectorAll<HTMLSelectElement>("select[data-agent-config-id]")) {
+      select.value = this.choiceValue(select.dataset.agentConfigId!);
+    }
+  }
+  private choiceValue(configId: string): string {
+    return this.draft.choices.find((choice) => choice.config_id === configId)?.value ?? "";
+  }
+  private unlistedChoice(configId: string, values: string[]) {
+    const value = this.choiceValue(configId);
+    return value && !values.includes(value)
+      ? html`<option value=${value} disabled>${value} (not in current choices)</option>`
+      : nothing;
+  }
   protected render() {
     if (this.selection?.stage !== "selected") return nothing;
     const options = this.selection?.config_options;
@@ -69,13 +85,21 @@ export class LensAgentDefaults extends LitElement {
                   ><span>${option.name}</span>
                   <select
                     aria-label=${`${option.name} default`}
-                    .value=${this.draft.choices.find((c) => c.config_id === option.id)?.value ?? ""}
+                    data-agent-config-id=${option.id}
                     ?disabled=${option.type !== "select"}
                     @change=${(e: Event) => this.choose(option.id, (e.target as HTMLSelectElement).value)}
                   >
                     <option value="">
                       ${option.category === "mode" ? "Lens safe default" : "Agent default"}
                     </option>
+                    ${this.unlistedChoice(
+                      option.id,
+                      (option.options ?? []).flatMap((choice) =>
+                        "group" in choice
+                          ? choice.options.map((item) => item.value)
+                          : [choice.value],
+                      ),
+                    )}
                     ${agentOptionChoices(option)}
                   </select>
                   <span class="help"
@@ -86,10 +110,14 @@ export class LensAgentDefaults extends LitElement {
             : html`<label
                 >Mode default<select
                   aria-label="Mode default"
-                  .value=${this.draft.choices.find((c) => c.config_id === "mode")?.value ?? ""}
+                  data-agent-config-id="mode"
                   @change=${(e: Event) => this.choose("mode", (e.target as HTMLSelectElement).value)}
                 >
                   <option value="">Lens safe default</option>
+                  ${this.unlistedChoice(
+                    "mode",
+                    modes.map((mode) => mode.id),
+                  )}
                   ${modes.map((m) => html`<option value=${m.id}>${m.name}</option>`)}
                 </select></label
               >`
