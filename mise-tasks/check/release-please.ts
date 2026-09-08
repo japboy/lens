@@ -12,9 +12,10 @@ import { runInThisContext } from "node:vm";
 import { VERSION_FILES, versionState } from "../../scripts/release/version.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const revision = "5c625bfb5d1ff62eadeeb3772007f7f66fdcf071";
-const digest = "04c6aa6cdc67f4f1be03de390c78b5558a461ab56a855dfd1b5bb15a70a11199";
-const destination = join(root, "target/release-please-conformance/index.cjs");
+const revision = "45996ed1f6d02564a971a2fa1b5860e934307cf7";
+const digest = "4fa35877a1c166013f0ecd7add1e6cf63ab44cf9082523dc96ce39212ae6a574";
+const cacheDirectory = join(root, "target/release-please-conformance", revision);
+const destination = join(cacheDirectory, "index.cjs");
 const workflow = readFileSync(join(root, ".github/workflows/release-please.yml"), "utf8");
 assert.ok(
   workflow.includes(`googleapis/release-please-action@${revision}`),
@@ -26,7 +27,7 @@ if (!existsSync(destination)) {
     { signal: AbortSignal.timeout(60_000) },
   );
   assert.ok(response.ok, "Could not retrieve the pinned Action bundle");
-  mkdirSync(join(root, "target/release-please-conformance"), { recursive: true });
+  mkdirSync(cacheDirectory, { recursive: true });
   writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
 }
 const templates: Record<string, string> = JSON.parse(
@@ -34,7 +35,7 @@ const templates: Record<string, string> = JSON.parse(
 );
 for (const [name, expected] of Object.entries(templates)) {
   assert.match(name, /^[a-z]+[0-9]?\.hbs$/u);
-  const path = join(root, "target/release-please-conformance", name);
+  const path = join(cacheDirectory, name);
   if (!existsSync(path)) {
     const response = await fetch(
       `https://raw.githubusercontent.com/googleapis/release-please-action/${revision}/dist/${name}`,
@@ -82,13 +83,7 @@ const wrapper = runInThisContext(
   filename: string,
   dirname: string,
 ) => void;
-wrapper(
-  createRequire(import.meta.url),
-  module,
-  module.exports,
-  destination,
-  join(root, "target/release-please-conformance"),
-);
+wrapper(createRequire(import.meta.url), module, module.exports, destination, cacheDirectory);
 type Version = { toString(): string };
 type ReleaseProposal = {
   headRefName: string;
@@ -151,7 +146,7 @@ const bundled = module.exports as {
   factory: { buildStrategy(options: Record<string, unknown>): Promise<Strategy> };
   Version: { parse(value: string): Version };
 };
-assert.equal(bundled.library.VERSION, "17.3.0");
+assert.equal(bundled.library.VERSION, "17.6.0");
 const quiet = {
   info() {},
   warn(message: string) {
