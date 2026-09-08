@@ -1,109 +1,59 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { MAX_HTML_BYTES, renderStaticHtml } from "./html-output";
+import { HTML_PREVIEW_CSP, MAX_HTML_BYTES, prepareHtmlPreview } from "./html-output";
 
-describe("static HTML profile", () => {
-  it("drops a long invalid declaration without whitespace backtracking", () => {
-    const invalid = `color:${" ".repeat(MAX_HTML_BYTES - 256)}:red`;
-    const fragment = renderStaticHtml(`<p style="${invalid};color:blue">Readable</p>`);
-    expect(fragment.querySelector("p")?.getAttribute("style")).toBe("color:blue");
-  });
+const prepared = (content: string) =>
+  new DOMParser().parseFromString(prepareHtmlPreview(content).document, "text/html");
 
-  it("bounds selector length and descendant matching complexity", () => {
-    const allowed = Array.from({ length: 16 }, () => ".a").join(" ");
-    const tooDeep = `${allowed} .a`;
-    const maximum = `.${"a".repeat(511)}`;
-    const tooLong = `${maximum}a`;
-    const fragment = renderStaticHtml(
-      `<style>${allowed}{color:blue}${tooDeep}{color:red}${maximum}{color:green}${tooLong}{color:purple}</style><p>Readable</p>`,
+describe("sandboxed static HTML preparation", () => {
+  it("keeps escaped noscript content inert when serialized for a scripts-disabled frame", () => {
+    const doc = prepared(
+      '<body><noscript>&lt;meta http-equiv=refresh content="0;url=https://example.org/auto"&gt;</noscript></body>',
     );
-    expect(fragment.querySelector("style")?.textContent).toBe(
-      `.content ${allowed}{color:blue}\n.content ${maximum}{color:green}`,
+    expect(doc.querySelector("noscript meta")).toBeNull();
+    expect(doc.querySelector("noscript")?.textContent).toContain("<meta");
+  });
+  it("preserves document attributes, expressive CSS, SVG and native controls", () => {
+    const css =
+      ":root{--accent:oklch(70% .2 20)} @media(min-width:1px){body{display:grid;gap:calc(1rem + 2px)}} .card{position:fixed;inset:0;background:linear-gradient(red,blue)}";
+    const doc = prepared(
+      `<!doctype html><html lang="ja"><head><style>${css}</style></head><body class="card"><svg viewBox="0 0 10 10"><circle r="5"/></svg><details open><summary>More</summary>Content</details><input placeholder="Name"></body></html>`,
     );
+    expect(doc.documentElement.lang).toBe("ja");
+    expect(doc.body.className).toBe("card");
+    expect(doc.querySelector("style")?.textContent).toBe(css);
+    expect(doc.querySelector("svg circle")).not.toBeNull();
+    expect(doc.querySelector("details")?.open).toBe(true);
+    expect(doc.querySelector("input")?.placeholder).toBe("Name");
   });
-  it("discards near-limit malformed stylesheets without suffix rescanning", () => {
-    const text = "a".repeat(MAX_HTML_BYTES - 128);
-    const fragment = renderStaticHtml(`<style>${text}</style><p>Readable</p>`);
-    expect(fragment.querySelector("style")).toBeNull();
-    expect(fragment.querySelector("p")?.textContent).toBe("Readable");
+  it("inserts the trusted CSP and removes navigation and embedded documents", () => {
+    const doc = prepared(
+      '<base href="https://evil.test"><meta http-equiv="refresh" content="0;url=https://evil.test"><meta http-equiv="Content-Security-Policy" content="script-src *"><script>alert(1)</script><iframe src="https://evil.test"></iframe><link rel="dns-prefetch" href="https://evil.test"><form action="https://evil.test"><button formaction="https://evil.test">Go</button></form>',
+    );
+    expect(doc.querySelectorAll("meta[http-equiv]")).toHaveLength(1);
+    expect(doc.querySelector("meta[http-equiv]")?.getAttribute("content")).toBe(HTML_PREVIEW_CSP);
+    expect(doc.querySelector("base")?.getAttribute("href")).toBe("about:srcdoc");
+    expect(doc.querySelector("script,iframe,link,[action],[formaction]")).toBeNull();
+    expect(doc.querySelector("form button")).not.toBeNull();
   });
-
-  it("rejects incomplete and nested rules but preserves a valid rule sequence", () => {
-    for (const css of [
-      ".card{color:red",
-      ".card{color:red}}",
-      ".card{.child{color:red}}",
-      ".card{color:red}trailing",
-    ]) {
-      expect(
-        renderStaticHtml(`<style>${css}</style><p>Readable</p>`).querySelector("style"),
-      ).toBeNull();
+  it("opens safe links through native popup requests and keeps fragments in the document", () => {
+    const result = prepareHtmlPreview(
+      '<a href="https://example.com">Reference</a><a href="#part">Jump</a><a href="javascript:alert(1)" onclick="alert(1)">Bad</a><svg><a href="https://example.com"><set attributeName="href" to="https://evil.test"/></a><circle><animate attributeName="r" values="1;5" dur="1s"/></circle></svg>',
+    );
+    const doc = new DOMParser().parseFromString(result.document, "text/html");
+    expect(doc.querySelectorAll("a[href]")).toHaveLength(3);
+    expect(doc.querySelector('a[href="#part"]')?.hasAttribute("target")).toBe(false);
+    for (const link of doc.querySelectorAll('a[href="https://example.com/"]')) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     }
-    expect(
-      renderStaticHtml(
-        "<style> .a{color:red} .b{color:blue} </style><p>Readable</p>",
-      ).querySelector("style")?.textContent,
-    ).toBe(".content .a{color:red}\n.content .b{color:blue}");
+    expect(doc.querySelector("[onclick],set")).toBeNull();
+    expect(doc.querySelector("animate")).not.toBeNull();
   });
-
-  it("ignores inherited property names while keeping allowed declarations", () => {
-    const fragment = renderStaticHtml(
-      '<style>.card{constructor:bad;color:red}</style><p class="card" style="constructor:bad;color:blue">Readable</p>',
-    );
-    expect(fragment.querySelector("style")?.textContent).toBe(".content .card{color:red}");
-    expect(fragment.querySelector("p")?.getAttribute("style")).toBe("color:blue");
-  });
-  it("preserves full document text, tables and finite card styles", () => {
-    const fragment = renderStaticHtml(
-      '<!doctype html><html><head><style>.card {display:grid;gap:12px;background-color:#fff;grid-template-columns:1fr 2fr}</style></head><body><section class="card"><h1>Result</h1><table><tr><td style="padding:8px;color:blue">Interpretation</td></tr></table></section></body></html>',
-    );
-    expect(fragment.querySelector("h1")?.textContent).toBe("Result");
-    expect(fragment.querySelector("td")?.getAttribute("style")).toBe("padding:8px;color:blue");
-    expect(fragment.querySelector("style")?.textContent).toContain(".content .card{display:grid");
-  });
-
-  it("removes executable, embedded, custom and network loading elements", () => {
-    const fragment = renderStaticHtml(
-      '<script>alert(1)</script><img src="https://evil.test"><iframe src="https://evil.test"></iframe><link rel="stylesheet" href="https://evil.test"><svg onload="alert(1)"></svg><math><mtext>bad</mtext></math><form><input autofocus></form><x-evil>text</x-evil><p onclick="alert(1)" style="background-image:url(https://evil.test)">safe</p><a href="javascript:alert(1)">bad</a>',
-    );
-    expect(
-      fragment.querySelector(
-        "script,img,iframe,link,svg,math,form,input,x-evil,[onclick],[style],[href]",
-      ),
-    ).toBeNull();
-    expect(fragment.textContent).toContain("safe");
-  });
-
-  it("rejects CSS escapes, host selectors, positioning and resource functions", () => {
-    const fragment = renderStaticHtml(
-      '<style>:host {display:none}.viewport{display:none}.card{position:fixed;inset:0;background:url(https://evil.test);color:red;--x:blue;width:var(--x)}</style><div class="card" style="color:blue;position:absolute">Card</div>',
-    );
-    const css = fragment.querySelector("style")?.textContent ?? "";
-    expect(css).toBe(".content .viewport{display:none}\n.content .card{color:red}");
-    expect(fragment.querySelector(".card")?.getAttribute("style")).toBe("color:blue");
-    expect(
-      renderStaticHtml("<style>.card{c\\6flor:red}</style><p>ok</p>").querySelector("style"),
-    ).toBeNull();
-  });
-
-  it("bounds input bytes and DOM complexity", () => {
-    expect(() => renderStaticHtml("x".repeat(MAX_HTML_BYTES + 1))).toThrow("512 KiB");
-    expect(() => renderStaticHtml("<div>".repeat(70) + "x" + "</div>".repeat(70))).toThrow(
-      "complexity",
-    );
-    expect(() => renderStaticHtml("<br>".repeat(5001))).toThrow("complexity");
-  });
-
-  it("maps document presentation onto a safe body wrapper and rejects empty output", () => {
-    const fragment = renderStaticHtml(
-      '<style>body{color:blue}:root{font-size:16px}</style><body style="padding:12px"><p>Readable</p></body>',
-    );
-    expect(fragment.querySelector(".lens-document-body")?.getAttribute("style")).toBe(
-      "padding:12px",
-    );
-    expect(fragment.querySelector("style")?.textContent).toContain(
-      ".content .lens-document-body{color:blue}",
-    );
-    expect(() => renderStaticHtml("<script>alert(1)</script>")).toThrow("no displayable text");
+  it("accepts image-only and complex content, keeping the UTF-8 transport limit", () => {
+    expect(prepared('<img src="data:image/png;base64,aA==">').querySelector("img")).not.toBeNull();
+    expect(() => prepareHtmlPreview("<br>".repeat(5001))).not.toThrow();
+    expect(() => prepareHtmlPreview("x".repeat(MAX_HTML_BYTES + 1))).toThrow("512 KiB");
+    expect(() => prepareHtmlPreview("あ".repeat(MAX_HTML_BYTES / 3 + 1))).toThrow("512 KiB");
   });
 });

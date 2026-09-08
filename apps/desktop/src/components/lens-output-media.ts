@@ -9,17 +9,15 @@ import type {
   PresentedOutputMedia,
 } from "../output-media";
 import type { HtmlOutputContent } from "../application/html-output-controller";
-import {
-  AGENT_OUTPUT_INTENT_EVENT,
-  dispatchComponentEvent,
-  type AgentOutputIntent,
-} from "./events";
 
 type PreparedHtml = {
   id: string;
   resourceId: string;
   content: string;
-} & ({ status: "ready"; preview: ReturnType<typeof prepareHtmlPreview> } | { status: "failed"; message: string });
+} & (
+  | { status: "ready"; preview: ReturnType<typeof prepareHtmlPreview> }
+  | { status: "failed"; message: string }
+);
 
 type MediaOverlay = "none" | "details";
 interface FullscreenSession {
@@ -56,9 +54,7 @@ export class LensOutputMedia extends LitElement {
   htmlContent: HtmlOutputContent | undefined;
 
   @state()
-  private renderedHtml:
-    | { resourceId: string; content: string; status: "ready" | "failed"; message?: string }
-    | undefined;
+  private renderedHtml: { resourceId: string; content: string } | undefined;
 
   @state()
   private selectedId: string | undefined;
@@ -162,7 +158,7 @@ export class LensOutputMedia extends LitElement {
     if (this.preparedHtml?.id === item.id && this.preparedHtml.status === "failed") return "failed";
     const rendered = this.renderedHtml;
     return rendered?.resourceId === item.resourceId && rendered.content === content.content
-      ? rendered.status
+      ? "ready"
       : "loading";
   }
 
@@ -178,9 +174,17 @@ export class LensOutputMedia extends LitElement {
     this.renderedHtml = undefined;
     const identity = { id: item.id, resourceId: item.resourceId, content: content.content };
     try {
-      this.preparedHtml = { ...identity, status: "ready", preview: prepareHtmlPreview(content.content) };
+      this.preparedHtml = {
+        ...identity,
+        status: "ready",
+        preview: prepareHtmlPreview(content.content),
+      };
     } catch (error) {
-      this.preparedHtml = { ...identity, status: "failed", message: error instanceof Error ? error.message : "HTML could not be displayed." };
+      this.preparedHtml = {
+        ...identity,
+        status: "failed",
+        message: error instanceof Error ? error.message : "HTML could not be displayed.",
+      };
     }
   }
 
@@ -287,6 +291,11 @@ export class LensOutputMedia extends LitElement {
                   </button>`
               : nothing
           }
+          ${
+            item.kind === "html" && this.overlay === "details"
+              ? html`<div class="output-media-details-backdrop" aria-hidden="true"></div>`
+              : nothing
+          }
           <section
             id=${this.detailsId}
             class="output-media-details"
@@ -316,10 +325,13 @@ export class LensOutputMedia extends LitElement {
                   : nothing
               }
             </dl>
-            ${item.kind === "html" && this.preparedHtml?.id === item.id && this.preparedHtml.status === "ready"
-              ? html`${this.preparedHtml.preview.notices.map((notice) => html`<p>${notice}</p>`)}
-                  ${this.preparedHtml.preview.links.length ? html`<h3>Links</h3><ul>${this.preparedHtml.preview.links.map((link) => html`<li><button type="button" @click=${() => this.openHtmlLink(link.url)}>${link.label}</button></li>`)}</ul>` : nothing}`
-              : nothing}
+            ${
+              item.kind === "html" &&
+              this.preparedHtml?.id === item.id &&
+              this.preparedHtml.status === "ready"
+                ? html`${this.preparedHtml.preview.notices.map((notice) => html`<p>${notice}</p>`)}`
+                : nothing
+            }
           </section>
         </div>
         <div
@@ -382,9 +394,14 @@ export class LensOutputMedia extends LitElement {
   private renderHtmlSlide(item: PresentedOutputHtml, index: number) {
     const content = this.htmlContent?.resourceId === item.resourceId ? this.htmlContent : undefined;
     const prepared = this.preparedHtml?.id === item.id ? this.preparedHtml : undefined;
-    const message = content?.status === "failed" ? content.message
-      : prepared?.status === "failed" ? prepared.message
-      : this.htmlState(item) === "loading" ? "Loading HTML…" : "";
+    const message =
+      content?.status === "failed"
+        ? content.message
+        : prepared?.status === "failed"
+          ? prepared.message
+          : this.htmlState(item) === "loading"
+            ? "Loading HTML…"
+            : "";
     return html`<section
       class="output-media-slide output-media-html-slide"
       aria-roledescription="slide"
@@ -407,14 +424,21 @@ export class LensOutputMedia extends LitElement {
         </button>
       </header>
       ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
-      ${prepared?.status === "ready" ? keyed(prepared, html`<iframe
-        class="output-html-frame"
-        title="HTML content"
-        sandbox=""
-        referrerpolicy="no-referrer"
-        .srcdoc=${prepared.preview.document}
-        @load=${(event: Event) => this.handleHtmlLoad(prepared, event)}
-      ></iframe>`) : nothing}
+      ${
+        prepared?.status === "ready"
+          ? keyed(
+              prepared,
+              html`<iframe
+                class="output-html-frame"
+                title="HTML content"
+                sandbox="allow-popups"
+                referrerpolicy="no-referrer"
+                .srcdoc=${prepared.preview.document}
+                @load=${(event: Event) => this.handleHtmlLoad(prepared, event)}
+              ></iframe>`,
+            )
+          : nothing
+      }
       ${message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
     </section>`;
   }
@@ -423,23 +447,20 @@ export class LensOutputMedia extends LitElement {
     const frame = event.currentTarget as HTMLIFrameElement;
     const content = this.htmlContent;
     if (
-      prepared !== this.preparedHtml || prepared.status !== "ready" ||
-      !frame.isConnected || !this.contains(frame) || frame.srcdoc !== prepared.preview.document ||
-      content?.resourceId !== prepared.resourceId || content.status !== "ready" || content.content !== prepared.content
+      prepared !== this.preparedHtml ||
+      prepared.status !== "ready" ||
+      !frame.isConnected ||
+      !this.contains(frame) ||
+      frame.srcdoc !== prepared.preview.document ||
+      content?.resourceId !== prepared.resourceId ||
+      content.status !== "ready" ||
+      content.content !== prepared.content
     )
       return;
     this.renderedHtml = {
       resourceId: content.resourceId,
       content: content.content,
-      status: "ready",
     };
-  }
-
-  private openHtmlLink(url: string): void {
-    dispatchComponentEvent<AgentOutputIntent>(this, AGENT_OUTPUT_INTENT_EVENT, {
-      type: "open-external-url",
-      url,
-    });
   }
 
   private handleImageLoad(item: PresentedOutputImage, event: Event): void {

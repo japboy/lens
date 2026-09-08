@@ -135,7 +135,7 @@ describe("Interpretation media interactions", () => {
     const element = await mount([images[0]!, htmlMedia]);
     const renderer = await loadHtml(element);
     expect(renderer.srcdoc).toContain("Readable result");
-    expect(renderer.getAttribute("sandbox")).toBe("");
+    expect(renderer.getAttribute("sandbox")).toBe("allow-popups");
     expect(renderer.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(renderer.title).toBe("HTML content");
     expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(true);
@@ -153,19 +153,20 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-overlay .fa-expand")).not.toBeNull();
   });
 
-  it("preserves the iframe across selection and opens extracted links from trusted details", async () => {
+  it("preserves the iframe and keeps native-handled external links in its document", async () => {
     const element = await mount([images[0]!, htmlMedia]);
     const renderer = await loadHtml(element);
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
     expect(renderer.closest(".output-media-slide")?.getAttribute("aria-hidden")).toBe("false");
-    const onIntent = vi.fn<(event: Event) => void>();
-    element.addEventListener("lens-agent-output-intent", onIntent);
-    element.querySelector<HTMLButtonElement>(".output-media-details button")!.click();
-    expect((onIntent.mock.calls[0]![0] as CustomEvent).detail).toEqual({
-      type: "open-external-url",
-      url: "https://example.com/",
-    });
+    const preview = new DOMParser().parseFromString(renderer.srcdoc, "text/html");
+    const anchor = preview.querySelector("a")!;
+    expect(anchor.getAttribute("href")).toBe("https://example.com/");
+    expect(anchor.getAttribute("target")).toBe("_blank");
+    expect(anchor.getAttribute("rel")?.split(/\s+/)).toEqual(
+      expect.arrayContaining(["noopener", "noreferrer"]),
+    );
+    expect(element.querySelector(".output-media-details button")).toBeNull();
     element.querySelector<HTMLButtonElement>(".output-media-previous")!.click();
     await element.updateComplete;
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
@@ -201,6 +202,26 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-html-frame")).toBe(renderer);
   });
 
+  it("dismisses HTML details through a temporary backdrop without replacing the frame", async () => {
+    const element = await mount([images[0]!, htmlMedia]);
+    const frame = await loadHtml(element);
+    const toggle = element.querySelector<HTMLButtonElement>(".output-media-details-toggle")!;
+    toggle.click();
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-details-backdrop")).toBeNull();
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    toggle.click();
+    await element.updateComplete;
+    const backdrop = element.querySelector<HTMLElement>(".output-media-details-backdrop")!;
+    expect(backdrop).not.toBeNull();
+    backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-details-backdrop")).toBeNull();
+    expect(element.querySelector<HTMLElement>(".output-media-details")!.hidden).toBe(true);
+    expect(element.querySelector(".output-html-frame")).toBe(frame);
+  });
+
   it("keeps HTML failures local and disables expansion until safe content is ready", async () => {
     const element = await mount([htmlMedia]);
     element.htmlContent = {
@@ -217,7 +238,11 @@ describe("Interpretation media interactions", () => {
   it("ignores old iframe loads and retains the current document across equivalent snapshots", async () => {
     const element = await mount([htmlMedia]);
     const oldFrame = await loadHtml(element);
-    element.htmlContent = { resourceId: "resource-1", status: "ready", content: "<p>New content</p>" };
+    element.htmlContent = {
+      resourceId: "resource-1",
+      status: "ready",
+      content: "<p>New content</p>",
+    };
     await element.updateComplete;
     const frame = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
     expect(frame).not.toBe(oldFrame);

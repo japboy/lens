@@ -5,6 +5,7 @@ mod agent_preferences;
 mod agent_runtime;
 mod app_state;
 mod commands;
+mod html_preview;
 use usecase::confirm_targets;
 #[cfg(test)]
 mod contract_tests;

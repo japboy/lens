@@ -937,6 +937,7 @@ export class LensOverlayView extends LitElement {
 
       .output-media-overlay {
         position: absolute;
+        z-index: 2;
         inset: 10px 12px auto;
         display: flex;
         align-items: center;
@@ -1006,6 +1007,7 @@ export class LensOverlayView extends LitElement {
 
       .output-media-arrow {
         position: absolute;
+        z-index: 2;
         top: 50%;
         width: 44px;
         height: 58px;
@@ -1025,9 +1027,16 @@ export class LensOverlayView extends LitElement {
         border-radius: 999px 0 0 999px;
       }
 
+      .output-media-details-backdrop {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        background: transparent;
+      }
+
       .output-media-details {
         position: absolute;
-        z-index: 2;
+        z-index: 3;
         top: 50px;
         right: 12px;
         width: min(300px, calc(100% - 24px));

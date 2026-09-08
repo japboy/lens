@@ -12,9 +12,17 @@ unknown arguments, and HTML larger than 512 KiB are rejected. Each successful
 invocation has a distinct resource identity; tools/list declares that the tool
 has no external mutations or open-world access, but is not idempotent.
 
-The tool does not sanitize or execute HTML. The Lens renderer owns its restricted
-HTML/CSS policy. The agent decides whether to call the tool: no automatic call,
-retry, or missing-artifact failure is imposed here.
+The tool does not sanitize or execute HTML. Lens prepares the document without a
+browsing context and displays it in a script-disabled sandboxed iframe. It
+preserves HTML presentation and CSS rather than enforcing an independent
+presentation allowlist. Self-contained inline SVG and data-URL images are
+supported; JavaScript, automatic external resource loading, embedded documents,
+and form submission are disabled. Clicking an HTTP(S) link in the preview opens
+the operating system's default browser through Lens's native destination policy;
+Lens denies creation of an application popup WebView. This does not promise identical rendering for pages
+that depend on scripts, external assets, or unsupported browser features.
+The agent decides whether to call the tool: no automatic call, retry, or
+missing-artifact failure is imposed here.
 
 MCP transport, initialization, schema discovery, and call dispatch use the
 [official Rust MCP SDK](https://docs.rs/rmcp/3.2.0/rmcp/) with only server, macros,
