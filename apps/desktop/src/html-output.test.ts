@@ -54,6 +54,6 @@ describe("sandboxed static HTML preparation", () => {
     expect(prepared('<img src="data:image/png;base64,aA==">').querySelector("img")).not.toBeNull();
     expect(() => prepareHtmlPreview("<br>".repeat(5001))).not.toThrow();
     expect(() => prepareHtmlPreview("x".repeat(MAX_HTML_BYTES + 1))).toThrow("512 KiB");
-    expect(() => prepareHtmlPreview("あ".repeat(MAX_HTML_BYTES / 3 + 1))).toThrow("512 KiB");
+    expect(() => prepareHtmlPreview("\u3042".repeat(MAX_HTML_BYTES / 3 + 1))).toThrow("512 KiB");
   });
 });
