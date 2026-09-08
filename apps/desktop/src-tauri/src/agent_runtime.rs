@@ -18,13 +18,12 @@ use uuid::Uuid;
 
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const REGISTRY_SCHEMA_VERSION: &str = "1.0.0";
-const NODE_VERSION: &str = "24.19.0";
-const NODE_TARGET: &str = "darwin-arm64";
-const NODE_ARCHIVE_NAME: &str = "node-v24.19.0-darwin-arm64.tar.gz";
-const NODE_ARCHIVE_ROOT: &str = "node-v24.19.0-darwin-arm64";
-const NODE_ARCHIVE_URL: &str = "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz";
-const NODE_ARCHIVE_SHA256: &str =
-    "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d";
+const NODE_VERSION: &str = env!("LENS_NODE_VERSION");
+const NODE_TARGET: &str = env!("LENS_NODE_TARGET");
+const NODE_ARCHIVE_NAME: &str = env!("LENS_NODE_ARCHIVE_NAME");
+const NODE_ARCHIVE_ROOT: &str = env!("LENS_NODE_ARCHIVE_ROOT");
+const NODE_ARCHIVE_URL: &str = env!("LENS_NODE_ARCHIVE_URL");
+const NODE_ARCHIVE_SHA256: &str = env!("LENS_NODE_ARCHIVE_SHA256");
 const NODE_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const PNPM_VERSION: &str = "11.22.0";
 const PNPM_ARCHIVE_NAME: &str = "pnpm-11.22.0.tgz";
@@ -1474,19 +1473,19 @@ mod tests {
     #[test]
     fn archive_paths_and_links_are_contained_by_the_approved_root() {
         assert!(validate_archive_path(
-            Path::new("node-v24.19.0-darwin-arm64/bin/node"),
+            &Path::new(NODE_ARCHIVE_ROOT).join("bin/node"),
             NODE_ARCHIVE_ROOT
         )
         .is_ok());
         assert!(validate_archive_path(Path::new("../escape"), NODE_ARCHIVE_ROOT).is_err());
         assert!(validate_archive_link(
-            Path::new("node-v24.19.0-darwin-arm64/bin/npm"),
+            &Path::new(NODE_ARCHIVE_ROOT).join("bin/npm"),
             Path::new("../lib/node_modules/npm/bin/npm-cli.js"),
             NODE_ARCHIVE_ROOT
         )
         .is_ok());
         assert!(validate_archive_link(
-            Path::new("node-v24.19.0-darwin-arm64/bin/npm"),
+            &Path::new(NODE_ARCHIVE_ROOT).join("bin/npm"),
             Path::new("../../escape"),
             NODE_ARCHIVE_ROOT
         )

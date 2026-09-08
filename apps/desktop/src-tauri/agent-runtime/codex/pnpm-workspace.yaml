@@ -9,7 +9,6 @@ trustLockfile: false
 blockExoticSubdeps: true
 strictDepBuilds: true
 allowBuilds: {}
-nodeVersion: 24.19.0
 engineStrict: true
 strictPeerDependencies: true
 saveExact: true
