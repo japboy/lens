@@ -123,6 +123,12 @@
       automerge: false,
     },
     {
+      description: "Development and managed Agent Node versions share the mise lock and update together.",
+      matchPackageNames: ["node"],
+      groupName: "Node.js runtime",
+      automerge: false,
+    },
+    {
       description: "mise-managed tool updates require manual review.",
       matchManagers: ["mise"],
       automerge: false,

@@ -106,6 +106,15 @@ describe("repository task ownership", () => {
     }
   });
 
+  it("checks the managed Node build policy on both admitted test hosts", () => {
+    expect(tasks.find((task) => task.name === "rust:test")!.run).toContain(
+      "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
+    );
+    expect(tasks.find((task) => task.name === "rust:test:linux")!.run).toContain(
+      "cargo test --locked -p desktop --test node_policy --no-default-features --target x86_64-unknown-linux-gnu",
+    );
+  });
+
   it("runs real MCP subprocess tests on both admitted native test hosts", () => {
     for (const [taskName, variant, target] of [
       ["rust:test", "macos-test", "aarch64-apple-darwin"],
