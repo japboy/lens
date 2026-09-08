@@ -36,11 +36,9 @@ You will need:
 
 Automatic updates are spaced at least three minutes apart.
 
-Lens includes a small Rust MCP server that provides the optional `publish_html` tool to its Agent sessions over stdio. No user MCP configuration or additional language runtime is needed. The Agent decides whether an HTML presentation is useful; Lens does not force tool calls or retry ordinary text answers.
-
-Published HTML appears alongside images in the Interpretation's media area, using the same navigation and expand controls. Lens supports one self-contained static document up to 512 KiB per response in a script-disabled sandboxed iframe. HTML structure and CSS are preserved without a separate presentation allowlist, including inline SVG and data-URL images. JavaScript, automatic external resource loading, embedded documents, and form submission are disabled; input controls can still be used without JavaScript. Clicking an HTTP(S) link in the HTML opens it in the operating system's default browser, not inside Lens. Pages that require scripts or external assets will not render identically to their unrestricted originals. Ordinary Markdown, HTML code fences, and file links are not converted automatically. The publisher returns HTML directly and does not read or write files or access the network. Existing Agent permission controls still apply.
-
 To tailor the result, edit **Settings → Agent Prompt**. Set **Working Directory** if you want the Agent to use instructions and memory from a particular project.
+
+Your Agent may present results as HTML alongside images in **Interpretation**, with no additional setup. You can request an HTML presentation in **Settings → Agent Prompt**. These previews support static content only; scripts and external assets do not load. Links open in your default browser.
 
 ## Content access
 
