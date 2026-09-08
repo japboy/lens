@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/japboy/lens/compare/v0.1.0...v0.2.0) (2026-09-08)
+
+
+### Features
+
+* **desktop:** expand output media with the Fullscreen API ([#52](https://github.com/japboy/lens/issues/52)) ([ee4c324](https://github.com/japboy/lens/commit/ee4c324ce198c6a9d508406de7ff981f13993a91))
+* **overlay:** publish and render HTML through bundled MCP ([#57](https://github.com/japboy/lens/issues/57)) ([9b1b38e](https://github.com/japboy/lens/commit/9b1b38eb44283ecacae503e28875b65c3b59806d))
+
+
+### Bug Fixes
+
+* **deps:** update acp dependencies ([#50](https://github.com/japboy/lens/issues/50)) ([0dbb730](https://github.com/japboy/lens/commit/0dbb73039f581bb0a4a0ef02a8f8bcc30a197ce5))
+* **settings:** restore saved dynamic Agent selections ([#56](https://github.com/japboy/lens/issues/56)) ([8c4b5a7](https://github.com/japboy/lens/commit/8c4b5a75ef7454c295bf634ef78970af0ae89001))
+
 ## 0.1.0 (2026-09-06)
 
 
