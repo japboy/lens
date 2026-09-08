@@ -1,6 +1,8 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
+import { keyed } from "lit/directives/keyed.js";
+import { prepareHtmlPreview } from "../html-output";
 import type {
   PresentedOutputImage,
   PresentedOutputHtml,
@@ -12,7 +14,12 @@ import {
   dispatchComponentEvent,
   type AgentOutputIntent,
 } from "./events";
-import "./lens-html-output";
+
+type PreparedHtml = {
+  id: string;
+  resourceId: string;
+  content: string;
+} & ({ status: "ready"; preview: ReturnType<typeof prepareHtmlPreview> } | { status: "failed"; message: string });
 
 type MediaOverlay = "none" | "details";
 interface FullscreenSession {
@@ -38,6 +45,7 @@ interface LoadedImage {
 
 @customElement("lens-output-media")
 export class LensOutputMedia extends LitElement {
+  private preparedHtml: PreparedHtml | undefined;
   private static nextId = 0;
   private readonly detailsId = `lens-output-media-details-${++LensOutputMedia.nextId}`;
 
@@ -81,6 +89,7 @@ export class LensOutputMedia extends LitElement {
   }
 
   protected willUpdate(changed: PropertyValues<this>): void {
+    this.prepareHtml();
     if (!changed.has("media")) return;
     const previous = changed.get("media") ?? [];
     if (
@@ -150,10 +159,29 @@ export class LensOutputMedia extends LitElement {
     const content = this.htmlContent;
     if (content?.resourceId !== item.resourceId) return "loading";
     if (content.status !== "ready") return content.status;
+    if (this.preparedHtml?.id === item.id && this.preparedHtml.status === "failed") return "failed";
     const rendered = this.renderedHtml;
     return rendered?.resourceId === item.resourceId && rendered.content === content.content
       ? rendered.status
       : "loading";
+  }
+
+  private prepareHtml(): void {
+    const item = this.media.find((media) => media.kind === "html");
+    const content = this.htmlContent;
+    if (!item || content?.resourceId !== item.resourceId || content.status !== "ready") {
+      this.preparedHtml = undefined;
+      this.renderedHtml = undefined;
+      return;
+    }
+    if (this.preparedHtml?.id === item.id && this.preparedHtml.content === content.content) return;
+    this.renderedHtml = undefined;
+    const identity = { id: item.id, resourceId: item.resourceId, content: content.content };
+    try {
+      this.preparedHtml = { ...identity, status: "ready", preview: prepareHtmlPreview(content.content) };
+    } catch (error) {
+      this.preparedHtml = { ...identity, status: "failed", message: error instanceof Error ? error.message : "HTML could not be displayed." };
+    }
   }
 
   protected render() {
@@ -288,6 +316,10 @@ export class LensOutputMedia extends LitElement {
                   : nothing
               }
             </dl>
+            ${item.kind === "html" && this.preparedHtml?.id === item.id && this.preparedHtml.status === "ready"
+              ? html`${this.preparedHtml.preview.notices.map((notice) => html`<p>${notice}</p>`)}
+                  ${this.preparedHtml.preview.links.length ? html`<h3>Links</h3><ul>${this.preparedHtml.preview.links.map((link) => html`<li><button type="button" @click=${() => this.openHtmlLink(link.url)}>${link.label}</button></li>`)}</ul>` : nothing}`
+              : nothing}
           </section>
         </div>
         <div
@@ -349,6 +381,10 @@ export class LensOutputMedia extends LitElement {
 
   private renderHtmlSlide(item: PresentedOutputHtml, index: number) {
     const content = this.htmlContent?.resourceId === item.resourceId ? this.htmlContent : undefined;
+    const prepared = this.preparedHtml?.id === item.id ? this.preparedHtml : undefined;
+    const message = content?.status === "failed" ? content.message
+      : prepared?.status === "failed" ? prepared.message
+      : this.htmlState(item) === "loading" ? "Loading HTML…" : "";
     return html`<section
       class="output-media-slide output-media-html-slide"
       aria-roledescription="slide"
@@ -371,25 +407,25 @@ export class LensOutputMedia extends LitElement {
         </button>
       </header>
       ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
-      <lens-html-output
-        .resourceId=${item.resourceId}
-        .content=${content?.status === "ready" ? content.content : undefined}
-        .status=${content?.status ?? "loading"}
-        .failureMessage=${content?.status === "failed" ? content.message : undefined}
-        @html-render-ready=${this.handleHtmlReady}
-        @html-render-error=${this.handleHtmlError}
-        @html-open-link=${this.handleHtmlLink}
-      ></lens-html-output>
+      ${prepared?.status === "ready" ? keyed(prepared, html`<iframe
+        class="output-html-frame"
+        title="HTML content"
+        sandbox=""
+        referrerpolicy="no-referrer"
+        .srcdoc=${prepared.preview.document}
+        @load=${(event: Event) => this.handleHtmlLoad(prepared, event)}
+      ></iframe>`) : nothing}
+      ${message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
     </section>`;
   }
 
-  private handleHtmlReady = (event: CustomEvent<{ resourceId: string }>): void => {
-    event.stopPropagation();
+  private handleHtmlLoad(prepared: PreparedHtml, event: Event): void {
+    const frame = event.currentTarget as HTMLIFrameElement;
     const content = this.htmlContent;
     if (
-      content?.resourceId !== event.detail.resourceId ||
-      content.status !== "ready" ||
-      content.content === undefined
+      prepared !== this.preparedHtml || prepared.status !== "ready" ||
+      !frame.isConnected || !this.contains(frame) || frame.srcdoc !== prepared.preview.document ||
+      content?.resourceId !== prepared.resourceId || content.status !== "ready" || content.content !== prepared.content
     )
       return;
     this.renderedHtml = {
@@ -397,27 +433,14 @@ export class LensOutputMedia extends LitElement {
       content: content.content,
       status: "ready",
     };
-  };
+  }
 
-  private handleHtmlError = (event: CustomEvent<{ resourceId: string; message: string }>): void => {
-    event.stopPropagation();
-    const content = this.htmlContent;
-    if (content?.resourceId !== event.detail.resourceId || content.status !== "ready") return;
-    this.renderedHtml = {
-      resourceId: content.resourceId,
-      content: content.content,
-      status: "failed",
-      message: event.detail.message,
-    };
-  };
-
-  private handleHtmlLink = (event: CustomEvent<{ url: string }>): void => {
-    event.stopPropagation();
+  private openHtmlLink(url: string): void {
     dispatchComponentEvent<AgentOutputIntent>(this, AGENT_OUTPUT_INTENT_EVENT, {
       type: "open-external-url",
-      url: event.detail.url,
+      url,
     });
-  };
+  }
 
   private handleImageLoad(item: PresentedOutputImage, event: Event): void {
     const image = event.currentTarget as HTMLImageElement;

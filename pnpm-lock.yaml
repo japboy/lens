@@ -89,6 +89,9 @@ importers:
       mermaid:
         specifier: 11.17.0
         version: 11.17.0
+      parse5:
+        specifier: 8.0.1
+        version: 8.0.1
     devDependencies:
       '@lit-labs/ssr':
         specifier: 4.1.0

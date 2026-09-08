@@ -118,17 +118,15 @@ describe("Interpretation media interactions", () => {
     byteLength: 100,
   };
 
-  async function loadHtml(element: LensOutputMedia): Promise<HTMLElement> {
+  async function loadHtml(element: LensOutputMedia): Promise<HTMLIFrameElement> {
     element.htmlContent = {
       resourceId: "resource-1",
       status: "ready",
       content: '<h1>Readable result</h1><p><a href="https://example.com/">Reference</a></p>',
     };
     await element.updateComplete;
-    const renderer = element.querySelector("lens-html-output") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    await renderer.updateComplete;
+    const renderer = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
+    renderer.dispatchEvent(new Event("load"));
     await element.updateComplete;
     return renderer;
   }
@@ -136,7 +134,10 @@ describe("Interpretation media interactions", () => {
   it("mixes HTML and images without borrowing image dimensions or changing the controls", async () => {
     const element = await mount([images[0]!, htmlMedia]);
     const renderer = await loadHtml(element);
-    expect(renderer.shadowRoot?.querySelector("h1")?.textContent).toBe("Readable result");
+    expect(renderer.srcdoc).toContain("Readable result");
+    expect(renderer.getAttribute("sandbox")).toBe("");
+    expect(renderer.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(renderer.title).toBe("HTML content");
     expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(true);
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
@@ -152,25 +153,15 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-overlay .fa-expand")).not.toBeNull();
   });
 
-  it("preserves HTML DOM across selection and lets document keys and links reach their owners", async () => {
+  it("preserves the iframe across selection and opens extracted links from trusted details", async () => {
     const element = await mount([images[0]!, htmlMedia]);
     const renderer = await loadHtml(element);
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
-    const heading = renderer.shadowRoot!.querySelector("h1")!;
-    const key = new KeyboardEvent("keydown", {
-      key: "Home",
-      bubbles: true,
-      composed: true,
-      cancelable: true,
-    });
-    heading.dispatchEvent(key);
-    expect(key.defaultPrevented).toBe(false);
-    await element.updateComplete;
     expect(renderer.closest(".output-media-slide")?.getAttribute("aria-hidden")).toBe("false");
     const onIntent = vi.fn<(event: Event) => void>();
     element.addEventListener("lens-agent-output-intent", onIntent);
-    renderer.shadowRoot!.querySelector<HTMLAnchorElement>("a")!.click();
+    element.querySelector<HTMLButtonElement>(".output-media-details button")!.click();
     expect((onIntent.mock.calls[0]![0] as CustomEvent).detail).toEqual({
       type: "open-external-url",
       url: "https://example.com/",
@@ -179,13 +170,12 @@ describe("Interpretation media interactions", () => {
     await element.updateComplete;
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
-    expect(renderer.shadowRoot!.querySelector("h1")).toBe(heading);
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
   });
 
   it("fullscreens the existing HTML slide and does not trap Tab on the close control", async () => {
     const element = await mount([htmlMedia]);
     const renderer = await loadHtml(element);
-    const heading = renderer.shadowRoot!.querySelector("h1");
     element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
     await element.updateComplete;
     const slide = element.querySelector<HTMLElement>(".output-media-html-slide")!;
@@ -200,15 +190,15 @@ describe("Interpretation media interactions", () => {
       composed: true,
       cancelable: true,
     });
-    renderer.shadowRoot!.querySelector("a")!.dispatchEvent(tab);
+    element.querySelector<HTMLButtonElement>(".output-html-expanded-close")!.dispatchEvent(tab);
     expect(tab.defaultPrevented).toBe(false);
-    expect(renderer.shadowRoot!.querySelector("h1")).toBe(heading);
-    expect(element.querySelectorAll("lens-html-output")).toHaveLength(1);
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+    expect(element.querySelectorAll(".output-html-frame")).toHaveLength(1);
     element.querySelector<HTMLButtonElement>(".output-html-expanded-close")!.click();
     await Promise.resolve();
     await element.updateComplete;
     expect(exitFullscreen).toHaveBeenCalledOnce();
-    expect(renderer.shadowRoot!.querySelector("h1")).toBe(heading);
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
   });
 
   it("keeps HTML failures local and disables expansion until safe content is ready", async () => {
@@ -219,12 +209,27 @@ describe("Interpretation media interactions", () => {
       message: "Resource expired",
     };
     await element.updateComplete;
-    const renderer = element.querySelector("lens-html-output") as HTMLElement & {
-      updateComplete: Promise<boolean>;
-    };
-    await renderer.updateComplete;
-    expect(renderer.shadowRoot!.textContent).toContain("Resource expired");
+    expect(element.querySelector(".output-media-state")!.textContent).toContain("Resource expired");
+    expect(element.querySelector("iframe")).toBeNull();
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+  });
+
+  it("ignores old iframe loads and retains the current document across equivalent snapshots", async () => {
+    const element = await mount([htmlMedia]);
+    const oldFrame = await loadHtml(element);
+    element.htmlContent = { resourceId: "resource-1", status: "ready", content: "<p>New content</p>" };
+    await element.updateComplete;
+    const frame = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
+    expect(frame).not.toBe(oldFrame);
+    oldFrame.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    frame.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
+    element.media = [{ ...htmlMedia }];
+    await element.updateComplete;
+    expect(element.querySelector(".output-html-frame")).toBe(frame);
   });
 
   it("uses labeled Font Awesome controls and reports only loaded, known metadata", async () => {

@@ -32,7 +32,7 @@ pub struct HtmlPublisher;
 #[tool_router]
 impl HtmlPublisher {
     #[tool(
-        description = "Publish a static HTML artifact for display in Lens's Hero area. Use when an HTML presentation helps fulfill the user's request. Pass the HTML itself, not a file path, URL, Markdown link, or fenced code block. The renderer supports a restricted subset of HTML and CSS; scripts, interactive forms, and external resources are not supported. This tool only returns the supplied HTML as an embedded resource; it does not write files or access the network. Ordinary answers can remain text.",
+        description = "Publish a self-contained HTML artifact for display in Lens's Hero area. Use when an HTML presentation helps fulfill the user's request. Pass the HTML itself, not a file path, URL, Markdown link, or fenced code block. Use expressive HTML and CSS, including inline SVG and data-URL images, to preserve the intended presentation. JavaScript is disabled and external resources are not loaded. Input and form controls can be displayed and used without JavaScript, but form submission is disabled. This tool only returns the supplied HTML as an embedded resource; it does not write files or access the network. Ordinary answers can remain text.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

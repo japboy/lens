@@ -100,6 +100,20 @@ fn real_stdio_handshake_tool_schema_publish_errors_and_eof() {
         .as_str()
         .unwrap()
         .contains("Ordinary answers can remain text"));
+    let description = list["result"]["tools"][0]["description"].as_str().unwrap();
+    for capability in [
+        "expressive HTML and CSS",
+        "inline SVG and data-URL images",
+        "JavaScript is disabled",
+        "external resources are not loaded",
+        "form submission is disabled",
+    ] {
+        assert!(
+            description.contains(capability),
+            "missing capability: {capability}"
+        );
+    }
+    assert!(!description.contains("restricted subset"));
     assert_eq!(
         list["result"]["tools"][0]["annotations"]["openWorldHint"],
         false

@@ -888,8 +888,9 @@ export class LensOverlayView extends LitElement {
         color: CanvasText;
       }
 
-      lens-html-output {
+      .output-html-frame {
         display: block;
+        border: 0;
         width: 100%;
         height: 100%;
         min-height: 0;
@@ -904,7 +905,6 @@ export class LensOverlayView extends LitElement {
         flex-direction: column;
         width: 100%;
         height: 100%;
-        --html-output-padding: 12px 24px 24px;
       }
 
       .output-media-html-slide:fullscreen > .output-html-expanded-header {
@@ -916,7 +916,7 @@ export class LensOverlayView extends LitElement {
         flex: 0 0 auto;
       }
 
-      .output-media-html-slide:fullscreen > lens-html-output {
+      .output-media-html-slide:fullscreen > .output-html-frame {
         flex: 1 1 auto;
       }
 
