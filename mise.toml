@@ -1,5 +1,5 @@
 [tools]
-node = "24.19.0"
+node = "24.20.0"
 pnpm = "11.22.0"
 rust = { version = "1.98.0", components = ["rustfmt", "clippy"] }
 "aqua:EmbarkStudios/cargo-deny" = "0.20.2"
