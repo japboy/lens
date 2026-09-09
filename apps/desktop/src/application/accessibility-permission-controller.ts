@@ -8,7 +8,7 @@ export type AccessibilityPermissionState =
   | { stage: "required" }
   | { stage: "restricted" }
   | { stage: "unsupported" }
-  | { stage: "failed"; message: string };
+  | { stage: "failed"; message: string; origin: "inspection" | "request" | "native" };
 
 export class AccessibilityPermissionController implements ReactiveController {
   state: AccessibilityPermissionState = { stage: "inactive" };
@@ -67,7 +67,7 @@ export class AccessibilityPermissionController implements ReactiveController {
       }
     } catch (error) {
       if (generation !== this.generation || !this.active || !this.connected) return;
-      this.setState({ stage: "failed", message: String(error) });
+      this.setState({ stage: "failed", message: String(error), origin: "request" });
     } finally {
       if (generation === this.generation) this.inFlight = "idle";
     }
@@ -75,7 +75,7 @@ export class AccessibilityPermissionController implements ReactiveController {
 
   async refresh(): Promise<void> {
     if (!this.active || !this.connected || document.visibilityState !== "visible") return;
-    if (this.state.stage !== "required" && this.state.stage !== "checking") return;
+    if (!this.canInspect()) return;
     if (this.inFlight !== "idle") return;
     const generation = ++this.generation;
     this.inFlight = "inspection";
@@ -85,7 +85,7 @@ export class AccessibilityPermissionController implements ReactiveController {
       this.applyAccess(access);
     } catch (error) {
       if (generation !== this.generation || !this.active || !this.connected) return;
-      this.setState({ stage: "failed", message: String(error) });
+      this.setState({ stage: "failed", message: String(error), origin: "inspection" });
     } finally {
       if (generation === this.generation) this.inFlight = "idle";
     }
@@ -98,7 +98,7 @@ export class AccessibilityPermissionController implements ReactiveController {
     document.addEventListener("visibilitychange", this.onVisibilityChange);
     void this.refresh();
     this.pollTimer = window.setInterval(() => {
-      if (this.state.stage === "required") void this.refresh();
+      void this.refresh();
     }, 2_000);
   }
 
@@ -117,9 +117,17 @@ export class AccessibilityPermissionController implements ReactiveController {
         this.setState({ stage: "unsupported" });
         break;
       case "failed":
-        this.setState({ stage: "failed", message: access.message });
+        this.setState({ stage: "failed", message: access.message, origin: "native" });
         break;
     }
+  }
+
+  private canInspect(): boolean {
+    return (
+      this.state.stage === "required" ||
+      this.state.stage === "checking" ||
+      (this.state.stage === "failed" && this.state.origin === "inspection")
+    );
   }
 
   private stop(): void {

@@ -38,6 +38,36 @@ afterEach(() => {
 });
 
 describe("Accessibility access contract", () => {
+  it("recovers inspection rejection on the next poll without requesting permission", async () => {
+    vi.useFakeTimers();
+    const { controller, get, request } = setup(required);
+    await Promise.resolve();
+    get.mockRejectedValueOnce(new Error("Transient IPC error"));
+    await controller.refresh();
+    expect(controller.state).toEqual({
+      stage: "failed",
+      message: "Error: Transient IPC error",
+      origin: "inspection",
+    });
+    get.mockResolvedValue(ready);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(controller.state.stage).toBe("allowed");
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each([
+    ready,
+    { schema_version: 1, status: "access_restricted" },
+    { schema_version: 1, status: "unsupported" },
+    { schema_version: 1, status: "failed", message: "Native failure" },
+  ] as const)("does not poll terminal native access %j", async (access) => {
+    vi.useFakeTimers();
+    const { get } = setup(access);
+    await Promise.resolve();
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
   it("recovers hidden activation when the document becomes visible", async () => {
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     const { controller, get } = setup(ready);
@@ -81,7 +111,11 @@ describe("Accessibility access contract", () => {
     await controller.request();
     resolve(ready);
     await inspection;
-    expect(controller.state).toEqual({ stage: "failed", message: "Error: Denied" });
+    expect(controller.state).toEqual({
+      stage: "failed",
+      message: "Error: Denied",
+      origin: "request",
+    });
   });
   it("cleans up a pending follow-up and visibility listener on disconnect", async () => {
     vi.useFakeTimers();

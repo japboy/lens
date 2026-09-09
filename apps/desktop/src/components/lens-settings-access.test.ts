@@ -10,7 +10,9 @@ it.each([
   [{ stage: "required" }, "Permission required", true],
   [{ stage: "restricted" }, "Access restricted", false],
   [{ stage: "unsupported" }, "Not supported", false],
-  [{ stage: "failed", message: "Unavailable" }, "Access check failed", false],
+  [{ stage: "failed", message: "Unavailable", origin: "native" }, "Access check failed", false],
+  [{ stage: "failed", message: "Transient", origin: "inspection" }, "Access check failed", false],
+  [{ stage: "failed", message: "Request", origin: "request" }, "Access check failed", false],
 ] satisfies [AccessibilityPermissionState, string, boolean][])(
   "renders access %j with only the declared action",
   async (permission, label, hasAction) => {
