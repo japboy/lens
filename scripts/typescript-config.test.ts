@@ -1,14 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const require = createRequire(import.meta.url);
+const compilerManifest = require.resolve("typescript/package.json");
+const compiler = resolve(
+  dirname(compilerManifest),
+  JSON.parse(readFileSync(compilerManifest, "utf8")).bin.tsc,
+);
 const read = (path: string) => JSON.parse(readFileSync(resolve(root, path), "utf8"));
 const config = (path: string) =>
   JSON.parse(
-    execFileSync("pnpm", ["exec", "tsc", "--showConfig", "-p", path], {
+    execFileSync(process.execPath, [compiler, "--showConfig", "-p", path], {
       cwd: root,
       encoding: "utf8",
     }),
