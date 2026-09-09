@@ -61,6 +61,8 @@ export async function supervise(
     probePrefixArgs = [],
     deadlineMs = 10000,
     stallMs = 1000,
+    lifecycle = {},
+    spawnChild = spawn,
   } = {},
 ) {
   if (
@@ -81,14 +83,15 @@ export async function supervise(
   let failure;
   let notify = () => {};
   const signal = () => notify();
-  const fail = (message) => {
+  const fail = (message, reason = "protocol_failed") => {
+    lifecycle.terminal?.(reason);
     failure ??= new Error(message);
     for (const item of children) if (!item.closed) item.process.kill("SIGKILL");
     signal();
   };
-  const timer = setTimeout(() => fail("External experiment deadline"), deadlineMs);
+  const timer = setTimeout(() => fail("External experiment deadline", "timed_out"), deadlineMs);
   function launch(command, args, role) {
-    const process = spawn(command, args, { shell: false, stdio: ["pipe", "pipe", "pipe"] });
+    const process = spawnChild(command, args, { shell: false, stdio: ["pipe", "pipe", "pipe"] });
     const item = {
       process,
       role,
@@ -98,23 +101,32 @@ export async function supervise(
       code: null,
       bytes: 0,
       remainder: "",
+      stdout: "",
+      stderr: "",
     };
     children.push(item);
     item.done = new Promise((resolve) =>
-      process.once("close", (code) => {
+      process.once("close", (code, exitSignal) => {
         item.closed = true;
         item.code = code;
+        item.signal = exitSignal;
         if (item.remainder) fail("Incomplete stdout line");
         resolve();
         signal();
       }),
     );
-    process.on("error", (error) => fail(`Child failure: ${error.code ?? "unknown"}`));
+    process.on("error", (error) =>
+      fail(`Child failure: ${error.code ?? "unknown"}`, "native_failed"),
+    );
     process.stdin.on("error", () => fail("Child command pipe failed"));
-    process.stderr.on("data", () => fail("Unexpected child stderr"));
+    process.stderr.on("data", (chunk) => {
+      item.stderr = (item.stderr + chunk.toString("utf8")).slice(0, 65536);
+      fail("Unexpected child stderr");
+    });
     process.stdout.setEncoding("utf8");
     process.stdout.on("data", (chunk) => {
       item.bytes += Buffer.byteLength(chunk);
+      item.stdout = (item.stdout + chunk).slice(0, 65536);
       if (item.bytes > 65536) {
         fail("Child stdout limit");
         return;
@@ -170,6 +182,11 @@ export async function supervise(
     transcript,
   };
   try {
+    if (lifecycle.cancelled?.()) {
+      lifecycle.terminal?.("cancelled");
+      throw new Error("Cancelled before native startup");
+    }
+    lifecycle.begin?.();
     const provider = launch(fixture, fixtureArgs, "fixture");
     await next(provider, "ready");
     const client = launch(probe, [...probePrefixArgs, String(provider.process.pid)], "probe");
@@ -195,6 +212,7 @@ export async function supervise(
       if (client.records.length > client.cursor || client.closed)
         throw new Error("Client returned before containment deadline");
       terminal = true;
+      lifecycle.terminal?.("timed_out");
       transcript.push({ role: "supervisor", event: "deadline_terminal" });
       client.process.kill("SIGKILL");
       await waitUntil(() => client.closed);
@@ -202,6 +220,7 @@ export async function supervise(
         throw new Error("Client returned during deadline containment");
     } else if (scenario === "stop-inflight") {
       terminal = true;
+      lifecycle.terminal?.("cancelled");
       transcript.push({ role: "supervisor", event: "stop_terminal" });
     }
     send(provider, "release");
@@ -212,6 +231,7 @@ export async function supervise(
       const response = await next(client, "call_returned");
       if (response.hresult !== 0 || !response.marker)
         throw new Error("Client did not receive provider marker");
+      lifecycle.result?.(response);
       if (terminal) rejectedLate++;
       else admitted++;
       await waitUntil(() => client.closed);
@@ -226,6 +246,7 @@ export async function supervise(
       throw new Error("Provider exit/transcript mismatch");
     result.outcome = "observation";
   } catch (error) {
+    lifecycle.terminal?.("native_failed");
     result.error = error.message;
   } finally {
     clearTimeout(timer);
@@ -242,6 +263,16 @@ export async function supervise(
     if (!done) result.outcome = "failed";
     result.admitted_results = admitted;
     result.rejected_late_results = rejectedLate;
+    result.children = children.map((item) => ({
+      role: item.role,
+      pid: item.process.pid,
+      closed: item.closed,
+      code: item.code,
+      signal: item.signal ?? null,
+      stdout: item.stdout,
+      stderr: item.stderr,
+      stdoutBytes: item.bytes,
+    }));
   }
   return result;
 }

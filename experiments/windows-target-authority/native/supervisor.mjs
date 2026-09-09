@@ -161,6 +161,8 @@ export async function superviseAcquisition(
     byteCap = 65536,
     fixtureArgs = [],
     probePrefixArgs = [],
+    lifecycle = {},
+    abortOnReplacement = false,
   } = {},
 ) {
   if (
@@ -182,6 +184,7 @@ export async function superviseAcquisition(
   const result = {
     version: 1,
     scope: "supervised-acquisition-experiment",
+    children: [],
     scenario,
     product_admission_granted: false,
   };
@@ -199,17 +202,27 @@ export async function superviseAcquisition(
   const killAll = () => {
     for (const entry of children) if (!entry.closed) entry.child.kill("SIGKILL");
   };
-  const fail = (message) => {
+  const fail = (message, reason = "protocol_failed") => {
+    lifecycle.terminal?.(reason);
     failure ??= new Error(message);
     killAll();
   };
-  const timer = setTimeout(() => fail("Acquisition deadline exceeded"), deadlineMs);
+  const timer = setTimeout(() => fail("Acquisition deadline exceeded", "timed_out"), deadlineMs);
   function launch(executable, args) {
     const child = spawn(executable, args, { stdio: ["pipe", "pipe", "pipe"], shell: false });
-    const entry = { child, closed: false, stdout: "", stderr: 0, bytes: 0, code: null };
+    const entry = {
+      child,
+      closed: false,
+      stdout: "",
+      rawStdout: "",
+      rawStderr: "",
+      stderr: 0,
+      bytes: 0,
+      code: null,
+    };
     children.push(entry);
     entry.done = new Promise((done) => {
-      child.on("error", (error) => fail(error.message));
+      child.on("error", (error) => fail(error.message, "native_failed"));
       child.on("close", (code, signal) => {
         entry.closed = true;
         entry.code = code;
@@ -220,11 +233,13 @@ export async function superviseAcquisition(
     child.stdin.on("error", (error) => fail(error.message));
     child.stdout.on("data", (chunk) => {
       entry.bytes += chunk.length;
+      entry.rawStdout = (entry.rawStdout + chunk.toString("utf8")).slice(0, byteCap);
       if (entry.bytes > byteCap) fail("Child stdout cap exceeded");
       else entry.stdout += chunk.toString("utf8");
     });
     child.stderr.on("data", (chunk) => {
       entry.stderr += chunk.length;
+      entry.rawStderr = (entry.rawStderr + chunk.toString("utf8")).slice(0, byteCap);
       if (entry.stderr > byteCap) fail("Child stderr cap exceeded");
     });
     return entry;
@@ -239,6 +254,11 @@ export async function superviseAcquisition(
   const observations = [];
   let lastTime = -1;
   try {
+    if (lifecycle.cancelled?.()) {
+      lifecycle.terminal?.("cancelled");
+      throw new Error("Cancelled before native startup");
+    }
+    lifecycle.begin?.();
     const owner = launch(fixture, fixtureArgs);
     async function receive(event, marker) {
       await until(() => owner.stdout.includes("\n") || owner.closed);
@@ -273,6 +293,7 @@ export async function superviseAcquisition(
     let current = await receive("created", "A");
     let reuse = false;
     async function replace() {
+      lifecycle.terminal?.("authority_uncertain");
       owner.child.stdin.write("replace-b\n");
       const previous = current;
       current = await receive("created", "B");
@@ -291,6 +312,7 @@ export async function superviseAcquisition(
     const barriers = ["before-root", "before-capture", "before-probe", "before-commit"];
     let finalLine;
     let stopped = false;
+    let authorityAborted = false;
     let completedBarriers = 0;
     for (const name of barriers) {
       await until(() => reader.stdout.includes("\n") || reader.closed || owner.closed);
@@ -311,8 +333,16 @@ export async function superviseAcquisition(
         Object.keys(message).sort().join() !== "barrier,scope,version"
       )
         throw new Error("Invalid probe barrier");
-      if (scenario === `replace-${name}`) await replace();
+      if (scenario === `replace-${name}`) {
+        await replace();
+        if (abortOnReplacement) {
+          reader.child.stdin.write("abort\n");
+          authorityAborted = true;
+          break;
+        }
+      }
       if (scenario === `stop-${name}`) {
+        lifecycle.terminal?.("cancelled");
         owner.child.stdin.write("stop\n");
         await receive("stopped", "none");
         owner.child.stdin.end();
@@ -462,9 +492,9 @@ export async function superviseAcquisition(
       "stop-before-capture": "uia_root_runtime_id",
       "stop-before-probe": "pixel_map",
       "stop-before-commit": "uia_compare",
-    }[scenario];
+    }[authorityAborted ? scenario.replace("replace-", "stop-") : scenario];
     if (
-      stopped &&
+      (stopped || authorityAborted) &&
       (reader.code !== 1 ||
         acquisition.hresult !== -2147467260 ||
         acquisition.stage !== stoppedStage)
@@ -475,6 +505,13 @@ export async function superviseAcquisition(
       (reader.code !== 1 || acquisition.stage !== "input" || acquisition.hresult !== -2147024891)
     )
       throw new Error("PID negative control did not reject before acquisition");
+    if (
+      scenario === "mismatched-pid" ||
+      (!failed && (acquisition.equal !== true || acquisition.marker !== "A"))
+    )
+      lifecycle.terminal?.("authority_uncertain");
+    else if (failed && !stopped && !authorityAborted) lifecycle.terminal?.("native_failed");
+    lifecycle.result?.(acquisition);
     const unknown = !acquisition.sampled || acquisition.marker === "unknown";
     return {
       ...result,
@@ -498,10 +535,35 @@ export async function superviseAcquisition(
       expected_pid: expectedPid,
       acquisition,
     };
+  } catch (error) {
+    lifecycle.terminal?.("protocol_failed");
+    throw error;
   } finally {
     clearTimeout(timer);
     killAll();
-    await Promise.all(children.map((entry) => entry.done));
+    let cleanupTimer;
+    const closed = await Promise.race([
+      Promise.all(children.map((entry) => entry.done)).then(() => true),
+      new Promise((done) => {
+        cleanupTimer = setTimeout(() => done(false), 2000);
+      }),
+    ]);
+    clearTimeout(cleanupTimer);
+    result.children.push(
+      ...children.map((entry, index) => ({
+        role: index === 0 ? "fixture" : "probe",
+        pid: entry.child.pid,
+        closed: entry.closed,
+        code: entry.code,
+        signal: entry.signal ?? null,
+        stdout: entry.rawStdout,
+        stderr: entry.rawStderr,
+        stdoutBytes: entry.bytes,
+        stderrBytes: entry.stderr,
+      })),
+    );
+    lifecycle.evidence?.(result.children);
+    lifecycle.cleanup?.(closed ? "closed" : "termination-unconfirmed");
   }
 }
 
