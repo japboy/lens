@@ -1,0 +1,51 @@
+name: Windows SDK Experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "experiments/windows-target-authority/native/**"
+      - ".github/workflows/windows-sdk-experiment.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-sdk-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-build-smoke:
+    name: experimental-sdk-build-only
+    runs-on: windows-2022
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile and link installed SDK references without acquisition
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'No installed MSVC x64 toolchain.' }
+          $developerShell = Join-Path $installation 'Common7/Tools/Launch-VsDevShell.ps1'
+          & $developerShell -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          & ./experiments/windows-target-authority/native/build.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'lens-windows-sdk-experiment')
+          & ./experiments/windows-target-authority/native/build-notifications.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'lens-windows-notification-experiment')
+          & ./experiments/windows-target-authority/native/provider-stall/build.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'lens-windows-provider-stall-experiment')
+
+      - name: Retain build-only provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-sdk-build-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/lens-windows-sdk-experiment/build-result.json
+            ${{ runner.temp }}/lens-windows-notification-experiment/notification-build-result.json
+            ${{ runner.temp }}/lens-windows-provider-stall-experiment/build-result.json
+          if-no-files-found: error
+          retention-days: 7
