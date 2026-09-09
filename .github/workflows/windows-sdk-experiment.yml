@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "experiments/windows-target-authority/native/**"
+      - "experiments/windows-target-authority/adapter-harness/**"
       - ".github/workflows/windows-sdk-experiment.yml"
 
 permissions:
@@ -26,6 +27,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Verify synthetic adapter lifecycle on Windows Node
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node --version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Node is required.' }
+          $tests = Get-ChildItem ./experiments/windows-target-authority -Recurse -Filter '*.test.mjs' | Sort-Object FullName | ForEach-Object FullName
+          node --test @tests
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic experiment tests failed.' }
 
       - name: Compile and link installed SDK references without acquisition
         run: |
