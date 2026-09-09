@@ -1,6 +1,7 @@
 //! Canonical semantic projection, independent of observation and Agent delivery state.
 
 use crate::{
+    geometry::{Rect, TaggedRect},
     lens::{
         LensContentNode, LensDocumentProjection, LensInput, LensMediaCoverage,
         LensMediaOmissionReason, LensMediaPayload, LensMediaScope, LensTargetSet,
@@ -97,7 +98,7 @@ struct LensAgentProjectionSource {
 struct LensAgentProjectionSourceProvenance {
     application: String,
     window_title: String,
-    bundle_id: String,
+    application_id: String,
 }
 
 #[derive(Serialize)]
@@ -111,12 +112,20 @@ struct LensAgentProjectionMedia {
     source_bounds: Bounds,
     captured_bounds: Bounds,
     coverage: LensMediaCoverage,
-    coordinate_space: &'static str,
+    coordinate_space: ProjectionCoordinateSpace,
     mime_type: String,
     pixel_width: usize,
     pixel_height: usize,
     encoded_bytes: usize,
     sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ProjectionCoordinateSpace {
+    TargetLogical,
+    OriginalCapturePixels,
+    WindowRelativePoints,
 }
 
 #[derive(Serialize)]
@@ -141,6 +150,9 @@ impl LensAgentProjection {
         target_set: &LensTargetSet,
         media: &[LensMediaPayload],
     ) -> Result<Self, LensAgentProjectionError> {
+        if target_set.validate().is_err() {
+            return Err(LensAgentProjectionError::TargetSetMismatch);
+        }
         let mut payloads = BTreeMap::new();
         for payload in media {
             if payloads
@@ -167,11 +179,17 @@ impl LensAgentProjection {
         let mut source_ids = BTreeMap::new();
         let mut sources = Vec::with_capacity(input.sources.len());
         for source in &input.sources {
-            let (source_index, _) = targets.get(source.target_id.as_str()).ok_or_else(|| {
-                LensAgentProjectionError::UnknownTarget {
-                    target_id: source.target_id.clone(),
-                }
-            })?;
+            let (source_index, target) =
+                targets.get(source.target_id.as_str()).ok_or_else(|| {
+                    LensAgentProjectionError::UnknownTarget {
+                        target_id: source.target_id.clone(),
+                    }
+                })?;
+            if source.source.receipt != target.identity.receipt
+                || source.source.application_id != target.facts.application_id
+            {
+                return Err(LensAgentProjectionError::TargetSetMismatch);
+            }
             let source_id = format!("source-{source_index}");
             if source_ids
                 .insert(source.target_id.clone(), source_id.clone())
@@ -198,7 +216,7 @@ impl LensAgentProjection {
                 provenance: LensAgentProjectionSourceProvenance {
                     application: source.source.application.clone(),
                     window_title: source.source.window_title.clone(),
-                    bundle_id: source.source.bundle_id.clone(),
+                    application_id: source.source.application_id.clone(),
                 },
                 document,
                 quality: source.quality,
@@ -295,16 +313,18 @@ impl LensAgentProjection {
                         })
                 })
                 .transpose()?;
+            let (source_bounds, captured_bounds, coordinate_space) =
+                acquired_media_bounds(attachment, target)?;
             normalized_media.push(LensAgentProjectionMedia {
                 id: projection_id.clone(),
                 source_id: source_id.clone(),
                 uri: projection_uri.clone(),
                 scope: attachment.scope,
                 source_node_id,
-                source_bounds: relative_bounds(attachment.source_bounds, target.facts.frame),
-                captured_bounds: relative_bounds(attachment.captured_bounds, target.facts.frame),
+                source_bounds,
+                captured_bounds,
                 coverage: attachment.coverage,
-                coordinate_space: "window_relative_points",
+                coordinate_space,
                 mime_type: attachment.mime_type.clone(),
                 pixel_width: attachment.pixel_width,
                 pixel_height: attachment.pixel_height,
@@ -371,7 +391,7 @@ impl LensAgentProjection {
             .collect::<Result<Vec<_>, LensAgentProjectionError>>()?;
 
         let canonical = CanonicalProjection::from_serializable(&LensAgentProjectionPayload {
-            schema_version: 1,
+            schema_version: 5,
             sources,
             media: normalized_media,
             media_omissions,
@@ -451,14 +471,106 @@ fn normalize_projection_node(
         id: resolve(&node.id)?,
         parent_id: node.parent_id.as_deref().map(resolve).transpose()?,
         kind: node.kind,
-        role: node.role.clone(),
-        subrole: node.subrole.clone(),
+        source_api: node.source_api,
+        node_purpose: node.node_purpose,
+        native_role: node.native_role.clone(),
+        native_subrole: node.native_subrole.clone(),
         title: node.title.clone(),
         value: node.value.clone(),
         description: node.description.clone(),
         media_refs: node.media_refs.clone(),
         resource_refs: node.resource_refs.clone(),
     })
+}
+
+fn acquired_media_bounds(
+    attachment: &crate::lens::LensMediaAttachment,
+    target: &crate::lens::LensTarget,
+) -> Result<(Bounds, Bounds, ProjectionCoordinateSpace), LensAgentProjectionError> {
+    let invalid = || LensAgentProjectionError::MediaMetadataMismatch {
+        attachment_id: attachment.id.clone(),
+    };
+    let Some(pixels) = &attachment.geometry else {
+        if attachment.desktop_geometry.is_some() {
+            return Err(invalid());
+        }
+        return Ok((
+            relative_bounds(attachment.source_bounds, target.facts.frame),
+            relative_bounds(attachment.captured_bounds, target.facts.frame),
+            ProjectionCoordinateSpace::WindowRelativePoints,
+        ));
+    };
+    pixels.validate().map_err(|_| invalid())?;
+    if pixels.attachment_id != attachment.id
+        || pixels.capture.read.target.operation_id != target.identity.operation_id
+        || uuid::Uuid::from(pixels.capture.read.target.receipt) != target.identity.receipt
+        || pixels.encoded_extent.width as usize != attachment.pixel_width
+        || pixels.encoded_extent.height as usize != attachment.pixel_height
+    {
+        return Err(invalid());
+    }
+    let crop = Rect {
+        x: f64::from(pixels.crop.x),
+        y: f64::from(pixels.crop.y),
+        width: f64::from(pixels.crop.extent.width),
+        height: f64::from(pixels.crop.extent.height),
+    };
+    let bounds = |rect: Rect| Bounds {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    };
+    let Some(desktop) = &attachment.desktop_geometry else {
+        if attachment.scope != LensMediaScope::WindowFallback {
+            return Err(invalid());
+        }
+        return Ok((
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: f64::from(pixels.original_extent.width),
+                height: f64::from(pixels.original_extent.height),
+            },
+            bounds(crop),
+            ProjectionCoordinateSpace::OriginalCapturePixels,
+        ));
+    };
+    desktop.validate().map_err(|_| invalid())?;
+    if desktop.read != pixels.capture.read {
+        return Err(invalid());
+    }
+    let window = desktop.window.rect;
+    let scale_x = window.width / f64::from(pixels.original_extent.width);
+    let scale_y = window.height / f64::from(pixels.original_extent.height);
+    let footprint = Rect {
+        x: window.x + crop.x * scale_x,
+        y: window.y + crop.y * scale_y,
+        width: crop.width * scale_x,
+        height: crop.height * scale_y,
+    };
+    let transform = |rect| {
+        desktop
+            .desktop_to_target
+            .apply(&TaggedRect {
+                read: desktop.read,
+                frame: desktop.window.frame.clone(),
+                rect,
+            })
+            .map(|tagged| bounds(tagged.rect))
+            .map_err(|_| invalid())
+    };
+    let source = attachment.source_bounds;
+    Ok((
+        transform(Rect {
+            x: source.x,
+            y: source.y,
+            width: source.width,
+            height: source.height,
+        })?,
+        transform(footprint)?,
+        ProjectionCoordinateSpace::TargetLogical,
+    ))
 }
 
 fn relative_bounds(bounds: Bounds, window: Bounds) -> Bounds {
@@ -643,7 +755,7 @@ mod tests {
             target_id, LensCoordinateSpace, LensInputSource, LensMediaAttachment,
             LensMediaCoverage, LensNodeKind, LensSource, LENS_INPUT_SCHEMA_VERSION,
         },
-        model::{SelectedWindow, WindowIdentity, WindowObservableFacts},
+        model::{NodePurpose, SelectedWindow, SourceApi, WindowIdentity, WindowObservableFacts},
     };
     use serde_json::json;
 
@@ -660,11 +772,12 @@ mod tests {
     ) -> (LensInput, LensTargetSet, Vec<LensMediaPayload>) {
         let window = SelectedWindow {
             identity: WindowIdentity {
-                window_id,
-                bundle_id: "example.browser".into(),
-                pid: 42,
+                operation_id: context_id,
+                receipt: Uuid::from_u128(u128::from(window_id)),
+                selection_ordinal: 1,
             },
             facts: WindowObservableFacts {
+                application_id: "example.browser".into(),
                 title: "Document".into(),
                 application_name: "Browser".into(),
                 frame: Bounds {
@@ -689,8 +802,8 @@ mod tests {
                 source: LensSource {
                     application: "Browser".into(),
                     window_title: "Document".into(),
-                    bundle_id: "example.browser".into(),
-                    window_id,
+                    application_id: "example.browser".into(),
+                    receipt: window.identity.receipt,
                 },
                 document: Some(LensDocumentProjection {
                     nodes: vec![
@@ -698,8 +811,10 @@ mod tests {
                             id: "node-000000".into(),
                             parent_id: None,
                             kind: LensNodeKind::Region,
-                            role: Some("AXWindow".into()),
-                            subrole: None,
+                            source_api: SourceApi::MacosAx,
+                            node_purpose: NodePurpose::WindowChrome,
+                            native_role: Some("AXWindow".into()),
+                            native_subrole: None,
                             title: Some("Document".into()),
                             value: None,
                             description: None,
@@ -710,8 +825,10 @@ mod tests {
                             id: "node-000001".into(),
                             parent_id: Some("node-000000".into()),
                             kind: LensNodeKind::Image,
-                            role: Some("AXImage".into()),
-                            subrole: None,
+                            source_api: SourceApi::MacosAx,
+                            node_purpose: NodePurpose::Content,
+                            native_role: Some("AXImage".into()),
+                            native_subrole: None,
                             title: None,
                             value: Some(text.into()),
                             description: Some("Chart".into()),
@@ -724,10 +841,12 @@ mod tests {
                 omissions: vec![],
             }],
             media: vec![LensMediaAttachment {
+                geometry: None,
+                desktop_geometry: None,
                 id: attachment_id.clone(),
                 target_id,
                 uri: uri.clone(),
-                scope: LensMediaScope::AxElementRegion,
+                scope: LensMediaScope::AccessibilityElementRegion,
                 source_node_id: Some("node-000001".into()),
                 source_bounds: Bounds {
                     x: window_origin.0 + 10.0,
@@ -765,6 +884,159 @@ mod tests {
     }
 
     #[test]
+    fn projection_rejects_source_receipt_not_owned_by_its_target() {
+        let (mut input, targets, media) =
+            agent_projection_fixture(Uuid::from_u128(1), 1, 1, 7, (0.0, 0.0), "Text", "aGVsbG8=");
+        input.sources[0].source.receipt = Uuid::from_u128(99);
+        assert!(matches!(
+            LensAgentProjection::from_input(&input, &targets, &media),
+            Err(LensAgentProjectionError::TargetSetMismatch)
+        ));
+    }
+
+    #[test]
+    fn acquired_pixels_survive_latest_movement_and_hide_capture_identity() {
+        use crate::geometry::*;
+        let (mut input, mut targets, media) = agent_projection_fixture(
+            Uuid::from_u128(1),
+            1,
+            1,
+            7,
+            (100.0, 200.0),
+            "Content",
+            "aGVsbG8=",
+        );
+        let attachment = &mut input.media[0];
+        let read = TargetReadKey {
+            target: TargetAuthority {
+                operation_id: Uuid::from_u128(1),
+                receipt: Uuid::from_u128(7).try_into().unwrap(),
+            },
+            sequence: ReadSequence::FIRST,
+        };
+        let capture = CaptureKey {
+            read,
+            capture_id: Uuid::from_u128(100),
+        };
+        let original = CoordinateFrame::OriginalCapturePixels { capture };
+        let cropped = CoordinateFrame::CroppedAttachmentPixels {
+            capture,
+            attachment_id: attachment.id.clone(),
+        };
+        let encoded = CoordinateFrame::EncodedAttachmentPixels {
+            capture,
+            attachment_id: attachment.id.clone(),
+        };
+        attachment.geometry = Some(AttachmentGeometry {
+            capture,
+            attachment_id: attachment.id.clone(),
+            original_extent: PixelExtent {
+                width: 800,
+                height: 600,
+            },
+            crop: PixelCrop {
+                x: 19,
+                y: 39,
+                extent: PixelExtent {
+                    width: 202,
+                    height: 162,
+                },
+            },
+            encoded_extent: PixelExtent {
+                width: attachment.pixel_width as u32,
+                height: attachment.pixel_height as u32,
+            },
+            original_to_crop: AxisAlignedTransform {
+                read,
+                source: original,
+                destination: cropped.clone(),
+                scale_x: 1.0,
+                scale_y: 1.0,
+                translate_x: -19.0,
+                translate_y: -39.0,
+            },
+            crop_to_encoded: AxisAlignedTransform {
+                read,
+                source: cropped,
+                destination: encoded,
+                scale_x: attachment.pixel_width as f64 / 202.0,
+                scale_y: attachment.pixel_height as f64 / 162.0,
+                translate_x: 0.0,
+                translate_y: 0.0,
+            },
+        });
+        attachment.desktop_geometry = Some(ReadGeometryDescriptor {
+            read,
+            window: TaggedRect {
+                read,
+                frame: CoordinateFrame::MacosDesktopPoints,
+                rect: Rect {
+                    x: 100.0,
+                    y: 200.0,
+                    width: 400.0,
+                    height: 300.0,
+                },
+            },
+            desktop_to_target: AxisAlignedTransform {
+                read,
+                source: CoordinateFrame::MacosDesktopPoints,
+                destination: CoordinateFrame::TargetLogical {
+                    target: read.target,
+                },
+                scale_x: 1.0,
+                scale_y: 1.0,
+                translate_x: -100.0,
+                translate_y: -200.0,
+            },
+        });
+        let first = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
+        let json: serde_json::Value = serde_json::from_str(first.json()).unwrap();
+        assert_eq!(json["media"][0]["captured_bounds"]["x"], 9.5);
+        assert_eq!(json["media"][0]["captured_bounds"]["width"], 101.0);
+        assert_eq!(json["media"][0]["coordinate_space"], "target_logical");
+        targets.targets[0].facts.frame.x = 900.0;
+        // Change every private capture key consistently, without altering pixels.
+        let mut geometry = serde_json::to_value(input.media[0].geometry.as_ref().unwrap()).unwrap();
+        fn change_capture(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    if let Some(id) = fields.get_mut("capture_id") {
+                        *id = serde_json::json!(Uuid::from_u128(101));
+                    }
+                    for child in fields.values_mut() {
+                        change_capture(child);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for child in items {
+                        change_capture(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+        change_capture(&mut geometry);
+        input.media[0].geometry = Some(serde_json::from_value(geometry).unwrap());
+        assert_eq!(
+            first.bytes(),
+            LensAgentProjection::from_input(&input, &targets, &media)
+                .unwrap()
+                .bytes()
+        );
+        input.media[0].desktop_geometry = None;
+        assert!(LensAgentProjection::from_input(&input, &targets, &media).is_err());
+        input.media[0].scope = LensMediaScope::WindowFallback;
+        let fallback = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
+        let json: serde_json::Value = serde_json::from_str(fallback.json()).unwrap();
+        assert_eq!(
+            json["media"][0]["coordinate_space"],
+            "original_capture_pixels"
+        );
+        assert_eq!(json["media"][0]["source_bounds"]["width"], 800.0);
+        assert_eq!(json["media"][0]["captured_bounds"]["x"], 19.0);
+    }
+
+    #[test]
     fn agent_projection_excludes_transport_revisions_ids_and_screen_origin() {
         let first_context = Uuid::from_u128(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);
         let second_context = Uuid::from_u128(0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb);
@@ -794,6 +1066,9 @@ mod tests {
 
         assert_eq!(first.bytes(), second.bytes());
         assert_eq!(first.digest(), second.digest());
+        let encoded: serde_json::Value = serde_json::from_str(first.json()).unwrap();
+        assert_eq!(encoded["schema_version"], 5);
+        assert_eq!(encoded["media"][0]["scope"], "accessibility_element_region");
         assert!(!first.json().contains(&first_context.to_string()));
         assert!(!first.json().contains("node-000001"));
         assert!(!first.json().contains("media-window-7"));

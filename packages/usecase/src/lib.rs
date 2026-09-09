@@ -5,10 +5,12 @@
 // Canonical contracts exposed to common application consumers through the usecase boundary.
 pub use domain::{lens, prompt_template};
 
+pub mod acquisition;
 pub mod agent_preferences;
 pub mod confirm_targets;
 pub mod context;
 pub mod elicitation;
+mod geometry;
 pub mod live_sync;
 pub mod media;
 pub mod model;

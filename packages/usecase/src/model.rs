@@ -1,7 +1,8 @@
 use crate::live_sync::ProjectionRef;
 pub use domain::model::{
-    Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock,
-    ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
+    Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock, NodePurpose,
+    ResourceReference, SelectedWindow, SemanticKind, SourceApi, WindowIdentity,
+    WindowObservableFacts,
 };
 use domain::prompt_template::AgentPromptTemplate;
 use serde::{Deserialize, Serialize};
@@ -560,8 +561,8 @@ mod tests {
             r#"{
                 "status":"selected",
                 "windows":[
-                    {"window_id":9,"title":"Nine","application_name":"App Z","bundle_id":"z.example","pid":90,"frame":{"x":0.0,"y":0.0,"width":900.0,"height":700.0}},
-                    {"window_id":7,"title":"Seven","application_name":"App A","bundle_id":"a.example","pid":70,"frame":{"x":10.0,"y":20.0,"width":800.0,"height":600.0}}
+                    {"operation_id":"00000000-0000-0000-0000-000000000001","receipt":"00000000-0000-0000-0000-000000000009","selection_ordinal":9,"title":"Nine","application_name":"App Z","application_id":"z.example","frame":{"x":0.0,"y":0.0,"width":900.0,"height":700.0}},
+                    {"operation_id":"00000000-0000-0000-0000-000000000001","receipt":"00000000-0000-0000-0000-000000000007","selection_ordinal":7,"title":"Seven","application_name":"App A","application_id":"a.example","frame":{"x":10.0,"y":20.0,"width":800.0,"height":600.0}}
                 ]
             }"#,
         )
@@ -572,8 +573,8 @@ mod tests {
             .expect("selected windows");
 
         assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0].identity.window_id, 9);
-        assert_eq!(windows[1].identity.window_id, 7);
+        assert_eq!(windows[0].identity.receipt, Uuid::from_u128(9));
+        assert_eq!(windows[1].identity.receipt, Uuid::from_u128(7));
     }
 
     #[test]

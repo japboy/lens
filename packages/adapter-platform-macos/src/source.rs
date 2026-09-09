@@ -1,7 +1,8 @@
-use crate::MacOsPlatform;
+use crate::{extraction::NativeExtractionResult, MacOsPlatform};
 use port_platform::{
     accessibility::{Accessibility, ExtractionTarget},
-    model::{ExtractionResult, SelectedWindow, WindowIdentity},
+    authority::{TargetReadKey, TargetReceipt},
+    model::{ExtractionResult, LegacyWindow, WindowIdentity},
     observation::{
         Observation, ObservationEvents, ObservationRegistration, ObservationRequest,
         ObservationSession, WindowObservationEvent, WindowObservationNotification,
@@ -23,10 +24,20 @@ type WindowObservationCallback = unsafe extern "C" fn(*const c_char, *mut c_void
 unsafe extern "C" {
     fn lens_accessibility_is_trusted() -> bool;
     fn lens_accessibility_request_trust() -> bool;
-    fn lens_present_window_picker_for_operation(
+    fn lens_open_window_operation(operation_id: *const c_char) -> bool;
+    fn lens_present_window_picker_for_invocation(
         operation_id: *const c_char,
+        invocation_id: *const c_char,
         callback: PickerCallback,
         context: *mut c_void,
+    ) -> bool;
+    fn lens_accept_window_picker_invocation(
+        operation_id: *const c_char,
+        invocation_id: *const c_char,
+    ) -> bool;
+    fn lens_cancel_window_picker_invocation(
+        operation_id: *const c_char,
+        invocation_id: *const c_char,
     ) -> bool;
     fn lens_extract_window_json(
         pid: i32,
@@ -42,21 +53,22 @@ unsafe extern "C" {
         max_resource_uri_bytes: u32,
         max_total_resource_uri_bytes: u32,
     ) -> *mut c_char;
-    fn lens_extract_registered_window_json(
+    fn lens_extract_receipt_window_json(
         operation_id: *const c_char,
-        window_id: u32,
+        receipt: *const c_char,
+        read_sequence: *const c_char,
         max_nodes: u32,
         max_text_bytes: u32,
         max_resource_refs: u32,
         max_resource_uri_bytes: u32,
         max_total_resource_uri_bytes: u32,
     ) -> *mut c_char;
-    fn lens_start_window_observation_json(
+    fn lens_start_receipt_window_observation_json(
         operation_id: *const c_char,
         context_id: *const c_char,
         source_registration_id: *const c_char,
         observer_epoch: u64,
-        window_id: u32,
+        receipt: *const c_char,
         callback: WindowObservationCallback,
         context: *mut c_void,
         started_out: *mut bool,
@@ -65,13 +77,93 @@ unsafe extern "C" {
         operation_id: *const c_char,
         source_registration_id: *const c_char,
     ) -> bool;
-    fn lens_release_registered_window(operation_id: *const c_char, window_id: u32) -> bool;
+    fn lens_release_receipt_window(operation_id: *const c_char, receipt: *const c_char) -> bool;
     fn lens_release_window_operation(operation_id: *const c_char) -> bool;
     fn lens_free_string(value: *mut c_char);
 }
 
 struct PickerContext {
     sender: Option<oneshot::Sender<String>>,
+}
+
+trait PickerInvocationControl {
+    fn accept(&self) -> bool;
+    fn cancel(&self);
+}
+
+struct NativePickerInvocation {
+    operation_id: CString,
+    invocation_id: CString,
+}
+
+impl PickerInvocationControl for NativePickerInvocation {
+    fn accept(&self) -> bool {
+        // SAFETY: Both owned UUID strings remain valid throughout synchronous native admission.
+        unsafe {
+            lens_accept_window_picker_invocation(
+                self.operation_id.as_ptr(),
+                self.invocation_id.as_ptr(),
+            )
+        }
+    }
+
+    fn cancel(&self) {
+        // SAFETY: Native cancels only this invocation. It owns any transferred callback context
+        // and completes it at most once; Rust must not free that context from this path.
+        unsafe {
+            lens_cancel_window_picker_invocation(
+                self.operation_id.as_ptr(),
+                self.invocation_id.as_ptr(),
+            );
+        }
+    }
+}
+
+struct PickerInvocationGuard<C: PickerInvocationControl> {
+    control: C,
+    accepted: bool,
+}
+
+impl<C: PickerInvocationControl> Drop for PickerInvocationGuard<C> {
+    fn drop(&mut self) {
+        if !self.accepted {
+            self.control.cancel();
+        }
+    }
+}
+
+async fn receive_picker_reply<C: PickerInvocationControl>(
+    receiver: oneshot::Receiver<String>,
+    mut invocation: PickerInvocationGuard<C>,
+    operation_id: Uuid,
+) -> Result<WindowPickerReply, PlatformError> {
+    let json = receiver
+        .await
+        .map_err(|_| PlatformError::PickerCallbackDropped)?;
+    let reply: WindowPickerReply = serde_json::from_str(&json)
+        .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))?;
+    if matches!(&reply, WindowPickerReply::Selected { windows } if windows.len() == 1) {
+        if let WindowPickerReply::Selected { windows } = &reply {
+            if windows[0].identity.operation_id != operation_id
+                || windows[0].identity.selection_ordinal == 0
+            {
+                return Err(PlatformError::InvalidResponse(
+                    "native picker returned inconsistent target authority".into(),
+                ));
+            }
+        }
+        if !invocation.control.accept() {
+            return Err(PlatformError::Operation(
+                "native picker invocation was revoked before admission".into(),
+            ));
+        }
+        invocation.accepted = true;
+    } else if matches!(reply, WindowPickerReply::Selected { .. }) {
+        return Err(PlatformError::InvalidResponse(
+            "native single-window picker returned an invalid target count".into(),
+        ));
+    }
+    Ok(reply)
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -91,7 +183,7 @@ struct WindowObservationCallbackContext {
     context_id: Uuid,
     source_registration_id: Uuid,
     observer_epoch: NonZeroU64,
-    window_id: u32,
+    receipt: TargetReceipt,
     sender: mpsc::Sender<WindowObservationEvent>,
 }
 
@@ -139,7 +231,7 @@ unsafe extern "C" fn window_observation_callback(json: *const c_char, context: *
         || event.context_id != context.context_id
         || event.source_registration_id != context.source_registration_id
         || event.observer_epoch != context.observer_epoch
-        || event.window_id != context.window_id
+        || event.receipt != context.receipt
     {
         return;
     }
@@ -199,6 +291,15 @@ async fn present_window_picker_for_operation(
 async fn present_window_picker_impl(
     operation_id: Uuid,
 ) -> Result<WindowPickerReply, PlatformError> {
+    let invocation = PickerInvocationGuard {
+        control: NativePickerInvocation {
+            operation_id: CString::new(operation_id.to_string())
+                .expect("UUID text contains no interior NUL"),
+            invocation_id: CString::new(Uuid::new_v4().to_string())
+                .expect("UUID text contains no interior NUL"),
+        },
+        accepted: false,
+    };
     let (sender, receiver) = oneshot::channel();
     let context = Box::new(PickerContext {
         sender: Some(sender),
@@ -207,13 +308,12 @@ async fn present_window_picker_impl(
 
     // SAFETY: The context remains owned by the callback when presentation succeeds. If
     // presentation fails synchronously, it is reconstructed below.
-    let operation_id =
-        CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
     // SAFETY: The UUID and callback context remain valid for the synchronous presentation
     // request. A successful request transfers callback-context ownership to native.
     let presented = unsafe {
-        lens_present_window_picker_for_operation(
-            operation_id.as_ptr(),
+        lens_present_window_picker_for_invocation(
+            invocation.control.operation_id.as_ptr(),
+            invocation.control.invocation_id.as_ptr(),
             picker_callback,
             raw_context,
         )
@@ -222,18 +322,16 @@ async fn present_window_picker_impl(
         // SAFETY: A failed presentation guarantees that the native side did not retain or call
         // the callback context.
         unsafe { drop(Box::from_raw(raw_context.cast::<PickerContext>())) };
-        return Err(PlatformError::PickerBusy);
+        return Err(PlatformError::Operation(
+            "native picker admission is unavailable or another picker is active".into(),
+        ));
     }
 
-    let json = receiver
-        .await
-        .map_err(|_| PlatformError::PickerCallbackDropped)?;
-    serde_json::from_str(&json)
-        .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
+    receive_picker_reply(receiver, invocation, operation_id).await
 }
 
 fn extract_window(
-    target: &SelectedWindow,
+    target: &LegacyWindow,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
     let title = CString::new(target.facts.title.as_str())
@@ -245,7 +343,7 @@ fn extract_window(
     // returns a malloc-owned NUL-terminated buffer, released with its matching free function.
     let raw = unsafe {
         lens_extract_window_json(
-            target.identity.pid,
+            target.pid,
             title.as_ptr(),
             application_name.as_ptr(),
             target.facts.frame.x,
@@ -270,23 +368,27 @@ fn extract_window(
         .into_owned();
     // SAFETY: The buffer was allocated by `PLCopyJSONString` and has not been freed yet.
     unsafe { lens_free_string(raw) };
-    serde_json::from_str(&json)
+    serde_json::from_str::<NativeExtractionResult>(&json)
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
+        .and_then(TryInto::try_into)
 }
 
 fn extract_registered_window(
-    operation_id: Uuid,
-    identity: &WindowIdentity,
+    read: TargetReadKey,
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
-    let operation_id =
-        CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
+    let operation_id = CString::new(read.target.operation_id.to_string())
+        .expect("UUID text contains no interior NUL");
+    let receipt = CString::new(Uuid::from(read.target.receipt).to_string())
+        .expect("UUID text contains no interior NUL");
+    let sequence = CString::new(String::from(read.sequence)).expect("decimal has no NUL");
     // SAFETY: The UUID remains valid for this blocking call. Native traverses only the AXWindow
     // retained under the exact operation/window identity and returns a malloc-owned JSON buffer.
     let raw = unsafe {
-        lens_extract_registered_window_json(
+        lens_extract_receipt_window_json(
             operation_id.as_ptr(),
-            identity.window_id,
+            receipt.as_ptr(),
+            sequence.as_ptr(),
             limits.max_nodes,
             limits.max_text_bytes,
             limits.max_resource_refs,
@@ -305,8 +407,9 @@ fn extract_registered_window(
         .into_owned();
     // SAFETY: This is the matching release for the native JSON response.
     unsafe { lens_free_string(raw) };
-    serde_json::from_str(&json)
+    serde_json::from_str::<NativeExtractionResult>(&json)
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
+        .and_then(TryInto::try_into)
 }
 
 fn start_window_observation(
@@ -323,6 +426,13 @@ fn start_window_observation(
     ),
     PlatformError,
 > {
+    if identity.operation_id != operation_id {
+        return Err(PlatformError::Operation(
+            "observation target belongs to another operation".into(),
+        ));
+    }
+    let receipt_text = CString::new(Uuid::from(identity.receipt).to_string())
+        .expect("UUID text contains no interior NUL");
     let operation_id_text =
         CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
     let context_id_text =
@@ -335,7 +445,7 @@ fn start_window_observation(
         context_id,
         source_registration_id,
         observer_epoch,
-        window_id: identity.window_id,
+        receipt: identity.receipt,
         sender,
     });
     let raw_context = (&mut *callback_context as *mut WindowObservationCallbackContext).cast();
@@ -343,12 +453,12 @@ fn start_window_observation(
     // SAFETY: The boxed context remains stable and Rust-owned until synchronous native stop.
     // Native installs every AXObserver registration and its run-loop source before returning.
     let raw = unsafe {
-        lens_start_window_observation_json(
+        lens_start_receipt_window_observation_json(
             operation_id_text.as_ptr(),
             context_id_text.as_ptr(),
             source_registration_id_text.as_ptr(),
             observer_epoch.get(),
-            identity.window_id,
+            receipt_text.as_ptr(),
             window_observation_callback,
             raw_context,
             &mut started,
@@ -408,11 +518,16 @@ fn start_window_observation(
     Ok((registration, receiver, start))
 }
 
-fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
+fn release_registered_window(
+    operation_id: Uuid,
+    receipt: TargetReceipt,
+) -> Result<(), PlatformError> {
     let operation_id =
         CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
-    // SAFETY: The UUID is valid for this synchronous main-thread-confined registry mutation.
-    if unsafe { lens_release_registered_window(operation_id.as_ptr(), window_id) } {
+    let receipt =
+        CString::new(Uuid::from(receipt).to_string()).expect("UUID text contains no interior NUL");
+    // SAFETY: The UUID strings are valid for this synchronous registry mutation.
+    if unsafe { lens_release_receipt_window(operation_id.as_ptr(), receipt.as_ptr()) } {
         Ok(())
     } else {
         Err(PlatformError::Operation(
@@ -452,6 +567,24 @@ impl ObservationRegistration for NativeObservationRegistration {
 }
 
 impl TargetSelection for MacOsPlatform {
+    fn open_operation(&self, operation_id: Uuid) -> Result<(), PlatformError> {
+        if operation_id.is_nil() {
+            return Err(PlatformError::Operation(
+                "operation identity must not be nil".into(),
+            ));
+        }
+        let operation_id =
+            CString::new(operation_id.to_string()).expect("UUID text contains no interior NUL");
+        // SAFETY: The owned UUID text remains live for the main-thread-confined operation open.
+        if unsafe { lens_open_window_operation(operation_id.as_ptr()) } {
+            Ok(())
+        } else {
+            Err(PlatformError::Operation(
+                "native selected-window operation could not be opened".into(),
+            ))
+        }
+    }
+
     fn pick(
         &self,
         operation_id: Uuid,
@@ -459,8 +592,12 @@ impl TargetSelection for MacOsPlatform {
         Box::pin(present_window_picker_for_operation(operation_id))
     }
 
-    fn release_target(&self, operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
-        release_registered_window(operation_id, window_id)
+    fn release_target(
+        &self,
+        operation_id: Uuid,
+        receipt: TargetReceipt,
+    ) -> Result<(), PlatformError> {
+        release_registered_window(operation_id, receipt)
     }
 
     fn release_operation(&self, operation_id: Uuid) -> Result<(), PlatformError> {
@@ -474,13 +611,14 @@ impl Accessibility for MacOsPlatform {
         target: ExtractionTarget,
         limits: ExtractionLimits,
     ) -> Result<ExtractionResult, PlatformError> {
-        match target {
-            ExtractionTarget::Registered {
-                operation_id,
-                identity,
-            } => extract_registered_window(operation_id, &identity, limits),
-            ExtractionTarget::Legacy(window) => extract_window(&window, limits),
-        }
+        let (result, expected) = match target {
+            ExtractionTarget::Registered { read } => {
+                (extract_registered_window(read, limits)?, Some(read))
+            }
+            ExtractionTarget::Legacy(window) => (extract_window(&window, limits)?, None),
+        };
+        super::validate_read(result.read, expected)?;
+        Ok(result)
     }
 }
 
@@ -502,12 +640,21 @@ impl Observation for MacOsPlatform {
 }
 
 impl AccessibilityTrust for MacOsPlatform {
-    fn inspect(&self) -> bool {
-        accessibility_is_trusted()
+    fn inspect(&self) -> port_platform::trust::AccessibilityAccess {
+        access_from_trust(accessibility_is_trusted())
     }
 
-    fn request(&self) -> bool {
-        request_accessibility_trust()
+    fn request(&self) -> port_platform::trust::AccessibilityAccess {
+        access_from_trust(request_accessibility_trust())
+    }
+}
+
+fn access_from_trust(trusted: bool) -> port_platform::trust::AccessibilityAccess {
+    use port_platform::trust::AccessibilityAccess;
+    if trusted {
+        AccessibilityAccess::Ready
+    } else {
+        AccessibilityAccess::PermissionRequired
     }
 }
 
@@ -515,13 +662,173 @@ impl AccessibilityTrust for MacOsPlatform {
 mod tests {
     use super::*;
 
+    struct TestPickerInvocation {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+        admission: bool,
+    }
+
+    impl PickerInvocationControl for TestPickerInvocation {
+        fn accept(&self) -> bool {
+            self.calls.lock().unwrap().push("accept");
+            self.admission
+        }
+
+        fn cancel(&self) {
+            self.calls.lock().unwrap().push("cancel");
+        }
+    }
+
+    fn test_invocation(admission: bool) -> PickerInvocationGuard<TestPickerInvocation> {
+        PickerInvocationGuard {
+            control: TestPickerInvocation {
+                calls: Default::default(),
+                admission,
+            },
+            accepted: false,
+        }
+    }
+
+    fn selected_reply() -> String {
+        serde_json::json!({
+            "status": "selected",
+            "windows": [{
+                "operation_id": Uuid::from_u128(1),
+                "receipt": Uuid::from_u128(17), "selection_ordinal": 1,
+                "application_id": "fixture",
+                "title": "fixture", "application_name": "fixture",
+                "frame": {"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0}
+            }]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn dropping_pending_or_delivered_picker_waiter_cancels_only_its_invocation() {
+        use std::future::Future;
+        for delivered in [false, true] {
+            let invocation = test_invocation(true);
+            let calls = invocation.control.calls.clone();
+            let (sender, receiver) = oneshot::channel();
+            let mut future = Box::pin(receive_picker_reply(
+                receiver,
+                invocation,
+                Uuid::from_u128(1),
+            ));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(future.as_mut().poll(&mut context).is_pending());
+            if delivered {
+                sender.send(selected_reply()).unwrap();
+            }
+            drop(future);
+            assert_eq!(*calls.lock().unwrap(), ["cancel"]);
+        }
+    }
+
+    #[test]
+    fn selected_reply_requires_live_native_admission_before_handoff() {
+        use std::future::Future;
+        for admitted in [false, true] {
+            let invocation = test_invocation(admitted);
+            let calls = invocation.control.calls.clone();
+            let (sender, receiver) = oneshot::channel();
+            sender.send(selected_reply()).unwrap();
+            let mut future = Box::pin(receive_picker_reply(
+                receiver,
+                invocation,
+                Uuid::from_u128(1),
+            ));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            let std::task::Poll::Ready(result) = future.as_mut().poll(&mut context) else {
+                panic!("delivered callback must complete without another await");
+            };
+            assert_eq!(result.is_ok(), admitted);
+            drop(future);
+            let expected = if admitted {
+                vec!["accept"]
+            } else {
+                vec!["accept", "cancel"]
+            };
+            assert_eq!(*calls.lock().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn picker_rejects_cross_operation_or_missing_ordinal_before_acceptance() {
+        use std::future::Future;
+        for (field, value) in [
+            ("operation_id", serde_json::json!(Uuid::from_u128(2))),
+            ("selection_ordinal", serde_json::json!(0)),
+            ("receipt", serde_json::json!(Uuid::nil())),
+        ] {
+            let invocation = test_invocation(true);
+            let calls = invocation.control.calls.clone();
+            let mut reply: serde_json::Value = serde_json::from_str(&selected_reply()).unwrap();
+            reply["windows"][0][field] = value;
+            let (sender, receiver) = oneshot::channel();
+            sender.send(reply.to_string()).unwrap();
+            let mut future = Box::pin(receive_picker_reply(
+                receiver,
+                invocation,
+                Uuid::from_u128(1),
+            ));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(matches!(
+                future.as_mut().poll(&mut context),
+                std::task::Poll::Ready(Err(_))
+            ));
+            drop(future);
+            assert_eq!(*calls.lock().unwrap(), ["cancel"]);
+        }
+    }
+
+    #[test]
+    fn unsuccessful_or_malformed_picker_results_never_accept_provisional_sources() {
+        use std::future::Future;
+        for response in [
+            None,
+            Some("invalid".to_string()),
+            Some(r#"{"status":"cancelled"}"#.to_string()),
+            Some(r#"{"status":"error","message":"fixture failure"}"#.to_string()),
+            Some(r#"{"status":"selected","windows":[]}"#.to_string()),
+        ] {
+            let invocation = test_invocation(true);
+            let calls = invocation.control.calls.clone();
+            let (sender, receiver) = oneshot::channel();
+            match response {
+                Some(response) => {
+                    sender.send(response).unwrap();
+                }
+                None => drop(sender),
+            }
+            let mut future = Box::pin(receive_picker_reply(
+                receiver,
+                invocation,
+                Uuid::from_u128(1),
+            ));
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(future.as_mut().poll(&mut context).is_ready());
+            drop(future);
+            assert_eq!(*calls.lock().unwrap(), ["cancel"]);
+        }
+    }
+
+    #[test]
+    fn native_trust_boolean_maps_only_to_macos_access_states() {
+        use port_platform::trust::AccessibilityAccess;
+        assert_eq!(access_from_trust(true), AccessibilityAccess::Ready);
+        assert_eq!(
+            access_from_trust(false),
+            AccessibilityAccess::PermissionRequired
+        );
+    }
+
     fn event() -> WindowObservationEvent {
         WindowObservationEvent {
             operation_id: Uuid::from_u128(1),
             context_id: Uuid::from_u128(2),
             source_registration_id: Uuid::from_u128(3),
             observer_epoch: NonZeroU64::MIN,
-            window_id: 17,
+            receipt: TargetReceipt::try_from(Uuid::from_u128(17)).unwrap(),
             notification: WindowObservationNotification::WindowTitleChanged,
         }
     }
@@ -535,7 +842,7 @@ mod tests {
             context_id: expected.context_id,
             source_registration_id: expected.source_registration_id,
             observer_epoch: expected.observer_epoch,
-            window_id: expected.window_id,
+            receipt: expected.receipt,
             sender,
         });
         let raw_context = (&mut *context as *mut WindowObservationCallbackContext).cast();
@@ -557,7 +864,7 @@ mod tests {
                 ..expected.clone()
             },
             WindowObservationEvent {
-                window_id: 18,
+                receipt: TargetReceipt::try_from(Uuid::from_u128(18)).unwrap(),
                 ..expected.clone()
             },
         ] {

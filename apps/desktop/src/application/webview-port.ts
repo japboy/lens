@@ -13,6 +13,41 @@ import type {
 
 export type Unlisten = () => void;
 
+export type AccessibilityAccess = { schema_version: 1 } & (
+  | { status: "ready" }
+  | { status: "permission_required"; action: "request_permission" }
+  | { status: "access_restricted" }
+  | { status: "unsupported" }
+  | { status: "failed"; message: string }
+);
+
+export function parseAccessibilityAccess(value: unknown): AccessibilityAccess {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("schema_version" in value) ||
+    value.schema_version !== 1 ||
+    !("status" in value)
+  ) {
+    throw new Error("Unsupported Accessibility access response");
+  }
+  switch (value.status) {
+    case "ready":
+    case "access_restricted":
+    case "unsupported":
+      if ("action" in value) break;
+      return { schema_version: 1, status: value.status };
+    case "permission_required":
+      if ("action" in value && value.action === "request_permission")
+        return { schema_version: 1, status: value.status, action: value.action };
+      break;
+    case "failed":
+      if (!("action" in value) && "message" in value && typeof value.message === "string")
+        return { schema_version: 1, status: value.status, message: value.message };
+  }
+  throw new Error("Unsupported Accessibility access response");
+}
+
 export interface AboutInfo {
   name: string;
   version: string;
@@ -50,8 +85,8 @@ export interface WebviewPort {
   ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
   getAppSnapshot(): Promise<AppSnapshot>;
-  getAccessibilityPermission(): Promise<boolean>;
-  requestAccessibilityPermission(): Promise<boolean>;
+  getAccessibilityPermission(): Promise<AccessibilityAccess>;
+  requestAccessibilityPermission(): Promise<AccessibilityAccess>;
   setAgent(agent: AgentKind): Promise<void>;
   authenticateAgentSelection(methodId: string): Promise<void>;
   reauthenticateAgentSelection(): Promise<void>;
@@ -102,8 +137,10 @@ export const tauriWebviewPort: WebviewPort = {
     return listen<AppSnapshot>("app-state-changed", ({ payload }) => listener(payload));
   },
   getAppSnapshot: () => invoke<AppSnapshot>("get_app_snapshot"),
-  getAccessibilityPermission: () => invoke<boolean>("accessibility_permission"),
-  requestAccessibilityPermission: () => invoke<boolean>("request_accessibility_permission"),
+  getAccessibilityPermission: async () =>
+    parseAccessibilityAccess(await invoke<unknown>("accessibility_permission")),
+  requestAccessibilityPermission: async () =>
+    parseAccessibilityAccess(await invoke<unknown>("request_accessibility_permission")),
   async setAgent(agent) {
     await invoke("set_agent", { agent });
   },

@@ -1,5 +1,38 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceApi {
+    MacosAx,
+    WindowsUia,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticKind {
+    Heading,
+    Text,
+    List,
+    ListItem,
+    Table,
+    Row,
+    Cell,
+    Link,
+    Control,
+    Dialog,
+    Region,
+    Paragraph,
+    Image,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodePurpose {
+    Content,
+    WindowChrome,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Bounds {
     pub x: f64,
@@ -16,13 +49,14 @@ pub struct ResourceReference {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WindowIdentity {
-    pub window_id: u32,
-    pub bundle_id: String,
-    pub pid: i32,
+    pub operation_id: uuid::Uuid,
+    pub receipt: uuid::Uuid,
+    pub selection_ordinal: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WindowObservableFacts {
+    pub application_id: String,
     pub title: String,
     pub application_name: String,
     pub frame: Bounds,
@@ -51,10 +85,13 @@ pub struct ExtractedNode {
     pub parent_id: Option<String>,
     pub order: usize,
     pub depth: usize,
+    pub source_api: SourceApi,
+    pub semantic_kind: SemanticKind,
+    pub node_purpose: NodePurpose,
     #[serde(default)]
-    pub role: Option<String>,
+    pub native_role: Option<String>,
     #[serde(default)]
-    pub subrole: Option<String>,
+    pub native_subrole: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -62,7 +99,7 @@ pub struct ExtractedNode {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub bounds: Option<Bounds>,
+    pub bounds: Option<crate::geometry::NodeBounds>,
     #[serde(default)]
     pub resource_refs: Vec<ResourceReference>,
     #[serde(default)]
@@ -92,6 +129,8 @@ pub struct ExtractionMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractionResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<crate::geometry::ReadGeometryDescriptor>,
     pub quality: ExtractionQuality,
     #[serde(default)]
     pub resolved_window: Option<ResolvedWindow>,
@@ -142,6 +181,25 @@ pub enum LensOutputBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extraction_requires_explicit_source_semantics_and_purpose() {
+        let value = serde_json::json!({
+            "id": "node", "order": 0, "depth": 0,
+            "source_api": "windows_uia", "semantic_kind": "unknown",
+            "node_purpose": "content", "native_role": "AXImage"
+        });
+        let node: ExtractedNode = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(node.semantic_kind, SemanticKind::Unknown);
+        for field in ["source_api", "semantic_kind", "node_purpose"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<ExtractedNode>(missing).is_err());
+            let mut unknown = value.clone();
+            unknown[field] = "future_value".into();
+            assert!(serde_json::from_value::<ExtractedNode>(unknown).is_err());
+        }
+    }
 
     #[test]
     fn output_block_serialization_is_tagged_and_self_describing() {

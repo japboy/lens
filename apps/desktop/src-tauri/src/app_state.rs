@@ -344,6 +344,21 @@ pub struct LensMediaStore {
 }
 
 impl LensMediaStore {
+    /// Remove only one provisional selection payload without replacing concurrent context media.
+    pub(crate) fn remove_uri_for_operation(
+        &self,
+        operation_id: Uuid,
+        uri: &str,
+    ) -> Result<(), String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Lens media store lock is poisoned".to_string())?;
+        if active.operation_id == Some(operation_id) {
+            active.payloads.retain(|_, payload| payload.uri != uri);
+        }
+        Ok(())
+    }
     pub fn begin(&self, operation_id: Uuid) -> Result<(), String> {
         let mut active = self
             .active
@@ -373,6 +388,7 @@ impl LensMediaStore {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub fn replace_context(
         &self,
         operation_id: Uuid,
@@ -437,6 +453,70 @@ impl LensMediaStore {
     }
 }
 
+/// Private operation-lifetime issuance. Lock order is runtime -> reads -> media;
+/// no guard survives a native call or await. The retained operation cannot be reset;
+/// production opens only fresh UUIDs, never caller-supplied or historical IDs.
+#[derive(Default)]
+pub(crate) struct ReadOperations {
+    active: Mutex<Option<(Uuid, usecase::acquisition::OperationReadState)>>,
+}
+
+impl ReadOperations {
+    pub(crate) fn is_open(&self, operation_id: Uuid) -> Result<bool, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "read issuer lock is poisoned")?;
+        Ok(active
+            .as_ref()
+            .is_some_and(|(id, issuer)| *id == operation_id && !issuer.is_closed()))
+    }
+
+    pub(crate) fn open(&self, operation_id: Uuid) -> Result<(), String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "read issuer lock is poisoned")?;
+        if active
+            .as_ref()
+            .is_some_and(|(id, issuer)| *id == operation_id || !issuer.is_closed())
+        {
+            return Err("read issuer already exists or a previous operation remains open".into());
+        }
+        let issuer = usecase::acquisition::OperationReadState::new(operation_id)
+            .map_err(|error| format!("read issuer open failed: {error:?}"))?;
+        *active = Some((operation_id, issuer));
+        Ok(())
+    }
+
+    pub(crate) fn close(&self, operation_id: Uuid) -> Result<(), String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "read issuer lock is poisoned")?;
+        if let Some((id, issuer)) = active.as_mut() {
+            if *id == operation_id {
+                issuer.close();
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        target: port_platform::authority::TargetAuthority,
+    ) -> Result<port_platform::authority::TargetReadKey, String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "read issuer lock is poisoned")?;
+        let (_, issuer) = active.as_mut().ok_or("read issuer is unavailable")?;
+        issuer
+            .reserve(target)
+            .map_err(|error| format!("read admission failed: {error:?}"))
+    }
+}
+
 pub struct AppState {
     pub platform: crate::platform::Services,
     pub session_controls: Mutex<Option<Arc<crate::session_controls::SessionControls>>>,
@@ -446,6 +526,8 @@ pub struct AppState {
     pub live_control: crate::live_runtime::LensLiveControl,
     pub lens_media: LensMediaStore,
     pub picker_control: PickerControl,
+    pub(crate) read_operations: ReadOperations,
+    pub(crate) read_workflow: AsyncMutex<()>,
     pub store: ConfigStore,
 }
 
@@ -480,6 +562,8 @@ impl AppState {
             live_control: crate::live_runtime::LensLiveControl::default(),
             lens_media: LensMediaStore::default(),
             picker_control: PickerControl::default(),
+            read_operations: ReadOperations::default(),
+            read_workflow: AsyncMutex::new(()),
             store,
         }
     }
@@ -666,13 +750,52 @@ pub fn commit_initial_lens_context<R: tauri::Runtime>(
     payloads: Vec<LensMediaPayload>,
 ) -> Result<bool, String> {
     validate_context_state(operation_id, &next)?;
+    commit_initial_state(app, operation_id, next, payloads)
+}
+
+/// A failed extraction still publishes only while its initial acquisition is live.
+pub(crate) fn commit_initial_lens_failure<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    next: LensState,
+    payloads: Vec<LensMediaPayload>,
+) -> Result<bool, String> {
+    if next.operation_id != Some(operation_id)
+        || next.stage != LensStage::Failed
+        || next.input.is_some()
+        || next.projection.is_some()
+        || !next
+            .context
+            .as_ref()
+            .is_some_and(|context| context.context_id == operation_id && context.revision > 0)
+    {
+        return Err("initial failure context is inconsistent".into());
+    }
+    next.target_set
+        .as_ref()
+        .ok_or("initial failure target set is absent")?
+        .validate()
+        .map_err(|error| error.to_string())?;
+    commit_initial_state(app, operation_id, next, payloads)
+}
+
+fn commit_initial_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    next: LensState,
+    payloads: Vec<LensMediaPayload>,
+) -> Result<bool, String> {
     let state = app.state::<AppState>();
     let (snapshot, sync_tray) = {
         let mut snapshot = state
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
-        if snapshot.lens.operation_id != Some(operation_id) || snapshot.lens.context.is_some() {
+        if snapshot.lens.operation_id != Some(operation_id)
+            || snapshot.lens.context.is_some()
+            || snapshot.lens.stage != LensStage::Extracting
+            || (next.live.is_some() && !state.read_operations.is_open(operation_id)?)
+        {
             return Ok(false);
         }
         let context_revision = next
@@ -722,6 +845,9 @@ pub(crate) fn commit_lens_context_refresh<R: tauri::Runtime>(
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
+        if !state.read_operations.is_open(operation_id)? {
+            return Ok(false);
+        }
         let Some(next) = prepare_context_refresh(
             &snapshot.lens,
             operation_id,
@@ -771,6 +897,7 @@ pub fn clear_lens_operation<R: tauri::Runtime>(
         if snapshot.lens.operation_id != Some(operation_id) {
             return Ok(false);
         }
+        state.read_operations.close(operation_id)?;
         let mut active = state
             .lens_media
             .active
@@ -925,6 +1052,33 @@ fn update_lens_state_if<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn read_issuance_survives_retries_and_cannot_reopen_a_closed_operation() {
+        use port_platform::authority::{ReadSequence, TargetAuthority};
+        let reads = super::ReadOperations::default();
+        let operation_id = uuid::Uuid::from_u128(1);
+        let target = TargetAuthority {
+            operation_id,
+            receipt: uuid::Uuid::from_u128(2).try_into().unwrap(),
+        };
+        reads.open(operation_id).unwrap();
+        let preview = reads.reserve(target).unwrap();
+        assert_eq!(preview.sequence, ReadSequence::FIRST);
+        assert!(reads.open(operation_id).is_err());
+        let retry = reads.reserve(target).unwrap();
+        assert_eq!(retry.sequence, preview.sequence.checked_next().unwrap());
+        reads.close(uuid::Uuid::from_u128(9)).unwrap();
+        assert_eq!(
+            reads.reserve(target).unwrap().sequence,
+            retry.sequence.checked_next().unwrap()
+        );
+        reads.close(operation_id).unwrap();
+        assert!(reads.reserve(target).is_err());
+        assert!(reads.open(operation_id).is_err());
+        reads.open(uuid::Uuid::from_u128(3)).unwrap();
+        assert!(reads.reserve(target).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -992,6 +1146,38 @@ mod tests {
         assert!(!store
             .replace(first, Vec::new())
             .expect("reject superseded payloads"));
+    }
+
+    #[test]
+    fn provisional_media_removal_preserves_other_payloads_and_context_revision() {
+        let store = LensMediaStore::default();
+        let operation = Uuid::new_v4();
+        let first = LensMediaPayload {
+            attachment_id: "first".into(),
+            uri: "lens://fixture/first".into(),
+            mime_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        };
+        let second = LensMediaPayload {
+            attachment_id: "second".into(),
+            uri: "lens://fixture/second".into(),
+            ..first.clone()
+        };
+        store.begin(operation).unwrap();
+        store
+            .replace_context(operation, 7, vec![first.clone(), second.clone()])
+            .unwrap();
+        store
+            .remove_uri_for_operation(Uuid::new_v4(), &first.uri)
+            .unwrap();
+        assert_eq!(store.payloads(operation).unwrap().len(), 2);
+        store
+            .remove_uri_for_operation(operation, &first.uri)
+            .unwrap();
+        assert_eq!(
+            store.payloads_for_context(operation, 7).unwrap(),
+            vec![second]
+        );
     }
 
     #[test]

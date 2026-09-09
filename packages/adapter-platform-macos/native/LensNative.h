@@ -37,8 +37,44 @@ bool lens_transition_window_frame(
 /* Legacy one-shot picker. It serializes metadata and owns no selected source. */
 bool lens_present_window_picker(LensPickerCallback callback, void *context);
 
+/* Explicit admission lifecycle. Open refuses an already open operation. */
+bool lens_open_window_operation(const char *operationID);
+/* A true start owns callback context until exactly one terminal callback, including cancel.
+ * Selected results remain provisional until accept; cancel never releases reviewed targets.
+ * There may be only one outstanding invocation per operation. No implicit open occurs.
+ */
+bool lens_present_window_picker_for_invocation(
+    const char *operationID, const char *invocationID,
+    LensPickerCallback callback, void *context
+);
+bool lens_accept_window_picker_invocation(const char *operationID, const char *invocationID);
+bool lens_cancel_window_picker_invocation(const char *operationID, const char *invocationID);
+
+/* Production registered authority is an opaque operation-scoped receipt, never a native ID.
+ * Extraction/capture replies include read {target,sequence} even when unavailable.
+ * readSequence is canonical nonzero decimal u64 text; invalid input returns NULL
+ * before source lookup. Legacy numeric wrappers do not imply this read contract.
+ * Invocation picker windows contain operation_id, receipt, selection_ordinal,
+ * application_id, title, application_name and frame; no native identity fields.
+ */
+char *lens_extract_receipt_window_json(
+    const char *operationID, const char *receipt, const char *readSequence, uint32_t maxNodes, uint32_t maxTextBytes,
+    uint32_t maxResourceRefs, uint32_t maxResourceURIBytes, uint32_t maxTotalResourceURIBytes
+);
+char *lens_capture_receipt_window_regions_json(
+    const char *operationID, const char *receipt, const char *readSequence, const char *requestsJSON,
+    uint32_t maxLongEdge, uint32_t maxPixels, uint32_t maxAttachmentBytes, uint32_t maxTotalBytes
+);
+char *lens_start_receipt_window_observation_json(
+    const char *operationID, const char *contextID, const char *sourceRegistrationID,
+    uint64_t observerEpoch, const char *receipt, LensWindowObservationCallback callback,
+    void *context, bool *startedOut
+);
+bool lens_release_receipt_window(const char *operationID, const char *receipt);
+
 /*
- * Operation-scoped picker. A successful callback stores the exact picker-returned
+ * Legacy operation-scoped picker, implicitly opens and accepts. Product callers use
+ * the explicit invocation lifecycle above. A successful callback stores the exact picker-returned
  * SCWindow under (operationID, windowID) until an explicit window/operation release.
  */
 bool lens_present_window_picker_for_operation(
@@ -133,8 +169,12 @@ bool lens_release_window_operation(const char *operationID);
 void lens_free_string(char *value);
 
 #if defined(LENS_NATIVE_TESTING)
+bool lens_test_pixel_geometry(void);
+bool lens_test_extraction_geometry_observation(void);
+bool lens_test_window_operation_lifecycle(void *screenCaptureWindow);
 /* Probe-only injection into the same registry path used by picker completion. */
 bool lens_test_store_picker_window(const char *operationID, void *screenCaptureWindow);
+char *lens_test_copy_picker_receipt(const char *operationID, uint32_t windowID);
 #endif
 
 #ifdef __cplusplus

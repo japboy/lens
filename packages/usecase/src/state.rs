@@ -136,6 +136,7 @@ pub fn validate_context_state(operation_id: Uuid, lens: &LensState) -> Result<()
         .target_set
         .as_ref()
         .ok_or_else(|| "canonical Lens state must contain a target set".to_string())?;
+    target_set.validate().map_err(|error| error.to_string())?;
     if context.revision == 0
         || target_set.selection_id != operation_id
         || input.context_id != context.context_id
@@ -157,8 +158,8 @@ pub fn validate_context_state(operation_id: Uuid, lens: &LensState) -> Result<()
                     || source.target_id != target.id
                     || source.source.application != target.facts.application_name
                     || source.source.window_title != target.facts.title
-                    || source.source.bundle_id != target.identity.bundle_id
-                    || source.source.window_id != target.identity.window_id
+                    || source.source.application_id != target.facts.application_id
+                    || source.source.receipt != target.identity.receipt
             })
     {
         return Err(
@@ -487,6 +488,7 @@ mod tests {
         use domain::{lens::LensTargetCapture, model::ExtractedNode};
         let targets = target_set(Uuid::from_u128(1), "Current");
         let capture = ExtractionResult {
+            geometry: None,
             quality: ExtractionQuality::Full,
             resolved_window: None,
             nodes: vec![ExtractedNode {
@@ -494,8 +496,11 @@ mod tests {
                 parent_id: None,
                 order: 0,
                 depth: 0,
-                role: Some("AXWindow".into()),
-                subrole: None,
+                source_api: domain::model::SourceApi::MacosAx,
+                semantic_kind: domain::model::SemanticKind::Region,
+                node_purpose: domain::model::NodePurpose::WindowChrome,
+                native_role: Some("AXWindow".into()),
+                native_subrole: None,
                 title: Some("Current".into()),
                 value: None,
                 description: None,
@@ -675,7 +680,7 @@ mod tests {
                 as fn(&mut LensContextRefreshCommit),
             |next| next.context.revision = 3,
             |next| next.target_set.selection_id = Uuid::from_u128(9),
-            |next| next.target_set.targets[0].identity.window_id += 1,
+            |next| next.target_set.targets[0].identity.receipt = Uuid::from_u128(99),
             |next| next.projection = projection_ref(2, 'b'),
             |next| next.outcome = LensContextRefreshOutcome::Updated,
             |next| next.input.context_revision = 1,
@@ -796,11 +801,12 @@ mod tests {
             operation_id,
             vec![crate::model::SelectedWindow {
                 identity: crate::model::WindowIdentity {
-                    window_id: 42,
-                    bundle_id: "example.browser".into(),
-                    pid: 100,
+                    operation_id,
+                    receipt: Uuid::from_u128(42),
+                    selection_ordinal: 1,
                 },
                 facts: crate::model::WindowObservableFacts {
+                    application_id: "example.browser".into(),
                     title: title.into(),
                     application_name: "Browser".into(),
                     frame: crate::model::Bounds {

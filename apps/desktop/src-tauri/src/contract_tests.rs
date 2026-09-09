@@ -1,4 +1,7 @@
-//! Byte-stable migration fixtures captured before splitting the backend workspace.
+//! Exact serialized contracts, originally captured before splitting the workspace.
+//! Current identity migration replaces native IDs with operation-scoped receipts,
+//! records application provenance as facts, and advances dependent schema versions.
+//! Projection bytes/digest change only with this deliberate public contract migration.
 use crate::lens::{LensContext, LensInput, LensMediaCapture, LensTargetCapture, LensTargetSet};
 use crate::live_sync::LensAgentProjection;
 use crate::model::{AppConfig, AppSnapshot, ExtractionResult, SelectedWindow};
@@ -11,29 +14,37 @@ use uuid::Uuid;
 
 fn contract_snapshot() -> Value {
     let window: SelectedWindow = serde_json::from_value(json!({
-        "window_id":7,"bundle_id":"example.browser","pid":42,
+        "operation_id":Uuid::from_u128(1),"receipt":Uuid::from_u128(17),"selection_ordinal":1,"application_id":"example.browser",
         "title":"Document","application_name":"Browser",
         "frame":{"x":0.0,"y":0.0,"width":100.0,"height":100.0}
     }))
     .unwrap();
+    let read = json!({"target":{"operation_id":Uuid::from_u128(1),"receipt":Uuid::from_u128(17)},"sequence":"18446744073709551615"});
     let extraction: ExtractionResult = serde_json::from_value(json!({
+        "geometry":{
+            "read":read,
+            "window":{"read":read,"frame":{"kind":"macos_desktop_points"},"rect":{"x":0.0,"y":0.0,"width":100.0,"height":100.0}},
+            "desktop_to_target":{"read":read,"source":{"kind":"macos_desktop_points"},"destination":{"kind":"target_logical","target":read["target"]},"scale_x":1.0,"scale_y":1.0,"translate_x":0.0,"translate_y":0.0}
+        },
         "quality":"full", "resolved_window":null,
         "nodes":[{
             "id":"node-000000","parent_id":null,"order":0,"depth":0,
-            "role":"AXWindow","subrole":null,"title":"Document","value":null,
-            "description":null,"bounds":{"x":0.0,"y":0.0,"width":100.0,"height":100.0},
+            "source_api":"macos_ax","semantic_kind":"region","node_purpose":"window_chrome",
+            "native_role":"AXWindow","native_subrole":null,"title":"Document","value":null,
+            "description":null,"bounds":{"kind":"registered","geometry":{"read":read,"frame":{"kind":"macos_desktop_points"},"rect":{"x":0.0,"y":0.0,"width":100.0,"height":100.0}}},
             "resource_refs":[],"children":["node-000001"]
         },{
             "id":"node-000001","parent_id":"node-000000","order":1,"depth":1,
-            "role":"AXStaticText","subrole":null,"title":null,"value":"A stable observation.",
+            "source_api":"macos_ax","semantic_kind":"text","node_purpose":"content",
+            "native_role":"AXStaticText","native_subrole":null,"title":null,"value":"A stable observation.",
             "description":null,"bounds":null,"resource_refs":[],"children":[]
         }],
         "text":"", "diagnostics":[]
     }))
     .unwrap();
-    let targets = LensTargetSet::try_new(Uuid::nil(), vec![window]).unwrap();
+    let targets = LensTargetSet::try_new(Uuid::from_u128(1), vec![window]).unwrap();
     let context = LensContext::from_captures(
-        Uuid::nil(),
+        Uuid::from_u128(1),
         &targets,
         vec![LensTargetCapture {
             accessibility: extraction,
@@ -83,7 +94,7 @@ fn contract_snapshot() -> Value {
 }
 
 #[test]
-fn serialized_contracts_match_the_pre_workspace_baseline() {
+fn serialized_contracts_match_the_versioned_workspace_fixture() {
     let actual = contract_snapshot();
     let expected: Value = serde_json::from_str(include_str!(
         "../../tests/fixtures/workspace-contracts.json"

@@ -2399,25 +2399,27 @@ mod tests {
     fn sample_input(source_text: &str) -> LensInput {
         LensInput {
             schema_version: LENS_INPUT_SCHEMA_VERSION,
-            context_id: Uuid::nil(),
+            context_id: Uuid::from_u128(1),
             context_revision: 1,
             sources: vec![LensInputSource {
-                source_id: "macos:com.apple.Safari:42:accessibility".into(),
-                target_id: "macos:com.apple.Safari:42".into(),
+                source_id: "target:00000000-0000-0000-0000-00000000002a:accessibility".into(),
+                target_id: "target:00000000-0000-0000-0000-00000000002a".into(),
                 source_revision: 1,
                 source: LensSource {
                     application: "Safari".into(),
                     window_title: "Document".into(),
-                    bundle_id: "com.apple.Safari".into(),
-                    window_id: 42,
+                    application_id: "com.apple.Safari".into(),
+                    receipt: Uuid::from_u128(42),
                 },
                 document: Some(LensDocumentProjection {
                     nodes: vec![LensContentNode {
                         id: "node-000000".into(),
                         parent_id: None,
                         kind: LensNodeKind::Text,
-                        role: None,
-                        subrole: None,
+                        source_api: crate::model::SourceApi::MacosAx,
+                        node_purpose: crate::model::NodePurpose::Content,
+                        native_role: None,
+                        native_subrole: None,
                         title: None,
                         value: Some(source_text.into()),
                         description: None,
@@ -2436,11 +2438,13 @@ mod tests {
 
     fn sample_media() -> (LensMediaAttachment, LensMediaPayload) {
         let attachment = LensMediaAttachment {
+            geometry: None,
+            desktop_geometry: None,
             id: "media-node-000001".into(),
-            target_id: "macos:com.apple.Safari:42".into(),
+            target_id: "target:00000000-0000-0000-0000-00000000002a".into(),
             uri: "lens://context/00000000-0000-0000-0000-000000000000/1/media/media-node-000001"
                 .into(),
-            scope: LensMediaScope::AxElementRegion,
+            scope: LensMediaScope::AccessibilityElementRegion,
             source_node_id: Some("node-000001".into()),
             source_bounds: Bounds {
                 x: 10.0,
@@ -2472,14 +2476,15 @@ mod tests {
 
     fn sample_target_set() -> LensTargetSet {
         LensTargetSet::try_new(
-            Uuid::nil(),
+            Uuid::from_u128(1),
             vec![SelectedWindow {
                 identity: WindowIdentity {
-                    window_id: 42,
-                    bundle_id: "com.apple.Safari".into(),
-                    pid: 100,
+                    operation_id: Uuid::from_u128(1),
+                    receipt: Uuid::from_u128(42),
+                    selection_ordinal: 1,
                 },
                 facts: WindowObservableFacts {
+                    application_id: "com.apple.Safari".into(),
                     title: "Document".into(),
                     application_name: "Safari".into(),
                     frame: Bounds {
@@ -2519,8 +2524,10 @@ mod tests {
                 id: "node-000001".into(),
                 parent_id: Some("node-000000".into()),
                 kind: LensNodeKind::Image,
-                role: Some("AXImage".into()),
-                subrole: None,
+                source_api: crate::model::SourceApi::MacosAx,
+                node_purpose: crate::model::NodePurpose::Content,
+                native_role: Some("AXImage".into()),
+                native_subrole: None,
                 title: None,
                 value: None,
                 description: Some("Quarterly chart".into()),
@@ -2541,7 +2548,7 @@ mod tests {
     fn sample_context(revision: u64) -> LensContext {
         LensContext {
             schema_version: LENS_CONTEXT_SCHEMA_VERSION,
-            context_id: Uuid::nil(),
+            context_id: Uuid::from_u128(1),
             revision,
             sources: vec![],
             media: vec![],
@@ -2928,7 +2935,7 @@ mod tests {
         let run_id = Uuid::from_u128(22);
         let old_representation = LensRepresentation {
             representation_id: Uuid::from_u128(10),
-            context_id: Uuid::nil(),
+            context_id: Uuid::from_u128(1),
             context_revision: 1,
             projection: old_projection,
             run_id: Uuid::from_u128(11),
@@ -2938,7 +2945,7 @@ mod tests {
             }],
         };
         let mut lens = LensState {
-            operation_id: Some(Uuid::nil()),
+            operation_id: Some(Uuid::from_u128(1)),
             stage: LensStage::Transforming,
             context: Some(sample_context(7)),
             projection: Some(target_projection.clone()),
@@ -2988,7 +2995,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id,
             },
             target_projection.clone(),
@@ -3038,7 +3045,7 @@ mod tests {
             text: "Initial representation".into(),
         }];
         let mut lens = LensState {
-            operation_id: Some(Uuid::nil()),
+            operation_id: Some(Uuid::from_u128(1)),
             stage: LensStage::Transforming,
             context: Some(sample_context(3)),
             projection: Some(target_projection.clone()),
@@ -3059,7 +3066,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id,
             },
             target_projection,
@@ -3084,7 +3091,7 @@ mod tests {
         let first_run_id = Uuid::from_u128(31);
         let second_run_id = Uuid::from_u128(32);
         let mut lens = LensState {
-            operation_id: Some(Uuid::nil()),
+            operation_id: Some(Uuid::from_u128(1)),
             stage: LensStage::Transforming,
             context: Some(sample_context(3)),
             projection: Some(latest_projection),
@@ -3103,7 +3110,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id: first_run_id,
             },
             first_projection.clone(),
@@ -3136,7 +3143,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id: second_run_id,
             },
             second_projection.clone(),
@@ -3167,7 +3174,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id: Uuid::from_u128(33),
             },
             first_projection,
@@ -3193,7 +3200,7 @@ mod tests {
         let run_id = Uuid::from_u128(22);
         let old_representation = LensRepresentation {
             representation_id: Uuid::from_u128(10),
-            context_id: Uuid::nil(),
+            context_id: Uuid::from_u128(1),
             context_revision: 1,
             projection: old_projection,
             run_id: Uuid::from_u128(11),
@@ -3203,7 +3210,7 @@ mod tests {
             }],
         };
         let mut lens = LensState {
-            operation_id: Some(Uuid::nil()),
+            operation_id: Some(Uuid::from_u128(1)),
             stage: LensStage::Transforming,
             context: Some(sample_context(2)),
             projection: Some(target_projection.clone()),
@@ -3228,7 +3235,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id,
             },
             target_projection,
@@ -3257,7 +3264,7 @@ mod tests {
         let run_id = Uuid::from_u128(22);
         let representation = LensRepresentation {
             representation_id: Uuid::from_u128(10),
-            context_id: Uuid::nil(),
+            context_id: Uuid::from_u128(1),
             context_revision: 1,
             projection: projection.clone(),
             run_id: Uuid::from_u128(11),
@@ -3267,7 +3274,7 @@ mod tests {
             }],
         };
         let mut lens = LensState {
-            operation_id: Some(Uuid::nil()),
+            operation_id: Some(Uuid::from_u128(1)),
             stage: LensStage::Transforming,
             context: Some(sample_context(1)),
             projection: Some(projection.clone()),
@@ -3287,7 +3294,7 @@ mod tests {
         finish_prompt_response(
             &mut lens,
             AgentRunKey {
-                operation_id: Uuid::nil(),
+                operation_id: Uuid::from_u128(1),
                 run_id,
             },
             projection,

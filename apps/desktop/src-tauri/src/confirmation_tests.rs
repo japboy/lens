@@ -84,15 +84,49 @@ impl Fixture {
     }
 }
 
+fn fixture_geometry(
+    read: port_platform::authority::TargetReadKey,
+) -> port_platform::geometry::ReadGeometryDescriptor {
+    use port_platform::geometry::{
+        AxisAlignedTransform, CoordinateFrame, ReadGeometryDescriptor, Rect, TaggedRect,
+    };
+    ReadGeometryDescriptor {
+        read,
+        window: TaggedRect {
+            read,
+            frame: CoordinateFrame::MacosDesktopPoints,
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                width: 400.0,
+                height: 300.0,
+            },
+        },
+        desktop_to_target: AxisAlignedTransform {
+            read,
+            source: CoordinateFrame::MacosDesktopPoints,
+            destination: CoordinateFrame::TargetLogical {
+                target: read.target,
+            },
+            scale_x: 1.0,
+            scale_y: 1.0,
+            translate_x: -10.0,
+            translate_y: -20.0,
+        },
+    }
+}
+
 impl Accessibility for Fixture {
     fn extract(
         &self,
         target: ExtractionTarget,
         limits: ExtractionLimits,
     ) -> Result<port_platform::model::ExtractionResult, PlatformError> {
-        assert!(
-            matches!(target, ExtractionTarget::Registered { operation_id: OPERATION, ref identity } if identity.window_id == 7)
-        );
+        let ExtractionTarget::Registered { read } = target else {
+            panic!("expected registered extraction")
+        };
+        assert_eq!(read.target.operation_id, OPERATION);
+        assert_eq!(Uuid::from(read.target.receipt), Uuid::from_u128(17));
         assert_eq!(limits.max_nodes, 30_000);
         self.record(Effect::Extract);
         if self.scenario == Scenario::StopDuringExtraction {
@@ -114,16 +148,20 @@ impl Accessibility for Fixture {
             return Err(PlatformError::Operation("fixture AX unavailable".into()));
         }
         Ok(serde_json::from_value(json!({
+            "read":read,
+            "geometry": fixture_geometry(read),
             "quality":"full", "resolved_window":{
-                "facts":{"title":"Observed document", "application_name":"Fixture",
+                "facts":{"application_id":"example.fixture","title":"Observed document", "application_name":"Fixture",
                     "frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}},
                 "resolution_score":1.0
             },
             "nodes":[
-                {"id":"text","parent_id":null,"order":0,"depth":0,"role":"AXStaticText",
+                {"id":"text","parent_id":null,"order":0,"depth":0,
+                 "source_api":"macos_ax","semantic_kind":"text","node_purpose":"content","native_role":"AXStaticText",
                  "value":"Fixture source text","bounds":null,"children":[]},
-                {"id":"image","parent_id":null,"order":1,"depth":0,"role":"AXImage",
-                 "description":"Fixture source image", "bounds":{"x":30.0,"y":40.0,"width":32.0,"height":32.0},"children":[]}
+                {"id":"image","parent_id":null,"order":1,"depth":0,
+                 "source_api":"macos_ax","semantic_kind":"image","node_purpose":"content","native_role":"AXImage",
+                 "description":"Fixture source image", "bounds":{"kind":"registered","geometry":{"read":read,"frame":{"kind":"macos_desktop_points"},"rect":{"x":30.0,"y":40.0,"width":32.0,"height":32.0}}},"children":[]}
             ], "text":"Fixture source text",
             "metrics":{"visited_nodes":2,"text_bytes":19,"resource_ref_count":0,"resource_uri_bytes":0,
                 "offscreen_text_nodes":0,"virtualization_signals":0,"truncated_nodes":false,
@@ -140,13 +178,11 @@ impl Capture for Fixture {
         requests: &[CaptureRequest],
         _: ImageCaptureLimits,
     ) -> Result<CaptureBatch, PlatformError> {
-        assert_eq!(
-            target,
-            CaptureTarget::Registered {
-                operation_id: OPERATION,
-                window_id: 7
-            }
-        );
+        let CaptureTarget::Registered { read } = target else {
+            panic!("expected registered capture")
+        };
+        assert_eq!(read.target.operation_id, OPERATION);
+        assert_eq!(Uuid::from(read.target.receipt), Uuid::from_u128(17));
         self.record(Effect::Capture);
         if self.scenario == Scenario::NativeUnavailable {
             return Err(PlatformError::Operation(
@@ -156,11 +192,41 @@ impl Capture for Fixture {
         assert_eq!(requests.len(), 1);
         let bounds = requests[0].bounds.unwrap();
         Ok(CaptureBatch {
+            capture: Some(port_platform::geometry::CaptureKey {
+                read,
+                capture_id: Uuid::from_u128(20),
+            }),
+            read: Some(read),
+            geometry: Some(fixture_geometry(read)),
+            window_bounds: Some(port_platform::model::Bounds {
+                x: 10.0,
+                y: 20.0,
+                width: 400.0,
+                height: 300.0,
+            }),
             captures: vec![CapturedImage {
                 attachment_id: requests[0].id.clone(),
                 source_bounds: bounds,
                 captured_bounds: bounds,
                 coverage: CaptureCoverage::FullRegion,
+                pixel_geometry: port_platform::geometry::CapturedPixelGeometry {
+                    original_extent: port_platform::geometry::PixelExtent {
+                        width: 400,
+                        height: 300,
+                    },
+                    crop: port_platform::geometry::PixelCrop {
+                        x: 20,
+                        y: 20,
+                        extent: port_platform::geometry::PixelExtent {
+                            width: 32,
+                            height: 32,
+                        },
+                    },
+                    encoded_extent: port_platform::geometry::PixelExtent {
+                        width: 32,
+                        height: 32,
+                    },
+                },
                 pixel_width: 32,
                 pixel_height: 32,
                 png: include_bytes!("../icons/32x32.png").to_vec(),
@@ -171,16 +237,26 @@ impl Capture for Fixture {
 }
 
 impl TargetSelection for Fixture {
+    fn open_operation(&self, _: Uuid) -> Result<(), PlatformError> {
+        panic!("confirmation must reuse the opened operation")
+    }
     fn pick(&self, _: Uuid) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>> {
         panic!("confirmation must reuse the selected target")
     }
-    fn release_target(&self, _: Uuid, _: u32) -> Result<(), PlatformError> {
+    fn release_target(
+        &self,
+        _: Uuid,
+        _: port_platform::authority::TargetReceipt,
+    ) -> Result<(), PlatformError> {
         panic!("confirmation must not replace an individual target")
     }
     fn release_operation(&self, operation: Uuid) -> Result<(), PlatformError> {
         assert_eq!(operation, OPERATION);
         self.record(Effect::Released);
-        if self.scenario == Scenario::StopDuringPrompt {
+        if matches!(
+            self.scenario,
+            Scenario::StopDuringPrompt | Scenario::StopDuringExtraction
+        ) {
             self.release_started.notify_one();
             let (lock, condition) = &self.finish_release;
             let (released, timeout) = condition
@@ -199,10 +275,10 @@ impl TargetSelection for Fixture {
     }
 }
 impl AccessibilityTrust for Fixture {
-    fn inspect(&self) -> bool {
-        true
+    fn inspect(&self) -> port_platform::trust::AccessibilityAccess {
+        port_platform::trust::AccessibilityAccess::Ready
     }
-    fn request(&self) -> bool {
+    fn request(&self) -> port_platform::trust::AccessibilityAccess {
         panic!("permission is already supplied")
     }
 }
@@ -236,7 +312,7 @@ impl Observation for Observer {
     fn observe(&self, request: ObservationRequest) -> Result<ObservationSession, PlatformError> {
         assert_eq!(request.operation_id, OPERATION);
         assert_eq!(request.context_id, OPERATION);
-        assert_eq!(request.identity.window_id, 7);
+        assert_eq!(Uuid::from(request.identity.receipt), Uuid::from_u128(17));
         self.0.record(Effect::Observe);
         if self.0.scenario == Scenario::ObserverUnavailable {
             return Err(PlatformError::Operation(
@@ -470,7 +546,8 @@ fn setup(scenario: Scenario) -> Harness {
         AppConfig::new("/fixture".into()),
     );
     state.lens_media.begin(OPERATION).unwrap();
-    let selected: SelectedWindow = serde_json::from_value(json!({"window_id":7,"bundle_id":"example.fixture","pid":42,
+    state.read_operations.open(OPERATION).unwrap();
+    let selected: SelectedWindow = serde_json::from_value(json!({"operation_id":OPERATION,"receipt":Uuid::from_u128(17),"selection_ordinal":1,"application_id":"example.fixture",
         "title":"Selected document","application_name":"Fixture","frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}})).unwrap();
     {
         let mut snapshot = state.runtime.write().unwrap();
@@ -486,7 +563,7 @@ fn setup(scenario: Scenario) -> Harness {
                 maximum_targets: crate::lens::MAX_LENS_TARGETS,
                 anchor: Some(selected.facts.frame),
                 items: vec![LensTargetSelectionItem {
-                    id: "macos:example.fixture:7".into(),
+                    id: "target:00000000-0000-0000-0000-000000000011".into(),
                     window: selected,
                     preview_uri: None,
                     preview_error: None,
@@ -839,7 +916,16 @@ fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
         .await
         .unwrap();
     });
-    invoke(&harness.window, "stop_lens");
+    let stop_window = harness.window.clone();
+    let stop = std::thread::spawn(move || invoke(&stop_window, "stop_lens"));
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            harness.fixture.release_started.notified(),
+        )
+        .await
+        .unwrap();
+    });
     let (lock, condition) = &harness.fixture.finish_extraction;
     *lock.lock().unwrap() = true;
     condition.notify_one();
@@ -848,6 +934,21 @@ fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
         .unwrap();
     invocation.join().unwrap();
     assert!(result.is_err());
+    assert_eq!(
+        harness.app.state::<AppState>().lens().unwrap().stage,
+        LensStage::Cancelled
+    );
+    assert!(harness
+        .app
+        .state::<AppState>()
+        .lens()
+        .unwrap()
+        .context
+        .is_none());
+    let (lock, condition) = &harness.fixture.finish_release;
+    *lock.lock().unwrap() = true;
+    condition.notify_one();
+    stop.join().unwrap();
     assert_eq!(
         harness.app.state::<AppState>().lens().unwrap(),
         LensState::default()

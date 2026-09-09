@@ -33,6 +33,32 @@ static NSDictionary *_Nullable LensJSONObjectFromOwnedCString(char *_Nullable js
     return [object isKindOfClass:NSDictionary.class] ? object : nil;
 }
 
+static BOOL LensReceiptAuthorityMatches(NSDictionary *reply, NSString *receipt) {
+    NSDictionary *read = reply[@"read"];
+    NSDictionary *authority = read[@"target"];
+    return [authority[@"operation_id"] isEqual:LensIntegrationOperationID]
+        && [authority[@"receipt"] isEqual:receipt]
+        && [read[@"sequence"] isEqual:@"1"];
+}
+
+static BOOL LensRejectsInvalidReadSequences(void) {
+    const char *invalid[] = { NULL, "", "0", "01", "+1", "-1", " 1", "1 ", "1.0", "1e0", "18446744073709551616" };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        char *extraction = lens_extract_receipt_window_json(LensIntegrationOperationID.UTF8String,
+            "00000000-0000-0000-0000-000000000011", invalid[i], 1, 1, 1, 1, 1);
+        char *capture = lens_capture_receipt_window_regions_json(LensIntegrationOperationID.UTF8String,
+            "00000000-0000-0000-0000-000000000011", invalid[i], "[]", 1, 1, 1, 1);
+        BOOL rejected = extraction == NULL && capture == NULL;
+        lens_free_string(extraction);
+        lens_free_string(capture);
+        if (!rejected) return NO;
+    }
+    NSDictionary *maximum = LensJSONObjectFromOwnedCString(lens_extract_receipt_window_json(
+        LensIntegrationOperationID.UTF8String, "00000000-0000-0000-0000-000000000011",
+        "18446744073709551615", 1, 1, 1, 1, 1));
+    return [maximum[@"read"][@"sequence"] isEqual:@"18446744073709551615"];
+}
+
 static BOOL LensPNGHasGreenCenterPixel(NSData *png, NSArray<NSNumber *> **rgbaOut) {
     NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:png];
     if (bitmap == nil || bitmap.pixelsWide == 0 || bitmap.pixelsHigh == 0) {
@@ -91,6 +117,7 @@ static void LensNativeIntegrationObservationCallback(
 @property(nonatomic, strong) NSTask *targetTask;
 @property(nonatomic, strong) SCWindow *selectedWindow;
 @property(nonatomic, assign) CGWindowID selectedWindowID;
+@property(nonatomic, copy) NSString *selectedReceipt;
 @property(nonatomic, assign) CGRect selectedFrame;
 @property(nonatomic, assign) NSUInteger selectionAttempts;
 @property(nonatomic, assign) NSUInteger promotionAttempts;
@@ -221,12 +248,25 @@ static void LensNativeIntegrationObservationCallback(
             }
             self.selectedWindowID = self.selectedWindow.windowID;
             self.selectedFrame = self.selectedWindow.frame;
+            if (!lens_test_window_operation_lifecycle((__bridge void *)self.selectedWindow)) {
+                self.failure = @"The deterministic operation admission lifecycle failed.";
+                [self finish];
+                return;
+            }
             BOOL stored = lens_test_store_picker_window(
                 LensIntegrationOperationID.UTF8String,
                 (__bridge void *)self.selectedWindow
             );
             if (!stored) {
                 self.failure = @"The product picker registry rejected the controlled SCWindow.";
+                [self finish];
+                return;
+            }
+            char *receipt = lens_test_copy_picker_receipt(LensIntegrationOperationID.UTF8String, self.selectedWindowID);
+            self.selectedReceipt = receipt == NULL ? nil : [NSString stringWithUTF8String:receipt];
+            lens_free_string(receipt);
+            if (self.selectedReceipt.length == 0) {
+                self.failure = @"The retained target did not receive an opaque receipt.";
                 [self finish];
                 return;
             }
@@ -242,9 +282,10 @@ static void LensNativeIntegrationObservationCallback(
     self.promotionAttempts += 1;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *reply = LensJSONObjectFromOwnedCString(
-            lens_extract_registered_window_json(
+            lens_extract_receipt_window_json(
                 LensIntegrationOperationID.UTF8String,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
+                "1",
                 128,
                 32768,
                 16,
@@ -255,6 +296,7 @@ static void LensNativeIntegrationObservationCallback(
         NSDictionary *resolvedWindow = reply[@"resolved_window"];
         NSArray<NSString *> *diagnostics = reply[@"diagnostics"];
         BOOL promoted = [resolvedWindow isKindOfClass:NSDictionary.class]
+            && LensReceiptAuthorityMatches(reply, self.selectedReceipt)
             && [diagnostics containsObject:
                 @"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -289,12 +331,12 @@ static void LensNativeIntegrationObservationCallback(
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         bool started = false;
         NSDictionary *reply = LensJSONObjectFromOwnedCString(
-            lens_start_window_observation_json(
+            lens_start_receipt_window_observation_json(
                 LensIntegrationOperationID.UTF8String,
                 LensIntegrationContextID.UTF8String,
                 LensIntegrationSourceID.UTF8String,
                 LensIntegrationObserverEpoch,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
                 LensNativeIntegrationObservationCallback,
                 (__bridge void *)self,
                 &started
@@ -349,7 +391,8 @@ static void LensNativeIntegrationObservationCallback(
         && [event[@"context_id"] isEqualToString:LensIntegrationContextID]
         && [event[@"source_registration_id"] isEqualToString:LensIntegrationSourceID]
         && [event[@"observer_epoch"] unsignedLongLongValue] == self.expectedObserverEpoch
-        && [event[@"window_id"] unsignedIntValue] == self.selectedWindowID;
+        && [event[@"receipt"] isEqualToString:self.selectedReceipt]
+        && event[@"window_id"] == nil && event[@"pid"] == nil;
     self.authorityValid = self.authorityValid && eventAuthorityValid;
     if (self.callbackEvents.count < 16) {
         [self.callbackEvents addObject:event];
@@ -384,9 +427,10 @@ static void LensNativeIntegrationObservationCallback(
 - (void)runRegisteredRefreshAndCapture {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *extraction = LensJSONObjectFromOwnedCString(
-            lens_extract_registered_window_json(
+            lens_extract_receipt_window_json(
                 LensIntegrationOperationID.UTF8String,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
+                "1",
                 128,
                 32768,
                 16,
@@ -410,6 +454,9 @@ static void LensNativeIntegrationObservationCallback(
                 || fabs(observedFrame.origin.y - self.selectedFrame.origin.y) > 1.0);
         self.registeredRefreshSucceeded =
             [resolvedWindow isKindOfClass:NSDictionary.class]
+            && LensReceiptAuthorityMatches(extraction, self.selectedReceipt)
+            && [extraction[@"geometry_observation"][@"before"] isEqual:facts[@"frame"]]
+            && [extraction[@"geometry_observation"][@"after"] isEqual:facts[@"frame"]]
             && exactDiagnostic
             && self.registeredTitleCurrent
             && self.registeredFrameCurrent;
@@ -439,9 +486,10 @@ static void LensNativeIntegrationObservationCallback(
             initWithData:requestsData
             encoding:NSUTF8StringEncoding];
         NSDictionary *capture = LensJSONObjectFromOwnedCString(
-            lens_capture_registered_window_regions_json(
+            lens_capture_receipt_window_regions_json(
                 LensIntegrationOperationID.UTF8String,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
+                "1",
                 requestsJSON.UTF8String,
                 2048,
                 4194304,
@@ -467,17 +515,31 @@ static void LensNativeIntegrationObservationCallback(
             &capturedBoundsValid
         );
         self.captureWindowBoundsCurrent = captureWindowFrameValid
-            && LensIntegrationFramesEqual(captureWindowFrame, observedFrame);
+            && LensIntegrationFramesEqual(captureWindowFrame, observedFrame)
+            && [capture[@"geometry_observation"] isKindOfClass:NSDictionary.class]
+            && [capture[@"geometry_observation"][@"before"] isEqual:capture[@"window_bounds"]]
+            && [capture[@"geometry_observation"][@"after"] isEqual:capture[@"window_bounds"]];
         self.captureRegionGeometryCurrent = sourceBoundsValid
             && capturedBoundsValid
             && LensIntegrationFramesEqual(sourceBounds, requestedRegion)
             && LensIntegrationFramesEqual(capturedBounds, requestedRegion)
             && [firstCapture[@"coverage"] isEqualToString:@"full_region"];
+        NSDictionary *pixels = firstCapture[@"pixel_geometry"];
+        NSDictionary *original = pixels[@"original_extent"], *crop = pixels[@"crop"];
+        NSDictionary *extent = crop[@"extent"], *encoded = pixels[@"encoded_extent"];
+        self.captureRegionGeometryCurrent = self.captureRegionGeometryCurrent
+            && [original[@"width"] unsignedLongLongValue] > 0 && [original[@"height"] unsignedLongLongValue] > 0
+            && [extent[@"width"] unsignedLongLongValue] > 0 && [extent[@"height"] unsignedLongLongValue] > 0
+            && [crop[@"x"] unsignedLongLongValue] + [extent[@"width"] unsignedLongLongValue] <= [original[@"width"] unsignedLongLongValue]
+            && [crop[@"y"] unsignedLongLongValue] + [extent[@"height"] unsignedLongLongValue] <= [original[@"height"] unsignedLongLongValue]
+            && [encoded[@"width"] isEqual:firstCapture[@"pixel_width"]]
+            && [encoded[@"height"] isEqual:firstCapture[@"pixel_height"]];
         NSData *png = [[NSData alloc]
             initWithBase64EncodedString:firstCapture[@"data"] ?: @""
                              options:0];
         self.registeredCaptureSucceeded =
             captures.count == 1
+            && LensReceiptAuthorityMatches(capture, self.selectedReceipt)
             && [firstCapture[@"attachment_id"] isEqualToString:@"probe-region"]
             && [firstCapture[@"mime_type"] isEqualToString:@"image/png"]
             && self.captureWindowBoundsCurrent
@@ -529,9 +591,10 @@ static void LensNativeIntegrationObservationCallback(
     }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *afterStop = LensJSONObjectFromOwnedCString(
-            lens_extract_registered_window_json(
+            lens_extract_receipt_window_json(
                 LensIntegrationOperationID.UTF8String,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
+                "1",
                 32,
                 4096,
                 4,
@@ -543,6 +606,7 @@ static void LensNativeIntegrationObservationCallback(
         NSDictionary *facts = resolvedWindow[@"facts"];
         NSArray<NSString *> *diagnostics = afterStop[@"diagnostics"];
         BOOL retained = [resolvedWindow isKindOfClass:NSDictionary.class]
+            && LensReceiptAuthorityMatches(afterStop, self.selectedReceipt)
             && [facts[@"title"] isEqualToString:LensIntegrationAfterStopTitle]
             && [diagnostics containsObject:
                 @"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
@@ -562,12 +626,12 @@ static void LensNativeIntegrationObservationCallback(
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         bool started = false;
         NSDictionary *reply = LensJSONObjectFromOwnedCString(
-            lens_start_window_observation_json(
+            lens_start_receipt_window_observation_json(
                 LensIntegrationOperationID.UTF8String,
                 LensIntegrationContextID.UTF8String,
                 LensIntegrationSourceID.UTF8String,
                 LensIntegrationResumeObserverEpoch,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
                 LensNativeIntegrationObservationCallback,
                 (__bridge void *)self,
                 &started
@@ -600,9 +664,10 @@ static void LensNativeIntegrationObservationCallback(
     }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *refresh = LensJSONObjectFromOwnedCString(
-            lens_extract_registered_window_json(
+            lens_extract_receipt_window_json(
                 LensIntegrationOperationID.UTF8String,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
+                "1",
                 32,
                 4096,
                 4,
@@ -613,6 +678,9 @@ static void LensNativeIntegrationObservationCallback(
         NSDictionary *facts = refresh[@"resolved_window"][@"facts"];
         NSArray<NSString *> *diagnostics = refresh[@"diagnostics"];
         BOOL current = [facts[@"title"] isEqualToString:LensIntegrationResumeTitle]
+            && [refresh[@"geometry_observation"][@"before"] isEqual:facts[@"frame"]]
+            && [refresh[@"geometry_observation"][@"after"] isEqual:facts[@"frame"]]
+            && LensReceiptAuthorityMatches(refresh, self.selectedReceipt)
             && [diagnostics containsObject:
                 @"Extraction used the exact promoted AXWindow without heuristic re-resolution."];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -653,15 +721,16 @@ static void LensNativeIntegrationObservationCallback(
     if (self.finished) {
         return;
     }
-    BOOL released = lens_release_registered_window(
+    BOOL released = lens_release_receipt_window(
         LensIntegrationOperationID.UTF8String,
-        self.selectedWindowID
+        self.selectedReceipt.UTF8String
     );
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSDictionary *afterRelease = LensJSONObjectFromOwnedCString(
-            lens_extract_registered_window_json(
+            lens_extract_receipt_window_json(
                 LensIntegrationOperationID.UTF8String,
-                self.selectedWindowID,
+                self.selectedReceipt.UTF8String,
+                "1",
                 32,
                 4096,
                 4,
@@ -671,6 +740,7 @@ static void LensNativeIntegrationObservationCallback(
         );
         NSArray<NSString *> *diagnostics = afterRelease[@"diagnostics"];
         BOOL unavailable = released
+            && LensReceiptAuthorityMatches(afterRelease, self.selectedReceipt)
             && [afterRelease[@"quality"] isEqualToString:@"unavailable"]
             && [diagnostics containsObject:
                 @"The exact operation-scoped selected window is unavailable."];
@@ -840,6 +910,21 @@ static int LensRunControlledTarget(void) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 2 && strcmp(argv[1], "--extraction-geometry-contract") == 0) {
+            BOOL passed = lens_test_extraction_geometry_observation();
+            puts(passed ? "{\"extraction_geometry_contract\":\"passed\",\"native_screen_acquisition\":false}" : "{\"extraction_geometry_contract\":\"failed\"}");
+            return passed ? 0 : 1;
+        }
+        if (argc == 2 && strcmp(argv[1], "--pixel-geometry-contract") == 0) {
+            BOOL passed = lens_test_pixel_geometry();
+            puts(passed ? "{\"pixel_geometry_contract\":\"passed\",\"native_screen_acquisition\":false}" : "{\"pixel_geometry_contract\":\"failed\"}");
+            return passed ? 0 : 1;
+        }
+        if (!LensRejectsInvalidReadSequences()) return 1;
+        if (argc == 2 && strcmp(argv[1], "--read-sequence-contract") == 0) {
+            puts("{\"read_sequence_contract\":\"passed\",\"native_source_acquisition\":false}");
+            return 0;
+        }
         if (argc == 2 && strcmp(argv[1], "--controlled-target") == 0) {
             return LensRunControlledTarget();
         }

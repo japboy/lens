@@ -11,6 +11,8 @@ use usecase::confirm_targets;
 mod contract_tests;
 use usecase::elicitation;
 mod live_runtime;
+#[cfg(debug_assertions)]
+mod live_validation;
 pub use usecase::live_sync;
 #[cfg(test)]
 mod confirmation_tests;
@@ -95,12 +97,100 @@ fn command_handler<R: tauri::Runtime>(
     ]
 }
 
+fn live_source_mode(
+    value: Option<&std::ffi::OsStr>,
+    debug: bool,
+    names: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<bool, String> {
+    let Some(value) = value else { return Ok(false) };
+    if !debug {
+        return Err("Live source validation requires a debug build".into());
+    }
+    if value != "1" {
+        return Err("LENS_VALIDATE_LIVE_SOURCE must be 1".into());
+    }
+    for name in names {
+        let name = name.to_string_lossy();
+        if (name.starts_with("LENS_VALIDATE_") && name != "LENS_VALIDATE_LIVE_SOURCE")
+            || name == "LENS_DEBUG_SETTINGS"
+        {
+            return Err(format!("Conflicting live validation mode: {name}"));
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod live_source_mode_tests {
+    use super::live_source_mode;
+    use std::ffi::{OsStr, OsString};
+
+    #[test]
+    fn live_mode_requires_explicit_debug_opt_in() {
+        assert_eq!(live_source_mode(None, false, std::iter::empty()), Ok(false));
+        assert_eq!(
+            live_source_mode(Some(OsStr::new("1")), true, std::iter::empty()),
+            Ok(true)
+        );
+        assert!(live_source_mode(Some(OsStr::new("1")), false, std::iter::empty()).is_err());
+        for value in ["", "0", "true"] {
+            assert!(live_source_mode(Some(OsStr::new(value)), true, std::iter::empty()).is_err());
+        }
+    }
+
+    #[test]
+    fn live_mode_rejects_other_validation_paths() {
+        for name in [
+            "LENS_VALIDATE_ACP",
+            "LENS_VALIDATE_TARGET",
+            "LENS_VALIDATE_FUTURE",
+            "LENS_DEBUG_SETTINGS",
+        ] {
+            assert!(live_source_mode(
+                Some(OsStr::new("1")),
+                true,
+                [OsString::from(name)].into_iter()
+            )
+            .is_err());
+        }
+        assert_eq!(
+            live_source_mode(
+                Some(OsStr::new("1")),
+                true,
+                [OsString::from("LENS_VALIDATE_LIVE_SOURCE")].into_iter()
+            ),
+            Ok(true)
+        );
+    }
+}
+
 /// Shared shell implementation. Product entry points still admit only supported native targets.
 pub fn run_with_runtime<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
     services: platform::Services,
     presentation: platform::Presentation<R>,
 ) {
+    let validate_live_source = live_source_mode(
+        std::env::var_os("LENS_VALIDATE_LIVE_SOURCE").as_deref(),
+        cfg!(debug_assertions),
+        std::env::vars_os().map(|(name, _)| name),
+    )
+    .expect("invalid live source validation configuration");
+    #[cfg(debug_assertions)]
+    let live_journal = std::sync::Arc::new(live_validation::ports::Journal::default());
+    #[cfg(debug_assertions)]
+    let services = if validate_live_source {
+        live_validation::ports::instrument(services, live_journal.clone())
+    } else {
+        services
+    };
+    let agents = agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost));
+    #[cfg(debug_assertions)]
+    let agents = if validate_live_source {
+        live_validation::agent::services(live_journal.clone())
+    } else {
+        agents
+    };
     let validate_interactions =
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
     let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();
@@ -128,15 +218,42 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         .ok()
         .and_then(|value| value.parse::<u64>().ok());
     let validation_target = std::env::var("LENS_VALIDATE_TARGET").ok().map(|json| {
-        serde_json::from_str::<model::SelectedWindow>(&json)
-            .expect("LENS_VALIDATE_TARGET must be a SelectedWindow JSON object")
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyValidationTarget {
+            window_id: u32,
+            pid: i32,
+            bundle_id: String,
+            title: String,
+            application_name: String,
+            frame: model::Bounds,
+        }
+        let native: LegacyValidationTarget = serde_json::from_str(&json)
+            .expect("LENS_VALIDATE_TARGET must be an explicit legacy validation address");
+        (
+            model::SelectedWindow {
+                identity: model::WindowIdentity {
+                    operation_id: uuid::Uuid::new_v4(),
+                    receipt: uuid::Uuid::new_v4(),
+                    selection_ordinal: 1,
+                },
+                facts: model::WindowObservableFacts {
+                    application_id: native.bundle_id,
+                    title: native.title,
+                    application_name: native.application_name,
+                    frame: native.frame,
+                },
+            },
+            native.window_id,
+            native.pid,
+        )
     });
     configure_shell(
         builder,
         app_state::AppState::load(services),
         presentation,
         ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
-        agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost)),
+        agents,
     )
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -165,6 +282,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 && !validate_rich_output
                 && !validate_target_selection
                 && !validate_interactions
+                && !validate_live_source
             {
                 let handle = app.handle().clone();
                 let preferred_agent = handle
@@ -181,14 +299,18 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 });
             }
             let state = app.state::<app_state::AppState>();
-            if !validate_rich_output && !state.platform.trust.inspect() {
-                state.platform.trust.request();
+            if !validate_rich_output {
+                usecase::platform::request_accessibility_access(state.platform.trust.as_ref());
             }
             Ok(())
         })
         .build(product_context())
         .expect("failed to build Lens")
         .run(move |app, event| match event {
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if validate_live_source => {
+                live_validation::launch(app.clone(), live_journal.clone());
+            }
             #[cfg(debug_assertions)]
             tauri::RunEvent::Ready if std::env::var_os("LENS_DEBUG_SETTINGS").is_some() => {
                 if let Err(error) = ui::show_settings(app) {
@@ -271,7 +393,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                         }
                     }
                     let extraction_result = match target {
-                        Some(target) => commands::extract_target(handle.clone(), target).await,
+                        Some((target, window_id, pid)) => commands::extract_target(handle.clone(), target, window_id, pid).await,
                         None => commands::select_and_extract(handle.clone()).await,
                     };
                     let result = match extraction_result {
@@ -445,11 +567,12 @@ async fn show_target_selection_validation<R: tauri::Runtime>(
                 id: format!("validation-{ordinal}"),
                 window: model::SelectedWindow {
                     identity: model::WindowIdentity {
-                        window_id: ordinal,
-                        bundle_id: "com.github.japboy.lens.fixture".into(),
-                        pid: std::process::id() as i32,
+                        operation_id,
+                        receipt: uuid::Uuid::new_v4(),
+                        selection_ordinal: ordinal,
                     },
                     facts: model::WindowObservableFacts {
+                        application_id: "com.github.japboy.lens.fixture".into(),
                         title: format!("Preview fixture {ordinal}"),
                         application_name: "Lens Fixture".into(),
                         frame,
@@ -482,11 +605,12 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
     let second_input_image = include_bytes!("../icons/128x128.png");
     let target = model::SelectedWindow {
         identity: model::WindowIdentity {
-            window_id: 0,
-            bundle_id: "com.github.japboy.lens.fixture".into(),
-            pid: std::process::id() as i32,
+            operation_id,
+            receipt: uuid::Uuid::new_v4(),
+            selection_ordinal: 1,
         },
         facts: model::WindowObservableFacts {
+            application_id: "com.github.japboy.lens.fixture".into(),
             title: "Rich output validation".into(),
             application_name: "Lens Fixture".into(),
             frame: model::Bounds {
@@ -503,10 +627,12 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
     let first_attachment_id = "media-node-000001".to_string();
     let first_media_uri = format!("lens://context/{operation_id}/1/media/{first_attachment_id}");
     let first_attachment = lens::LensMediaAttachment {
+        geometry: None,
+        desktop_geometry: None,
         id: first_attachment_id.clone(),
         target_id: target_id.clone(),
         uri: first_media_uri.clone(),
-        scope: lens::LensMediaScope::AxElementRegion,
+        scope: lens::LensMediaScope::AccessibilityElementRegion,
         source_node_id: Some("node-000001".into()),
         source_bounds: model::Bounds {
             x: 240.0,
@@ -530,10 +656,12 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
     let second_attachment_id = "media-node-000002".to_string();
     let second_media_uri = format!("lens://context/{operation_id}/1/media/{second_attachment_id}");
     let second_attachment = lens::LensMediaAttachment {
+        geometry: None,
+        desktop_geometry: None,
         id: second_attachment_id.clone(),
         target_id: target_id.clone(),
         uri: second_media_uri.clone(),
-        scope: lens::LensMediaScope::AxElementRegion,
+        scope: lens::LensMediaScope::AccessibilityElementRegion,
         source_node_id: Some("node-000002".into()),
         source_bounds: model::Bounds {
             x: 540.0,
@@ -560,14 +688,12 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
         context_id: operation_id,
         revision: 1,
         sources: vec![lens::LensAccessibilitySource {
-            source_id: format!(
-                "macos:{}:{}:accessibility",
-                target.identity.bundle_id, target.identity.window_id
-            ),
+            source_id: format!("{}:accessibility", lens::target_id(&target)),
             target_id: target_id.clone(),
             revision: 1,
             source: source.clone(),
             capture: model::ExtractionResult {
+                geometry: None,
                 quality: model::ExtractionQuality::Full,
                 resolved_window: None,
                 nodes: Vec::new(),
@@ -595,10 +721,7 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
         context_id: operation_id,
         context_revision: 1,
         sources: vec![lens::LensInputSource {
-            source_id: format!(
-                "macos:{}:{}:accessibility",
-                target.identity.bundle_id, target.identity.window_id
-            ),
+            source_id: format!("{}:accessibility", lens::target_id(&target)),
             target_id,
             source_revision: 1,
             source,
@@ -608,8 +731,10 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
                         id: "node-000001".into(),
                         parent_id: None,
                         kind: lens::LensNodeKind::Image,
-                        role: Some("AXImage".into()),
-                        subrole: None,
+                        source_api: model::SourceApi::MacosAx,
+                        node_purpose: model::NodePurpose::Content,
+                        native_role: Some("AXImage".into()),
+                        native_subrole: None,
                         title: Some("Lens validation icon".into()),
                         value: None,
                         description: Some("First input media preview fixture".into()),
@@ -623,8 +748,10 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
                         id: "node-000002".into(),
                         parent_id: None,
                         kind: lens::LensNodeKind::Image,
-                        role: Some("AXImage".into()),
-                        subrole: None,
+                        source_api: model::SourceApi::MacosAx,
+                        node_purpose: model::NodePurpose::Content,
+                        native_role: Some("AXImage".into()),
+                        native_subrole: None,
                         title: Some("Lens validation icon thumbnail".into()),
                         value: None,
                         description: Some("Second input media preview fixture".into()),

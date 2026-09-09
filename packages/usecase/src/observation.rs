@@ -84,7 +84,7 @@ pub fn valid_signal(
     operation_id: Uuid,
     context_id: Uuid,
     observer_epoch: NonZeroU64,
-    authority: &BTreeMap<Uuid, u32>,
+    authority: &BTreeMap<Uuid, port_platform::authority::TargetReceipt>,
 ) -> bool {
     match signal {
         LiveSignal::ImmediateRefresh | LiveSignal::PeriodicReconciliation => true,
@@ -92,7 +92,7 @@ pub fn valid_signal(
             event.operation_id == operation_id
                 && event.context_id == context_id
                 && event.observer_epoch == observer_epoch
-                && authority.get(&event.source_registration_id) == Some(&event.window_id)
+                && authority.get(&event.source_registration_id) == Some(&event.receipt)
         }
     }
 }
@@ -145,10 +145,10 @@ mod tests {
             context_id: Uuid::from_u128(2),
             source_registration_id: Uuid::from_u128(3),
             observer_epoch: NonZeroU64::new(1).unwrap(),
-            window_id: 42,
+            receipt: Uuid::from_u128(42).try_into().unwrap(),
             notification: WindowObservationNotification::WindowTitleChanged,
         };
-        let authority = BTreeMap::from([(event.source_registration_id, event.window_id)]);
+        let authority = BTreeMap::from([(event.source_registration_id, event.receipt)]);
         let admits = |signal: &LiveSignal| {
             valid_signal(
                 signal,
@@ -174,7 +174,7 @@ mod tests {
                 1 => stale.context_id = Uuid::from_u128(4),
                 2 => stale.source_registration_id = Uuid::from_u128(4),
                 3 => stale.observer_epoch = NonZeroU64::new(2).unwrap(),
-                4 => stale.window_id = 43,
+                4 => stale.receipt = Uuid::from_u128(43).try_into().unwrap(),
                 _ => unreachable!(),
             }
             assert!(!admits(&LiveSignal::Invalidation(stale)));

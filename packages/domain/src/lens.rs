@@ -1,16 +1,67 @@
 use crate::model::{
-    Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult,
-    ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
+    Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult, NodePurpose,
+    ResourceReference, SelectedWindow, SemanticKind, SourceApi, WindowIdentity,
+    WindowObservableFacts,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 2;
-pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 2;
-pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 4;
-pub const LENS_INPUT_SCHEMA_VERSION: u32 = 3;
+pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 6;
+pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 3;
+pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 9;
+pub const LENS_INPUT_SCHEMA_VERSION: u32 = 8;
+
+fn deserialize_target_set_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u32, D::Error> {
+    let version = u32::deserialize(deserializer)?;
+    if version == LENS_TARGET_SET_SCHEMA_VERSION {
+        Ok(version)
+    } else {
+        Err(serde::de::Error::custom(
+            "unsupported target set schema version",
+        ))
+    }
+}
+
+fn deserialize_document_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u32, D::Error> {
+    let version = u32::deserialize(deserializer)?;
+    if version == LENS_DOCUMENT_SCHEMA_VERSION {
+        Ok(version)
+    } else {
+        Err(serde::de::Error::custom(
+            "unsupported document schema version",
+        ))
+    }
+}
+
+fn deserialize_context_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u32, D::Error> {
+    let version = u32::deserialize(deserializer)?;
+    if version == LENS_CONTEXT_SCHEMA_VERSION {
+        Ok(version)
+    } else {
+        Err(serde::de::Error::custom(
+            "unsupported context schema version",
+        ))
+    }
+}
+
+fn deserialize_input_version<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u32, D::Error> {
+    let version = u32::deserialize(deserializer)?;
+    if version == LENS_INPUT_SCHEMA_VERSION {
+        Ok(version)
+    } else {
+        Err(serde::de::Error::custom("unsupported input schema version"))
+    }
+}
 pub const MAX_LENS_TARGETS: usize = 4;
 pub const MAX_LENS_CONTEXT_NODES: usize = 60_000;
 pub const MAX_LENS_CONTEXT_TEXT_BYTES: usize = 2_000_000;
@@ -55,6 +106,7 @@ impl LensTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensTargetSet {
+    #[serde(deserialize_with = "deserialize_target_set_version")]
     pub schema_version: u32,
     pub selection_id: Uuid,
     pub targets: Vec<LensTarget>,
@@ -64,10 +116,14 @@ pub struct LensTargetSet {
 pub enum LensTargetSetError {
     #[error("the native picker returned no selected windows")]
     Empty,
-    #[error("selected {actual} windows; the version 2 limit is {maximum}")]
+    #[error("selected {actual} windows; the current limit is {maximum}")]
     TooMany { actual: usize, maximum: usize },
     #[error("the native picker returned duplicate window identity {0}")]
-    DuplicateWindow(u32),
+    DuplicateWindow(Uuid),
+    #[error("target authority must have a non-nil operation and receipt, a positive ordinal, and match the selection operation")]
+    InvalidAuthority,
+    #[error("duplicate selection ordinal {0}")]
+    DuplicateOrdinal(u32),
     #[error("observable facts referenced unknown target {0}")]
     UnknownTarget(String),
     #[error("observable facts revision must be non-zero")]
@@ -75,6 +131,21 @@ pub enum LensTargetSetError {
 }
 
 impl LensTargetSet {
+    /// Revalidate owned/deserialized values before they become source authority.
+    pub fn validate(&self) -> Result<(), LensTargetSetError> {
+        let canonical = Self::try_new(
+            self.selection_id,
+            self.targets
+                .iter()
+                .map(LensTarget::selected_window)
+                .collect(),
+        )?;
+        if !self.has_same_identity(&canonical) {
+            return Err(LensTargetSetError::InvalidAuthority);
+        }
+        Ok(())
+    }
+
     pub fn try_new(
         selection_id: Uuid,
         windows: Vec<SelectedWindow>,
@@ -89,22 +160,29 @@ impl LensTargetSet {
             });
         }
 
-        let mut window_ids = BTreeSet::new();
+        let mut receipts = BTreeSet::new();
+        let mut ordinals = BTreeSet::new();
         let mut targets = Vec::with_capacity(windows.len());
         for window in windows {
-            if !window_ids.insert(window.identity.window_id) {
-                return Err(LensTargetSetError::DuplicateWindow(
-                    window.identity.window_id,
+            let identity = &window.identity;
+            if selection_id.is_nil()
+                || identity.operation_id != selection_id
+                || identity.receipt.is_nil()
+                || identity.selection_ordinal == 0
+            {
+                return Err(LensTargetSetError::InvalidAuthority);
+            }
+            if !receipts.insert(identity.receipt) {
+                return Err(LensTargetSetError::DuplicateWindow(identity.receipt));
+            }
+            if !ordinals.insert(identity.selection_ordinal) {
+                return Err(LensTargetSetError::DuplicateOrdinal(
+                    identity.selection_ordinal,
                 ));
             }
             targets.push(LensTarget::from_window(window));
         }
-        targets.sort_by(|left, right| {
-            left.identity
-                .bundle_id
-                .cmp(&right.identity.bundle_id)
-                .then(left.identity.window_id.cmp(&right.identity.window_id))
-        });
+        targets.sort_by_key(|target| target.identity.selection_ordinal);
 
         Ok(Self {
             schema_version: LENS_TARGET_SET_SCHEMA_VERSION,
@@ -153,8 +231,8 @@ impl LensTargetSet {
 pub struct LensSource {
     pub application: String,
     pub window_title: String,
-    pub bundle_id: String,
-    pub window_id: u32,
+    pub application_id: String,
+    pub receipt: Uuid,
 }
 
 impl From<&LensTarget> for LensSource {
@@ -162,8 +240,8 @@ impl From<&LensTarget> for LensSource {
         Self {
             application: target.facts.application_name.clone(),
             window_title: target.facts.title.clone(),
-            bundle_id: target.identity.bundle_id.clone(),
-            window_id: target.identity.window_id,
+            application_id: target.facts.application_id.clone(),
+            receipt: target.identity.receipt,
         }
     }
 }
@@ -201,10 +279,12 @@ pub struct LensNode {
     pub order: usize,
     pub depth: usize,
     pub kind: LensNodeKind,
+    pub source_api: SourceApi,
+    pub node_purpose: NodePurpose,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub native_role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subrole: Option<String>,
+    pub native_subrole: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,9 +292,7 @@ pub struct LensNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bounds: Option<Bounds>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coordinate_space: Option<LensCoordinateSpace>,
+    pub bounds: Option<crate::geometry::NodeBounds>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -225,6 +303,9 @@ pub struct LensNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<crate::geometry::ReadGeometryDescriptor>,
+    #[serde(deserialize_with = "deserialize_document_version")]
     pub schema_version: u32,
     pub source: LensSource,
     pub roots: Vec<String>,
@@ -237,6 +318,8 @@ pub struct LensDocument {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum LensDocumentError {
+    #[error("extraction geometry is invalid or belongs to another target")]
+    InvalidGeometry,
     #[error("usable extraction contains no nodes")]
     EmptyUsableDocument,
     #[error("extracted node {0} has no identity")]
@@ -259,11 +342,47 @@ pub enum LensDocumentError {
     },
 }
 
+fn geometry_matches_resolved_window(
+    geometry: &crate::geometry::ReadGeometryDescriptor,
+    extraction: &ExtractionResult,
+) -> bool {
+    extraction.resolved_window.as_ref().is_none_or(|window| {
+        let bounds = window.facts.frame;
+        geometry.window.rect
+            == crate::geometry::Rect {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+            }
+    })
+}
+
+fn node_geometry_valid(extraction: &ExtractionResult) -> bool {
+    extraction.nodes.iter().all(|node| {
+        node.bounds
+            .as_ref()
+            .is_none_or(|bounds| bounds.validate_for(extraction.geometry.as_ref()).is_ok())
+    })
+}
+
 impl LensDocument {
     pub fn from_accessibility(
         target: &LensTarget,
         extraction: &ExtractionResult,
     ) -> Result<Option<Self>, LensDocumentError> {
+        if !node_geometry_valid(extraction) {
+            return Err(LensDocumentError::InvalidGeometry);
+        }
+        if let Some(geometry) = &extraction.geometry {
+            if geometry.validate().is_err()
+                || geometry.read.target.operation_id != target.identity.operation_id
+                || Uuid::from(geometry.read.target.receipt) != target.identity.receipt
+                || !geometry_matches_resolved_window(geometry, extraction)
+            {
+                return Err(LensDocumentError::InvalidGeometry);
+            }
+        }
         if extraction.quality == ExtractionQuality::Unavailable {
             return Ok(None);
         }
@@ -333,6 +452,7 @@ impl LensDocument {
 
         Ok(Some(Self {
             schema_version: LENS_DOCUMENT_SCHEMA_VERSION,
+            geometry: extraction.geometry.clone(),
             source: LensSource::from(target),
             roots,
             nodes,
@@ -403,17 +523,19 @@ impl LensDocument {
             .filter(|node| included.contains(&node.id))
             .map(|node| {
                 let is_application_root =
-                    node.parent_id.is_none() && node.role.as_deref() == Some("AXWindow");
+                    node.parent_id.is_none() && node.node_purpose == NodePurpose::WindowChrome;
                 omitted_root_chrome |= is_application_root
                     && (node.title.is_some() || node.value.is_some() || node.description.is_some());
                 LensContentNode {
                     id: node.id.clone(),
                     parent_id: node.parent_id.clone().filter(|id| included.contains(id)),
                     kind: node.kind,
-                    role: matches!(node.kind, LensNodeKind::Unknown | LensNodeKind::Image)
-                        .then(|| node.role.clone())
+                    source_api: node.source_api,
+                    node_purpose: node.node_purpose,
+                    native_role: matches!(node.kind, LensNodeKind::Unknown | LensNodeKind::Image)
+                        .then(|| node.native_role.clone())
                         .flatten(),
-                    subrole: node.subrole.clone(),
+                    native_subrole: node.native_subrole.clone(),
                     title: (!is_application_root)
                         .then(|| project_text(node.title.as_deref(), &mut truncated_fields))
                         .flatten(),
@@ -433,7 +555,7 @@ impl LensDocument {
         if omitted_root_chrome {
             omissions.push(ProjectionOmission::document_wide(
                 ProjectionOmissionReason::ApplicationChrome,
-                "Root AXWindow text is represented by source metadata instead of document content.",
+                "Root window chrome text is represented by source metadata instead of document content.",
             ));
         }
         if truncated_fields {
@@ -481,14 +603,15 @@ impl From<&ExtractedNode> for LensNode {
             parent_id: node.parent_id.clone(),
             order: node.order,
             depth: node.depth,
-            kind: normalize_kind(node.role.as_deref()),
-            role: node.role.clone(),
-            subrole: node.subrole.clone(),
+            kind: normalize_kind(node.semantic_kind),
+            source_api: node.source_api,
+            node_purpose: node.node_purpose,
+            native_role: node.native_role.clone(),
+            native_subrole: node.native_subrole.clone(),
             title: node.title.clone(),
             value: node.value.clone(),
             description: node.description.clone(),
-            bounds: node.bounds,
-            coordinate_space: node.bounds.map(|_| LensCoordinateSpace::ScreenPoints),
+            bounds: node.bounds.clone(),
             children: node.children.clone(),
             media_refs: Vec::new(),
             resource_refs: node.resource_refs.clone(),
@@ -500,23 +623,22 @@ fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 
-fn normalize_kind(role: Option<&str>) -> LensNodeKind {
-    match role.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "axheading" => LensNodeKind::Heading,
-        "axstatictext" | "axtext" => LensNodeKind::Text,
-        "axlist" => LensNodeKind::List,
-        "axlistitem" => LensNodeKind::ListItem,
-        "axtable" | "axoutline" => LensNodeKind::Table,
-        "axrow" => LensNodeKind::Row,
-        "axcell" | "axcolumn" => LensNodeKind::Cell,
-        "axlink" => LensNodeKind::Link,
-        "axbutton" | "axcheckbox" | "axradiobutton" | "axtextfield" | "axtextarea"
-        | "axcombobox" | "axpopupbutton" | "axslider" | "axswitch" => LensNodeKind::Control,
-        "axdialog" | "axsheet" => LensNodeKind::Dialog,
-        "axgroup" | "axsection" | "axlandmark" | "axwebarea" | "axwindow" => LensNodeKind::Region,
-        "axparagraph" => LensNodeKind::Paragraph,
-        "aximage" => LensNodeKind::Image,
-        _ => LensNodeKind::Unknown,
+fn normalize_kind(kind: SemanticKind) -> LensNodeKind {
+    match kind {
+        SemanticKind::Heading => LensNodeKind::Heading,
+        SemanticKind::Text => LensNodeKind::Text,
+        SemanticKind::List => LensNodeKind::List,
+        SemanticKind::ListItem => LensNodeKind::ListItem,
+        SemanticKind::Table => LensNodeKind::Table,
+        SemanticKind::Row => LensNodeKind::Row,
+        SemanticKind::Cell => LensNodeKind::Cell,
+        SemanticKind::Link => LensNodeKind::Link,
+        SemanticKind::Control => LensNodeKind::Control,
+        SemanticKind::Dialog => LensNodeKind::Dialog,
+        SemanticKind::Region => LensNodeKind::Region,
+        SemanticKind::Paragraph => LensNodeKind::Paragraph,
+        SemanticKind::Image => LensNodeKind::Image,
+        SemanticKind::Unknown => LensNodeKind::Unknown,
     }
 }
 
@@ -536,7 +658,7 @@ fn project_text(value: Option<&str>, truncated: &mut bool) -> Option<String> {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LensMediaScope {
-    AxElementRegion,
+    AccessibilityElementRegion,
     WindowFallback,
 }
 
@@ -549,6 +671,10 @@ pub enum LensMediaCoverage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensMediaAttachment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<crate::geometry::AttachmentGeometry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_geometry: Option<crate::geometry::ReadGeometryDescriptor>,
     pub id: String,
     pub target_id: String,
     pub uri: String,
@@ -621,13 +747,8 @@ impl LensMediaPlan {
         max_attachments: usize,
     ) -> Self {
         let target_id = target.id.clone();
-        if extraction.quality == ExtractionQuality::Unavailable
-            || !matches!(
-                LensDocument::from_accessibility(target, extraction),
-                Ok(Some(_))
-            )
-        {
-            let id = format!("media-window-{}-fallback", target.identity.window_id);
+        let Ok(Some(document)) = LensDocument::from_accessibility(target, extraction) else {
+            let id = format!("media-window-{}-fallback", target.identity.receipt);
             return if max_attachments == 0 {
                 Self {
                     requests: Vec::new(),
@@ -655,23 +776,19 @@ impl LensMediaPlan {
                     omissions: Vec::new(),
                 }
             };
-        }
+        };
 
-        let mut image_nodes = extraction
+        let mut image_nodes = document
             .nodes
-            .iter()
-            .filter(|node| {
-                node.role
-                    .as_deref()
-                    .is_some_and(|role| role.eq_ignore_ascii_case("AXImage"))
-            })
+            .values()
+            .filter(|node| node.kind == LensNodeKind::Image)
             .collect::<Vec<_>>();
         image_nodes.sort_by_key(|node| node.order);
         let mut plan = Self::default();
         let mut planning_omissions = BTreeMap::new();
         for node in image_nodes {
-            let attachment_id = format!("media-window-{}-{}", target.identity.window_id, node.id);
-            let Some(bounds) = node.bounds else {
+            let attachment_id = format!("media-window-{}-{}", target.identity.receipt, node.id);
+            let Some(node_bounds) = node.bounds.as_ref() else {
                 record_planning_omission(
                     &mut planning_omissions,
                     LensMediaOmissionReason::MissingBounds,
@@ -679,7 +796,10 @@ impl LensMediaPlan {
                 );
                 continue;
             };
-            if !valid_bounds(bounds) {
+            if node_bounds
+                .validate_for(document.geometry.as_ref())
+                .is_err()
+            {
                 record_planning_omission(
                     &mut planning_omissions,
                     LensMediaOmissionReason::InvalidBounds,
@@ -687,7 +807,36 @@ impl LensMediaPlan {
                 );
                 continue;
             }
-            if !bounds_intersect(bounds, target.facts.frame) {
+            let (rect, intersects) = match node_bounds {
+                crate::geometry::NodeBounds::Registered { geometry } => {
+                    let Some(descriptor) = document.geometry.as_ref() else {
+                        unreachable!("validated registered node requires descriptor")
+                    };
+                    (
+                        geometry.rect,
+                        matches!(
+                            geometry.intersect(&descriptor.window),
+                            Ok(crate::geometry::Intersection::Overlap(_))
+                        ),
+                    )
+                }
+                crate::geometry::NodeBounds::Legacy { geometry } => {
+                    let rect = geometry.rect;
+                    (
+                        rect,
+                        bounds_intersect(
+                            Bounds {
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.width,
+                                height: rect.height,
+                            },
+                            target.facts.frame,
+                        ),
+                    )
+                }
+            };
+            if !intersects {
                 record_planning_omission(
                     &mut planning_omissions,
                     LensMediaOmissionReason::OutsideWindow,
@@ -705,9 +854,14 @@ impl LensMediaPlan {
             }
             plan.requests.push(LensMediaRequest {
                 id: attachment_id,
-                scope: LensMediaScope::AxElementRegion,
+                scope: LensMediaScope::AccessibilityElementRegion,
                 source_node_id: Some(node.id.clone()),
-                bounds: Some(bounds),
+                bounds: Some(Bounds {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                }),
             });
         }
         plan.omissions = planning_omissions
@@ -742,16 +896,16 @@ fn record_planning_omission(
 fn planning_omission_detail(reason: LensMediaOmissionReason, count: usize) -> String {
     match reason {
         LensMediaOmissionReason::MissingBounds => format!(
-            "{count} AXImage nodes expose no screen bounds, so their pixels cannot be captured deterministically."
+            "{count} Image nodes expose no screen bounds, so their pixels cannot be captured deterministically."
         ),
         LensMediaOmissionReason::InvalidBounds => format!(
-            "{count} AXImage nodes expose non-finite or non-positive screen bounds."
+            "{count} Image nodes expose non-finite or non-positive screen bounds."
         ),
         LensMediaOmissionReason::OutsideWindow => format!(
-            "{count} AXImage nodes do not intersect the selected-window frame, so they have no visible pixels to capture."
+            "{count} Image nodes do not intersect the selected-window frame, so they have no visible pixels to capture."
         ),
         LensMediaOmissionReason::AttachmentLimit => format!(
-            "{count} AXImage regions were omitted after the versioned {MAX_LENS_MEDIA_ATTACHMENTS}-attachment limit."
+            "{count} Image regions were omitted after the versioned {MAX_LENS_MEDIA_ATTACHMENTS}-attachment limit."
         ),
         LensMediaOmissionReason::ByteBudget | LensMediaOmissionReason::CaptureFailed => {
             unreachable!("native capture outcomes are not planning omissions")
@@ -805,6 +959,7 @@ pub struct LensTargetCapture {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensContext {
+    #[serde(deserialize_with = "deserialize_context_version")]
     pub schema_version: u32,
     pub context_id: Uuid,
     pub revision: u64,
@@ -817,6 +972,12 @@ pub struct LensContext {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum LensContextError {
+    #[error("media geometry is invalid for attachment {attachment_id}")]
+    InvalidMediaGeometry { attachment_id: String },
+    #[error("source geometry is invalid for target {target_id}")]
+    InvalidGeometry { target_id: String },
+    #[error("context target authority is invalid")]
+    InvalidTargetAuthority,
     #[error("received {actual} captures for {expected} selected targets")]
     CaptureCount { expected: usize, actual: usize },
     #[error("media outcome {attachment_id} belongs to {actual_target_id}; expected {expected_target_id}")]
@@ -831,6 +992,25 @@ pub enum LensContextError {
     InvalidSourceRevision { target_id: String },
     #[error("source revisions contain unknown target {target_id}")]
     UnknownSourceRevision { target_id: String },
+}
+
+fn attachment_geometry_valid(attachment: &LensMediaAttachment, target: &LensTarget) -> bool {
+    let Some(geometry) = &attachment.geometry else {
+        return attachment.desktop_geometry.is_none();
+    };
+    if geometry.validate().is_err()
+        || geometry.attachment_id != attachment.id
+        || geometry.capture.read.target.operation_id != target.identity.operation_id
+        || Uuid::from(geometry.capture.read.target.receipt) != target.identity.receipt
+        || usize::try_from(geometry.encoded_extent.width).ok() != Some(attachment.pixel_width)
+        || usize::try_from(geometry.encoded_extent.height).ok() != Some(attachment.pixel_height)
+    {
+        return false;
+    }
+    match &attachment.desktop_geometry {
+        Some(desktop) => desktop.validate().is_ok() && desktop.read == geometry.capture.read,
+        None => attachment.scope == LensMediaScope::WindowFallback,
+    }
 }
 
 impl LensContext {
@@ -854,6 +1034,9 @@ impl LensContext {
         target_set: &LensTargetSet,
         captures: Vec<LensTargetCapture>,
     ) -> Result<Self, LensContextError> {
+        if target_set.validate().is_err() {
+            return Err(LensContextError::InvalidTargetAuthority);
+        }
         if context_revision == 0 {
             return Err(LensContextError::ZeroContextRevision);
         }
@@ -869,6 +1052,26 @@ impl LensContext {
         let mut omissions = Vec::new();
         let mut diagnostics = Vec::new();
         for (target, mut capture) in target_set.targets.iter().zip(captures) {
+            if !node_geometry_valid(&capture.accessibility) {
+                return Err(LensContextError::InvalidGeometry {
+                    target_id: target.id.clone(),
+                });
+            }
+            if capture
+                .accessibility
+                .geometry
+                .as_ref()
+                .is_some_and(|geometry| {
+                    geometry.validate().is_err()
+                        || geometry.read.target.operation_id != target.identity.operation_id
+                        || Uuid::from(geometry.read.target.receipt) != target.identity.receipt
+                        || !geometry_matches_resolved_window(geometry, &capture.accessibility)
+                })
+            {
+                return Err(LensContextError::InvalidGeometry {
+                    target_id: target.id.clone(),
+                });
+            }
             let revision = source_revisions
                 .get(&target.id)
                 .copied()
@@ -877,6 +1080,19 @@ impl LensContext {
                     target_id: target.id.clone(),
                 })?;
             for attachment in &capture.media.attachments {
+                if !attachment_geometry_valid(attachment, target)
+                    || capture
+                        .accessibility
+                        .geometry
+                        .as_ref()
+                        .is_some_and(|extraction| {
+                            attachment.desktop_geometry.as_ref() != Some(extraction)
+                        })
+                {
+                    return Err(LensContextError::InvalidMediaGeometry {
+                        attachment_id: attachment.id.clone(),
+                    });
+                }
                 if attachment.target_id != target.id {
                     return Err(LensContextError::MediaTargetMismatch {
                         attachment_id: attachment.id.clone(),
@@ -1029,6 +1245,7 @@ impl LensContext {
 
     pub fn unavailable_accessibility(message: impl Into<String>) -> ExtractionResult {
         ExtractionResult {
+            geometry: None,
             quality: ExtractionQuality::Unavailable,
             resolved_window: None,
             nodes: Vec::new(),
@@ -1040,10 +1257,7 @@ impl LensContext {
 }
 
 pub fn target_id(target: &SelectedWindow) -> String {
-    format!(
-        "macos:{}:{}",
-        target.identity.bundle_id, target.identity.window_id
-    )
+    format!("target:{}", target.identity.receipt)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1057,10 +1271,12 @@ pub struct LensContentNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     pub kind: LensNodeKind,
+    pub source_api: SourceApi,
+    pub node_purpose: NodePurpose,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub native_role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subrole: Option<String>,
+    pub native_subrole: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1120,6 +1336,7 @@ pub struct LensInputSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensInput {
+    #[serde(deserialize_with = "deserialize_input_version")]
     pub schema_version: u32,
     pub context_id: Uuid,
     pub context_revision: u64,
@@ -1285,14 +1502,48 @@ fn distribute_optional_limits(total: usize, capacities: &[usize]) -> Vec<usize> 
 mod tests {
     use super::*;
 
+    fn legacy_bounds(bounds: Bounds) -> crate::geometry::NodeBounds {
+        crate::geometry::NodeBounds::Legacy {
+            geometry: crate::geometry::DesktopRect {
+                frame: crate::geometry::DesktopFrame::MacosDesktopPoints,
+                rect: crate::geometry::Rect {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: bounds.width,
+                    height: bounds.height,
+                },
+            },
+        }
+    }
+
+    fn bind_node_geometry(extraction: &mut ExtractionResult) {
+        let descriptor = extraction.geometry.as_ref().unwrap();
+        for node in &mut extraction.nodes {
+            if let Some(bounds) = &node.bounds {
+                let rect = match bounds {
+                    crate::geometry::NodeBounds::Legacy { geometry } => geometry.rect,
+                    crate::geometry::NodeBounds::Registered { geometry } => geometry.rect,
+                };
+                node.bounds = Some(crate::geometry::NodeBounds::Registered {
+                    geometry: crate::geometry::TaggedRect {
+                        read: descriptor.read,
+                        frame: descriptor.window.frame.clone(),
+                        rect,
+                    },
+                });
+            }
+        }
+    }
+
     fn target() -> SelectedWindow {
         SelectedWindow {
             identity: WindowIdentity {
-                window_id: 7,
-                bundle_id: "example.browser".into(),
-                pid: 42,
+                operation_id: Uuid::from_u128(1),
+                receipt: Uuid::from_u128(7),
+                selection_ordinal: 7,
             },
             facts: WindowObservableFacts {
+                application_id: "example.browser".into(),
                 title: "Document".into(),
                 application_name: "Browser".into(),
                 frame: Bounds {
@@ -1307,13 +1558,14 @@ mod tests {
 
     fn target_with(window_id: u32, bundle_id: &str) -> SelectedWindow {
         let mut target = target();
-        target.identity.window_id = window_id;
-        target.identity.bundle_id = bundle_id.into();
+        target.identity.receipt = Uuid::from_u128(u128::from(window_id));
+        target.identity.selection_ordinal = window_id;
+        target.facts.application_id = bundle_id.into();
         target
     }
 
     fn lens_target() -> LensTarget {
-        LensTargetSet::try_new(Uuid::nil(), vec![target()])
+        LensTargetSet::try_new(Uuid::from_u128(1), vec![target()])
             .expect("valid target set")
             .targets
             .into_iter()
@@ -1323,6 +1575,7 @@ mod tests {
 
     fn accessibility(quality: ExtractionQuality) -> ExtractionResult {
         ExtractionResult {
+            geometry: None,
             quality,
             resolved_window: None,
             nodes: vec![
@@ -1331,12 +1584,15 @@ mod tests {
                     parent_id: None,
                     order: 0,
                     depth: 0,
-                    role: Some("AXWindow".into()),
-                    subrole: None,
+                    source_api: SourceApi::MacosAx,
+                    semantic_kind: SemanticKind::Region,
+                    node_purpose: NodePurpose::WindowChrome,
+                    native_role: Some("AXWindow".into()),
+                    native_subrole: None,
                     title: Some("Document".into()),
                     value: None,
                     description: None,
-                    bounds: Some(target().facts.frame),
+                    bounds: Some(legacy_bounds(target().facts.frame)),
                     resource_refs: vec![],
                     children: vec!["node-000001".into(), "node-000002".into()],
                 },
@@ -1345,8 +1601,11 @@ mod tests {
                     parent_id: Some("node-000000".into()),
                     order: 1,
                     depth: 1,
-                    role: Some("AXStaticText".into()),
-                    subrole: None,
+                    source_api: SourceApi::MacosAx,
+                    semantic_kind: SemanticKind::Text,
+                    node_purpose: NodePurpose::Content,
+                    native_role: Some("AXStaticText".into()),
+                    native_subrole: None,
                     title: None,
                     value: Some("Repeated".into()),
                     description: None,
@@ -1359,17 +1618,20 @@ mod tests {
                     parent_id: Some("node-000000".into()),
                     order: 2,
                     depth: 1,
-                    role: Some("AXImage".into()),
-                    subrole: None,
+                    source_api: SourceApi::MacosAx,
+                    semantic_kind: SemanticKind::Image,
+                    node_purpose: NodePurpose::Content,
+                    native_role: Some("AXImage".into()),
+                    native_subrole: None,
                     title: None,
                     value: None,
                     description: Some("Sales chart".into()),
-                    bounds: Some(Bounds {
+                    bounds: Some(legacy_bounds(Bounds {
                         x: 10.0,
                         y: 20.0,
                         width: 60.0,
                         height: 40.0,
-                    }),
+                    })),
                     resource_refs: vec![ResourceReference {
                         uri: "https://example.test/chart.png".into(),
                         source_attribute: "AXURL".into(),
@@ -1385,11 +1647,13 @@ mod tests {
 
     fn captured_region() -> LensMediaCapture {
         let attachment = LensMediaAttachment {
-            id: "media-window-7-node-000002".into(),
+            geometry: None,
+            desktop_geometry: None,
+            id: "media-window-00000000-0000-0000-0000-000000000007-node-000002".into(),
             target_id: target_id(&target()),
             uri: "lens://context/00000000-0000-0000-0000-000000000000/1/media/media-window-7-node-000002"
                 .into(),
-            scope: LensMediaScope::AxElementRegion,
+            scope: LensMediaScope::AccessibilityElementRegion,
             source_node_id: Some("node-000002".into()),
             source_bounds: Bounds {
                 x: 10.0,
@@ -1422,11 +1686,255 @@ mod tests {
         }
     }
 
+    fn geometry_capture(read: crate::geometry::TargetReadKey) -> LensMediaCapture {
+        use crate::geometry::*;
+        let mut media = captured_region();
+        media.attachments[0].scope = LensMediaScope::WindowFallback;
+        media.attachments[0].source_node_id = None;
+        let id = media.attachments[0].id.clone();
+        let capture = CaptureKey {
+            read,
+            capture_id: Uuid::from_u128(101),
+        };
+        let original = CoordinateFrame::OriginalCapturePixels { capture };
+        let cropped = CoordinateFrame::CroppedAttachmentPixels {
+            capture,
+            attachment_id: id.clone(),
+        };
+        let encoded = CoordinateFrame::EncodedAttachmentPixels {
+            capture,
+            attachment_id: id.clone(),
+        };
+        let extent = PixelExtent {
+            width: 120,
+            height: 80,
+        };
+        media.attachments[0].geometry = Some(AttachmentGeometry {
+            capture,
+            attachment_id: id,
+            original_extent: extent,
+            crop: PixelCrop { x: 0, y: 0, extent },
+            encoded_extent: extent,
+            original_to_crop: AxisAlignedTransform {
+                read,
+                source: original,
+                destination: cropped.clone(),
+                scale_x: 1.0,
+                scale_y: 1.0,
+                translate_x: 0.0,
+                translate_y: 0.0,
+            },
+            crop_to_encoded: AxisAlignedTransform {
+                read,
+                source: cropped,
+                destination: encoded,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                translate_x: 0.0,
+                translate_y: 0.0,
+            },
+        });
+        media
+    }
+
+    fn geometry_read() -> crate::geometry::TargetReadKey {
+        crate::geometry::TargetReadKey {
+            target: crate::geometry::TargetAuthority {
+                operation_id: target().identity.operation_id,
+                receipt: target().identity.receipt.try_into().unwrap(),
+            },
+            sequence: crate::geometry::ReadSequence::FIRST,
+        }
+    }
+
+    fn geometry_context(media: LensMediaCapture) -> Result<LensContext, LensContextError> {
+        let targets = LensTargetSet::try_new(Uuid::from_u128(1), vec![target()]).unwrap();
+        LensContext::from_captures(
+            Uuid::from_u128(1),
+            &targets,
+            vec![LensTargetCapture {
+                accessibility: accessibility(ExtractionQuality::Full),
+                media,
+            }],
+        )
+    }
+
+    #[test]
+    fn context_retains_valid_pixel_geometry_without_inventing_desktop_observation() {
+        let media = geometry_capture(geometry_read());
+        let mut unknown_region = media.clone();
+        unknown_region.attachments[0].scope = LensMediaScope::AccessibilityElementRegion;
+        assert!(matches!(
+            geometry_context(unknown_region),
+            Err(LensContextError::InvalidMediaGeometry { .. })
+        ));
+        let expected = media.attachments[0].geometry.clone();
+        let context = geometry_context(media).unwrap();
+        assert_eq!(context.media[0].geometry, expected);
+        assert_eq!(context.media[0].desktop_geometry, None);
+        let json = serde_json::to_value(&context).unwrap();
+        assert_eq!(
+            json["media"][0]["geometry"],
+            serde_json::to_value(expected.unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_value::<LensContext>(json).unwrap(),
+            context
+        );
+    }
+
+    #[test]
+    fn context_rejects_wrong_target_attachment_extent_and_crop_geometry() {
+        let mut wrong_read = geometry_read();
+        wrong_read.target.receipt = Uuid::from_u128(999).try_into().unwrap();
+        let wrong_target = geometry_capture(wrong_read);
+        assert!(wrong_target.attachments[0]
+            .geometry
+            .as_ref()
+            .unwrap()
+            .validate()
+            .is_ok());
+        let mut wrong_id = geometry_capture(geometry_read());
+        wrong_id.attachments[0].id = "wrong-attachment".into();
+        let mut wrong_extent = geometry_capture(geometry_read());
+        wrong_extent.attachments[0].pixel_width = 121;
+        let mut wrong_crop = geometry_capture(geometry_read());
+        wrong_crop.attachments[0].geometry.as_mut().unwrap().crop.x = 1;
+        for invalid in [wrong_target, wrong_id, wrong_extent, wrong_crop] {
+            assert!(matches!(
+                geometry_context(invalid),
+                Err(LensContextError::InvalidMediaGeometry { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn desktop_geometry_must_be_valid_and_belong_to_the_same_capture_read() {
+        use crate::geometry::*;
+        let read = geometry_read();
+        let frame = target().facts.frame;
+        let desktop = ReadGeometryDescriptor {
+            read,
+            window: TaggedRect {
+                read,
+                frame: CoordinateFrame::MacosDesktopPoints,
+                rect: Rect {
+                    x: frame.x,
+                    y: frame.y,
+                    width: frame.width,
+                    height: frame.height,
+                },
+            },
+            desktop_to_target: AxisAlignedTransform {
+                read,
+                source: CoordinateFrame::MacosDesktopPoints,
+                destination: CoordinateFrame::TargetLogical {
+                    target: read.target,
+                },
+                scale_x: 1.0,
+                scale_y: 1.0,
+                translate_x: -frame.x,
+                translate_y: -frame.y,
+            },
+        };
+        let mut valid = geometry_capture(read);
+        valid.attachments[0].desktop_geometry = Some(desktop.clone());
+        assert!(geometry_context(valid.clone()).is_ok());
+        let mut stale = desktop.clone();
+        stale.read.sequence = stale.read.sequence.checked_next().unwrap();
+        stale.window.read = stale.read;
+        stale.desktop_to_target.read = stale.read;
+        assert!(stale.validate().is_ok());
+        let mut invalid_offset = desktop;
+        invalid_offset.desktop_to_target.translate_x += 1.0;
+        for invalid in [stale, invalid_offset] {
+            let mut media = valid.clone();
+            media.attachments[0].desktop_geometry = Some(invalid);
+            assert!(matches!(
+                geometry_context(media),
+                Err(LensContextError::InvalidMediaGeometry { .. })
+            ));
+        }
+        valid.attachments[0].geometry = None;
+        assert!(matches!(
+            geometry_context(valid),
+            Err(LensContextError::InvalidMediaGeometry { .. })
+        ));
+    }
+
+    #[test]
+    fn context_rejects_media_from_a_different_read_than_extraction() {
+        use crate::geometry::*;
+        let read = geometry_read();
+        let frame = target().facts.frame;
+        let descriptor = |read: TargetReadKey| ReadGeometryDescriptor {
+            read,
+            window: TaggedRect {
+                read,
+                frame: CoordinateFrame::MacosDesktopPoints,
+                rect: Rect {
+                    x: frame.x,
+                    y: frame.y,
+                    width: frame.width,
+                    height: frame.height,
+                },
+            },
+            desktop_to_target: AxisAlignedTransform {
+                read,
+                source: CoordinateFrame::MacosDesktopPoints,
+                destination: CoordinateFrame::TargetLogical {
+                    target: read.target,
+                },
+                scale_x: 1.0,
+                scale_y: 1.0,
+                translate_x: -frame.x,
+                translate_y: -frame.y,
+            },
+        };
+        let mut extraction = accessibility(ExtractionQuality::Full);
+        extraction.geometry = Some(descriptor(read));
+        bind_node_geometry(&mut extraction);
+        let targets = LensTargetSet::try_new(Uuid::from_u128(1), vec![target()]).unwrap();
+        let build = |media| {
+            LensContext::from_captures(
+                Uuid::from_u128(1),
+                &targets,
+                vec![LensTargetCapture {
+                    accessibility: extraction.clone(),
+                    media,
+                }],
+            )
+        };
+        let mut matching = geometry_capture(read);
+        matching.attachments[0].desktop_geometry = Some(descriptor(read));
+        assert!(build(matching).is_ok());
+
+        let other_read = TargetReadKey {
+            sequence: read.sequence.checked_next().unwrap(),
+            ..read
+        };
+        let mut different = geometry_capture(other_read);
+        different.attachments[0].desktop_geometry = Some(descriptor(other_read));
+        // Every media field is internally coherent: only its relation to AX is wrong.
+        assert!(attachment_geometry_valid(
+            &different.attachments[0],
+            &targets.targets[0]
+        ));
+        assert!(matches!(
+            build(different),
+            Err(LensContextError::InvalidMediaGeometry { .. })
+        ));
+        assert!(matches!(
+            build(geometry_capture(read)),
+            Err(LensContextError::InvalidMediaGeometry { .. })
+        ));
+    }
+
     fn context(accessibility: ExtractionResult, media: LensMediaCapture) -> LensContext {
         let target_set =
-            LensTargetSet::try_new(Uuid::nil(), vec![target()]).expect("valid target set");
+            LensTargetSet::try_new(Uuid::from_u128(1), vec![target()]).expect("valid target set");
         LensContext::from_captures(
-            Uuid::nil(),
+            Uuid::from_u128(1),
             &target_set,
             vec![LensTargetCapture {
                 accessibility,
@@ -1434,6 +1942,135 @@ mod tests {
             }],
         )
         .expect("valid context")
+    }
+
+    #[test]
+    fn current_media_schemas_reject_native_ax_scope() {
+        let context = context(accessibility(ExtractionQuality::Full), captured_region());
+        let input = LensInput::from_context(&context).unwrap();
+        let mut context_wire = serde_json::to_value(&context).unwrap();
+        let mut input_wire = serde_json::to_value(&input).unwrap();
+        assert_eq!(
+            context_wire["media"][0]["scope"],
+            "accessibility_element_region"
+        );
+        assert!(serde_json::from_value::<LensContext>(context_wire.clone()).is_ok());
+        assert!(serde_json::from_value::<LensInput>(input_wire.clone()).is_ok());
+        context_wire["media"][0]["scope"] = "ax_element_region".into();
+        input_wire["media"][0]["scope"] = "ax_element_region".into();
+        assert!(serde_json::from_value::<LensContext>(context_wire).is_err());
+        assert!(serde_json::from_value::<LensInput>(input_wire).is_err());
+    }
+
+    #[test]
+    fn canonical_geometry_is_retained_without_becoming_semantic_identity() {
+        let targets = LensTargetSet::try_new(Uuid::from_u128(1), vec![target()]).unwrap();
+        let mut projections = Vec::new();
+        for sequence in ["1", "18446744073709551615"] {
+            let mut extraction = accessibility(ExtractionQuality::Full);
+            let read = serde_json::json!({"target":{"operation_id":targets.selection_id,"receipt":targets.targets[0].identity.receipt},"sequence":sequence});
+            extraction.geometry = Some(serde_json::from_value(serde_json::json!({
+                "read":read,
+                "window":{"read":read,"frame":{"kind":"macos_desktop_points"},"rect":target().facts.frame},
+                "desktop_to_target":{"read":read,"source":{"kind":"macos_desktop_points"},"destination":{"kind":"target_logical","target":read["target"]},"scale_x":1.0,"scale_y":1.0,"translate_x":-target().facts.frame.x,"translate_y":-target().facts.frame.y}
+            })).unwrap());
+            assert!(LensDocument::from_accessibility(&targets.targets[0], &extraction).is_err());
+            bind_node_geometry(&mut extraction);
+            let mut moved_target = targets.targets[0].clone();
+            moved_target.facts.frame.x = 10_000.0;
+            let acquired_plan = LensMediaPlan::from_accessibility(
+                &moved_target,
+                &extraction,
+                MAX_LENS_MEDIA_ATTACHMENTS,
+            );
+            assert_eq!(acquired_plan.requests.len(), 1);
+            let mut wrong_node = extraction.clone();
+            if let Some(crate::geometry::NodeBounds::Registered { geometry }) =
+                &mut wrong_node.nodes[0].bounds
+            {
+                geometry.read.sequence =
+                    if geometry.read.sequence == crate::geometry::ReadSequence::FIRST {
+                        geometry.read.sequence.checked_next().unwrap()
+                    } else {
+                        crate::geometry::ReadSequence::FIRST
+                    };
+            }
+            assert!(matches!(
+                LensDocument::from_accessibility(&targets.targets[0], &wrong_node),
+                Err(LensDocumentError::InvalidGeometry)
+            ));
+            assert!(matches!(
+                LensContext::from_captures(
+                    targets.selection_id,
+                    &targets,
+                    vec![LensTargetCapture {
+                        accessibility: wrong_node,
+                        media: LensMediaCapture::default()
+                    }]
+                ),
+                Err(LensContextError::InvalidGeometry { .. })
+            ));
+            let expected = extraction.geometry.clone();
+            let mut wrong_frame = extraction.clone();
+            let mut facts = target().facts;
+            facts.frame.x += 1.0;
+            wrong_frame.resolved_window = Some(crate::model::ResolvedWindow {
+                facts,
+                resolution_score: 1.0,
+            });
+            assert!(matches!(
+                LensContext::from_captures(
+                    targets.selection_id,
+                    &targets,
+                    vec![LensTargetCapture {
+                        accessibility: wrong_frame,
+                        media: LensMediaCapture::default()
+                    }]
+                ),
+                Err(LensContextError::InvalidGeometry { .. })
+            ));
+            let built = LensContext::from_captures(
+                targets.selection_id,
+                &targets,
+                vec![LensTargetCapture {
+                    accessibility: extraction.clone(),
+                    media: LensMediaCapture::default(),
+                }],
+            )
+            .unwrap();
+            assert_eq!(built.sources[0].capture.geometry, expected);
+            assert_eq!(
+                built.sources[0].document.as_ref().unwrap().geometry,
+                expected
+            );
+            let roundtrip: LensContext =
+                serde_json::from_value(serde_json::to_value(&built).unwrap()).unwrap();
+            assert_eq!(roundtrip.sources[0].capture.geometry, expected);
+            let input = LensInput::from_context(&built).unwrap();
+            projections.push(
+                crate::projection::LensAgentProjection::from_input(&input, &targets, &[]).unwrap(),
+            );
+            extraction
+                .geometry
+                .as_mut()
+                .unwrap()
+                .read
+                .target
+                .operation_id = Uuid::from_u128(99);
+            assert!(matches!(
+                LensContext::from_captures(
+                    targets.selection_id,
+                    &targets,
+                    vec![LensTargetCapture {
+                        accessibility: extraction,
+                        media: LensMediaCapture::default()
+                    }]
+                ),
+                Err(LensContextError::InvalidGeometry { .. })
+            ));
+        }
+        assert_eq!(projections[0].bytes(), projections[1].bytes());
+        assert_eq!(projections[0].digest(), projections[1].digest());
     }
 
     #[test]
@@ -1455,16 +2092,131 @@ mod tests {
     }
 
     #[test]
+    fn media_planning_selects_normalized_images_in_document_order() {
+        for (native_role, semantic_kind) in [
+            (Some("AXImage"), SemanticKind::Unknown),
+            (Some("axIMAGE"), SemanticKind::Image),
+            (Some("AXButton"), SemanticKind::Control),
+            (Some("Image"), SemanticKind::Image),
+            (None, SemanticKind::Unknown),
+        ] {
+            let mut extraction = accessibility(ExtractionQuality::Full);
+            extraction.nodes[1].native_role = Some("AXImage".into());
+            extraction.nodes[1].semantic_kind = SemanticKind::Image;
+            extraction.nodes[1].bounds = extraction.nodes[2].bounds.clone();
+            extraction.nodes[2].native_role = native_role.map(str::to_owned);
+            extraction.nodes[2].semantic_kind = semantic_kind;
+            extraction.nodes[2].source_api = SourceApi::WindowsUia;
+            // Transfer order is not semantic order. Normalization owns graph validation.
+            extraction.nodes.reverse();
+            let document = LensDocument::from_accessibility(&lens_target(), &extraction)
+                .expect("valid graph")
+                .expect("usable document");
+            let mut expected = document
+                .nodes
+                .values()
+                .filter(|node| node.kind == LensNodeKind::Image)
+                .collect::<Vec<_>>();
+            expected.sort_by_key(|node| node.order);
+            let plan = LensMediaPlan::from_accessibility(
+                &lens_target(),
+                &extraction,
+                MAX_LENS_MEDIA_ATTACHMENTS,
+            );
+            assert_eq!(
+                plan.requests
+                    .iter()
+                    .map(|request| request.source_node_id.as_deref())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|node| Some(node.id.as_str()))
+                    .collect::<Vec<_>>(),
+                "native_role {native_role:?}",
+            );
+            assert!(plan.omissions.is_empty());
+            assert_eq!(
+                document.nodes["node-000002"].kind,
+                normalize_kind(semantic_kind)
+            );
+        }
+    }
+
+    #[test]
+    fn source_roles_do_not_determine_root_chrome_or_semantics() {
+        for (purpose, retained) in [
+            (NodePurpose::Content, true),
+            (NodePurpose::WindowChrome, false),
+        ] {
+            let mut extraction = accessibility(ExtractionQuality::Full);
+            extraction.nodes[0].source_api = SourceApi::WindowsUia;
+            extraction.nodes[0].semantic_kind = SemanticKind::Region;
+            extraction.nodes[0].node_purpose = purpose;
+            extraction.nodes[0].native_role = Some("Pane".into());
+            extraction.nodes[0].title = Some("Root content".into());
+            let document = LensDocument::from_accessibility(&lens_target(), &extraction)
+                .unwrap()
+                .unwrap();
+            let (projection, _) = document.project(&BTreeSet::new(), usize::MAX);
+            assert_eq!(projection.nodes[0].title.is_some(), retained);
+            assert_eq!(projection.nodes[0].node_purpose, purpose);
+            assert_eq!(projection.nodes[0].source_api, SourceApi::WindowsUia);
+        }
+    }
+
+    #[test]
+    fn target_authority_is_explicit_unique_and_ordered_only_by_selection() {
+        let mut first = target_with(90, "z.example");
+        first.identity.selection_ordinal = 1;
+        let mut second = target_with(2, "a.example");
+        second.identity.selection_ordinal = 2;
+        let set = LensTargetSet::try_new(Uuid::from_u128(1), vec![second.clone(), first.clone()])
+            .unwrap();
+        assert_eq!(set.targets[0].identity.receipt, first.identity.receipt);
+        assert!(set.validate().is_ok());
+        for axis in 0..4 {
+            let mut invalid = first.clone();
+            match axis {
+                0 => invalid.identity.operation_id = Uuid::nil(),
+                1 => invalid.identity.operation_id = Uuid::from_u128(2),
+                2 => invalid.identity.receipt = Uuid::nil(),
+                3 => invalid.identity.selection_ordinal = 0,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                LensTargetSet::try_new(Uuid::from_u128(1), vec![invalid]),
+                Err(LensTargetSetError::InvalidAuthority)
+            );
+        }
+        second.identity.selection_ordinal = 1;
+        assert_eq!(
+            LensTargetSet::try_new(Uuid::from_u128(1), vec![first, second]),
+            Err(LensTargetSetError::DuplicateOrdinal(1))
+        );
+        let mut reordered = set.clone();
+        reordered.targets.reverse();
+        assert_eq!(
+            reordered.validate(),
+            Err(LensTargetSetError::InvalidAuthority)
+        );
+        for version in [0, 2, 4] {
+            let mut value = serde_json::to_value(&set).unwrap();
+            value["schema_version"] = version.into();
+            assert!(serde_json::from_value::<LensTargetSet>(value).is_err());
+        }
+    }
+
+    #[test]
     fn target_set_is_nonempty_bounded_unique_and_canonical() {
-        let selection_id = Uuid::nil();
+        let selection_id = Uuid::from_u128(1);
         let target_set = LensTargetSet::try_new(
             selection_id,
             vec![target_with(9, "z.example"), target_with(7, "a.example")],
         )
         .expect("valid target set");
 
-        assert_eq!(target_set.targets[0].identity.bundle_id, "a.example");
-        assert_eq!(target_set.targets[1].identity.bundle_id, "z.example");
+        assert_eq!(target_set.targets[0].facts.application_id, "a.example");
+        assert_eq!(target_set.targets[1].facts.application_id, "z.example");
         assert_eq!(
             LensTargetSet::try_new(selection_id, Vec::new()),
             Err(LensTargetSetError::Empty)
@@ -1474,7 +2226,7 @@ mod tests {
                 selection_id,
                 vec![target_with(7, "a.example"), target_with(7, "z.example")]
             ),
-            Err(LensTargetSetError::DuplicateWindow(7))
+            Err(LensTargetSetError::DuplicateWindow(Uuid::from_u128(7)))
         );
         assert_eq!(
             LensTargetSet::try_new(
@@ -1493,10 +2245,11 @@ mod tests {
     #[test]
     fn observable_fact_refresh_advances_facts_without_retargeting_identity() {
         let original =
-            LensTargetSet::try_new(Uuid::nil(), vec![target()]).expect("valid target set");
+            LensTargetSet::try_new(Uuid::from_u128(1), vec![target()]).expect("valid target set");
         let target_id = original.targets[0].id.clone();
         let identity = original.targets[0].identity.clone();
         let facts = WindowObservableFacts {
+            application_id: "example.browser".into(),
             title: "Renamed document".into(),
             application_name: "Browser".into(),
             frame: Bounds {
@@ -1522,7 +2275,7 @@ mod tests {
     #[test]
     fn context_preserves_canonical_per_target_sources_and_revisions() {
         let target_set = LensTargetSet::try_new(
-            Uuid::nil(),
+            Uuid::from_u128(1),
             vec![target_with(9, "z.example"), target_with(7, "a.example")],
         )
         .expect("valid target set");
@@ -1534,9 +2287,30 @@ mod tests {
                 media: LensMediaCapture::default(),
             })
             .collect();
-        let context =
-            LensContext::from_captures(Uuid::nil(), &target_set, captures).expect("valid context");
+        let context = LensContext::from_captures(Uuid::from_u128(1), &target_set, captures)
+            .expect("valid context");
         let input = LensInput::from_context(&context).expect("usable input");
+
+        fn rejects_other_versions<T: serde::Serialize + serde::de::DeserializeOwned>(
+            value: &T,
+            current: u32,
+        ) {
+            let mut encoded = serde_json::to_value(value).unwrap();
+            assert!(serde_json::from_value::<T>(encoded.clone()).is_ok());
+            for rejected in [0, current - 1, current + 1, u32::MAX] {
+                encoded["schema_version"] = rejected.into();
+                assert!(serde_json::from_value::<T>(encoded.clone()).is_err());
+            }
+        }
+        rejects_other_versions(&context, LENS_CONTEXT_SCHEMA_VERSION);
+        rejects_other_versions(&input, LENS_INPUT_SCHEMA_VERSION);
+        let document = LensDocument::from_accessibility(
+            &lens_target(),
+            &accessibility(ExtractionQuality::Full),
+        )
+        .unwrap()
+        .unwrap();
+        rejects_other_versions(&document, LENS_DOCUMENT_SCHEMA_VERSION);
 
         assert_eq!(context.sources.len(), 2);
         assert_eq!(context.sources[0].target_id, target_set.targets[0].id);
@@ -1550,10 +2324,10 @@ mod tests {
     #[test]
     fn refreshed_context_uses_explicit_nonzero_context_and_source_revisions() {
         let target_set =
-            LensTargetSet::try_new(Uuid::nil(), vec![target()]).expect("valid target set");
+            LensTargetSet::try_new(Uuid::from_u128(1), vec![target()]).expect("valid target set");
         let target_id = target_set.targets[0].id.clone();
         let context = LensContext::from_captures_at_revision(
-            Uuid::nil(),
+            Uuid::from_u128(1),
             8,
             BTreeMap::from([(target_id, 5)]),
             &target_set,
@@ -1600,8 +2374,14 @@ mod tests {
         );
 
         assert_eq!(plan.requests.len(), 1);
-        assert_eq!(plan.requests[0].id, "media-window-7-node-000002");
-        assert_eq!(plan.requests[0].scope, LensMediaScope::AxElementRegion);
+        assert_eq!(
+            plan.requests[0].id,
+            "media-window-00000000-0000-0000-0000-000000000007-node-000002"
+        );
+        assert_eq!(
+            plan.requests[0].scope,
+            LensMediaScope::AccessibilityElementRegion
+        );
         assert_eq!(
             plan.requests[0].source_node_id.as_deref(),
             Some("node-000002")
@@ -1627,7 +2407,10 @@ mod tests {
 
         assert_eq!(document.nodes.len(), 3);
         assert_eq!(plan.requests.len(), 1);
-        assert_eq!(plan.requests[0].scope, LensMediaScope::AxElementRegion);
+        assert_eq!(
+            plan.requests[0].scope,
+            LensMediaScope::AccessibilityElementRegion
+        );
         assert_eq!(
             plan.requests[0].source_node_id.as_deref(),
             Some("node-000002")
@@ -1650,12 +2433,12 @@ mod tests {
     #[test]
     fn off_window_ax_image_is_omitted_before_capture_planning() {
         let mut extraction = accessibility(ExtractionQuality::Full);
-        extraction.nodes[2].bounds = Some(Bounds {
+        extraction.nodes[2].bounds = Some(legacy_bounds(Bounds {
             x: 110.0,
             y: 20.0,
             width: 60.0,
             height: 40.0,
-        });
+        }));
 
         let plan = LensMediaPlan::from_accessibility(
             &lens_target(),
@@ -1675,12 +2458,12 @@ mod tests {
     #[test]
     fn resized_window_facts_admit_an_image_region_outside_the_picker_frame() {
         let mut extraction = accessibility(ExtractionQuality::Full);
-        extraction.nodes[2].bounds = Some(Bounds {
+        extraction.nodes[2].bounds = Some(legacy_bounds(Bounds {
             x: 120.0,
             y: 20.0,
             width: 60.0,
             height: 40.0,
-        });
+        }));
         let picker_frame_plan = LensMediaPlan::from_accessibility(
             &lens_target(),
             &extraction,
@@ -1688,7 +2471,7 @@ mod tests {
         );
         let mut resized = target();
         resized.facts.frame.width = 200.0;
-        let resized_target = LensTargetSet::try_new(Uuid::nil(), vec![resized])
+        let resized_target = LensTargetSet::try_new(Uuid::from_u128(1), vec![resized])
             .expect("resized target set")
             .targets
             .into_iter()
@@ -1730,17 +2513,20 @@ mod tests {
                 parent_id: Some("node-000000".into()),
                 order: index,
                 depth: 1,
-                role: Some("AXImage".into()),
-                subrole: None,
+                source_api: SourceApi::MacosAx,
+                semantic_kind: SemanticKind::Image,
+                node_purpose: NodePurpose::Content,
+                native_role: Some("AXImage".into()),
+                native_subrole: None,
                 title: None,
                 value: None,
                 description: None,
-                bounds: Some(Bounds {
+                bounds: Some(legacy_bounds(Bounds {
                     x: 10.0,
                     y: 20.0,
                     width: 60.0,
                     height: 40.0,
-                }),
+                })),
                 resource_refs: vec![],
                 children: vec![],
             });
@@ -1790,7 +2576,10 @@ mod tests {
             .expect("image node");
 
         assert_eq!(context.quality, ExtractionQuality::Full);
-        assert_eq!(image.media_refs, vec!["media-window-7-node-000002"]);
+        assert_eq!(
+            image.media_refs,
+            vec!["media-window-00000000-0000-0000-0000-000000000007-node-000002"]
+        );
         assert_eq!(image.resource_refs[0].uri, "https://example.test/chart.png");
         assert_eq!(input.media.len(), 1);
         assert!(input.serialized_len().expect("serialize") <= MAX_LENS_INPUT_BYTES);
@@ -1834,8 +2623,11 @@ mod tests {
                 parent_id: Some("node-000000".into()),
                 order: index,
                 depth: 1,
-                role: Some("AXStaticText".into()),
-                subrole: None,
+                source_api: SourceApi::MacosAx,
+                semantic_kind: SemanticKind::Text,
+                node_purpose: NodePurpose::Content,
+                native_role: Some("AXStaticText".into()),
+                native_subrole: None,
                 title: None,
                 value: Some(format!("bounded content {index:06}")),
                 description: None,
@@ -1914,8 +2706,11 @@ mod tests {
                 parent_id: Some("node-000000".into()),
                 order: index,
                 depth: 1,
-                role: Some("AXStaticText".into()),
-                subrole: None,
+                source_api: SourceApi::MacosAx,
+                semantic_kind: SemanticKind::Text,
+                node_purpose: NodePurpose::Content,
+                native_role: Some("AXStaticText".into()),
+                native_subrole: None,
                 title: None,
                 value: Some(format!("bounded content {index:06}")),
                 description: None,
