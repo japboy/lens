@@ -58,25 +58,37 @@ test("oversized output fails and closes owned process", async () => {
   assert.equal(result.cleanup, "closed");
 });
 test("external deadline interrupts an overlapping provider hold", async () => {
+  // Reserve 3 s for both child startups instead of 250 ms. The hold cannot
+  // naturally finish before 8.5 s (3 s entry delay + 5.5 s hold), while the
+  // external deadline fires at 6 s and has a 2 s cleanup observation budget.
+  // Keeping the completion bound below 8.5 s still detects an uninterruptible hold.
   const start = performance.now();
   const delayed = fixture.replace(
     "setImmediate(()=>emit('provider_entered'))",
-    "setTimeout(()=>emit('provider_entered'),450)",
+    "setTimeout(()=>emit('provider_entered'),3000)",
   );
-  const longProbe = probe.replace("},150)", "},2000)");
+  const longProbe = probe.replace("},150)", "},30000)");
   const result = await supervise(process.execPath, process.execPath, {
     fixtureArgs: ["-e", delayed],
     probePrefixArgs: ["-e", longProbe],
     scenario: "provider-deadline",
-    deadlineMs: 700,
-    stallMs: 600,
+    deadlineMs: 6000,
+    stallMs: 5500,
   });
   assert.equal(result.provider_entered, true);
   assert.equal(result.outcome, "failed");
   assert.equal(result.cleanup, "closed");
   assert.match(result.error, /External experiment deadline/);
+  assert.equal(
+    result.transcript.some((record) => record.event === "deadline_terminal"),
+    false,
+  );
+  assert.equal(
+    result.transcript.some((record) => record.event === "released"),
+    false,
+  );
   assert.ok(
-    performance.now() - start < 1050,
+    performance.now() - start < 8000,
     "hold must not defer child cleanup until its own end",
   );
 });
