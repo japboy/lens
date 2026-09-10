@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInThisContext } from "node:vm";
 import { actionRevision, withActionSource } from "../../scripts/release/action-source.ts";
-import { VERSION_FILES, versionState } from "../../scripts/release/version.ts";
+import { VERSION_FILES, manifestVersionState } from "../../scripts/release/version.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const revision = actionRevision(
@@ -146,7 +146,13 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
   });
   const current = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   let cases = 0;
-  for (const version of ["0.1.1", "0.2.0", "1.0.0"]) {
+  const [major, minor, patch] = current.split(".").map(Number);
+  const futureVersions = [
+    `${major}.${minor}.${patch + 1}`,
+    `${major}.${minor + 1}.0`,
+    `${major + 1}.0.0`,
+  ];
+  for (const version of futureVersions) {
     const parsed = bundled.Version.parse(version);
     const updates = [
       ...(await strategy.buildUpdates({
@@ -163,15 +169,9 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       const matching = updates.filter((update) => update.path === path);
       assert.equal(matching.length, 1, `Exactly one updater for ${path}`);
       const content = readFileSync(join(root, path), "utf8");
-      const expected =
-        path === "Cargo.lock"
-          ? content.replace(
-              `name = "desktop"\nversion = "${current}"`,
-              `name = "desktop"\nversion = "${version}"`,
-            )
-          : content
-              .replace(`"version": "${current}"`, `"version": "${version}"`)
-              .replace(`version = "${current}"`, `version = "${version}"`);
+      const expected = content
+        .replace(`"version": "${current}"`, `"version": "${version}"`)
+        .replace(`version = "${current}"`, `version = "${version}"`);
       assert.equal(
         matching[0]!.updater.updateContent(content),
         expected,
@@ -179,6 +179,25 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       );
       cases++;
     }
+    const byPath = new Map(updates.map((update) => [update.path, update]));
+    assert.equal(
+      byPath.has("Cargo.lock"),
+      false,
+      "Cargo owns package identities and dependency references together",
+    );
+    const files = Object.fromEntries(
+      VERSION_FILES.map((path) => {
+        const content = readFileSync(join(root, path), "utf8");
+        return [
+          path,
+          path === ".release-please-manifest.json"
+            ? JSON.stringify({ ".": version })
+            : (byPath.get(path)?.updater.updateContent(content) ?? content),
+        ];
+      }),
+    );
+    assert.deepEqual(manifestVersionState(files), { version, bootstrapped: true });
+    cases++;
   }
   for (const [previous, message, expected] of [
     [undefined, "feat: initial", "0.1.0"],
@@ -317,6 +336,7 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       assert.deepEqual(proposal.labels, ["autorelease: pending"]);
       const updates = new Map(proposal.updates.map((update) => [update.path, update]));
       assert.equal(updates.size, proposal.updates.length);
+      assert.equal(updates.has("Cargo.lock"), false);
       const applicable = [...updates.values()].filter(
         (update) => update.createIfMissing || existsSync(join(root, update.path)),
       );
@@ -333,15 +353,15 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
         VERSION_FILES.map((path) => [
           path,
           updates
-            .get(path)!
-            .updater.updateContent(
+            .get(path)
+            ?.updater.updateContent(
               path === ".release-please-manifest.json"
                 ? "{}"
                 : readFileSync(join(root, path), "utf8"),
-            ),
+            ) ?? readFileSync(join(root, path), "utf8"),
         ]),
       );
-      assert.deepEqual(versionState(files), { version: "0.1.0", bootstrapped: true });
+      assert.deepEqual(manifestVersionState(files), { version: "0.1.0", bootstrapped: true });
       const changelog = updates.get("CHANGELOG.md")!.updater.updateContent("");
       assert.match(changelog, /## .*0\.1\.0/u);
       assert.ok(changelog.includes("first supported capability"));

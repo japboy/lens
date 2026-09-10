@@ -14,6 +14,7 @@ import {
 } from "./artifact.ts";
 import { publish, requireReleaseJobs } from "./publish.ts";
 import { preflight } from "./preflight.ts";
+import { refreshReleaseLock } from "./refresh-lock.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const env = (name: string) => {
@@ -33,6 +34,11 @@ if (mode === "pr-title") {
   const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
   const result = await control(api.request, root, env("SOURCE_SHA"), env("GITHUB_REPOSITORY"));
   output("state", result);
+} else if (mode === "refresh-lock") {
+  const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
+  process.stdout.write(
+    `${await refreshReleaseLock(api.request, root, env("SOURCE_SHA"), env("GITHUB_REPOSITORY"))}\n`,
+  );
 } else if (mode === "preflight") {
   const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
   const tag = env("RELEASE_TAG");

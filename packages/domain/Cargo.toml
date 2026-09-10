@@ -1,6 +1,6 @@
 [package]
 name = "domain"
-version = "0.1.0"
+version.workspace = true
 description = "Canonical observation, media and semantic projection rules"
 edition.workspace = true
 rust-version.workspace = true

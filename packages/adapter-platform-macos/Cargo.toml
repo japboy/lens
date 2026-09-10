@@ -1,6 +1,6 @@
 [package]
 name = "adapter-platform-macos"
-version = "0.1.0"
+version.workspace = true
 description = "macOS native capability implementation and retained resource bridge"
 edition.workspace = true
 rust-version.workspace = true

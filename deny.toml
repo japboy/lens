@@ -44,6 +44,9 @@ ignore = true
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+# Private workspace paths use the single product version, not registry ranges.
+# Exact local identities and paths are enforced by check:boundaries.
+allow-wildcard-paths = true
 highlight = "all"
 allow = []
 deny = []

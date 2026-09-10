@@ -1,14 +1,21 @@
 import type { FeatureGraph } from "../../mise-tasks/inspect/features.ts";
+import { MEMBERS } from "../workspace-policy.ts";
 import { stableVersion } from "./version.ts";
 
-// Only the exact application identity owns this slot. Dependency versions stay literal.
+// Only declared Cargo workspace identities share the release slot. External versions stay literal.
+const workspacePackages = MEMBERS.filter((member) => member.ecosystem === "cargo");
 export function admissionGraph(graph: FeatureGraph, version: string): FeatureGraph {
   stableVersion(version);
   const projected = graph.nodes.map((node) => {
-    if (node.name !== "desktop" || node.source !== "path:apps/desktop/src-tauri") return node;
+    if (
+      !workspacePackages.some(
+        (member) => node.name === member.name && node.source === `path:${member.directory}`,
+      )
+    )
+      return node;
     if (node.version !== version)
-      throw new Error("Application graph version disagrees with authority");
-    return { ...node, version: "application-release" };
+      throw new Error("Workspace graph version disagrees with authority");
+    return { ...node, version: "workspace-release" };
   });
   const keys = projected.map((node) => JSON.stringify(node));
   if (new Set(keys).size !== keys.length)

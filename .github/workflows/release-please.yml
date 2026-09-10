@@ -58,3 +58,10 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           skip-github-release: true
+
+      - name: Refresh the proposed Cargo lock with Cargo
+        if: steps.control.outputs.state == 'update-pr'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/release/cli.ts refresh-lock
