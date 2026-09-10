@@ -1984,7 +1984,7 @@ async fn run_session_turn<R: tauri::Runtime>(
                     || *cancellation.borrow()
                     || *shutdown.borrow();
                 let published = publication.finish().map_err(|error| state_error(error.to_string()))?;
-                if stop_reason == StopReason::EndTurn && !cancelled {
+                if !cancelled {
                     if let Some(published) = published {
                         candidate.accept_published_html(published)?;
                     }

@@ -33,7 +33,7 @@ const OPERATION: Uuid = Uuid::from_u128(7);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     Success,
-    HtmlPublication,
+    HtmlPublication(StopReason),
     NativeUnavailable,
     ObserverUnavailable,
     AgentUnavailable,
@@ -448,7 +448,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                     .data("fixture provider prompt failure"),
                             );
                         }
-                        if prompt.scenario == Scenario::HtmlPublication
+                        if matches!(prompt.scenario, Scenario::HtmlPublication(_))
                             || prompt.scenario == Scenario::StopDuringPrompt
                         {
                             publish_fixture_html(&prompt, &prompt_value).await;
@@ -469,6 +469,10 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 ))?;
                                 responder.respond(PromptResponse::new(StopReason::EndTurn))
                             });
+                        }
+                        if let Scenario::HtmlPublication(stop_reason) = prompt.scenario {
+                            // HTML-only turns must not depend on a text chunk for completion.
+                            return responder.respond(PromptResponse::new(stop_reason));
                         }
                         connection.send_notification(SessionNotification::new(
                             request.session_id,
@@ -787,23 +791,42 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
 }
 
 #[test]
-fn http_publication_commits_exact_private_html() {
-    let harness = setup(Scenario::HtmlPublication);
-    let first = invoke(&harness.window, "confirm_lens_targets");
-    assert_eq!(first.stage, LensStage::Completed);
+fn http_publication_commits_exact_private_html_for_all_non_cancelled_stops() {
+    for stop_reason in [
+        StopReason::EndTurn,
+        StopReason::MaxTokens,
+        StopReason::MaxTurnRequests,
+        StopReason::Refusal,
+    ] {
+        let harness = setup(Scenario::HtmlPublication(stop_reason));
+        let first = invoke(&harness.window, "confirm_lens_targets");
+        assert_eq!(first.stage, LensStage::Completed, "{stop_reason:?}");
+        let retained = harness.app.state::<AppState>().lens().unwrap();
+        let html: Vec<_> = retained
+            .representation
+            .as_ref()
+            .unwrap()
+            .output_blocks
+            .iter()
+            .filter_map(|block| match block {
+                LensOutputBlock::Html { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(html, vec!["<h1>Fixture HTML</h1>"], "{stop_reason:?}");
+    }
+}
+
+#[test]
+fn cancelled_agent_response_discards_published_html() {
+    let harness = setup(Scenario::HtmlPublication(StopReason::Cancelled));
+    invoke(&harness.window, "confirm_lens_targets");
     let retained = harness.app.state::<AppState>().lens().unwrap();
-    let html: Vec<_> = retained
-        .representation
-        .as_ref()
-        .unwrap()
+    assert!(retained.representation.is_none());
+    assert!(!retained
         .output_blocks
         .iter()
-        .filter_map(|block| match block {
-            LensOutputBlock::Html { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(html, vec!["<h1>Fixture HTML</h1>"]);
+        .any(|block| matches!(block, LensOutputBlock::Html { .. })));
 }
 
 #[test]
