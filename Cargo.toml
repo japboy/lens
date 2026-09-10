@@ -19,6 +19,7 @@ agent-client-protocol-schema = { version = "=1.7.0", features = ["tracing"] }
 domain = { path = "packages/domain", version = "=0.1.0" }
 usecase = { path = "packages/usecase", version = "=0.1.0" }
 port-platform = { path = "packages/port-platform", version = "=0.1.0" }
+adapter-output-mcp = { path = "packages/adapter-output-mcp", version = "=0.1.0" }
 adapter-platform-macos = { path = "packages/adapter-platform-macos", version = "=0.1.0" }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

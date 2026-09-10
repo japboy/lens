@@ -90,7 +90,7 @@ depends = ["rust:clippy"]
 run = [
   "node scripts/run-workspace-variant.ts macos-test",
   "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
-  "cargo test --locked -p adapter-output-mcp --test stdio --target aarch64-apple-darwin",
+  "cargo test --locked -p adapter-output-mcp --test http --target aarch64-apple-darwin",
   "cargo test --locked --workspace --doc --target aarch64-apple-darwin",
 ]
 
@@ -119,7 +119,7 @@ depends = ["rust:clippy:linux"]
 run = [
   "node scripts/run-workspace-variant.ts linux-common-test",
   "cargo test --locked -p desktop --test node_policy --no-default-features --target x86_64-unknown-linux-gnu",
-  "cargo test --locked -p adapter-output-mcp --test stdio --target x86_64-unknown-linux-gnu",
+  "cargo test --locked -p adapter-output-mcp --test http --target x86_64-unknown-linux-gnu",
   "cargo test --locked -p domain -p port-platform -p usecase -p desktop -p adapter-output-mcp --doc --no-default-features --target x86_64-unknown-linux-gnu",
 ]
 

@@ -171,11 +171,11 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     },
   );
 
-  it("rejects managed-runtime admission into the development pnpm workspace", () => {
+  it("rejects unknown package admission into the development pnpm workspace", () => {
     const f = fixture();
     f.js.push({
-      name: "managed-runtime",
-      path: resolve(root, "apps/desktop/src-tauri/agent-runtime/codex"),
+      name: "unknown-package",
+      path: resolve(root, "packages/unknown-package"),
       private: true,
     });
     expect(f.check).toThrow("Unclassified or missing pnpm member");

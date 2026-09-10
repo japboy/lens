@@ -115,13 +115,13 @@ describe("repository task ownership", () => {
     );
   });
 
-  it("runs real MCP subprocess tests on both admitted native test hosts", () => {
+  it("runs real MCP HTTP tests on both admitted native test hosts", () => {
     for (const [taskName, variant, target] of [
       ["rust:test", "macos-test", "aarch64-apple-darwin"],
       ["rust:test:linux", "linux-common-test", "x86_64-unknown-linux-gnu"],
     ] as const) {
       const commands = tasks.find((task) => task.name === taskName)!.run;
-      const integration = `cargo test --locked -p adapter-output-mcp --test stdio --target ${target}`;
+      const integration = `cargo test --locked -p adapter-output-mcp --test http --target ${target}`;
       expect(commands).toContain(integration);
       expect(commands.indexOf(integration)).toBeGreaterThan(
         commands.indexOf(`node scripts/run-workspace-variant.ts ${variant}`),

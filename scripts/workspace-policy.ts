@@ -7,7 +7,7 @@ export type Member = {
   directory: string;
   role: "repository" | "application" | "domain" | "usecase" | "port" | "adapter" | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
-  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "sidecar";
+  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "transport";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
 };
 
@@ -50,6 +50,7 @@ export const MEMBERS: readonly Member[] = [
       normal: [
         "usecase",
         "port-platform",
+        "adapter-output-mcp",
         "agent-client-protocol",
         "base64",
         "dirs",
@@ -131,10 +132,20 @@ export const MEMBERS: readonly Member[] = [
     directory: "packages/adapter-output-mcp",
     role: "adapter",
     capability: "desktop",
-    implementation: "sidecar",
+    implementation: "transport",
     dependencies: {
-      normal: ["rmcp", "serde", "uuid", "tokio"],
-      dev: ["serde_json", "tokio"],
+      normal: [
+        "rmcp",
+        "axum",
+        "hyper",
+        "hyper-util",
+        "serde",
+        "serde_json",
+        "uuid",
+        "tokio",
+        "tokio-util",
+      ],
+      dev: ["reqwest", "tokio"],
     },
   },
   {
@@ -159,12 +170,6 @@ export const TARGET_DEPENDENCIES = [
     name: "adapter-platform-macos",
   },
   { member: "desktop", target: 'cfg(target_os = "macos")', kind: "normal", name: "tauri" },
-] as const;
-
-// These are separate production trust domains, not development workspace members.
-export const MANAGED_RUNTIME_DIRECTORIES = [
-  "apps/desktop/src-tauri/agent-runtime/claude",
-  "apps/desktop/src-tauri/agent-runtime/codex",
 ] as const;
 
 export type BuildVariant = {

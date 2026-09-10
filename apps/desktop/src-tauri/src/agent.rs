@@ -19,6 +19,7 @@ use crate::{
     },
     prompt_template::{AgentPromptMode, AgentPromptTemplate},
 };
+use adapter_output_mcp::HttpPublisher;
 use agent_client_protocol::{
     schema::{
         v1::{
@@ -137,6 +138,7 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     shutdown: &'a mut watch::Receiver<bool>,
     session: &'a mut ActiveSession<'static, Agent>,
     prompt_capabilities: &'a PromptCapabilities,
+    publisher: &'a HttpPublisher,
 }
 
 #[derive(Serialize)]
@@ -150,10 +152,11 @@ struct SourceCheckpoint<'a> {
 pub(crate) struct AgentDescriptor {
     kind: AgentKind,
     adapter_name: &'static str,
-    adapter_version: &'static str,
+    adapter_version: String,
     safe_mode_id: &'static str,
     command: PathBuf,
     args: Vec<String>,
+    installation: Option<Arc<agent_runtime::RuntimeInstallation>>,
 }
 
 pub(crate) type HostFuture<'a, T> =
@@ -161,7 +164,6 @@ pub(crate) type HostFuture<'a, T> =
 
 /// Approved runtime acquisition and ACP transport, not session or output policy.
 pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
-    fn output_server(&self) -> Result<PathBuf, String>;
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -172,6 +174,22 @@ pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
         app: &'a AppHandle<R>,
         kind: AgentKind,
     ) -> HostFuture<'a, Option<ResolvedAgentRuntime>>;
+    fn resolve_for_session<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+    ) -> HostFuture<'a, ResolvedAgentRuntime> {
+        self.resolve(app, kind)
+    }
+    fn confirm_ready(&self, _runtime: &ResolvedAgentRuntime) -> Result<(), String> {
+        Ok(())
+    }
+    fn reject_candidate<'a>(
+        &'a self,
+        _runtime: &'a ResolvedAgentRuntime,
+    ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        Box::pin(async { Ok(None) })
+    }
     fn connect(
         &self,
         descriptor: &AgentDescriptor,
@@ -183,10 +201,6 @@ pub(crate) struct AgentServices<R: tauri::Runtime>(pub Arc<dyn AgentHost<R>>);
 pub(crate) struct ManagedAgentHost;
 
 impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
-    fn output_server(&self) -> Result<PathBuf, String> {
-        crate::output_mcp::bundled_executable()
-    }
-
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -201,6 +215,25 @@ impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
         kind: AgentKind,
     ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
         Box::pin(agent_runtime::resolve_installed(app, kind))
+    }
+
+    fn resolve_for_session<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+    ) -> HostFuture<'a, ResolvedAgentRuntime> {
+        Box::pin(agent_runtime::resolve_for_session(app, kind))
+    }
+
+    fn confirm_ready(&self, runtime: &ResolvedAgentRuntime) -> Result<(), String> {
+        agent_runtime::confirm_ready(runtime)
+    }
+
+    fn reject_candidate<'a>(
+        &'a self,
+        runtime: &'a ResolvedAgentRuntime,
+    ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        Box::pin(agent_runtime::reject_candidate(runtime))
     }
 
     fn connect(
@@ -236,6 +269,17 @@ impl AgentDescriptor {
             .map(Self::from_runtime)
     }
 
+    async fn resolve_for_session<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        kind: AgentKind,
+    ) -> Result<Self, String> {
+        app.state::<AgentServices<R>>()
+            .0
+            .resolve_for_session(app, kind)
+            .await
+            .map(Self::from_runtime)
+    }
+
     async fn resolve_installed<R: tauri::Runtime>(
         app: &AppHandle<R>,
         kind: AgentKind,
@@ -255,6 +299,19 @@ impl AgentDescriptor {
             safe_mode_id: runtime.safe_mode_id,
             command: runtime.command,
             args: runtime.args,
+            installation: runtime.installation,
+        }
+    }
+
+    fn runtime(&self) -> ResolvedAgentRuntime {
+        ResolvedAgentRuntime {
+            kind: self.kind,
+            adapter_name: self.adapter_name,
+            adapter_version: self.adapter_version.clone(),
+            safe_mode_id: self.safe_mode_id,
+            command: self.command.clone(),
+            args: self.args.clone(),
+            installation: self.installation.clone(),
         }
     }
 
@@ -273,7 +330,7 @@ impl AgentDescriptor {
             input_projection: None,
             kind: self.kind,
             adapter_name: self.adapter_name.into(),
-            adapter_version: self.adapter_version.into(),
+            adapter_version: self.adapter_version.clone(),
             session_id: None,
             session_mode_id: None,
             auth_methods: Vec::new(),
@@ -899,7 +956,7 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
             let _ = changed;
             None
         }
-        descriptor = AgentDescriptor::resolve(&app, identity.config.agent) => Some(descriptor),
+        descriptor = AgentDescriptor::resolve_for_session(&app, identity.config.agent) => Some(descriptor),
     };
     let Some(descriptor) = descriptor else {
         if let Err(error) = mailbox.close("Agent session was shut down before startup completed") {
@@ -915,17 +972,60 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
         return;
     };
     let (result, descriptor) = match descriptor {
-        Ok(descriptor) => {
-            let result = run_persistent_session(
+        Ok(mut descriptor) => {
+            let mut startup = SessionStartup::Pending;
+            let mut result = run_persistent_session(
                 app.clone(),
                 identity.clone(),
                 descriptor.clone(),
                 Arc::clone(&mailbox),
                 shutdown.clone(),
+                &mut startup,
             )
-            .await
-            .map_err(|error| (error.to_string(), Some(error.code)));
-            (result, Some(descriptor))
+            .await;
+            // Only a rejected startup can retry. No prompt has been consumed,
+            // and the fallback descriptor bypasses another registry resolution.
+            if startup == SessionStartup::Incompatible && !*shutdown.borrow() {
+                let runtime = descriptor.runtime();
+                match app
+                    .state::<AgentServices<R>>()
+                    .0
+                    .reject_candidate(&runtime)
+                    .await
+                {
+                    Ok(Some(previous)) => {
+                        if previous.installation.is_some() {
+                            let reason = result
+                                .as_ref()
+                                .err()
+                                .map(ToString::to_string)
+                                .unwrap_or_default();
+                            if let Err(error) =
+                                agent_runtime::publish_recovery(&app, &previous, &reason)
+                            {
+                                eprintln!("Unable to publish Agent runtime recovery: {error}");
+                            }
+                        }
+                        descriptor = AgentDescriptor::from_runtime(previous);
+                        startup = SessionStartup::Pending;
+                        result = run_persistent_session(
+                            app.clone(),
+                            identity.clone(),
+                            descriptor.clone(),
+                            Arc::clone(&mailbox),
+                            shutdown.clone(),
+                            &mut startup,
+                        )
+                        .await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => result = Err(state_error(error)),
+                }
+            }
+            (
+                result.map_err(|error| (error.to_string(), Some(error.code))),
+                Some(descriptor),
+            )
         }
         Err(error) => (Err((error, None)), None),
     };
@@ -980,18 +1080,27 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionStartup {
+    Pending,
+    Incompatible,
+    Ready,
+}
+
 async fn run_persistent_session<R: tauri::Runtime>(
     app: AppHandle<R>,
     identity: AgentSessionIdentity,
     descriptor: AgentDescriptor,
     mailbox: Arc<AgentSessionMailbox>,
     mut shutdown: watch::Receiver<bool>,
+    startup: &mut SessionStartup,
 ) -> Result<(), Error> {
-    let output_server = app
-        .state::<AgentServices<R>>()
-        .0
-        .output_server()
-        .map_err(state_error)?;
+    if *shutdown.borrow() {
+        return Err(Error::request_cancelled());
+    }
+    let publisher = HttpPublisher::start()
+        .await
+        .map_err(|error| state_error(error.to_string()))?;
     let process = transport(&app, &descriptor);
     agent_client_protocol::Client
         .builder()
@@ -1013,11 +1122,22 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 .agent_info
                 .as_ref()
                 .map(|info| (info.name.clone(), info.version.clone()));
+            if initialize.protocol_version != ProtocolVersion::V1 {
+                *startup = SessionStartup::Incompatible;
+                return Err(Error::invalid_params().data("Agent returned an unsupported ACP protocol version"));
+            }
+            if let Err(error) = crate::output_mcp::require_http(&initialize.agent_capabilities.mcp_capabilities) {
+                *startup = SessionStartup::Incompatible;
+                return Err(error);
+            }
+            if *shutdown.borrow() {
+                return Err(Error::request_cancelled());
+            }
             let mut session = tokio::select! {
                 result = connection
                     .build_session_from(crate::output_mcp::session_request(
                         &identity.config.working_directory,
-                        output_server,
+                        &publisher,
                     ))
                     .block_task()
                     .start_session() => result?,
@@ -1027,6 +1147,12 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 }
             };
             let session_id = session.session_id().clone();
+            if let Err(error) = session_controls::require_safe_mode(
+                session.config_options(), session.modes(), descriptor.safe_mode_id,
+            ) {
+                *startup = SessionStartup::Incompatible;
+                return Err(error);
+            }
             let defaults = identity.config.agent_preferences.get(identity.config.agent);
             let setup = session_controls::apply_defaults(
                 &connection, &session_id, session.config_options().map(<[_]>::to_vec),
@@ -1052,6 +1178,11 @@ async fn run_persistent_session<R: tauri::Runtime>(
             update_lens_state(&app, identity.operation_id, |lens| lens.session_controls = None).map_err(state_error)?;
             controls.publish(&app).map_err(state_error)?;
             let _control_lifetime = session_controls::ControlLifetime { app: app.clone(), controls: Arc::clone(&controls) };
+            if *shutdown.borrow() {
+                return Err(Error::request_cancelled());
+            }
+            app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
+            *startup = SessionStartup::Ready;
             confirm_agent_selection_after_session(&app, identity.config.agent)
                 .map_err(state_error)?;
 
@@ -1119,6 +1250,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         shutdown: &mut shutdown,
                         session: &mut session,
                         prompt_capabilities: &initialize.agent_capabilities.prompt_capabilities,
+                        publisher: &publisher,
                     },
                     run.key,
                     &mut run.cancellation,
@@ -1763,20 +1895,31 @@ async fn run_session_turn<R: tauri::Runtime>(
         shutdown,
         session,
         prompt_capabilities,
+        publisher,
     } = execution;
     let AgentTurnTarget {
         context_revision: target_context_revision,
         projection: target_projection,
     } = target;
+    if *cancellation.borrow() || *shutdown.borrow() {
+        return Err(Error::request_cancelled());
+    }
+    let publication = publisher
+        .begin_turn(key.run_id)
+        .map_err(|error| state_error(error.to_string()))?;
     controls.begin_turn(key.run_id)?;
     let _turn_lifetime = session_controls::TurnLifetime { controls, app };
-    let prompt = build_prompt_blocks(
+    let mut prompt = build_prompt_blocks(
         &identity.config.agent_prompt_template,
         projection,
         &target_projection,
         prompt_mode,
         prompt_capabilities,
     )?;
+    prompt.push(crate::output_mcp::publication_context(
+        key.run_id,
+        prompt_capabilities.embedded_context,
+    ));
     let session_id = session.session_id().clone();
     let session_connection = session.connection().clone();
     let prompt_response = session_connection
@@ -1840,6 +1983,12 @@ async fn run_session_turn<R: tauri::Runtime>(
                 let cancelled = stop_reason == StopReason::Cancelled
                     || *cancellation.borrow()
                     || *shutdown.borrow();
+                let published = publication.finish().map_err(|error| state_error(error.to_string()))?;
+                if !cancelled {
+                    if let Some(published) = published {
+                        candidate.accept_published_html(published)?;
+                    }
+                }
                 let _ = update_lens_state_for_run(
                     app,
                     key,
@@ -2282,6 +2431,7 @@ mod tests {
     use agent_client_protocol::schema::v1::{SessionMode, SessionModeState};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
+        use adapter_output_mcp::HttpPublisher;
         use agent_client_protocol::{
             schema::v1::{NewSessionRequest, NewSessionResponse},
             Client, Responder,
@@ -2294,10 +2444,9 @@ mod tests {
         let agent_response = expected.clone();
         let working_directory = std::env::current_dir().unwrap();
         let expected_directory = working_directory.clone();
-        let output_server = PathBuf::from("/bundle/lens-output-mcp");
+        let publisher = HttpPublisher::start().await.unwrap();
         let expected_servers =
-            crate::output_mcp::session_request(&working_directory, output_server.clone())
-                .mcp_servers;
+            crate::output_mcp::session_request(&working_directory, &publisher).mcp_servers;
         let agent = Agent.builder().on_receive_request(
             async move |request: NewSessionRequest,
                         responder: Responder<NewSessionResponse>,
@@ -2315,7 +2464,7 @@ mod tests {
                 let session = connection
                     .build_session_from(crate::output_mcp::session_request(
                         &working_directory,
-                        output_server,
+                        &publisher,
                     ))
                     .block_task()
                     .start_session()
@@ -2555,7 +2704,8 @@ mod tests {
         let descriptor = AgentDescriptor {
             kind: AgentKind::Codex,
             adapter_name: "@agentclientprotocol/codex-acp",
-            adapter_version: "1.6.2",
+            adapter_version: "1.6.2".into(),
+            installation: None,
             safe_mode_id: "read-only",
             command: PathBuf::from("/managed/node"),
             args: vec![],
@@ -3355,7 +3505,8 @@ mod tests {
         let descriptor = AgentDescriptor {
             kind: AgentKind::Codex,
             adapter_name: "@agentclientprotocol/codex-acp",
-            adapter_version: "1.6.2",
+            adapter_version: "1.6.2".into(),
+            installation: None,
             safe_mode_id: "read-only",
             command: PathBuf::from("/managed/node"),
             args: vec!["/managed/codex-acp.js".into()],

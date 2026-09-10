@@ -116,10 +116,6 @@ impl<R: tauri::Runtime> crate::ui::TrayOutput<R> for UnusedTray {
 
 pub(crate) struct UnusedAgent;
 impl<R: tauri::Runtime> crate::agent::AgentHost<R> for UnusedAgent {
-    fn output_server(&self) -> Result<std::path::PathBuf, String> {
-        panic!("this test must not resolve an output server")
-    }
-
     fn resolve<'a>(
         &'a self,
         _: &'a tauri::AppHandle<R>,

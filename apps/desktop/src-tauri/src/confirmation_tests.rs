@@ -33,9 +33,15 @@ const OPERATION: Uuid = Uuid::from_u128(7);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     Success,
+    HtmlPublication(StopReason),
     NativeUnavailable,
     ObserverUnavailable,
     AgentUnavailable,
+    CandidateMissingHttp,
+    CandidateAlwaysMissingHttp,
+    CandidateAuthRequired,
+    CandidateSetupFailure,
+    CandidatePromptFailure,
     StopDuringDismiss,
     StopDuringPrompt,
     StopDuringExtraction,
@@ -49,6 +55,9 @@ enum Effect {
     Capture,
     Observe,
     Resolve,
+    ResolveForSession,
+    ConfirmReady(String),
+    RejectCandidate(String),
     Connect,
     Initialize,
     NewSession(Value),
@@ -306,10 +315,6 @@ impl ui::TrayOutput<MockRuntime> for Fixture {
 
 struct AgentFixture(Arc<Fixture>);
 impl agent::AgentHost<MockRuntime> for AgentFixture {
-    fn output_server(&self) -> Result<std::path::PathBuf, String> {
-        Ok("/fixture/lens-output-mcp".into())
-    }
-
     fn resolve<'a>(
         &'a self,
         _: &'a tauri::AppHandle<MockRuntime>,
@@ -324,13 +329,41 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
             Ok(ResolvedAgentRuntime {
                 kind,
                 adapter_name: "fixture-acp",
-                adapter_version: "1",
+                adapter_version: "2.0.0".into(),
+                installation: None,
                 safe_mode_id: "safe",
                 command: "/fixture/not-executed".into(),
                 args: vec![],
             })
         })
     }
+    fn resolve_for_session<'a>(
+        &'a self,
+        app: &'a tauri::AppHandle<MockRuntime>,
+        kind: AgentKind,
+    ) -> agent::HostFuture<'a, ResolvedAgentRuntime> {
+        self.0.record(Effect::ResolveForSession);
+        self.resolve(app, kind)
+    }
+    fn confirm_ready(&self, runtime: &ResolvedAgentRuntime) -> Result<(), String> {
+        self.0
+            .record(Effect::ConfirmReady(runtime.adapter_version.clone()));
+        Ok(())
+    }
+    fn reject_candidate<'a>(
+        &'a self,
+        runtime: &'a ResolvedAgentRuntime,
+    ) -> agent::HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        self.0
+            .record(Effect::RejectCandidate(runtime.adapter_version.clone()));
+        Box::pin(async move {
+            Ok(Some(ResolvedAgentRuntime {
+                adapter_version: "1.0.0".into(),
+                ..runtime.clone()
+            }))
+        })
+    }
+
     fn resolve_installed<'a>(
         &'a self,
         _: &'a tauri::AppHandle<MockRuntime>,
@@ -339,6 +372,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
         panic!("confirmation does not restore an installation")
     }
     fn connect(&self, _: &agent::AgentDescriptor) -> DynConnectTo<Client> {
+        let first_connection = !self.0.effects.lock().unwrap().contains(&Effect::Connect);
         self.0.record(Effect::Connect);
         let initialize = self.0.clone();
         let new_session = self.0.clone();
@@ -356,6 +390,12 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         responder.respond(
                             InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
                                 AgentCapabilities::new()
+                                    .mcp_capabilities(McpCapabilities::new().http(
+                                        initialize.scenario != Scenario::CandidateAlwaysMissingHttp
+                                            && !(first_connection
+                                                && initialize.scenario
+                                                    == Scenario::CandidateMissingHttp),
+                                    ))
                                     .prompt_capabilities(PromptCapabilities::new().image(true)),
                             ),
                         )
@@ -368,6 +408,10 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 _| {
                         new_session
                             .record(Effect::NewSession(serde_json::to_value(request).unwrap()));
+                        if new_session.scenario == Scenario::CandidateAuthRequired {
+                            return responder
+                                .respond_with_error(agent_client_protocol::Error::auth_required());
+                        }
                         responder.respond(
                             NewSessionResponse::new("fixture-session")
                                 .config_options(Fixture::options()),
@@ -380,6 +424,12 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 responder: Responder<SetSessionConfigOptionResponse>,
                                 _| {
                         configure.record(Effect::Configure);
+                        if configure.scenario == Scenario::CandidateSetupFailure {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::invalid_params()
+                                    .data("fixture saved settings rejected"),
+                            );
+                        }
                         assert_eq!(request.config_id.to_string(), "mode");
                         assert_eq!(serde_json::to_value(&request).unwrap()["value"], "safe");
                         responder.respond(SetSessionConfigOptionResponse::new(Fixture::options()))
@@ -390,7 +440,19 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                     async move |request: PromptRequest,
                                 responder: Responder<PromptResponse>,
                                 connection: ConnectionTo<Client>| {
-                        prompt.record(Effect::Prompt(serde_json::to_value(&request).unwrap()));
+                        let prompt_value = serde_json::to_value(&request).unwrap();
+                        prompt.record(Effect::Prompt(prompt_value.clone()));
+                        if prompt.scenario == Scenario::CandidatePromptFailure {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("fixture provider prompt failure"),
+                            );
+                        }
+                        if matches!(prompt.scenario, Scenario::HtmlPublication(_))
+                            || prompt.scenario == Scenario::StopDuringPrompt
+                        {
+                            publish_fixture_html(&prompt, &prompt_value).await;
+                        }
                         if prompt.scenario == Scenario::StopDuringPrompt {
                             let fixture = prompt.clone();
                             let sender = connection.clone();
@@ -408,6 +470,10 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 responder.respond(PromptResponse::new(StopReason::EndTurn))
                             });
                         }
+                        if let Scenario::HtmlPublication(stop_reason) = prompt.scenario {
+                            // HTML-only turns must not depend on a text chunk for completion.
+                            return responder.respond(PromptResponse::new(stop_reason));
+                        }
                         connection.send_notification(SessionNotification::new(
                             request.session_id,
                             SessionUpdate::AgentMessageChunk(ContentChunk::new(
@@ -420,6 +486,86 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                 ),
         )
     }
+}
+
+/// Exercise the actual registered MCP endpoint instead of fabricating ACP HTML updates.
+async fn publish_fixture_html(fixture: &Fixture, prompt: &Value) {
+    let server = fixture
+        .effects
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|effect| {
+            if let Effect::NewSession(request) = effect {
+                Some(request["mcpServers"][0].clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let context: Value = prompt["prompt"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|block| {
+            let text = block["text"]
+                .as_str()
+                .or_else(|| block["resource"]["text"].as_str())?;
+            let value: Value = serde_json::from_str(text).ok()?;
+            (value["kind"] == "lens_output_publication").then_some(value)
+        })
+        .expect("explicit publication context");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let post = |payload: Value, session: Option<&str>| {
+        let mut request = client
+            .post(server["url"].as_str().unwrap())
+            .header(
+                "authorization",
+                server["headers"][0]["value"].as_str().unwrap(),
+            )
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .body(payload.to_string());
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        request.send()
+    };
+    let response = post(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
+    }}), None).await.unwrap();
+    assert!(response.status().is_success());
+    let session = response
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| v.to_str().unwrap().to_owned());
+    let _ = response.text().await.unwrap();
+    assert!(post(
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        session.as_deref()
+    )
+    .await
+    .unwrap()
+    .status()
+    .is_success());
+    let response = post(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"publish_html","arguments":{"turn_id":context["turn_id"],"html":"<h1>Fixture HTML</h1>"}
+    }}), session.as_deref()).await.unwrap();
+    assert!(response.status().is_success());
+    let raw = response.text().await.unwrap();
+    let result: Value = serde_json::from_str(&raw).unwrap_or_else(|_| {
+        raw.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .find_map(|data| serde_json::from_str(data).ok())
+            .expect("MCP response")
+    });
+    assert!(result.get("error").is_none());
+    assert_ne!(result["result"]["isError"], true);
 }
 
 struct Harness {
@@ -587,12 +733,21 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             }
         })
         .unwrap();
-    assert_eq!(
-        request,
-        &json!({"cwd":"/fixture","mcpServers":[{
-            "name":"lens_output", "command":"/fixture/lens-output-mcp", "args":[], "env":[]
-        }]})
-    );
+    assert_eq!(request["cwd"], "/fixture");
+    assert_eq!(request["mcpServers"].as_array().unwrap().len(), 1);
+    let server = &request["mcpServers"][0];
+    assert_eq!(server["name"], "lens_output");
+    assert_eq!(server["type"], "http");
+    let endpoint = reqwest::Url::parse(server["url"].as_str().unwrap()).unwrap();
+    assert_eq!(endpoint.scheme(), "http");
+    assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+    assert!(endpoint.port().is_some());
+    assert_eq!(server["headers"][0]["name"], "Authorization");
+    assert!(server["headers"][0]["value"]
+        .as_str()
+        .unwrap()
+        .starts_with("Bearer "));
+    assert!(server.get("command").is_none());
     let prompt = effects
         .iter()
         .find_map(|e| {
@@ -633,6 +788,174 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
         .unwrap()
         .contains(&Effect::ObserverClosed));
     assert!(fixture.effects.lock().unwrap().contains(&Effect::Released));
+}
+
+#[test]
+fn http_publication_commits_exact_private_html_for_all_non_cancelled_stops() {
+    for stop_reason in [
+        StopReason::EndTurn,
+        StopReason::MaxTokens,
+        StopReason::MaxTurnRequests,
+        StopReason::Refusal,
+    ] {
+        let harness = setup(Scenario::HtmlPublication(stop_reason));
+        let first = invoke(&harness.window, "confirm_lens_targets");
+        assert_eq!(first.stage, LensStage::Completed, "{stop_reason:?}");
+        let retained = harness.app.state::<AppState>().lens().unwrap();
+        let html: Vec<_> = retained
+            .representation
+            .as_ref()
+            .unwrap()
+            .output_blocks
+            .iter()
+            .filter_map(|block| match block {
+                LensOutputBlock::Html { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(html, vec!["<h1>Fixture HTML</h1>"], "{stop_reason:?}");
+    }
+}
+
+#[test]
+fn cancelled_agent_response_discards_published_html() {
+    let harness = setup(Scenario::HtmlPublication(StopReason::Cancelled));
+    invoke(&harness.window, "confirm_lens_targets");
+    let retained = harness.app.state::<AppState>().lens().unwrap();
+    assert!(retained.representation.is_none());
+    assert!(!retained
+        .output_blocks
+        .iter()
+        .any(|block| matches!(block, LensOutputBlock::Html { .. })));
+}
+
+#[test]
+fn incompatible_candidate_falls_back_once_before_exactly_one_prompt() {
+    let harness = setup(Scenario::CandidateMissingHttp);
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Completed);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| **e == Effect::ResolveForSession)
+            .count(),
+        1
+    );
+    assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 2);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RejectCandidate(_)))
+            .count(),
+        1
+    );
+    assert!(effects.contains(&Effect::RejectCandidate("2.0.0".into())));
+    assert!(effects.contains(&Effect::ConfirmReady("1.0.0".into())));
+    assert!(!effects.contains(&Effect::ConfirmReady("2.0.0".into())));
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+    let configured = effects
+        .iter()
+        .position(|e| *e == Effect::Configure)
+        .unwrap();
+    let confirmed = effects
+        .iter()
+        .position(|e| matches!(e, Effect::ConfirmReady(_)))
+        .unwrap();
+    let prompted = effects
+        .iter()
+        .position(|e| matches!(e, Effect::Prompt(_)))
+        .unwrap();
+    assert!(configured < confirmed && confirmed < prompted);
+    invoke(&harness.window, "stop_lens");
+}
+
+#[test]
+fn incompatible_fallback_is_not_retried_or_prompted_again() {
+    let harness = setup(Scenario::CandidateAlwaysMissingHttp);
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Failed);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 2);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RejectCandidate(_)))
+            .count(),
+        1
+    );
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::ConfirmReady(_) | Effect::Prompt(_))));
+    invoke(&harness.window, "stop_lens");
+}
+
+#[test]
+fn authentication_or_saved_settings_failure_never_rolls_back_candidate() {
+    for (scenario, stage) in [
+        (
+            Scenario::CandidateAuthRequired,
+            LensStage::AuthenticationRequired,
+        ),
+        (Scenario::CandidateSetupFailure, LensStage::Failed),
+    ] {
+        let harness = setup(scenario);
+        let result = invoke(&harness.window, "confirm_lens_targets");
+        assert_eq!(result.stage, stage);
+        let effects = harness.fixture.effects.lock().unwrap().clone();
+        assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 1);
+        assert!(!effects.iter().any(|e| matches!(
+            e,
+            Effect::RejectCandidate(_) | Effect::ConfirmReady(_) | Effect::Prompt(_)
+        )));
+        invoke(&harness.window, "stop_lens");
+    }
+}
+
+#[test]
+fn provider_failure_after_confirmation_never_rolls_back_or_replays_prompt() {
+    let harness = setup(Scenario::CandidatePromptFailure);
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Failed);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 1);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::ConfirmReady(_)))
+            .count(),
+        1
+    );
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::RejectCandidate(_))));
+    let configured = effects
+        .iter()
+        .position(|e| *e == Effect::Configure)
+        .unwrap();
+    let confirmed = effects
+        .iter()
+        .position(|e| matches!(e, Effect::ConfirmReady(_)))
+        .unwrap();
+    let prompted = effects
+        .iter()
+        .position(|e| matches!(e, Effect::Prompt(_)))
+        .unwrap();
+    assert!(configured < confirmed && confirmed < prompted);
+    invoke(&harness.window, "stop_lens");
 }
 
 #[test]
@@ -815,6 +1138,16 @@ fn stop_during_agent_prompt_revokes_publication_and_releases_observation() {
     let effects = fixture.effects.lock().unwrap();
     assert!(effects.contains(&Effect::ObserverClosed));
     assert!(effects.contains(&Effect::Released));
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::RejectCandidate(_))));
 }
 
 #[test]

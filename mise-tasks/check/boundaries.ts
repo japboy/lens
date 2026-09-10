@@ -6,11 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  MANAGED_RUNTIME_DIRECTORIES,
-  MEMBERS,
-  TARGET_DEPENDENCIES,
-} from "../../scripts/workspace-policy.ts";
+import { MEMBERS, TARGET_DEPENDENCIES } from "../../scripts/workspace-policy.ts";
 import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
   portableSourceViolations,
@@ -310,7 +306,6 @@ export function validateInventory(
     ...expectedPnpm.map((member) =>
       member.directory === "." ? "package.json" : `${member.directory}/package.json`,
     ),
-    ...MANAGED_RUNTIME_DIRECTORIES.map((directory) => `${directory}/package.json`),
   ]);
   for (const path of sourcePaths) {
     if (/(?:^|\/)(?:Cargo.toml|package.json)$/u.test(path)) {

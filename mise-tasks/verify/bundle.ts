@@ -10,7 +10,6 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runVariant } from "../../scripts/run-workspace-variant.ts";
-import { OUTPUT_SIDECAR_CONFIG, prepareOutputSidecar } from "../../scripts/output-sidecar.ts";
 import { bundleContract, verifyApp, verifyDmg } from "../../scripts/release/bundle.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -28,7 +27,6 @@ export function verifyNativeBundle(root = ROOT, kind = "app"): string {
   const previous = process.env.MACOSX_DEPLOYMENT_TARGET;
   try {
     process.env.MACOSX_DEPLOYMENT_TARGET = contract.minimum;
-    prepareOutputSidecar(root, "aarch64-apple-darwin", "release");
     runVariant("macos-bundle-build", root);
     // Remove only generated packaging output; stale DMGs cannot become candidates.
     rmSync(directory, { recursive: true, force: true });
@@ -51,8 +49,6 @@ export function verifyNativeBundle(root = ROOT, kind = "app"): string {
         "--bundles",
         kind,
         "--ci",
-        "--config",
-        OUTPUT_SIDECAR_CONFIG,
         ...(kind === "dmg" ? ["--config", "src-tauri/tauri.release.conf.json"] : []),
       ],
       { cwd: application, stdio: "inherit", env: { ...process.env, CI: "true" } },

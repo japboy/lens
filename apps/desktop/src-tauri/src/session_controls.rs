@@ -934,6 +934,42 @@ impl<R: tauri::Runtime> Drop for ControlLifetime<R> {
     }
 }
 
+/// Required provider capability, independent of the user's saved choice.
+/// Configuration catalogs take precedence over the legacy mode list.
+pub(crate) fn require_safe_mode(
+    options: Option<&[SessionConfigOption]>,
+    modes: Option<&SessionModeState>,
+    safe_mode: &str,
+) -> Result<(), Error> {
+    if let Some(options) = options {
+        validate_options(options)?;
+        if let Some(option) = mode_option(options)? {
+            return if values(option)?
+                .iter()
+                .any(|value| value.value.to_string() == safe_mode)
+            {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "Agent does not provide the required non-mutating mode",
+                ))
+            };
+        }
+    }
+    if modes.is_some_and(|modes| {
+        modes
+            .available_modes
+            .iter()
+            .any(|mode| mode.id.to_string() == safe_mode)
+    }) {
+        Ok(())
+    } else {
+        Err(invalid(
+            "Agent does not provide the required non-mutating mode",
+        ))
+    }
+}
+
 /// Resolve and apply defaults against this Agent's current catalog; never reconstruct choices.
 pub async fn apply_defaults(
     connection: &ConnectionTo<Agent>,
