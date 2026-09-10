@@ -566,6 +566,39 @@ mod tests {
     }
 
     #[test]
+    fn older_bundle_contents_are_preserved_until_an_explicit_reset() {
+        let mut config = AppConfig::new(PathBuf::from("/host"));
+        config.prompt_presets.presets.truncate(3);
+        for preset in &mut config.prompt_presets.presets {
+            preset.bundled_source.as_mut().unwrap().version = 1;
+            preset
+                .template
+                .common
+                .push_str("\nPreviously saved instructions.");
+        }
+        config.sync_prompt_template().unwrap();
+        let bytes = serde_json::to_vec(&config).unwrap();
+        assert!(!AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+        let loaded = AppConfig::decode_settings(&bytes, PathBuf::from("/other")).unwrap();
+        assert_eq!(loaded, config);
+        let reset = loaded
+            .prompt_presets
+            .apply(crate::prompt_presets::PromptPresetMutation::ResetAll {
+                expected_catalog_revision: loaded.prompt_presets.revision,
+            })
+            .unwrap();
+        assert_eq!(reset.presets.len(), 4);
+        for (actual, seed) in reset
+            .presets
+            .iter()
+            .zip(crate::prompt_presets::bundled_presets())
+        {
+            assert_eq!(actual.template, seed.template);
+            assert_eq!(actual.bundled_source, seed.bundled_source);
+        }
+    }
+
+    #[test]
     fn settings_reject_invalid_current_catalog_and_nonprompt_fields() {
         for value in [
             serde_json::json!({"working_directory":null}),

@@ -1036,7 +1036,7 @@ mod tests {
         let mut config = crate::store::default_config();
         config.prompt_presets.presets[0].name = "A & B".into();
         let items = prompt_preset_menu(&config);
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
         assert_eq!(items[0].name, "A && B");
         assert_eq!(items.iter().filter(|item| item.checked).count(), 1);
         assert_eq!(

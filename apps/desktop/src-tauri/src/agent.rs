@@ -2771,7 +2771,7 @@ mod tests {
         };
         assert!(instruction
             .text
-            .contains("existing instructions, memory, and preferences"));
+            .contains("instructions, preferences, and relevant memory actually available"));
         let ContentBlock::Resource(resource) = &blocks[1] else {
             panic!("second block must be embedded context")
         };

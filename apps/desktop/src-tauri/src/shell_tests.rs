@@ -376,7 +376,7 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
     );
     assert_eq!(saved.prompt_presets.selected_id, "visual-learner");
     assert_eq!(saved.prompt_presets.selected().name, "Visual Learner");
-    assert_eq!(saved.prompt_presets.presets.len(), 3);
+    assert_eq!(saved.prompt_presets.presets.len(), 4);
     let restored_visual = saved
         .prompt_presets
         .presets

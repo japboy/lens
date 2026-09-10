@@ -138,7 +138,7 @@ export class SettingsPage extends ReactiveElement {
           const approved = await this.port.confirmAction(
             change.type === "delete"
               ? "Delete this saved preset? If it is in use, the first remaining preset will be used. Unsaved drafts remain available until you leave Settings."
-              : "Reset all presets? All added presets, saved edits and unsaved drafts will be deleted. The three initial presets will be restored and Visual Learner will be used.",
+              : "Reset all presets? All added presets, saved edits and unsaved drafts will be deleted. The four initial presets will be restored and Visual Learner will be used.",
             change.type === "delete" ? "Delete Prompt Preset" : "Reset All Presets",
           );
           if (!approved) return;

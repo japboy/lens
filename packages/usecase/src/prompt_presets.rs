@@ -1,5 +1,5 @@
 //! Saved explanation preferences, independently versioned from execution templates.
-use domain::prompt_template::{AgentPromptTemplate, BUILT_IN_RESPONSE_INSTRUCTION};
+use domain::prompt_template::AgentPromptTemplate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -122,8 +122,13 @@ impl PromptPresetCatalog {
             if let Some(source) = &preset.bundled_source {
                 if source.id != preset.id
                     || source.version == 0
-                    || !["visual-learner", "conceptual-learner", "practical-learner"]
-                        .contains(&source.id.as_str())
+                    || ![
+                        "visual-learner",
+                        "conceptual-learner",
+                        "practical-learner",
+                        "analytical-learner",
+                    ]
+                    .contains(&source.id.as_str())
                 {
                     return Err("Invalid bundled prompt preset source".into());
                 }
@@ -250,27 +255,28 @@ fn increment(revision: u32) -> Result<u32, String> {
 }
 
 pub fn bundled_presets() -> Vec<PromptPreset> {
-    let shared = "Prioritize the dominant content in the user's selected target, especially the current tab and viewport when identifiable. Use available, permitted tools to retrieve missing context and verify details when useful. Consult content outside the viewport or in other tabs when accessible and relevant, while keeping the selected content as the primary subject. Distinguish supplementary information from the observed content. Briefly report which tools you actually used, or state that no tools were used.";
     [
-        ("visual-learner", "Visual Learner", "Lead with an infographic that visually summarizes the main content. Use available image-generation skills and tools when supported. Prefer Mermaid over ASCII art for relationships, processes, and structure. Follow the visual with key takeaways and supplementary information. If image generation is unavailable, provide a Mermaid diagram or structured visual summary and briefly state the limitation."),
-        ("conceptual-learner", "Conceptual Learner", "Lead with the central idea in plain language. Define essential terms, then explain how the main concepts relate and why they matter. Build from the overview to the details. Use a concise analogy when helpful, and distinguish the analogy from the actual explanation. End with important qualifications."),
-        ("practical-learner", "Practical Learner", "Lead with a concrete example that makes the main idea useful. Explain it step by step, then show how to apply the same reasoning to a similar situation. Include common mistakes and a short checklist when helpful. Clearly label invented examples, and explain actions without performing them."),
+        ("visual-learner", "Visual Learner", "Lead with an infographic that makes the important ideas, their relationships, and the context needed to understand them clear. Integrate relevant source information and verified supplementary context. Use visual hierarchy, spatial grouping, comparisons, and connections to explain the information. Choose the composition, level of detail, and number of visuals according to what communicates the information most effectively. Keep text readable and avoid unnecessary fragmentation or decorative bulk. Create the infographic as HTML or images using the shared output rules, then provide supplementary explanation and supporting detail in the text that follows."),
+        ("conceptual-learner", "Conceptual Learner", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use an HTML concept map, comparison panel, or annotated illustration when it makes the structure easier to understand; choose an image when illustration is more suitable. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
+        ("practical-learner", "Practical Learner", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use an HTML walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow; use an image when spatial or physical details are better illustrated. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
+        ("analytical-learner", "Analytical Learner", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a static HTML visualization or an image when it clarifies the model or comparison."),
     ].into_iter().map(|(id, name, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
-        template: AgentPromptTemplate::from_legacy_response_prompt(&format!("{BUILT_IN_RESPONSE_INSTRUCTION}\n\n{instruction}\n\n{shared}")),
-        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 1 }),
+        template: AgentPromptTemplate::with_explanation_strategy(instruction),
+        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 2 }),
     }).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::prompt_template::BUILT_IN_RESPONSE_INSTRUCTION;
 
     #[test]
-    fn defaults_are_three_ordered_seeds_and_first_is_selected() {
+    fn defaults_are_four_ordered_seeds_and_first_is_selected() {
         let catalog = PromptPresetCatalog::default().normalize().unwrap();
         assert_eq!(catalog.schema_version, 2);
-        assert_eq!(catalog.presets.len(), 3);
+        assert_eq!(catalog.presets.len(), 4);
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
         assert_eq!(catalog.selected_id, "visual-learner");
         assert!(catalog
@@ -315,7 +321,7 @@ mod tests {
                 expected_catalog_revision: selected.revision,
             })
             .unwrap();
-        assert_eq!(reset.presets.len(), 3);
+        assert_eq!(reset.presets.len(), 4);
         assert_eq!(reset.selected_id, reset.presets[0].id);
         assert!(reset.revision > selected.revision);
         assert!(reset.execution_revision > selected.execution_revision);
@@ -399,7 +405,7 @@ mod tests {
                 expected_revision: 1,
             })
             .unwrap();
-        assert_eq!(deleted.clone().normalize().unwrap().presets.len(), 2);
+        assert_eq!(deleted.clone().normalize().unwrap().presets.len(), 3);
         assert_eq!(deleted.selected_id, catalog.presets[1].id);
         let inactive_deleted = catalog
             .apply(PromptPresetMutation::Delete {
