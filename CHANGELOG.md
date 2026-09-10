@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/japboy/lens/compare/v0.2.0...v0.3.0) (2026-09-10)
+
+
+### Features
+
+* **acp:** update registry adapters without HTML patches ([#69](https://github.com/japboy/lens/issues/69)) ([5f54007](https://github.com/japboy/lens/commit/5f540077c44d1ed85648ee3a7e9784796f8916d5))
+* **settings:** add editable learner prompt presets ([#70](https://github.com/japboy/lens/issues/70)) ([de85302](https://github.com/japboy/lens/commit/de853026b41b9bdcc869583033cde680fd6e49b0))
+
+
+### Bug Fixes
+
+* **ci:** verify the workflow-selected release action ([#64](https://github.com/japboy/lens/issues/64)) ([bd7141b](https://github.com/japboy/lens/commit/bd7141b01003e6485e94708e999ae5ece6419f90))
+* **release:** synchronize workspace versions ([#71](https://github.com/japboy/lens/issues/71)) ([fc2a646](https://github.com/japboy/lens/commit/fc2a6462ac716035a0f385ae03cee8c63417f98a))
+* **runtime:** unify development and managed Node versions ([#60](https://github.com/japboy/lens/issues/60)) ([ccb6f91](https://github.com/japboy/lens/commit/ccb6f9136f073131aa5816b1e6570fc94338b35f))
+
 ## [0.2.0](https://github.com/japboy/lens/compare/v0.1.0...v0.2.0) (2026-09-08)
 
 
