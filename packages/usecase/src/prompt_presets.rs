@@ -234,7 +234,8 @@ impl PromptPresetCatalog {
         }
         next.revision = increment(self.revision)?;
         if next.execution_revision == self.execution_revision
-            && next.selected().template != self.selected().template
+            && (next.selected_id != self.selected_id
+                || next.selected().template != self.selected().template)
         {
             next.execution_revision = increment(self.execution_revision)?;
         }
@@ -383,6 +384,71 @@ mod tests {
             .unwrap(),
             a
         );
+    }
+
+    #[test]
+    fn identical_templates_still_advance_execution_when_selection_changes() {
+        let original = PromptPresetCatalog::default();
+        let duplicate_id = Uuid::from_u128(123).to_string();
+        let catalog = original
+            .apply_with_creation_id(
+                PromptPresetMutation::Create {
+                    name: "Duplicate".into(),
+                    template: original.selected().template.clone(),
+                },
+                Some(Uuid::from_u128(123)),
+            )
+            .unwrap();
+        assert_eq!(catalog.execution_revision, original.execution_revision);
+        let selected = catalog
+            .apply(PromptPresetMutation::Select {
+                id: duplicate_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(selected.selected().template, catalog.selected().template);
+        assert_eq!(selected.execution_revision, catalog.execution_revision + 1);
+        assert_eq!(
+            selected
+                .apply(PromptPresetMutation::Select {
+                    id: duplicate_id.clone()
+                })
+                .unwrap(),
+            selected
+        );
+        let back = selected
+            .apply(PromptPresetMutation::Select {
+                id: original.selected_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(back.execution_revision, catalog.execution_revision + 2);
+        let deleted = selected
+            .apply(PromptPresetMutation::Delete {
+                id: duplicate_id.clone(),
+                expected_revision: 1,
+            })
+            .unwrap();
+        assert_eq!(deleted.selected_id, original.selected_id);
+        assert_eq!(deleted.selected().template, selected.selected().template);
+        assert_eq!(deleted.execution_revision, selected.execution_revision + 1);
+        let reset = selected
+            .apply(PromptPresetMutation::ResetAll {
+                expected_catalog_revision: selected.revision,
+            })
+            .unwrap();
+        assert_eq!(reset.execution_revision, selected.execution_revision + 1);
+        let mut inactive_template = catalog.selected().template.clone();
+        inactive_template
+            .common
+            .push_str("\nInactive customization.");
+        let edited = catalog
+            .apply(PromptPresetMutation::Update {
+                id: duplicate_id,
+                expected_revision: 1,
+                name: "Edited duplicate".into(),
+                template: inactive_template,
+            })
+            .unwrap();
+        assert_eq!(edited.execution_revision, catalog.execution_revision);
     }
 
     #[test]

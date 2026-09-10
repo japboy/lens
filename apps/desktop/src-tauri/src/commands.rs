@@ -171,8 +171,8 @@ pub fn reset_agent_prompt_template<R: tauri::Runtime>(
     set_agent_prompt_template(AgentPromptTemplate::default(), app)
 }
 
-/// Catalog edits are atomic persisted state changes. Only an effective instruction change
-/// revokes the current Agent session; unrelated edits never touch execution authority.
+/// Catalog edits are atomic persisted state changes. Changing the selected identity or its
+/// effective instructions revokes the current Agent session; unrelated edits do not.
 #[tauri::command]
 pub fn update_prompt_presets<R: tauri::Runtime>(
     change: usecase::prompt_presets::PromptPresetMutation,

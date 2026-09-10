@@ -1216,7 +1216,63 @@ fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
 
 #[test]
 fn preset_switch_starts_fresh_session_for_same_sources_and_rejects_late_old_output() {
+    verify_preset_switch(PresetSwitch::DifferentContent);
+}
+
+#[test]
+fn identical_preset_switch_starts_fresh_session_and_rejects_late_old_output() {
+    verify_preset_switch(PresetSwitch::Duplicate);
+}
+
+#[test]
+fn deleting_selected_identical_preset_starts_fresh_session_and_rejects_late_old_output() {
+    verify_preset_switch(PresetSwitch::DeleteSelected);
+}
+
+enum PresetSwitch {
+    DifferentContent,
+    Duplicate,
+    DeleteSelected,
+}
+
+fn verify_preset_switch(scenario: PresetSwitch) {
+    use usecase::prompt_presets::PromptPresetMutation;
     let harness = setup(Scenario::SwitchDuringPrompt);
+    let change = match scenario {
+        PresetSwitch::DifferentContent => PromptPresetMutation::Select {
+            id: "conceptual-learner".into(),
+        },
+        PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => {
+            let initial = harness.app.state::<AppState>().config().unwrap();
+            let created = crate::commands::update_prompt_presets(
+                PromptPresetMutation::Create {
+                    name: "Duplicate".into(),
+                    template: initial.agent_prompt_template,
+                },
+                harness.app.handle().clone(),
+            )
+            .unwrap();
+            let duplicate = created.prompt_presets.presets.last().unwrap();
+            if matches!(scenario, PresetSwitch::DeleteSelected) {
+                crate::commands::update_prompt_presets(
+                    PromptPresetMutation::Select {
+                        id: duplicate.id.clone(),
+                    },
+                    harness.app.handle().clone(),
+                )
+                .unwrap();
+                PromptPresetMutation::Delete {
+                    id: duplicate.id.clone(),
+                    expected_revision: duplicate.revision,
+                }
+            } else {
+                PromptPresetMutation::Select {
+                    id: duplicate.id.clone(),
+                }
+            }
+        }
+    };
+    let previous_config = harness.app.state::<AppState>().config().unwrap();
     let invocation_window = harness.window.clone();
     let invocation = std::thread::spawn(move || {
         crate::shell_tests::invoke(
@@ -1234,13 +1290,15 @@ fn preset_switch_starts_fresh_session_for_same_sources_and_rejects_late_old_outp
         .unwrap();
     });
     let before = harness.app.state::<AppState>().lens().unwrap();
-    let config = crate::commands::update_prompt_presets(
-        usecase::prompt_presets::PromptPresetMutation::Select {
-            id: "conceptual-learner".into(),
-        },
-        harness.app.handle().clone(),
-    )
-    .unwrap();
+    let config =
+        crate::commands::update_prompt_presets(change, harness.app.handle().clone()).unwrap();
+    assert!(!previous_config.same_execution_config(&config));
+    if !matches!(scenario, PresetSwitch::DifferentContent) {
+        assert_eq!(
+            previous_config.agent_prompt_template,
+            config.agent_prompt_template
+        );
+    }
     tauri::async_runtime::block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -1315,5 +1373,8 @@ fn preset_switch_starts_fresh_session_for_same_sources_and_rejects_late_old_outp
     assert_eq!(prompts.len(), 2);
     assert!(serde_json::to_string(prompts[1])
         .unwrap()
-        .contains("Lead with the central idea"));
+        .contains(match scenario {
+            PresetSwitch::DifferentContent => "Lead with the central idea",
+            PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => "Lead with an infographic",
+        }));
 }
