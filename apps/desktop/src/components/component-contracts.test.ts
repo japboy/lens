@@ -25,6 +25,7 @@ function representation(id: string, revision: number, text: string): LensReprese
     context_revision: revision,
     projection: { revision, digest: `sha256:projection-${revision}` },
     run_id: `run-${revision}`,
+    prompt_execution_revision: 1,
     output_blocks: [{ type: "markdown", text }],
   };
 }
@@ -33,6 +34,7 @@ function liveLens(current: LensRepresentation): LensState {
   return {
     operation_id: "operation",
     stage: "completed",
+    prompt_execution_revision: 1,
     output_blocks: [{ type: "markdown", text: "Compatibility output" }],
     representation: current,
     live: {
@@ -91,6 +93,7 @@ describe("component property and event contracts", () => {
           maximum_targets: 4,
           items: [],
         },
+        prompt_execution_revision: 1,
         output_blocks: [],
       },
       pending: false,
@@ -122,10 +125,12 @@ describe("component property and event contracts", () => {
     textarea.value = "Updated prompt\n\n{turn_instruction}";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await element.updateComplete;
-    element.querySelector<HTMLInputElement>('input[value="request"]')?.click();
+    element.querySelector<HTMLDetailsElement>(".prompt-advanced")!.open = true;
     await element.updateComplete;
-    expect(textarea.value).toBe("Use the initial projection.");
-    element.querySelector<HTMLInputElement>('input[value="shared"]')?.click();
+    expect(element.querySelector<HTMLTextAreaElement>("#prompt-request-editor")?.value).toBe(
+      "Use the initial projection.",
+    );
+    element.querySelector<HTMLDetailsElement>(".prompt-advanced")!.open = false;
     await element.updateComplete;
     expect(textarea.value).toBe("Updated prompt\n\n{turn_instruction}");
     element.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
@@ -262,6 +267,7 @@ describe("component property and event contracts", () => {
           maximum_targets: 4,
           items: [item],
         },
+        prompt_execution_revision: 1,
         output_blocks: [],
       },
       pending: false,
@@ -352,6 +358,7 @@ describe("component property and event contracts", () => {
         operation_id: "operation",
         stage: "selecting",
         selection,
+        prompt_execution_revision: 1,
         output_blocks: [],
       },
       pending: true,
@@ -383,6 +390,7 @@ describe("component property and event contracts", () => {
       lens: {
         operation_id: "operation",
         stage: "transforming",
+        prompt_execution_revision: 1,
         output_blocks: [],
         agent: {
           run_id: "run",
@@ -455,6 +463,7 @@ describe("component property and event contracts", () => {
         operation_id: "operation",
         stage: "ready",
         input,
+        prompt_execution_revision: 1,
         output_blocks: [],
         live: {
           lifecycle: "watching",
@@ -518,7 +527,7 @@ describe("component property and event contracts", () => {
       lens: LensState;
       updateComplete: Promise<boolean>;
     };
-    element.lens = { stage: "failed", output_blocks: [] };
+    element.lens = { stage: "failed", prompt_execution_revision: 1, output_blocks: [] };
     if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
@@ -535,6 +544,7 @@ describe("component property and event contracts", () => {
     element.lens = {
       ...liveLens(representation("representation-1", 1, "Published interpretation")),
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "Unpublished stream" }],
     };
     if ("active" in element) element.active = true;
@@ -648,7 +658,12 @@ describe("component property and event contracts", () => {
 
     element.model = {
       ...element.model,
-      lens: { operation_id: "next-operation", stage: "connecting", output_blocks: [] },
+      lens: {
+        operation_id: "next-operation",
+        stage: "connecting",
+        prompt_execution_revision: 1,
+        output_blocks: [],
+      },
     };
     await element.updateComplete;
     expect(element.shadowRoot?.querySelector('[role="tabpanel"]')?.id).toBe("interpretation-panel");
@@ -711,6 +726,7 @@ describe("component property and event contracts", () => {
     async ({ top, initialHeight, expected }) => {
       const withMedia = (id: string, revision: number): LensRepresentation => ({
         ...representation(id, revision, "Image explanation"),
+        prompt_execution_revision: 1,
         output_blocks: [
           { type: "image", mime_type: "image/png", data: "aA==" },
           { type: "markdown", text: "Image explanation" },
@@ -891,6 +907,7 @@ describe("progress notification visibility", () => {
     const element = await mount({
       operation_id: "operation",
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "Continuing interpretation." }],
     });
     const root = element.shadowRoot!;
@@ -992,6 +1009,7 @@ it("keeps Agent diagnostics out of the Lens interpretation layout", async () => 
     message: "",
     lens: {
       stage: "ready",
+      prompt_execution_revision: 1,
       output_blocks: [],
       session_controls: {
         instance_id: "fixture",

@@ -51,11 +51,15 @@ fn install<R: tauri::Runtime>(
         vec![],
         receiver,
     )?;
-    *app.state::<AppState>().session_controls.lock().unwrap() = Some(controls.clone());
     controls.begin_turn(Uuid::new_v4())?;
     controls
-        .publish(app)
-        .map_err(|_| invalid("Unable to publish fixture controls"))?;
+        .install(
+            app,
+            &app.state::<AppState>()
+                .config()
+                .map_err(|_| invalid("Unable to read fixture config"))?,
+        )
+        .map_err(|_| invalid("Unable to install fixture controls"))?;
     Ok((controls, shutdown))
 }
 fn ui_response<R: tauri::Runtime>(

@@ -1,3 +1,4 @@
+import { parseSettingsDestination } from "../agent-prompt-template";
 import { snapshotStatus } from "../rendering/snapshot-status";
 import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
@@ -32,11 +33,12 @@ export class SettingsPage extends ReactiveElement {
       {
         name: "agent",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () =>
-          Promise.all([
-            import("../components/lens-agent-settings"),
-            import("../components/lens-agent-defaults"),
-          ]),
+        load: () => import("../components/lens-agent-settings"),
+      },
+      {
+        name: "agent-defaults",
+        ready: () => Boolean(this.snapshots.snapshot),
+        load: () => import("../components/lens-agent-defaults"),
       },
       {
         name: "prompt",
@@ -46,8 +48,15 @@ export class SettingsPage extends ReactiveElement {
     ],
   );
 
-  initialize(): Promise<void> {
-    return this.attachment.initialize();
+  private destination = parseSettingsDestination(
+    new URLSearchParams(window.location.search).get("destination"),
+  );
+  private destinationUnlisten: (() => void) | undefined;
+  private destinationGeneration = 0;
+
+  async initialize(): Promise<void> {
+    await this.attachment.initialize();
+    if (this.destination) this.view.destination = this.destination;
   }
 
   private get view(): LensSettingsView {
@@ -62,10 +71,27 @@ export class SettingsPage extends ReactiveElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.accessibility.setActive(true);
+    const generation = ++this.destinationGeneration;
+    void this.port
+      .subscribeToSettingsDestination((destination) => {
+        if (generation !== this.destinationGeneration) return;
+        this.destination = destination;
+        if (this.attachment.stage === "active") this.view.destination = destination;
+      })
+      .then((unlisten) => {
+        if (generation === this.destinationGeneration) this.destinationUnlisten = unlisten;
+        else unlisten();
+      })
+      .catch((error) => {
+        this.aboutOpenError = `Unable to receive Settings navigation: ${String(error)}`;
+      });
     this.addEventListener("lens-settings-intent", this.handleSettingsIntent);
   }
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.destinationGeneration += 1;
+    this.destinationUnlisten?.();
+    this.destinationUnlisten = undefined;
 
     this.removeEventListener("lens-settings-intent", this.handleSettingsIntent);
   }
@@ -106,6 +132,46 @@ export class SettingsPage extends ReactiveElement {
     if (!this.snapshots.snapshot && intent.type !== "request-accessibility-permission") return;
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
+      case "update-prompt-presets": {
+        const change = intent.change;
+        if (change.type === "delete" || change.type === "reset_all") {
+          const approved = await this.port.confirmAction(
+            change.type === "delete"
+              ? "Delete this saved preset? If it is in use, the first remaining preset will be used. Unsaved drafts remain available until you leave Settings."
+              : "Reset all presets? All added presets, saved edits and unsaved drafts will be deleted. The three initial presets will be restored and Visual Learner will be used.",
+            change.type === "delete" ? "Delete Prompt Preset" : "Reset All Presets",
+          );
+          if (!approved) return;
+        }
+        const previousIds = new Set(
+          this.snapshots.snapshot?.config.prompt_presets.presets.map((preset) => preset.id),
+        );
+        await this.commands.run(
+          identity,
+          async () => {
+            const config = await this.port.updatePromptPresets(change);
+            if (change.type === "reset_all") {
+              const editor = this.view.shadowRoot?.querySelector("lens-prompt-settings") as
+                | import("../components/lens-prompt-settings").LensPromptSettings
+                | null;
+              editor?.acceptResetPresets(config.prompt_presets);
+            }
+            if (change.type === "create") {
+              const created = [...config.prompt_presets.presets]
+                .reverse()
+                .find((preset) => !previousIds.has(preset.id));
+              if (created) {
+                const editor = this.view.shadowRoot?.querySelector("lens-prompt-settings") as
+                  | import("../components/lens-prompt-settings").LensPromptSettings
+                  | null;
+                editor?.openCreatedPreset(config.prompt_presets, created.id);
+              }
+            }
+          },
+          "Prompt presets updated.",
+        );
+        return;
+      }
       case "preview-agent-model": {
         const selectionId = this.snapshots.snapshot?.agent_selection.operation_id;
         if (!selectionId) return;

@@ -6,7 +6,7 @@ import { inputMediaPreviewUrl } from "../view-model";
 @customElement("lens-media-gallery")
 export class LensMediaGallery extends LitElement {
   @property({ attribute: false })
-  lens: LensState = { stage: "idle", output_blocks: [] };
+  lens: LensState = { stage: "idle", prompt_execution_revision: 1, output_blocks: [] };
 
   @state()
   private activeAttachmentId: string | undefined;

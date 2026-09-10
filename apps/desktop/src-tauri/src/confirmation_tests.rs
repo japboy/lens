@@ -44,6 +44,7 @@ enum Scenario {
     CandidatePromptFailure,
     StopDuringDismiss,
     StopDuringPrompt,
+    SwitchDuringPrompt,
     StopDuringExtraction,
 }
 
@@ -453,7 +454,16 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         {
                             publish_fixture_html(&prompt, &prompt_value).await;
                         }
-                        if prompt.scenario == Scenario::StopDuringPrompt {
+                        let first_switch_prompt = prompt.scenario == Scenario::SwitchDuringPrompt
+                            && prompt
+                                .effects
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .filter(|effect| matches!(effect, Effect::Prompt(_)))
+                                .count()
+                                == 1;
+                        if prompt.scenario == Scenario::StopDuringPrompt || first_switch_prompt {
                             let fixture = prompt.clone();
                             let sender = connection.clone();
                             return connection.spawn(async move {
@@ -660,10 +670,14 @@ fn setup(scenario: Scenario) -> Harness {
     let snapshots = Arc::new(Mutex::new(Vec::new()));
     let recorded = snapshots.clone();
     let handle = app.handle().clone();
+    let checked_initial_media = std::sync::atomic::AtomicBool::new(false);
     let listener = app.listen_any("app-state-changed", move |event| {
         let snapshot: AppSnapshot = serde_json::from_str(event.payload()).unwrap();
         if let Some(context) = &snapshot.lens.context {
-            if context.revision == 1 && snapshot.lens.stage == LensStage::Ready {
+            if context.revision == 1
+                && snapshot.lens.stage == LensStage::Ready
+                && !checked_initial_media.swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
                 let payloads = handle
                     .state::<AppState>()
                     .lens_media
@@ -1198,4 +1212,108 @@ fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
         .unwrap()
         .iter()
         .any(|e| matches!(e, Effect::Capture | Effect::Observe | Effect::Resolve)));
+}
+
+#[test]
+fn preset_switch_starts_fresh_session_for_same_sources_and_rejects_late_old_output() {
+    let harness = setup(Scenario::SwitchDuringPrompt);
+    let invocation_window = harness.window.clone();
+    let invocation = std::thread::spawn(move || {
+        crate::shell_tests::invoke(
+            &invocation_window,
+            "confirm_lens_targets",
+            json!({"operationId":OPERATION}),
+        )
+    });
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            harness.fixture.prompt_started.notified(),
+        )
+        .await
+        .unwrap();
+    });
+    let before = harness.app.state::<AppState>().lens().unwrap();
+    let config = crate::commands::update_prompt_presets(
+        usecase::prompt_presets::PromptPresetMutation::Select {
+            id: "conceptual-learner".into(),
+        },
+        harness.app.handle().clone(),
+    )
+    .unwrap();
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let lens = harness.app.state::<AppState>().lens().unwrap();
+                if lens.representation.as_ref().is_some_and(|result| {
+                    result.prompt_execution_revision == config.prompt_presets.execution_revision
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    let completed = harness.app.state::<AppState>().lens().unwrap();
+    assert_eq!(completed.operation_id, before.operation_id);
+    assert_eq!(
+        completed.target_set.as_ref().unwrap().selection_id,
+        before.target_set.as_ref().unwrap().selection_id
+    );
+    assert_eq!(
+        completed
+            .target_set
+            .as_ref()
+            .unwrap()
+            .targets
+            .iter()
+            .map(|target| &target.identity)
+            .collect::<Vec<_>>(),
+        before
+            .target_set
+            .as_ref()
+            .unwrap()
+            .targets
+            .iter()
+            .map(|target| &target.identity)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(completed.projection, before.projection);
+    harness.fixture.finish_prompt.notify_one();
+    let _ = invocation.join().unwrap();
+    let after = harness.app.state::<AppState>().lens().unwrap();
+    assert_eq!(after.representation, completed.representation);
+    assert!(after.representation.as_ref().unwrap().output_blocks.iter().any(|block|
+        matches!(block, crate::model::LensOutputBlock::Markdown { text, .. } if text == "Fixture interpretation")));
+    let effects = harness.fixture.effects.lock().unwrap();
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Observe))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::NewSession(_)))
+            .count(),
+        2
+    );
+    let prompts = effects
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::Prompt(value) = effect {
+                Some(value)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prompts.len(), 2);
+    assert!(serde_json::to_string(prompts[1])
+        .unwrap()
+        .contains("Lead with the central idea"));
 }

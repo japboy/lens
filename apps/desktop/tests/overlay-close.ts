@@ -27,10 +27,31 @@ const snapshot: AppSnapshot = {
       source_checkpoint: "",
       current_projection_retry: "",
     },
+    prompt_presets: {
+      schema_version: 2,
+      execution_revision: 1,
+      revision: 1,
+      selected_id: "visual-learner",
+      presets: [
+        {
+          id: "visual-learner",
+          name: "Visual Learner",
+
+          revision: 1,
+          template: {
+            schema_version: 1,
+            common: "",
+            full_projection: "",
+            source_checkpoint: "",
+            current_projection_retry: "",
+          },
+        },
+      ],
+    },
   },
   agent_selection: { stage: "selected", candidate: "codex", auth_methods: [] },
   agent_runtime: { stage: "ready", agent: "codex", downloaded_bytes: 0 },
-  lens: { stage: "idle", output_blocks: [] },
+  lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
 };
 
 beforeEach(() => {
@@ -101,7 +122,12 @@ describe("overlay window dismissal", () => {
     const operationId = "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d";
     port.getAppSnapshot.mockResolvedValue({
       ...snapshot,
-      lens: { stage: "completed", operation_id: operationId, output_blocks: [] },
+      lens: {
+        stage: "completed",
+        operation_id: operationId,
+        prompt_execution_revision: 1,
+        output_blocks: [],
+      },
     });
     let completeStop!: () => void;
     port.stopLens.mockReturnValue(

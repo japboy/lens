@@ -14,7 +14,26 @@ export type AgentPromptPreviewMode =
   | "source_checkpoint"
   | "current_projection_retry";
 
-export type SettingsDestination = "general" | "agent-prompt";
+export type SettingsDestination =
+  | "connection"
+  | "session-defaults"
+  | "prompt-presets"
+  | "privacy-security";
+export function parseSettingsDestination(value: string | null): SettingsDestination | undefined {
+  switch (value) {
+    case "general":
+      return "connection";
+    case "agent-prompt":
+      return "prompt-presets";
+    case "connection":
+    case "session-defaults":
+    case "prompt-presets":
+    case "privacy-security":
+      return value;
+    default:
+      return undefined;
+  }
+}
 
 export type PromptEditorLayer = "shared" | "request";
 

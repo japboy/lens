@@ -19,7 +19,10 @@ pub struct AgentSessionIdentity {
 
 impl AgentSessionIdentity {
     pub fn admits_reuse(&self, requested: &Self, mailbox_closed: bool) -> bool {
-        self == requested && !mailbox_closed
+        self.operation_id == requested.operation_id
+            && self.context_id == requested.context_id
+            && self.config.same_execution_config(&requested.config)
+            && !mailbox_closed
     }
 }
 
@@ -206,6 +209,8 @@ pub fn reconcile_lens_after_context_refresh(
                 .zip(lens.projection.as_ref())
                 .is_some_and(|(representation, projection)| {
                     &representation.projection == projection
+                        && representation.prompt_execution_revision
+                            == lens.prompt_execution_revision
                 });
             if representation_is_current {
                 lens.representation
@@ -293,7 +298,7 @@ pub fn agent_run_has_authority(
     key: AgentRunKey,
     expected_config: &AppConfig,
 ) -> bool {
-    &snapshot.config == expected_config
+    snapshot.config.same_execution_config(expected_config)
         && snapshot.lens.operation_id == Some(key.operation_id)
         && snapshot
             .lens
@@ -766,6 +771,7 @@ mod tests {
         context_revision: u64,
     ) -> crate::model::LensRepresentation {
         crate::model::LensRepresentation {
+            prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),
             context_revision,
@@ -1012,6 +1018,31 @@ mod tests {
         assert_eq!(live.freshness, LensFreshness::Current);
         assert_eq!(live.last_outcome, Some(LensRefreshOutcome::Unchanged));
         assert!(live.error.is_none());
+    }
+
+    #[test]
+    fn unchanged_source_does_not_make_an_old_prompt_representation_current() {
+        let projection = projection_ref(2, 'b');
+        let mut lens = LensState {
+            prompt_execution_revision: 2,
+            stage: LensStage::Failed,
+            projection: Some(projection.clone()),
+            representation: Some(representation(projection, 4)),
+            live: Some(live_state(
+                LensFreshness::Stale,
+                Some(LensRefreshOutcome::Failed),
+                Some("generation failed"),
+            )),
+            ..LensState::default()
+        };
+        reconcile_lens_after_context_refresh(
+            &mut lens,
+            5,
+            LensSourceHealth::Healthy,
+            LensContextRefreshOutcome::Unchanged,
+        );
+        assert_eq!(lens.representation.as_ref().unwrap().context_revision, 4);
+        assert_eq!(lens.live.as_ref().unwrap().freshness, LensFreshness::Stale);
     }
 
     #[test]

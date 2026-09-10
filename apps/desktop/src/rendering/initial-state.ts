@@ -26,7 +26,7 @@ export function initialSettingsState() {
   return {
     model: undefined as SettingsViewModel | undefined,
     snapshotStatus: { stage: "loading" } as SnapshotStatus,
-    destination: "general" as const,
+    destination: "connection" as const,
     windowEmphasis: "emphasized" as const,
     active: false,
   };

@@ -1,4 +1,5 @@
 use crate::live_sync::ProjectionRef;
+use crate::prompt_presets::PromptPresetCatalog;
 pub use domain::model::{
     Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock,
     ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
@@ -174,17 +175,42 @@ pub struct AppConfig {
     pub agent: AgentKind,
     pub working_directory: PathBuf,
     pub agent_prompt_template: AgentPromptTemplate,
+    pub prompt_presets: PromptPresetCatalog,
 }
 
 impl AppConfig {
     /// Application defaults require the host to supply its resolved default directory.
     pub fn new(default_working_directory: PathBuf) -> Self {
+        let prompt_presets = PromptPresetCatalog::default();
         Self {
             agent: AgentKind::Claude,
             agent_preferences: Default::default(),
             working_directory: default_working_directory,
-            agent_prompt_template: AgentPromptTemplate::default(),
+            agent_prompt_template: prompt_presets.selected().template.clone(),
+            prompt_presets,
         }
+    }
+
+    pub fn sync_prompt_template(&mut self) -> Result<(), String> {
+        self.prompt_presets = self.prompt_presets.clone().normalize()?;
+        self.agent_prompt_template = self.prompt_presets.selected().template.clone();
+        Ok(())
+    }
+
+    pub fn same_execution_config(&self, other: &Self) -> bool {
+        self.prompt_presets.execution_revision == other.prompt_presets.execution_revision
+            && self.agent == other.agent
+            && self.agent_preferences == other.agent_preferences
+            && self.working_directory == other.working_directory
+            && self.agent_prompt_template == other.agent_prompt_template
+    }
+
+    pub fn settings_require_prompt_migration(bytes: &[u8]) -> Result<bool, serde_json::Error> {
+        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        Ok(value.get("prompt_presets").is_none()
+            || value["prompt_presets"]["schema_version"] == 1
+            || current_catalog_has_no_records(&value["prompt_presets"])
+            || current_catalog_needs_selection(&value["prompt_presets"]))
     }
 
     /// Persisted settings may omit fields. Their host-dependent default is explicit.
@@ -193,7 +219,8 @@ impl AppConfig {
         default_working_directory: PathBuf,
     ) -> Result<Self, serde_json::Error> {
         let wire: AppConfigWire = serde_json::from_slice(bytes)?;
-        Ok(wire.into_config(default_working_directory))
+        wire.into_config(default_working_directory)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -204,8 +231,65 @@ struct AppConfigWire {
     agent: AgentKind,
     #[serde(deserialize_with = "present_directory")]
     working_directory: Option<PathBuf>,
-    agent_prompt_template: Option<AgentPromptTemplate>,
-    response_prompt: Option<String>,
+    #[serde(deserialize_with = "present_prompt_presets")]
+    prompt_presets: Option<PromptPresetCatalog>,
+}
+
+fn current_catalog_has_no_records(value: &serde_json::Value) -> bool {
+    value["schema_version"] == 2
+        && (value.get("presets").is_none()
+            || value
+                .get("presets")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty))
+}
+
+fn current_catalog_needs_selection(value: &serde_json::Value) -> bool {
+    value["schema_version"] == 2
+        && value
+            .get("presets")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|presets| {
+                !presets.is_empty()
+                    && (value.get("selected_id").is_none()
+                        || value["selected_id"].as_str().is_some_and(|selected| {
+                            !presets
+                                .iter()
+                                .any(|preset| preset["id"].as_str() == Some(selected))
+                        }))
+            })
+}
+
+fn present_prompt_presets<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PromptPresetCatalog>, D::Error> {
+    let mut value = serde_json::Value::deserialize(deserializer)?;
+    if current_catalog_has_no_records(&value) {
+        let defaults = PromptPresetCatalog::default();
+        value["presets"] =
+            serde_json::to_value(&defaults.presets).map_err(serde::de::Error::custom)?;
+        value["selected_id"] = serde_json::Value::String(defaults.selected_id.clone());
+        serde_json::from_value::<PromptPresetCatalog>(value)
+            .map_err(serde::de::Error::custom)?
+            .normalize()
+            .map_err(serde::de::Error::custom)?;
+        return Ok(Some(defaults));
+    }
+    if current_catalog_needs_selection(&value) {
+        value["selected_id"] = value["presets"][0]["id"].clone();
+    }
+    match value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(1) => Ok(Some(PromptPresetCatalog::default())),
+        Some(2) => serde_json::from_value::<PromptPresetCatalog>(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        _ => Err(serde::de::Error::custom(
+            "unsupported prompt preset catalog schema",
+        )),
+    }
 }
 
 // A missing setting can use the supplied host default; an explicit null was never a path.
@@ -221,31 +305,26 @@ impl Default for AppConfigWire {
             agent: AgentKind::Claude,
             agent_preferences: Default::default(),
             working_directory: None,
-            agent_prompt_template: None,
-            response_prompt: None,
+            prompt_presets: None,
         }
     }
 }
 
 impl AppConfigWire {
-    fn into_config(self, default_working_directory: PathBuf) -> AppConfig {
-        let agent_prompt_template = self.agent_prompt_template.unwrap_or_else(|| {
-            self.response_prompt
-                .as_deref()
-                .map(AgentPromptTemplate::from_legacy_response_prompt)
-                .unwrap_or_default()
-        });
-        AppConfig {
+    fn into_config(self, default_working_directory: PathBuf) -> Result<AppConfig, String> {
+        let prompt_presets = self.prompt_presets.unwrap_or_default().normalize()?;
+        Ok(AppConfig {
             agent: self.agent,
             agent_preferences: self.agent_preferences,
             working_directory: self.working_directory.unwrap_or(default_working_directory),
-            agent_prompt_template,
-        }
+            agent_prompt_template: prompt_presets.selected().template.clone(),
+            prompt_presets,
+        })
     }
 }
 
 impl TryFrom<AppConfigWire> for AppConfig {
-    type Error = &'static str;
+    type Error = String;
 
     fn try_from(wire: AppConfigWire) -> Result<Self, Self::Error> {
         // A current snapshot carries its directory. Legacy persisted input uses decode_settings,
@@ -254,7 +333,7 @@ impl TryFrom<AppConfigWire> for AppConfig {
             .working_directory
             .clone()
             .ok_or("missing field `working_directory`")?;
-        Ok(wire.into_config(directory))
+        wire.into_config(directory)
     }
 }
 
@@ -323,6 +402,8 @@ pub struct LensLiveState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LensRepresentation {
+    #[serde(default = "initial_prompt_execution_revision")]
+    pub prompt_execution_revision: u32,
     pub representation_id: Uuid,
     pub context_id: Uuid,
     pub context_revision: u64,
@@ -371,6 +452,8 @@ pub struct LensTargetSelection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensState {
+    #[serde(default = "initial_prompt_execution_revision")]
+    pub prompt_execution_revision: u32,
     #[serde(default)]
     pub session_controls: Option<crate::session_controls::AgentSessionControlState>,
     #[serde(default)]
@@ -400,9 +483,14 @@ pub struct LensState {
     pub error: Option<String>,
 }
 
+fn initial_prompt_execution_revision() -> u32 {
+    1
+}
+
 impl Default for LensState {
     fn default() -> Self {
         Self {
+            prompt_execution_revision: initial_prompt_execution_revision(),
             operation_id: None,
             stage: LensStage::Idle,
             session_controls: None,
@@ -447,111 +535,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_settings_use_only_the_explicit_host_defaults() {
-        for directory in ["/host-a", "/host-b"] {
-            let default = PathBuf::from(directory);
-            assert_eq!(
-                AppConfig::decode_settings(b"{}", default.clone()).unwrap(),
-                AppConfig::new(default.clone())
-            );
-            // Serde's existing defaulted preference struct also accepts an empty sequence.
-            assert_eq!(
-                AppConfig::decode_settings(br#"{"agent_preferences":[]}"#, default.clone())
-                    .unwrap(),
-                AppConfig::new(default)
-            );
-        }
-        let config = AppConfig::decode_settings(
-            br#"{"agent":"codex","working_directory":""}"#,
-            PathBuf::from("/host"),
-        )
-        .unwrap();
-        assert_eq!(config.agent, AgentKind::Codex);
-        assert_eq!(config.working_directory, PathBuf::new());
-        // Existence checks belong to the desktop store, not shared decoding.
-        assert_eq!(
-            AppConfig::decode_settings(
-                br#"{"working_directory":"/explicit/nonexistent"}"#,
-                PathBuf::from("/host"),
-            )
-            .unwrap()
-            .working_directory,
-            PathBuf::from("/explicit/nonexistent")
-        );
-    }
-
-    #[test]
-    fn settings_preserve_legacy_prompt_precedence_and_literal_braces() {
-        let legacy = "Explain {literal} and {{braces}}.";
-        let expected = AgentPromptTemplate::from_legacy_response_prompt(legacy);
-        for template in [serde_json::Value::Null, serde_json::json!(expected)] {
-            let bytes = serde_json::to_vec(&serde_json::json!({
-                "response_prompt": legacy,
-                "agent_prompt_template": template,
-            }))
-            .unwrap();
-            let config = AppConfig::decode_settings(&bytes, PathBuf::from("/host")).unwrap();
-            assert_eq!(config.agent_prompt_template, expected);
-            assert!(config.agent_prompt_template.common.contains("{{literal}}"));
-        }
-        let explicit = AgentPromptTemplate::default();
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "response_prompt": legacy,
-            "agent_prompt_template": explicit,
-        }))
-        .unwrap();
-        assert_eq!(
-            AppConfig::decode_settings(&bytes, PathBuf::from("/host"))
-                .unwrap()
-                .agent_prompt_template,
-            explicit
-        );
-        assert_eq!(
-            AppConfig::decode_settings(
-                br#"{"response_prompt":null,"agent_prompt_template":null}"#,
-                PathBuf::from("/host"),
-            )
-            .unwrap(),
-            AppConfig::new(PathBuf::from("/host"))
-        );
-    }
-
-    #[test]
-    fn settings_reject_explicit_null_and_invalid_field_types() {
-        for bytes in [
-            r#"{"working_directory":null}"#,
-            r#"{"working_directory":42}"#,
-            r#"{"agent":null}"#,
-            r#"{"agent":"unknown"}"#,
-            r#"{"agent_preferences":null}"#,
-            r#"{"agent_preferences":42}"#,
-            r#"{"response_prompt":42}"#,
-            r#"{"agent_prompt_template":"invalid"}"#,
+    fn settings_upgrade_prompt_schema_once_and_preserve_other_settings() {
+        for legacy in [
+            serde_json::json!({}),
+            serde_json::json!({"response_prompt":"old literal {text}"}),
+            serde_json::json!({"prompt_presets":{"schema_version":1,"presets":[{"description":"old"}]}}),
         ] {
-            assert!(
-                AppConfig::decode_settings(bytes.as_bytes(), PathBuf::from("/host")).is_err(),
-                "unexpectedly accepted {bytes}"
+            let mut value = legacy;
+            value["agent"] = "codex".into();
+            value["working_directory"] = "/explicit".into();
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert!(AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+            let config = AppConfig::decode_settings(&bytes, PathBuf::from("/host")).unwrap();
+            assert_eq!(config.agent, AgentKind::Codex);
+            assert_eq!(config.working_directory, PathBuf::from("/explicit"));
+            assert_eq!(config.prompt_presets, PromptPresetCatalog::default());
+            assert_eq!(
+                config.agent_prompt_template,
+                config.prompt_presets.presets[0].template
             );
         }
+        let mut config = AppConfig::new(PathBuf::from("/host"));
+        config.prompt_presets.presets[0].name = "My visual".into();
+        let bytes = serde_json::to_vec(&config).unwrap();
+        assert!(!AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+        assert_eq!(
+            AppConfig::decode_settings(&bytes, PathBuf::from("/other")).unwrap(),
+            config
+        );
     }
 
     #[test]
-    fn snapshots_round_trip_without_resolving_a_host_directory() {
-        let snapshot = AppSnapshot::new(AppConfig::new(PathBuf::from("/snapshot")));
-        let value = serde_json::to_value(&snapshot).unwrap();
-        let decoded: AppSnapshot = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
-        assert!(value["config"].get("response_prompt").is_none());
+    fn settings_reject_invalid_current_catalog_and_nonprompt_fields() {
+        for value in [
+            serde_json::json!({"working_directory":null}),
+            serde_json::json!({"agent":"unknown"}),
+            serde_json::json!({"prompt_presets":null}),
+            serde_json::json!({"prompt_presets":{"schema_version":3}}),
+            serde_json::json!({"prompt_presets":{"schema_version":2}}),
+            serde_json::json!({"prompt_presets":{"schema_version":2,"revision":0,"execution_revision":1,"presets":[]}}),
+            serde_json::json!({"prompt_presets":{"schema_version":2,"revision":1,"execution_revision":1,"presets":null}}),
+        ] {
+            assert!(AppConfig::decode_settings(
+                &serde_json::to_vec(&value).unwrap(),
+                PathBuf::from("/host")
+            )
+            .is_err());
+        }
         assert!(serde_json::from_str::<AppConfig>("{}").is_err());
-        let legacy: AppConfig = serde_json::from_value(serde_json::json!({
-            "working_directory": "/snapshot",
-            "response_prompt": "Legacy instruction",
-        }))
-        .unwrap();
-        assert_eq!(
-            legacy.agent_prompt_template,
-            AgentPromptTemplate::from_legacy_response_prompt("Legacy instruction")
-        );
+        let snapshot = AppSnapshot::new(AppConfig::new(PathBuf::from("/snapshot")));
+        let decoded: AppSnapshot =
+            serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(decoded, snapshot);
     }
 
     #[test]

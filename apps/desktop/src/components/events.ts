@@ -1,4 +1,10 @@
-import type { AgentKind, AgentPromptTemplate, AgentDefaults, InteractionResponse } from "../types";
+import type {
+  PromptPresetChange,
+  AgentKind,
+  AgentPromptTemplate,
+  AgentDefaults,
+  InteractionResponse,
+} from "../types";
 
 export const AGENT_INTENT_EVENT = "lens-agent-intent";
 export const PROMPT_INTENT_EVENT = "lens-prompt-intent";
@@ -17,10 +23,12 @@ export type AgentIntent =
   | { type: "sign-out" };
 
 export type PromptIntent =
+  | { type: "presets"; change: PromptPresetChange }
   | { type: "save"; agentPromptTemplate: AgentPromptTemplate }
   | { type: "reset" };
 
 export type SettingsIntent =
+  | { type: "update-prompt-presets"; change: PromptPresetChange }
   | { type: "open-about" }
   | { type: "preview-agent-model"; configId: string; value?: string }
   | { type: "save-agent-defaults"; defaults: AgentDefaults }

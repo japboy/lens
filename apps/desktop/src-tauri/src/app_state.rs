@@ -460,10 +460,10 @@ pub struct LensPromptMaterial {
 }
 
 impl AppState {
-    pub fn load(platform: crate::platform::Services) -> Self {
+    pub fn load(platform: crate::platform::Services) -> Result<Self, String> {
         let store = ConfigStore::new();
-        let config = store.load();
-        Self::with_config(platform, store, config)
+        let config = store.try_load()?;
+        Ok(Self::with_config(platform, store, config))
     }
 
     pub(crate) fn with_config(
@@ -806,7 +806,7 @@ pub fn begin_agent_run<R: tauri::Runtime>(
             .map_err(|_| "application state lock is poisoned".to_string())?;
         if snapshot.lens.operation_id != Some(operation_id)
             || snapshot.lens.projection.as_ref() != Some(expected_projection)
-            || &snapshot.config != expected_config
+            || !snapshot.config.same_execution_config(expected_config)
             || snapshot
                 .lens
                 .live
@@ -820,6 +820,7 @@ pub fn begin_agent_run<R: tauri::Runtime>(
         }
         let revision = next_revision(&snapshot)?;
         let run = state.agent_control.begin(operation_id)?;
+        snapshot.lens.prompt_execution_revision = expected_config.prompt_presets.execution_revision;
         initialize(run.key.run_id, &mut snapshot.lens);
         let agent = snapshot
             .lens
@@ -878,7 +879,7 @@ pub fn update_lens_state_for_projection<R: tauri::Runtime>(
     update_lens_state_if(
         app,
         |snapshot| {
-            &snapshot.config == expected_config
+            snapshot.config.same_execution_config(expected_config)
                 && snapshot.lens.operation_id == Some(operation_id)
                 && snapshot.lens.projection.as_ref() == Some(expected_projection)
         },
@@ -926,6 +927,87 @@ fn update_lens_state_if<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preset_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap()
+    }
+
+    #[test]
+    fn prompt_metadata_edits_preserve_active_work_but_instruction_changes_cancel_it() {
+        use usecase::prompt_presets::PromptPresetMutation;
+        let state = crate::test_support::state();
+        let run = state.agent_control.begin(Uuid::new_v4()).unwrap();
+        let original = state.config().unwrap();
+        let app = preset_app(state);
+        let preset = original.prompt_presets.selected();
+        let (updated, restart) = crate::commands::commit_prompt_presets(
+            app.handle(),
+            PromptPresetMutation::Update {
+                id: preset.id.clone(),
+                expected_revision: preset.revision,
+                name: "Renamed".into(),
+                template: preset.template.clone(),
+            },
+        )
+        .unwrap();
+        assert!(restart.is_none());
+        assert!(!*run.cancellation.borrow());
+        assert!(original.same_execution_config(&updated.config));
+        assert_eq!(
+            app.state::<AppState>().store.load().prompt_presets,
+            updated.config.prompt_presets
+        );
+        let (changed, _) = crate::commands::commit_prompt_presets(
+            app.handle(),
+            PromptPresetMutation::Select {
+                id: "conceptual-learner".into(),
+            },
+        )
+        .unwrap();
+        assert!(*run.cancellation.borrow());
+        assert!(!original.same_execution_config(&changed.config));
+        assert_eq!(
+            changed.lens.prompt_execution_revision,
+            changed.config.prompt_presets.execution_revision
+        );
+        let (same, restart) = crate::commands::commit_prompt_presets(
+            app.handle(),
+            PromptPresetMutation::Select {
+                id: "conceptual-learner".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(same.revision, changed.revision);
+        assert!(restart.is_none());
+    }
+
+    #[test]
+    fn failed_prompt_persistence_preserves_configuration_and_running_work() {
+        use usecase::prompt_presets::PromptPresetMutation;
+        let path =
+            std::env::temp_dir().join(format!("lens-preset-save-failure-{}", Uuid::new_v4()));
+        std::fs::write(&path, "not a directory").unwrap();
+        let mut state = crate::test_support::state();
+        state.store = ConfigStore::at_path(path.join("settings.json"));
+        let original = state.snapshot().unwrap();
+        let run = state.agent_control.begin(Uuid::new_v4()).unwrap();
+        let app = preset_app(state);
+        assert!(crate::commands::commit_prompt_presets(
+            app.handle(),
+            PromptPresetMutation::Select {
+                id: "conceptual-learner".into(),
+            }
+        )
+        .is_err());
+        let current = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(current.config, original.config);
+        assert_eq!(current.revision, original.revision);
+        assert!(!*run.cancellation.borrow());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn newer_agent_run_with_same_operation_cancels_and_outlives_previous_run() {

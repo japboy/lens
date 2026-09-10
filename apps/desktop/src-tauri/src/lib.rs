@@ -71,6 +71,7 @@ fn command_handler<R: tauri::Runtime>(
         commands::set_agent,
         commands::set_working_directory,
         commands::set_agent_prompt_template,
+        commands::update_prompt_presets,
         commands::reset_agent_prompt_template,
         commands::accessibility_permission,
         commands::request_accessibility_permission,
@@ -133,7 +134,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
     });
     configure_shell(
         builder,
-        app_state::AppState::load(services),
+        app_state::AppState::load(services).expect("Unable to load or migrate Lens settings"),
         presentation,
         ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
         agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost)),

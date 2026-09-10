@@ -38,6 +38,9 @@ export class LensSettingsView extends LitElement {
         --settings-sidebar-width: 188px;
         --settings-detail-inline-padding: 26px;
         --settings-content-max-width: 680px;
+        --disclosure-content-gap: 12px;
+        --disclosure-section-gap: 20px;
+        --prompt-field-gap: 12px;
         width: 100%;
         height: 100dvh;
         min-width: 0;
@@ -195,6 +198,38 @@ export class LensSettingsView extends LitElement {
         max-width: var(--settings-content-max-width);
       }
 
+      .settings-nav-heading {
+        display: block;
+        color: GrayText;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 8px;
+      }
+      .settings-nav-group + .settings-nav-group {
+        margin-top: 12px;
+      }
+      .settings-disclosure {
+        margin-block: var(--disclosure-section-gap);
+      }
+      .settings-disclosure > summary {
+        font-weight: 600;
+        cursor: default;
+      }
+      .settings-disclosure[open] > summary {
+        margin-bottom: var(--disclosure-content-gap);
+      }
+      .settings-disclosure > fieldset > legend {
+        padding: 0;
+        margin-bottom: var(--disclosure-content-gap);
+      }
+      lens-agent-defaults .settings-field {
+        width: 100%;
+        grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr);
+        align-items: center;
+      }
+      lens-agent-defaults .settings-field .help {
+        grid-column: 1 / -1;
+      }
       .settings-context-feedback {
         max-width: var(--settings-content-max-width);
         margin: 0;
@@ -254,7 +289,9 @@ export class LensSettingsView extends LitElement {
         tab-size: 2;
       }
 
-      :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-editor) {
+      :host([data-platform="macos"])
+        .settings-shell
+        :is(.directory-field, .prompt-editor, .prompt-preset-field) {
         appearance: none;
         border: 1px solid ButtonBorder;
         border-radius: 5px;
@@ -265,7 +302,7 @@ export class LensSettingsView extends LitElement {
 
       :host([data-platform="macos"])
         .settings-shell
-        :is(.directory-field, .prompt-editor):focus-visible {
+        :is(.directory-field, .prompt-editor, .prompt-preset-field):focus-visible {
         border-color: var(--settings-focus-ring);
         outline: 3px solid var(--settings-focus-ring);
         outline-offset: 1px;
@@ -273,7 +310,7 @@ export class LensSettingsView extends LitElement {
 
       :host([data-platform="macos"])
         .settings-shell
-        :is(.directory-field, .prompt-editor):disabled {
+        :is(.directory-field, .prompt-editor, .prompt-preset-field):disabled {
         border-color: color-mix(in srgb, ButtonBorder 65%, transparent);
         color: GrayText;
         background: color-mix(in srgb, Field 72%, Canvas);
@@ -281,7 +318,7 @@ export class LensSettingsView extends LitElement {
         cursor: default;
       }
 
-      :host([data-platform="macos"]) .settings-shell .directory-field {
+      :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-preset-field) {
         min-height: 24px;
         padding: 3px 7px;
         line-height: 16px;
@@ -292,6 +329,46 @@ export class LensSettingsView extends LitElement {
         resize: none;
       }
 
+      .prompt-presets {
+        display: grid;
+        gap: var(--prompt-field-gap);
+        margin-block-end: 20px;
+      }
+      .prompt-presets label {
+        display: grid;
+        gap: 4px;
+      }
+      .prompt-presets input,
+      .prompt-presets select {
+        width: 100%;
+        min-width: 0;
+      }
+      .prompt-presets h2,
+      .prompt-presets .help {
+        margin: 0;
+      }
+      .prompt-presets .prompt-actions {
+        margin-top: 0;
+      }
+      .prompt-presets select {
+        appearance: auto;
+      }
+      .prompt-preset-management {
+        display: grid;
+        justify-items: start;
+        gap: 10px;
+        padding-top: 12px;
+      }
+      .prompt-preset-management label {
+        width: 100%;
+      }
+      .prompt-presets summary {
+        cursor: default;
+      }
+      .prompt-presets [role="alert"] {
+        color: MarkText;
+        background: Mark;
+      }
       .prompt-actions {
         display: flex;
         flex-wrap: wrap;
@@ -348,149 +425,62 @@ export class LensSettingsView extends LitElement {
       }
 
       .prompt-detail-header {
-        padding-inline-end: 112px;
         margin-bottom: 0;
       }
-
+      .prompt-preset-active,
+      .prompt-preset-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .prompt-preset-active {
+        margin-bottom: 16px;
+      }
       .prompt-draft-status {
-        position: absolute;
-        inset-block-start: 0;
-        inset-inline-end: 0;
-        flex: 0 0 auto;
-        padding: 3px 7px;
-        border-radius: 999px;
         color: GrayText;
-        background: color-mix(in srgb, CanvasText 7%, transparent);
-        font-size: 11px;
-        white-space: nowrap;
+        font-size: 12px;
       }
-
       .prompt-draft-status[data-dirty="true"] {
-        color: MarkText;
-        background: Mark;
+        color: CanvasText;
       }
-
-      .prompt-composition,
       .prompt-editor-section,
       .prompt-preview-section {
         min-width: 0;
-        border: 1px solid var(--settings-group-border);
-        border-radius: 10px;
-        background: var(--settings-group-background);
       }
-
-      .prompt-composition,
-      .prompt-editor-section {
-        padding: 14px;
+      .prompt-editor-header {
+        margin-bottom: 6px;
       }
-
-      .prompt-composition-heading-row {
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 10px 16px;
-        margin-bottom: 12px;
-      }
-
-      .prompt-composition-heading-row h2,
       .prompt-editor-header h2 {
         margin: 0;
+        font-size: 13px;
+        font-weight: 400;
       }
-
-      .prompt-composition-heading-row p,
-      .prompt-editor-header p {
-        margin: 4px 0 0;
-        color: GrayText;
-        font-size: 12px;
-        line-height: 1.4;
-      }
-
       .prompt-request-mode {
         display: grid;
-        gap: 4px;
-        min-width: min(100%, 190px);
-        color: CanvasText;
-        font-size: 11px;
-        font-weight: 600;
+        gap: 6px;
+        margin: 0 0 var(--disclosure-content-gap);
       }
-
       .prompt-request-mode select {
         width: 100%;
         min-width: 0;
       }
-
-      .prompt-composition-flow {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
-        align-items: stretch;
-        gap: 6px;
+      .prompt-presets .settings-disclosure {
+        margin: calc(var(--disclosure-section-gap) - var(--prompt-field-gap)) 0 0;
       }
-
-      .prompt-composition-part,
-      .prompt-composition-result {
-        min-width: 0;
-        display: grid;
-        align-content: start;
-        gap: 5px;
-        padding: 9px;
-        border: 1px solid var(--settings-group-border);
-        border-radius: 7px;
-        color: CanvasText;
-        background: color-mix(in srgb, CanvasText 3%, transparent);
+      .prompt-presets .settings-disclosure + :not(.settings-disclosure) {
+        margin-top: calc(var(--disclosure-section-gap) - var(--prompt-field-gap));
       }
-
-      .prompt-composition-part {
-        cursor: default;
+      .settings-shell .prompt-presets .prompt-editor {
+        min-height: 150px;
       }
-
-      .prompt-composition-part[data-active="true"] {
-        border-color: color-mix(in srgb, AccentColor 62%, var(--settings-group-border));
-        background: color-mix(in srgb, AccentColor 8%, var(--settings-group-background));
+      .prompt-presets #prompt-request-editor {
+        min-height: 90px;
       }
-
-      .prompt-composition-part:has(input:focus-visible) {
-        outline: 3px solid var(--settings-focus-ring);
-        outline-offset: 1px;
-      }
-
-      .prompt-composition-title {
-        display: flex;
-        align-items: flex-start;
-        gap: 5px;
-      }
-
-      .prompt-composition-title input {
-        flex: 0 0 auto;
-        margin: 1px 0 0;
-      }
-
-      .prompt-composition-part > span:last-child,
-      .prompt-composition-result > span {
-        color: GrayText;
-        font-size: 10px;
-        line-height: 1.35;
-      }
-
-      .prompt-composition-operator {
-        align-self: center;
-        color: GrayText;
-        font-size: 15px;
-        font-weight: 650;
-      }
-
-      .prompt-editor-header {
-        margin-bottom: 10px;
-      }
-
-      .prompt-editor-header > div > span:first-child {
-        display: block;
-        margin-bottom: 3px;
-        color: GrayText;
-        font-size: 10px;
-        font-weight: 650;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
+      .prompt-preset-reset {
+        border-top: 1px solid var(--settings-group-border);
+        padding-top: 16px;
       }
 
       .prompt-variable-bar {
@@ -597,7 +587,7 @@ export class LensSettingsView extends LitElement {
         align-items: center;
         justify-content: space-between;
         gap: 8px 12px;
-        padding: 11px 14px;
+        padding: 0 0 var(--disclosure-content-gap);
         border-bottom: 1px solid var(--settings-group-border);
       }
 
@@ -618,7 +608,7 @@ export class LensSettingsView extends LitElement {
       }
 
       .prompt-preview-content {
-        padding: 14px;
+        padding: var(--disclosure-content-gap) 0 0;
       }
 
       .prompt-preview-output {
@@ -717,7 +707,9 @@ export class LensSettingsView extends LitElement {
           border-color: CanvasText;
         }
 
-        :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-editor) {
+        :host([data-platform="macos"])
+          .settings-shell
+          :is(.directory-field, .prompt-editor, .prompt-preset-field) {
           border-width: 2px;
           border-color: CanvasText;
           box-shadow: none;
@@ -725,7 +717,7 @@ export class LensSettingsView extends LitElement {
 
         :host([data-platform="macos"])
           .settings-shell
-          :is(.directory-field, .prompt-editor):focus-visible {
+          :is(.directory-field, .prompt-editor, .prompt-preset-field):focus-visible {
           border-color: AccentColor;
           outline-width: 4px;
         }
@@ -771,7 +763,7 @@ export class LensSettingsView extends LitElement {
   @property({ attribute: false }) snapshotStatus = initialSettingsState().snapshotStatus;
 
   @state()
-  private destination: SettingsDestination = initialSettingsState().destination;
+  destination: SettingsDestination = initialSettingsState().destination;
 
   @state()
   private windowEmphasis: "emphasized" | "unemphasized" = initialSettingsState().windowEmphasis;
@@ -808,9 +800,11 @@ export class LensSettingsView extends LitElement {
       }
     })();
     const permissionAllowed = permission.stage === "allowed";
-    const generalFeedback = model ? feedbackForDestination(model?.feedback, "general") : undefined;
+    const generalFeedback = model
+      ? feedbackForDestination(model?.feedback, "connection")
+      : undefined;
     const promptFeedback = model
-      ? feedbackForDestination(model?.feedback, "agent-prompt")
+      ? feedbackForDestination(model?.feedback, "prompt-presets")
       : undefined;
     return html`
       <main
@@ -823,8 +817,14 @@ export class LensSettingsView extends LitElement {
         <aside class="settings-sidebar">
           <nav aria-label="Settings sections">
             <div class="settings-nav-group">
-              ${this.navigationButton("general", "General")}
-              ${this.navigationButton("agent-prompt", "Agent Prompt")}
+              <span class="settings-nav-heading">Agent</span>
+              ${this.navigationButton("connection", "Connection")}
+              ${this.navigationButton("session-defaults", "Session Defaults")}
+              ${this.navigationButton("prompt-presets", "Prompt Presets")}
+            </div>
+            <div class="settings-nav-group">
+              <span class="settings-nav-heading">General</span>
+              ${this.navigationButton("privacy-security", "Privacy & Security")}
             </div>
           </nav>
           <div class="settings-sidebar-status">
@@ -843,11 +843,11 @@ export class LensSettingsView extends LitElement {
         <section class="settings-detail">
           ${renderSnapshotFailure(this.snapshotStatus)}
           ${this.aboutOpenError ? html`<p role="alert">${this.aboutOpenError}</p>` : nothing}
-          <div class="settings-detail-panel" ?hidden=${this.destination !== "general"}>
+          <div class="settings-detail-panel" ?hidden=${this.destination !== "connection"}>
             <header class="settings-detail-header">
               <div>
-                <h1>General</h1>
-                <p>Choose how Lens connects to an Agent and accesses your Mac.</p>
+                <h1>Connection</h1>
+                <p>Choose your Agent and its working directory.</p>
               </div>
             </header>
             ${renderSettingsFeedback(generalFeedback)}
@@ -862,12 +862,6 @@ export class LensSettingsView extends LitElement {
                   .disabled=${!this.active || !model || model.pending}
                 ></lens-agent-settings>
               </section>
-              <lens-agent-defaults
-                .selection=${model?.agentSelection}
-                .defaults=${model?.config?.agent_preferences?.[model?.config.agent]}
-                .disabled=${!this.active || !model || model.pending}
-              ></lens-agent-defaults>
-
               <section class="settings-group" aria-labelledby="cwd-heading">
                 <h2 id="cwd-heading">Working Directory</h2>
                 <div class="directory-row">
@@ -890,7 +884,56 @@ export class LensSettingsView extends LitElement {
                   memory.
                 </p>
               </section>
+            </div>
+          </div>
 
+          <div class="settings-detail-panel" ?hidden=${this.destination !== "session-defaults"}>
+            <header class="settings-detail-header">
+              <div>
+                <h1>Session Defaults</h1>
+                <p>
+                  ${
+                    model?.agentSelection?.stage === "selected"
+                      ? `Choose settings for new sessions with ${model.config?.agent === "claude" ? "Claude" : "Codex"}.`
+                      : "Choose settings for new sessions with the connected Agent."
+                  }
+                </p>
+              </div>
+            </header>
+            ${renderSettingsFeedback(model ? feedbackForDestination(model.feedback, "session-defaults") : undefined)}
+            <div class="settings-detail-groups">
+              ${
+                model?.agentSelection?.stage === "selected"
+                  ? nothing
+                  : html`<div class="settings-group">
+                      <p>Connect an Agent to configure its session defaults.</p>
+                      <button
+                        type="button"
+                        @click=${() => {
+                          this.destination = "connection";
+                        }}
+                      >
+                        Open Connection
+                      </button>
+                    </div>`
+              }
+              <div data-region-error="agent-defaults"></div>
+              <lens-agent-defaults
+                .selection=${model?.agentSelection}
+                .defaults=${model?.config?.agent_preferences?.[model?.config.agent]}
+                .disabled=${!this.active || !model || model.pending}
+              ></lens-agent-defaults>
+            </div>
+          </div>
+          <div class="settings-detail-panel" ?hidden=${this.destination !== "privacy-security"}>
+            <header class="settings-detail-header">
+              <div>
+                <h1>Privacy &amp; Security</h1>
+                <p>Manage operating system permissions for Lens.</p>
+              </div>
+            </header>
+            ${renderSettingsFeedback(model ? feedbackForDestination(model.feedback, "privacy-security") : undefined)}
+            <div class="settings-detail-groups">
               <section class="settings-group" aria-labelledby="permission-heading">
                 <h2 id="permission-heading">Accessibility</h2>
                 <div class="permission-row">
@@ -911,21 +954,18 @@ export class LensSettingsView extends LitElement {
               </section>
             </div>
           </div>
-
-          <div class="settings-detail-panel" ?hidden=${this.destination !== "agent-prompt"}>
+          <div class="settings-detail-panel" ?hidden=${this.destination !== "prompt-presets"}>
             <section class="prompt-workspace" aria-labelledby="agent-prompt-heading">
               <header class="settings-detail-header prompt-detail-header">
                 <div>
-                  <h1 id="agent-prompt-heading">Agent Prompt</h1>
-                  <p>
-                    Edit every natural-language instruction Lens can send, and inspect the exact
-                    composed result.
-                  </p>
+                  <h1 id="agent-prompt-heading">Prompt Presets</h1>
+                  <p>Choose and edit the instructions used to interpret content.</p>
                 </div>
               </header>
               <div data-region-error="prompt"></div>
               <lens-prompt-settings
                 .agentPromptTemplate=${model?.config?.agent_prompt_template}
+                .promptPresets=${model?.config?.prompt_presets}
                 .synchronization=${model?.promptSynchronization}
                 .feedback=${promptFeedback}
                 .disabled=${!this.active || !model || model.pending}
@@ -1001,6 +1041,14 @@ export class LensSettingsView extends LitElement {
   };
 
   private forwardPromptIntent = (event: CustomEvent<PromptIntent>): void => {
+    if (event.detail.type === "presets") {
+      event.stopPropagation();
+      dispatchComponentEvent(this, SETTINGS_INTENT_EVENT, {
+        type: "update-prompt-presets",
+        change: event.detail.change,
+      });
+      return;
+    }
     event.stopPropagation();
     this.emit(
       event.detail.type === "save"

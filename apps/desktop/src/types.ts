@@ -36,11 +36,41 @@ export interface AgentPromptTemplate {
   current_projection_retry: string;
 }
 
+export interface PromptPreset {
+  id: string;
+  name: string;
+  revision: number;
+  template: AgentPromptTemplate;
+  bundled_source?: { id: string; version: number } | null;
+}
+
+export interface PromptPresetCollection {
+  schema_version: 2;
+  execution_revision: number;
+  revision: number;
+  selected_id: string;
+  presets: PromptPreset[];
+}
+
+export type PromptPresetChange =
+  | { type: "create"; name: string; template: AgentPromptTemplate }
+  | {
+      type: "update";
+      id: string;
+      expected_revision: number;
+      name: string;
+      template: AgentPromptTemplate;
+    }
+  | { type: "delete"; id: string; expected_revision: number }
+  | { type: "select"; id: string }
+  | { type: "reset_all"; expected_catalog_revision: number };
+
 export interface AppConfig {
   agent_preferences?: { claude: AgentDefaults; codex: AgentDefaults };
   agent: AgentKind;
   working_directory: string;
   agent_prompt_template: AgentPromptTemplate;
+  prompt_presets: PromptPresetCollection;
 }
 
 export interface Bounds {
@@ -380,6 +410,7 @@ export interface ProjectionRef {
 }
 
 export interface LensRepresentation {
+  prompt_execution_revision: number;
   representation_id: string;
   context_id: string;
   context_revision: number;
@@ -403,6 +434,7 @@ export interface LensLiveState {
 }
 
 export interface LensState {
+  prompt_execution_revision: number;
   session_controls?: AgentSessionControlState;
   operation_id?: string;
   stage: LensStage;

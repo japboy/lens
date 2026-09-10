@@ -17,7 +17,7 @@ import {
 @customElement("lens-agent-output")
 export class LensAgentOutput extends LitElement {
   @property({ attribute: false })
-  lens: LensState = { stage: "idle", output_blocks: [] };
+  lens: LensState = { stage: "idle", prompt_execution_revision: 1, output_blocks: [] };
   @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
   protected createRenderRoot(): HTMLElement {
