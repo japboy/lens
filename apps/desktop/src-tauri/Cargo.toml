@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "0.2.0"
+version.workspace = true
 description = "Accessibility-first personal information lens for macOS"
 authors = ["Lens contributors"]
 edition.workspace = true

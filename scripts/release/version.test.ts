@@ -1,54 +1,86 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { MEMBERS } from "../workspace-policy.ts";
 import { VERSION_FILES, compareVersions, tagVersion, versionState } from "./version.ts";
-import { admissionGraph } from "./graph.ts";
-import { graphDigest, parseFeatureGraph } from "../../mise-tasks/inspect/features.ts";
 
-const files = () => {
+const cargo = MEMBERS.filter((member) => member.ecosystem === "cargo");
+const files = (version = "0.1.0", bootstrapped = false) => {
   const value = Object.fromEntries(VERSION_FILES.map((path) => [path, readFileSync(path, "utf8")]));
-  const current = JSON.parse(value[VERSION_FILES[0]]!).version as string;
-  for (const path of VERSION_FILES.slice(0, 4))
-    value[path] = value[path]!.replace(`"version": "${current}"`, '"version": "0.1.0"').replace(
-      `version = "${current}"`,
-      'version = "0.1.0"',
+  const current = JSON.parse(value["apps/desktop/src-tauri/tauri.conf.json"]!).version as string;
+  for (const path of VERSION_FILES.filter(
+    (path) => path.endsWith(".json") || path === "Cargo.toml",
+  ))
+    value[path] = value[path]!.replace(
+      `"version": "${current}"`,
+      `"version": "${version}"`,
+    ).replace(`version = "${current}"`, `version = "${version}"`);
+  for (const member of cargo)
+    value["Cargo.lock"] = value["Cargo.lock"]!.replace(
+      `name = "${member.name}"\nversion = "${current}"`,
+      `name = "${member.name}"\nversion = "${version}"`,
     );
-  value["Cargo.lock"] = value["Cargo.lock"]!.replace(
-    `name = "desktop"\nversion = "${current}"`,
-    'name = "desktop"\nversion = "0.1.0"',
-  );
-  value[".release-please-manifest.json"] = "{}";
+  value[".release-please-manifest.json"] = JSON.stringify(bootstrapped ? { ".": version } : {});
   return value;
 };
-describe("application release authority", () => {
-  it("admits initial unshipped state and synchronized release versions", () => {
+
+describe("workspace release authority", () => {
+  it("admits initial unshipped state and synchronized patch, minor and major releases", () => {
     expect(versionState(files())).toEqual({ version: "0.1.0", bootstrapped: false });
-    for (const version of ["0.1.1", "0.2.0", "1.0.0"]) {
-      const changed = files();
-      for (const path of VERSION_FILES.slice(0, 4))
-        changed[path] = changed[path]!.replace(
-          '"version": "0.1.0"',
-          `"version": "${version}"`,
-        ).replace('version = "0.1.0"', `version = "${version}"`);
-      changed["Cargo.lock"] = changed["Cargo.lock"]!.replace(
-        'name = "desktop"\nversion = "0.1.0"',
-        `name = "desktop"\nversion = "${version}"`,
-      );
-      changed[".release-please-manifest.json"] = JSON.stringify({ ".": version });
-      expect(versionState(changed)).toEqual({ version, bootstrapped: true });
-    }
+    for (const version of ["0.1.1", "0.2.0", "1.0.0"])
+      expect(versionState(files(version, true))).toEqual({ version, bootstrapped: true });
+    expect(() => versionState(files("0.2.0"))).toThrow("Only initial");
   });
-  it.each(VERSION_FILES)("rejects an inconsistent mirror: %s", (file) => {
+  it.each(VERSION_FILES)("rejects an inconsistent mirror or inheritance: %s", (file) => {
     const changed = files();
-    changed[file] =
-      file === "Cargo.lock"
-        ? changed[file]!.replace(
-            'name = "desktop"\nversion = "0.1.0"',
-            'name = "desktop"\nversion = "0.2.0"',
-          )
-        : file.endsWith("manifest.json")
-          ? '{".":"0.2.0"}'
-          : changed[file]!.replace("0.1.0", "0.2.0");
+    changed[file] = file.endsWith("/Cargo.toml")
+      ? changed[file]!.replace("version.workspace = true", 'version = "0.1.0"')
+      : file.endsWith("manifest.json")
+        ? '{".":"0.2.0"}'
+        : changed[file]!.replace("0.1.0", "0.2.0");
     expect(() => versionState(changed)).toThrow(/.+/u);
+  });
+  it.each(cargo.map((member) => member.name))("rejects a stale lock version for %s", (name) => {
+    const changed = files("1.0.0", true);
+    changed["Cargo.lock"] = changed["Cargo.lock"]!.replace(
+      `name = "${name}"\nversion = "1.0.0"`,
+      `name = "${name}"\nversion = "0.1.0"`,
+    );
+    expect(() => versionState(changed)).toThrow("disagree");
+  });
+  it.each(["missing", "duplicate", "source", "unexpected"])(
+    "rejects %s local lock identity",
+    (kind) => {
+      const changed = files();
+      const entry = '[[package]]\nname = "domain"\nversion = "0.1.0"\n';
+      if (kind === "missing")
+        changed["Cargo.lock"] = changed["Cargo.lock"]!.replace('name = "domain"', 'name = "other"');
+      if (kind === "duplicate") changed["Cargo.lock"] += entry;
+      if (kind === "source")
+        changed["Cargo.lock"] = changed["Cargo.lock"]!.replace(
+          'name = "domain"',
+          'name = "domain"\nsource = "registry+fixture"',
+        );
+      if (kind === "unexpected") changed["Cargo.lock"] += entry.replace("domain", "other");
+      expect(() => versionState(changed)).toThrow(/Cargo.lock/u);
+    },
+  );
+  it("allows independent registry versions even when they share a workspace name", () => {
+    const changed = files();
+    changed["Cargo.lock"] +=
+      '\n[[package]]\nname = "domain"\nversion = "9.9.9"\nsource = "registry+fixture"\n';
+    expect(versionState(changed).version).toBe("0.1.0");
+  });
+  it.each(cargo)("rejects incorrect identity or missing inheritance for $name", (member) => {
+    for (const replacement of ['name = "other"', "version.workspace = false"]) {
+      const changed = files();
+      const path = join(member.directory, "Cargo.toml");
+      changed[path] = changed[path]!.replace(
+        replacement.startsWith("name") ? `name = "${member.name}"` : "version.workspace = true",
+        replacement,
+      );
+      expect(() => versionState(changed)).toThrow("identity and inherited");
+    }
   });
   it.each(["0.1.0", "v01.0.0", "v1.0", "v1.0.0-rc.1", "v1.0.0+build", "v1.0.0\n", "v1.0.0/evil"])(
     "rejects malformed tag %s",
@@ -61,46 +93,5 @@ describe("application release authority", () => {
     expect(compareVersions("0.9.0", "0.10.0")).toBe(-1);
     expect(compareVersions("1.0.0", "0.100.0")).toBe(1);
     expect(compareVersions("1.0.0", "1.0.0")).toBe(0);
-  });
-});
-
-describe("application-only graph projection", () => {
-  const graph = (version: string) =>
-    parseFeatureGraph(
-      `0desktop v${version} (/fixture/apps/desktop/src-tauri)|\n1shared v0.1.0 (/fixture/packages/shared)|one\n1desktop v1.0.0|two\n`,
-      "/fixture",
-    );
-  it("preserves observations but admits only a synchronized application version change", () => {
-    const before = graph("0.1.0");
-    const after = graph("1.0.0");
-    expect(graphDigest(before)).not.toBe(graphDigest(after));
-    expect(admissionGraph(before, "0.1.0")).toEqual(admissionGraph(after, "1.0.0"));
-    expect(() => admissionGraph(after, "0.1.0")).toThrow("disagrees");
-  });
-  it.each(["version", "features", "source", "edges", "roots"])(
-    "retains dependency %s changes",
-    (field) => {
-      const before = graph("0.1.0");
-      const after = structuredClone(before);
-      const shared = after.nodes.find((node) => node.name === "shared")!;
-      if (field === "version") shared.version = "0.2.0";
-      if (field === "features") shared.features.push("two");
-      if (field === "source") shared.source = "registry";
-      if (field === "edges") after.edges.pop();
-      if (field === "roots") after.roots.push(1);
-      expect(admissionGraph(after, "0.1.0")).not.toEqual(admissionGraph(before, "0.1.0"));
-    },
-  );
-  it("does not normalize same-name registry or different-path packages", () => {
-    const before = graph("0.1.0");
-    for (const source of ["registry", "path:another/desktop"]) {
-      const changed = structuredClone(before);
-      const node = changed.nodes.find(
-        (entry) => entry.name === "desktop" && entry.source === "registry",
-      )!;
-      node.source = source;
-      node.version = "2.0.0";
-      expect(admissionGraph(changed, "0.1.0")).not.toEqual(admissionGraph(before, "0.1.0"));
-    }
   });
 });

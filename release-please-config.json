@@ -16,6 +16,11 @@
       "extra-files": [
         {
           "type": "json",
+          "path": "packages/typescript-config/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
           "path": "apps/desktop/package.json",
           "jsonpath": "$.version"
         },
@@ -26,13 +31,13 @@
         },
         {
           "type": "toml",
-          "path": "apps/desktop/src-tauri/Cargo.toml",
-          "jsonpath": "$.package.version"
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value==\"desktop\")].version"
+          "jsonpath": "$.package[?(!@.source && (@.name.value==\"desktop\" || @.name.value==\"domain\" || @.name.value==\"usecase\" || @.name.value==\"port-platform\" || @.name.value==\"adapter-platform-macos\" || @.name.value==\"adapter-output-mcp\"))].version"
         }
       ]
     }

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { runInThisContext } from "node:vm";
 import { actionRevision, withActionSource } from "../../scripts/release/action-source.ts";
 import { VERSION_FILES, versionState } from "../../scripts/release/version.ts";
+import { MEMBERS } from "../../scripts/workspace-policy.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const revision = actionRevision(
@@ -146,7 +147,16 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
   });
   const current = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   let cases = 0;
-  for (const version of ["0.1.1", "0.2.0", "1.0.0"]) {
+  const [major, minor, patch] = current.split(".").map(Number);
+  const futureVersions = [
+    `${major}.${minor}.${patch + 1}`,
+    `${major}.${minor + 1}.0`,
+    `${major + 1}.0.0`,
+  ];
+  const localCargoPackages = MEMBERS.filter((member) => member.ecosystem === "cargo").map(
+    (member) => member.name,
+  );
+  for (const version of futureVersions) {
     const parsed = bundled.Version.parse(version);
     const updates = [
       ...(await strategy.buildUpdates({
@@ -163,22 +173,54 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       const matching = updates.filter((update) => update.path === path);
       assert.equal(matching.length, 1, `Exactly one updater for ${path}`);
       const content = readFileSync(join(root, path), "utf8");
-      const expected =
-        path === "Cargo.lock"
-          ? content.replace(
-              `name = "desktop"\nversion = "${current}"`,
-              `name = "desktop"\nversion = "${version}"`,
-            )
-          : content
-              .replace(`"version": "${current}"`, `"version": "${version}"`)
-              .replace(`version = "${current}"`, `version = "${version}"`);
+      let expected: string;
+      if (path === "Cargo.lock") {
+        expected = content;
+        for (const name of localCargoPackages) {
+          const entry = `name = "${name}"\nversion = "${current}"`;
+          assert.equal(content.split(entry).length, 2, `Exactly one local lock entry for ${name}`);
+          expected = expected.replace(entry, `name = "${name}"\nversion = "${version}"`);
+        }
+      } else {
+        expected = content
+          .replace(`"version": "${current}"`, `"version": "${version}"`)
+          .replace(`version = "${current}"`, `version = "${version}"`);
+      }
       assert.equal(
         matching[0]!.updater.updateContent(content),
         expected,
         `Exact version-only update of ${path}`,
       );
+      if (path === "Cargo.lock") {
+        const externalEntries = localCargoPackages
+          .map(
+            (name) =>
+              `\n[[package]]\nname = "${name}"\nversion = "${current}"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`,
+          )
+          .join("");
+        assert.equal(
+          matching[0]!.updater.updateContent(content + externalEntries),
+          expected + externalEntries,
+          "Same-name registry packages must retain their independent versions",
+        );
+        cases++;
+      }
       cases++;
     }
+    const byPath = new Map(updates.map((update) => [update.path, update]));
+    const files = Object.fromEntries(
+      VERSION_FILES.map((path) => {
+        const content = readFileSync(join(root, path), "utf8");
+        return [
+          path,
+          path === ".release-please-manifest.json"
+            ? JSON.stringify({ ".": version })
+            : (byPath.get(path)?.updater.updateContent(content) ?? content),
+        ];
+      }),
+    );
+    assert.deepEqual(versionState(files), { version, bootstrapped: true });
+    cases++;
   }
   for (const [previous, message, expected] of [
     [undefined, "feat: initial", "0.1.0"],
@@ -333,12 +375,12 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
         VERSION_FILES.map((path) => [
           path,
           updates
-            .get(path)!
-            .updater.updateContent(
+            .get(path)
+            ?.updater.updateContent(
               path === ".release-please-manifest.json"
                 ? "{}"
                 : readFileSync(join(root, path), "utf8"),
-            ),
+            ) ?? readFileSync(join(root, path), "utf8"),
         ]),
       );
       assert.deepEqual(versionState(files), { version: "0.1.0", bootstrapped: true });

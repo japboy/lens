@@ -11,14 +11,38 @@ import { VERSION_FILES } from "./version.ts";
 import { annotation } from "./source.ts";
 
 function fixture(unrelatedCount = 0) {
-  const files = {
+  const files: Record<string, string> = {
     "apps/desktop/src-tauri/tauri.conf.json": '{"version":"0.1.0"}',
     "package.json": '{"version":"0.1.0"}',
     "apps/desktop/package.json": '{"version":"0.1.0"}',
-    "apps/desktop/src-tauri/Cargo.toml": '[package]\nname = "desktop"\nversion = "0.1.0"\n',
-    "Cargo.lock": '[[package]]\nname = "desktop"\nversion = "0.1.0"\n',
+    "packages/typescript-config/package.json": '{"version":"0.1.0"}',
+    "Cargo.toml": '[workspace.package]\nversion = "0.1.0"\n',
+    ...Object.fromEntries(
+      [
+        ["desktop", "apps/desktop/src-tauri"],
+        ["domain", "packages/domain"],
+        ["usecase", "packages/usecase"],
+        ["port-platform", "packages/port-platform"],
+        ["adapter-platform-macos", "packages/adapter-platform-macos"],
+        ["adapter-output-mcp", "packages/adapter-output-mcp"],
+      ].map(([name, directory]) => [
+        `${directory}/Cargo.toml`,
+        `[package]\nname = "${name}"\nversion.workspace = true\n`,
+      ]),
+    ),
+    "Cargo.lock": [
+      "desktop",
+      "domain",
+      "usecase",
+      "port-platform",
+      "adapter-platform-macos",
+      "adapter-output-mcp",
+    ]
+      .map((name) => `[[package]]\nname = "${name}"\nversion = "0.1.0"\n`)
+      .join("\n"),
     ".release-please-manifest.json": "{}\n",
   } satisfies Record<(typeof VERSION_FILES)[number], string>;
+  expect(Object.keys(files).sort()).toEqual([...VERSION_FILES].sort());
   const root = mkdtempSync(join(tmpdir(), "lens-release-control-"));
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
@@ -35,7 +59,7 @@ function fixture(unrelatedCount = 0) {
   git("init", "-b", "main");
   for (const path of VERSION_FILES) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), files[path]);
+    writeFileSync(join(root, path), files[path]!);
   }
   git("add", ".");
   git("commit", "-m", "feat: initial source");

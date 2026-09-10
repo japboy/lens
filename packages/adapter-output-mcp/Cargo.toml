@@ -1,6 +1,6 @@
 [package]
 name = "adapter-output-mcp"
-version = "0.1.0"
+version.workspace = true
 description = "Lens embedded static HTML publication MCP server"
 edition.workspace = true
 rust-version.workspace = true
