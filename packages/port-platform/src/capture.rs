@@ -1,6 +1,5 @@
 use crate::{ImageCaptureLimits, PlatformError};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub use crate::model::Bounds;
 
@@ -8,19 +7,16 @@ pub use crate::model::Bounds;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureTarget {
     Registered {
-        operation_id: Uuid,
-        window_id: u32,
+        read: crate::authority::TargetReadKey,
     },
     /// Existing explicit one-shot validation path, never a registered-operation fallback.
-    Legacy {
-        window_id: u32,
-    },
+    Legacy { window_id: u32 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureScope {
-    AxElementRegion,
+    AccessibilityElementRegion,
     WindowFallback,
 }
 
@@ -53,6 +49,7 @@ pub struct CaptureRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapturedImage {
     pub attachment_id: String,
+    pub pixel_geometry: crate::geometry::CapturedPixelGeometry,
     pub source_bounds: Bounds,
     pub captured_bounds: Bounds,
     pub coverage: CaptureCoverage,
@@ -71,6 +68,10 @@ pub struct CaptureOmission {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureBatch {
+    /// Adapter-issued identity for this successful owned pixel batch, scoped to its read.
+    pub capture: Option<crate::geometry::CaptureKey>,
+    pub read: Option<crate::authority::TargetReadKey>,
+    pub geometry: Option<crate::geometry::ReadGeometryDescriptor>,
     pub window_bounds: Option<Bounds>,
     pub captures: Vec<CapturedImage>,
     pub omissions: Vec<CaptureOmission>,
@@ -87,4 +88,21 @@ pub trait Capture: Send + Sync {
         requests: &[CaptureRequest],
         limits: ImageCaptureLimits,
     ) -> Result<CaptureBatch, PlatformError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_capture_scope_rejects_native_ax_vocabulary() {
+        assert!(serde_json::from_str::<CaptureScope>("\"ax_element_region\"").is_err());
+        for scope in [
+            CaptureScope::AccessibilityElementRegion,
+            CaptureScope::WindowFallback,
+        ] {
+            let wire = serde_json::to_string(&scope).unwrap();
+            assert_eq!(serde_json::from_str::<CaptureScope>(&wire).unwrap(), scope);
+        }
+    }
 }

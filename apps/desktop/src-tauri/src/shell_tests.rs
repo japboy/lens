@@ -133,7 +133,7 @@ fn production_snapshot_ipc_preserves_the_complete_state_and_permission_result() 
     );
     assert_eq!(
         invoke(&window, "accessibility_permission", json!({})).unwrap(),
-        json!(false)
+        json!({"schema_version": 1, "status": "permission_required", "action": "request_permission"})
     );
 }
 
@@ -153,6 +153,43 @@ fn production_snapshot_ipc_reports_poisoned_state_as_an_error() {
         invoke(&window, "get_app_snapshot", json!({})).unwrap_err(),
         json!("application state lock is poisoned")
     );
+}
+
+#[test]
+fn permission_ipc_preserves_unavailable_states_without_requesting_access() {
+    use port_platform::trust::{AccessibilityAccess as Access, AccessibilityTrust};
+    struct Trust(Access);
+    impl AccessibilityTrust for Trust {
+        fn inspect(&self) -> Access {
+            self.0.clone()
+        }
+        fn request(&self) -> Access {
+            panic!("unavailable access must not prompt")
+        }
+    }
+    for access in [
+        Access::Ready,
+        Access::AccessRestricted,
+        Access::Unsupported,
+        Access::Failed {
+            message: "controlled inspection failure".into(),
+        },
+    ] {
+        let expected =
+            serde_json::to_value(usecase::platform::accessibility_access(access.clone())).unwrap();
+        let mut state = test_support::state();
+        state.platform.trust = Arc::new(Trust(access));
+        let app = app(state);
+        let window = window(&app);
+        assert_eq!(
+            invoke(&window, "accessibility_permission", json!({})).unwrap(),
+            expected
+        );
+        assert_eq!(
+            invoke(&window, "request_accessibility_permission", json!({})).unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]

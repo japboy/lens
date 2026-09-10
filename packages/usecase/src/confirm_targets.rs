@@ -140,7 +140,7 @@ mod tests {
         fn selection(&self, _: Uuid) -> Result<LensTargetSelection, String> {
             self.record(Effect::Selection);
             let window: SelectedWindow = serde_json::from_value(serde_json::json!({
-                "window_id":7,"bundle_id":"example.browser","pid":42,
+                "operation_id":OPERATION,"receipt":Uuid::from_u128(7),"selection_ordinal":1,"application_id":"example.browser",
                 "title":"Document","application_name":"Browser",
                 "frame":{"x":0.0,"y":0.0,"width":100.0,"height":100.0}
             }))

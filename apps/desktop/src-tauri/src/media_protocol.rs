@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn serves_selection_previews_only_to_the_selection_webview() {
-        let uri = "lens://selection/00000000-0000-0000-0000-000000000001/window/417";
+        let uri = "lens://selection/00000000-0000-0000-0000-000000000001/window/11111111-1111-4111-8111-111111111111";
         let state = active_state(uri, "image/png", "iVBORw0KGgo=");
 
         assert_eq!(

@@ -21,7 +21,7 @@ import {
 function representation(id: string, revision: number, text: string): LensRepresentation {
   return {
     representation_id: id,
-    context_id: "operation",
+    context_id: "33333333-3333-4333-8333-333333333333",
     context_revision: revision,
     projection: { revision, digest: `sha256:projection-${revision}` },
     run_id: `run-${revision}`,
@@ -31,7 +31,7 @@ function representation(id: string, revision: number, text: string): LensReprese
 
 function liveLens(current: LensRepresentation): LensState {
   return {
-    operation_id: "operation",
+    operation_id: "33333333-3333-4333-8333-333333333333",
     stage: "completed",
     output_blocks: [{ type: "markdown", text: "Compatibility output" }],
     representation: current,
@@ -83,10 +83,10 @@ describe("component property and event contracts", () => {
     element.model = {
       platform: "macos",
       lens: {
-        operation_id: "operation",
+        operation_id: "33333333-3333-4333-8333-333333333333",
         stage: "selecting",
         selection: {
-          selection_id: "operation",
+          selection_id: "33333333-3333-4333-8333-333333333333",
           stage: "reviewing",
           maximum_targets: 4,
           items: [],
@@ -240,24 +240,25 @@ describe("component property and event contracts", () => {
 
   it("starts remove intent immediately and retains the departing card through its motion", async () => {
     const item: LensTargetSelectionItem = {
-      id: "macos:com.apple.Safari:417",
+      id: "target:11111111-1111-4111-8111-111111111111",
       window: {
-        window_id: 417,
+        operation_id: "33333333-3333-4333-8333-333333333333",
+        selection_ordinal: 1,
+        receipt: "11111111-1111-4111-8111-111111111111",
         title: "Fixture",
         application_name: "Safari",
-        bundle_id: "com.apple.Safari",
-        pid: 417,
+        application_id: "com.apple.Safari",
         frame: { x: 0, y: 0, width: 800, height: 600 },
       },
-      preview_uri: "lens://selection/operation/window/417",
+      preview_uri: "lens://selection/operation/window/11111111-1111-4111-8111-111111111111",
     };
     const model: TargetSelectionViewModel = {
       platform: "macos",
       lens: {
-        operation_id: "operation",
+        operation_id: "33333333-3333-4333-8333-333333333333",
         stage: "selecting",
         selection: {
-          selection_id: "operation",
+          selection_id: "33333333-3333-4333-8333-333333333333",
           stage: "reviewing",
           maximum_targets: 4,
           items: [item],
@@ -313,31 +314,33 @@ describe("component property and event contracts", () => {
 
   it("declares the inverse card motion when one reviewed target is added", async () => {
     const first: LensTargetSelectionItem = {
-      id: "macos:com.apple.Safari:417",
+      id: "target:11111111-1111-4111-8111-111111111111",
       window: {
-        window_id: 417,
+        operation_id: "33333333-3333-4333-8333-333333333333",
+        selection_ordinal: 1,
+        receipt: "11111111-1111-4111-8111-111111111111",
         title: "Fixture",
         application_name: "Safari",
-        bundle_id: "com.apple.Safari",
-        pid: 417,
+        application_id: "com.apple.Safari",
         frame: { x: 0, y: 0, width: 800, height: 600 },
       },
-      preview_uri: "lens://selection/operation/window/417",
+      preview_uri: "lens://selection/operation/window/11111111-1111-4111-8111-111111111111",
     };
     const second: LensTargetSelectionItem = {
-      id: "macos:com.apple.TextEdit:512",
+      id: "target:22222222-2222-4222-8222-222222222222",
       window: {
-        window_id: 512,
+        operation_id: "33333333-3333-4333-8333-333333333333",
+        selection_ordinal: 2,
+        receipt: "22222222-2222-4222-8222-222222222222",
         title: "Notes",
         application_name: "TextEdit",
-        bundle_id: "com.apple.TextEdit",
-        pid: 512,
+        application_id: "com.apple.TextEdit",
         frame: { x: 80, y: 80, width: 600, height: 500 },
       },
-      preview_uri: "lens://selection/operation/window/512",
+      preview_uri: "lens://selection/operation/window/22222222-2222-4222-8222-222222222222",
     };
     const selection = {
-      selection_id: "operation",
+      selection_id: "33333333-3333-4333-8333-333333333333",
       stage: "reviewing" as const,
       maximum_targets: 4,
       items: [first],
@@ -349,7 +352,7 @@ describe("component property and event contracts", () => {
     element.model = {
       platform: "macos",
       lens: {
-        operation_id: "operation",
+        operation_id: "33333333-3333-4333-8333-333333333333",
         stage: "selecting",
         selection,
         output_blocks: [],
@@ -381,7 +384,7 @@ describe("component property and event contracts", () => {
     const model: OverlayViewModel = {
       platform: "macos",
       lens: {
-        operation_id: "operation",
+        operation_id: "33333333-3333-4333-8333-333333333333",
         stage: "transforming",
         output_blocks: [],
         agent: {
@@ -441,8 +444,8 @@ describe("component property and event contracts", () => {
 
   it("starts the initial Agent turn automatically and exposes retry only after failure", async () => {
     const input: NonNullable<LensState["input"]> = {
-      schema_version: 3,
-      context_id: "operation",
+      schema_version: 8,
+      context_id: "33333333-3333-4333-8333-333333333333",
       context_revision: 1,
       sources: [],
       media: [],
@@ -452,7 +455,7 @@ describe("component property and event contracts", () => {
     const readyModel: OverlayViewModel = {
       platform: "macos",
       lens: {
-        operation_id: "operation",
+        operation_id: "33333333-3333-4333-8333-333333333333",
         stage: "ready",
         input,
         output_blocks: [],
@@ -561,14 +564,15 @@ describe("component property and event contracts", () => {
 
   it("renders the latest title facts without changing the selected target identity", async () => {
     const target = {
-      id: "macos:com.apple.Safari:417",
+      id: "target:11111111-1111-4111-8111-111111111111",
       identity: {
-        window_id: 417,
-        bundle_id: "com.apple.Safari",
-        pid: 417,
+        operation_id: "33333333-3333-4333-8333-333333333333",
+        receipt: "11111111-1111-4111-8111-111111111111",
+        selection_ordinal: 1,
       },
       facts_revision: 1,
       facts: {
+        application_id: "com.apple.Safari",
         title: "Picker title",
         application_name: "Safari",
         frame: { x: 0, y: 0, width: 800, height: 600 },
@@ -583,8 +587,8 @@ describe("component property and event contracts", () => {
       lens: {
         ...liveLens(representation("representation-1", 1, "Interpretation")),
         target_set: {
-          schema_version: 2,
-          selection_id: "operation",
+          schema_version: 3,
+          selection_id: "33333333-3333-4333-8333-333333333333",
           targets: [target],
         },
       },
@@ -889,7 +893,7 @@ describe("progress notification visibility", () => {
 
   it("dismisses and reopens the same notification without cancelling or moving content", async () => {
     const element = await mount({
-      operation_id: "operation",
+      operation_id: "33333333-3333-4333-8333-333333333333",
       stage: "transforming",
       output_blocks: [{ type: "markdown", text: "Continuing interpretation." }],
     });
@@ -995,7 +999,7 @@ it("keeps Agent diagnostics out of the Lens interpretation layout", async () => 
       output_blocks: [],
       session_controls: {
         instance_id: "fixture",
-        operation_id: "operation",
+        operation_id: "33333333-3333-4333-8333-333333333333",
         session_id: "session",
         agent_name: "Fixture Agent",
         active: true,

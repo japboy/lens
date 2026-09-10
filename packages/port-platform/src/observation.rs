@@ -22,7 +22,7 @@ pub struct WindowObservationEvent {
     pub context_id: Uuid,
     pub source_registration_id: Uuid,
     pub observer_epoch: NonZeroU64,
-    pub window_id: u32,
+    pub receipt: crate::authority::TargetReceipt,
     pub notification: WindowObservationNotification,
 }
 
@@ -73,7 +73,7 @@ mod tests {
     fn invalid_epoch_and_unknown_notification_are_independently_rejected() {
         let valid = serde_json::json!({
             "operation_id":Uuid::from_u128(1),"context_id":Uuid::from_u128(2),
-            "source_registration_id":Uuid::from_u128(3),"observer_epoch":1,"window_id":17,
+            "source_registration_id":Uuid::from_u128(3),"observer_epoch":1,"receipt":Uuid::from_u128(17),
             "notification":"window_destroyed"
         });
         let mut zero_epoch = valid.clone();
@@ -104,7 +104,7 @@ mod tests {
                 "context_id":"00000000-0000-0000-0000-000000000002",
                 "source_registration_id":"00000000-0000-0000-0000-000000000003",
                 "observer_epoch":4,
-                "window_id":17,
+                "receipt":"00000000-0000-0000-0000-000000000011",
                 "notification":"window_title_changed"
             }"#,
         )
@@ -121,7 +121,7 @@ mod tests {
                 "context_id":"00000000-0000-0000-0000-000000000002",
                 "source_registration_id":"00000000-0000-0000-0000-000000000003",
                 "observer_epoch":0,
-                "window_id":17,
+                "receipt":"00000000-0000-0000-0000-000000000011",
                 "notification":"unbounded_native_detail"
             }"#,
         );

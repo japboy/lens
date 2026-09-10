@@ -56,12 +56,13 @@ export interface ResourceReference {
 }
 
 export interface WindowIdentity {
-  window_id: number;
-  bundle_id: string;
-  pid: number;
+  operation_id: string;
+  receipt: string;
+  selection_ordinal: number;
 }
 
 export interface WindowObservableFacts {
+  application_id: string;
   title: string;
   application_name: string;
   frame: Bounds;
@@ -105,17 +106,100 @@ export interface ExtractedNode {
   parent_id?: string;
   order: number;
   depth: number;
-  role?: string;
-  subrole?: string;
+  source_api: LensSourceApi;
+  semantic_kind: LensNodeKind;
+  node_purpose: LensNodePurpose;
+  native_role?: string | null;
+  native_subrole?: string | null;
   title?: string;
   value?: string;
   description?: string;
-  bounds?: Bounds;
+  bounds?: NodeBounds;
   resource_refs?: ResourceReference[];
   children: string[];
 }
 
+export interface TargetAuthority {
+  operation_id: string;
+  receipt: string;
+}
+
+export interface TargetReadKey {
+  target: TargetAuthority;
+  /** Canonical nonzero decimal u64; never convert to a JavaScript number. */
+  sequence: string;
+}
+
+export interface CaptureKey {
+  read: TargetReadKey;
+  capture_id: string;
+}
+
+export type DesktopFrame = "macos_desktop_points" | "windows_desktop_physical_pixels";
+
+export interface DesktopRect {
+  frame: DesktopFrame;
+  rect: Bounds;
+}
+
+export type CoordinateFrame =
+  | { kind: "macos_desktop_points" }
+  | { kind: "windows_desktop_physical_pixels" }
+  | { kind: "target_logical"; target: TargetAuthority }
+  | { kind: "original_capture_pixels"; capture: CaptureKey }
+  | { kind: "cropped_attachment_pixels"; capture: CaptureKey; attachment_id: string }
+  | { kind: "encoded_attachment_pixels"; capture: CaptureKey; attachment_id: string };
+
+export interface TaggedRect {
+  read: TargetReadKey;
+  frame: CoordinateFrame;
+  rect: Bounds;
+}
+
+export type NodeBounds =
+  | { kind: "registered"; geometry: TaggedRect }
+  | { kind: "legacy"; geometry: DesktopRect };
+
+export interface AxisAlignedTransform {
+  read: TargetReadKey;
+  source: CoordinateFrame;
+  destination: CoordinateFrame;
+  scale_x: number;
+  scale_y: number;
+  translate_x: number;
+  translate_y: number;
+}
+
+/** Validated domain wire facts; UI does not infer missing coordinate mappings. */
+export interface ReadGeometryDescriptor {
+  read: TargetReadKey;
+  window: TaggedRect;
+  desktop_to_target: AxisAlignedTransform;
+}
+
+export interface PixelExtent {
+  width: number;
+  height: number;
+}
+
+export interface PixelCrop {
+  x: number;
+  y: number;
+  extent: PixelExtent;
+}
+
+export interface AttachmentGeometry {
+  capture: CaptureKey;
+  attachment_id: string;
+  original_extent: PixelExtent;
+  crop: PixelCrop;
+  encoded_extent: PixelExtent;
+  original_to_crop: AxisAlignedTransform;
+  crop_to_encoded: AxisAlignedTransform;
+}
+
 export interface ExtractionResult {
+  geometry?: ReadGeometryDescriptor | null;
   quality: ExtractionQuality;
   resolved_window?: {
     facts: WindowObservableFacts;
@@ -142,8 +226,8 @@ export interface ExtractionResult {
 export interface LensSource {
   application: string;
   window_title: string;
-  bundle_id: string;
-  window_id: number;
+  application_id: string;
+  receipt: string;
 }
 
 export type LensNodeKind =
@@ -163,6 +247,8 @@ export type LensNodeKind =
   | "unknown";
 
 export type LensCoordinateSpace = "screen_points";
+export type LensSourceApi = "macos_ax" | "windows_uia";
+export type LensNodePurpose = "content" | "window_chrome";
 
 export interface LensNode {
   id: string;
@@ -170,20 +256,22 @@ export interface LensNode {
   order: number;
   depth: number;
   kind: LensNodeKind;
-  role?: string;
-  subrole?: string;
+  source_api: LensSourceApi;
+  node_purpose: LensNodePurpose;
+  native_role?: string;
+  native_subrole?: string;
   title?: string;
   value?: string;
   description?: string;
-  bounds?: Bounds;
-  coordinate_space?: LensCoordinateSpace;
+  bounds?: NodeBounds;
   children?: string[];
   media_refs?: string[];
   resource_refs?: ResourceReference[];
 }
 
 export interface LensDocument {
-  schema_version: number;
+  schema_version: 6;
+  geometry?: ReadGeometryDescriptor | null;
   source: LensSource;
   roots: string[];
   nodes: Record<string, LensNode>;
@@ -192,10 +280,12 @@ export interface LensDocument {
   diagnostics: string[];
 }
 
-export type LensMediaScope = "ax_element_region" | "window_fallback";
+export type LensMediaScope = "accessibility_element_region" | "window_fallback";
 export type LensMediaCoverage = "full_region" | "visible_subregion";
 
 export interface LensMediaAttachment {
+  geometry?: AttachmentGeometry | null;
+  desktop_geometry?: ReadGeometryDescriptor | null;
   id: string;
   target_id: string;
   uri: string;
@@ -234,12 +324,12 @@ export interface LensAccessibilitySource {
   revision: number;
   source: LensSource;
   capture: ExtractionResult;
-  document?: LensDocument;
+  document?: LensDocument | null;
   quality: ExtractionQuality;
 }
 
 export interface LensContext {
-  schema_version: number;
+  schema_version: 9;
   context_id: string;
   revision: number;
   sources: LensAccessibilitySource[];
@@ -253,8 +343,10 @@ export interface LensContentNode {
   id: string;
   parent_id?: string;
   kind: LensNodeKind;
-  role?: string;
-  subrole?: string;
+  source_api: LensSourceApi;
+  node_purpose: LensNodePurpose;
+  native_role?: string;
+  native_subrole?: string;
   title?: string;
   value?: string;
   description?: string;
@@ -279,13 +371,13 @@ export interface LensInputSource {
   target_id: string;
   source_revision: number;
   source: LensSource;
-  document?: LensDocumentProjection;
+  document?: LensDocumentProjection | null;
   quality: ExtractionQuality;
   omissions: ProjectionOmission[];
 }
 
 export interface LensInput {
-  schema_version: number;
+  schema_version: 8;
   context_id: string;
   context_revision: number;
   sources: LensInputSource[];
@@ -407,9 +499,9 @@ export interface LensState {
   operation_id?: string;
   stage: LensStage;
   selection?: LensTargetSelection;
-  target_set?: LensTargetSet;
-  context?: LensContext;
-  input?: LensInput;
+  target_set?: LensTargetSet | null;
+  context?: LensContext | null;
+  input?: LensInput | null;
   projection?: ProjectionRef;
   representation?: LensRepresentation;
   live?: LensLiveState;

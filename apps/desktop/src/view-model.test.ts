@@ -19,25 +19,27 @@ import {
 
 function lensInput(text: string): NonNullable<LensState["input"]> {
   return {
-    schema_version: 3,
+    schema_version: 8,
     context_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
     context_revision: 1,
     sources: [
       {
-        source_id: "macos:com.apple.Safari:417:accessibility",
-        target_id: "macos:com.apple.Safari:417",
+        source_id: "target:11111111-1111-4111-8111-111111111111:accessibility",
+        target_id: "target:11111111-1111-4111-8111-111111111111",
         source_revision: 1,
         source: {
           application: "Safari",
           window_title: "Fixture",
-          bundle_id: "com.apple.Safari",
-          window_id: 417,
+          application_id: "com.apple.Safari",
+          receipt: "11111111-1111-4111-8111-111111111111",
         },
         document: {
           nodes: [
             {
               id: "node-000000",
               kind: "text",
+              source_api: "macos_ax",
+              node_purpose: "content",
               value: text,
             },
           ],
@@ -172,19 +174,19 @@ describe("Lens view model", () => {
       stage: "ready",
       output_blocks: [],
       context: {
-        schema_version: 4,
+        schema_version: 9,
         context_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
         revision: 1,
         sources: [
           {
-            source_id: "macos:com.apple.Safari:417:accessibility",
-            target_id: "macos:com.apple.Safari:417",
+            source_id: "target:11111111-1111-4111-8111-111111111111:accessibility",
+            target_id: "target:11111111-1111-4111-8111-111111111111",
             revision: 1,
             source: {
               application: "Safari",
               window_title: "Fixture",
-              bundle_id: "com.apple.Safari",
-              window_id: 417,
+              application_id: "com.apple.Safari",
+              receipt: "11111111-1111-4111-8111-111111111111",
             },
             capture: {
               quality: "full",
@@ -226,9 +228,9 @@ describe("Lens view model", () => {
     const input = lensInput("Normalized source");
     const attachment = {
       id: "media-node-000001",
-      target_id: "macos:com.apple.Safari:417",
+      target_id: "target:11111111-1111-4111-8111-111111111111",
       uri: `lens://context/${input.context_id}/${input.context_revision}/media/media-node-000001`,
-      scope: "ax_element_region",
+      scope: "accessibility_element_region",
       source_node_id: "node-000001",
       source_bounds: { x: 10, y: 20, width: 30, height: 40 },
       captured_bounds: { x: 10, y: 20, width: 30, height: 40 },

@@ -64,7 +64,7 @@ struct ObservationSchedulerContext {
     operation_id: Uuid,
     context_id: Uuid,
     observer_epoch: NonZeroU64,
-    source_window_authority: BTreeMap<Uuid, u32>,
+    source_window_authority: BTreeMap<Uuid, port_platform::authority::TargetReceipt>,
     coverage: ObservationCoverage,
     start: ObservationStart,
 }
@@ -351,16 +351,23 @@ fn build_observation<R: tauri::Runtime>(
     let mut failures = Vec::new();
 
     for target in &target_set.targets {
-        // Window IDs are unique inside LensTargetSet. Adding one avoids the nil UUID while keeping
-        // the registration identity deterministic across Pause/Resume epochs.
-        let source_registration_id = Uuid::from_u128(u128::from(target.identity.window_id) + 1);
+        // Registered receipts are non-nil and unique within the operation.
+        let source_registration_id = target.identity.receipt;
+        let identity = match usecase::platform::window_identity(&target.identity) {
+            Ok(identity) => identity,
+            Err(error) => {
+                failures.push(format!("{}: {error}", target.id));
+                continue;
+            }
+        };
+        let receipt = identity.receipt;
         match app.state::<AppState>().platform.observation.observe(
             port_platform::observation::ObservationRequest {
                 operation_id,
                 context_id,
                 source_registration_id,
                 observer_epoch,
-                identity: usecase::platform::window_identity(&target.identity),
+                identity,
             },
         ) {
             Ok(port_platform::observation::ObservationSession {
@@ -372,7 +379,7 @@ fn build_observation<R: tauri::Runtime>(
                 for diagnostic in start.diagnostics {
                     eprintln!("Lens observer diagnostic for {}: {diagnostic}", target.id);
                 }
-                authority.insert(source_registration_id, target.identity.window_id);
+                authority.insert(source_registration_id, receipt);
                 registrations.push(registration);
                 source_receivers.push(receiver);
             }

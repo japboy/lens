@@ -1,10 +1,10 @@
 use crate::{
     agent,
     app_state::{
-        clear_lens_operation, commit_initial_lens_context, commit_lens_context_refresh,
-        emit_app_snapshot, next_revision, publish_lens_state, update_lens_state,
-        update_lens_state_for_context, AgentRunKey, AppState, LensContextRefreshCommit,
-        LensContextRefreshOutcome,
+        clear_lens_operation, commit_initial_lens_context, commit_initial_lens_failure,
+        commit_lens_context_refresh, emit_app_snapshot, next_revision, publish_lens_state,
+        update_lens_state, update_lens_state_for_context, AgentRunKey, AppState,
+        LensContextRefreshCommit, LensContextRefreshOutcome,
     },
     confirm_targets::{confirm_targets, ConfirmationHost, OPERATION_SUPERSEDED},
     lens::{
@@ -23,26 +23,132 @@ use crate::{
     prompt_template::AgentPromptTemplate,
     ui,
 };
-use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
+use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf, sync::Arc};
 use tauri::{AppHandle, Manager, State};
+use usecase::acquisition::ReadIssuer;
 use usecase::context::{
     build_context, BlockingExecutor, BuiltContext, ContextBuildRequest, WindowAccessMode,
 };
 use usecase::state::ContextReadAuthority;
 use uuid::Uuid;
 
+/// Owns admission until the initial workflow transfers it to retained Lens state.
+/// In particular, dropping an IPC future must close a pending native picker.
+struct InitialOperationLease {
+    selection: Arc<dyn port_platform::selection::TargetSelection>,
+    operation_id: Uuid,
+    retained: bool,
+    reconcile: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+}
+
+impl InitialOperationLease {
+    fn open(
+        selection: Arc<dyn port_platform::selection::TargetSelection>,
+        operation_id: Uuid,
+    ) -> Result<Self, String> {
+        selection
+            .open_operation(operation_id)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            selection,
+            operation_id,
+            retained: false,
+            reconcile: None,
+        })
+    }
+
+    fn retain(&mut self) {
+        self.retained = true;
+    }
+
+    fn track_state<R: tauri::Runtime>(&mut self, app: AppHandle<R>) {
+        let operation_id = self.operation_id;
+        self.reconcile = Some(Box::new(move || {
+            let Ok(current) = app.state::<AppState>().lens() else {
+                return false;
+            };
+            if current.operation_id != Some(operation_id) {
+                let _ = app.state::<AppState>().read_operations.close(operation_id);
+                return false;
+            }
+            // A completed diagnostic context owns the source even if showing its
+            // window failed after publication. The user may still Stop that context.
+            if current.context.is_some() && current.target_set.is_some() {
+                return true;
+            }
+            if matches!(current.stage, LensStage::Selecting | LensStage::Extracting) {
+                // No reviewed-state handoff occurred. The workflow picker lease still
+                // prevents another selection from starting; clear checks operation
+                // identity again and atomically revokes its media and snapshot.
+                if let Err(error) = clear_lens_operation(&app, operation_id) {
+                    eprintln!("Unable to clear unfinished Lens selection: {error}");
+                }
+            }
+            let _ = app.state::<AppState>().read_operations.close(operation_id);
+            false
+        }));
+    }
+}
+
+impl Drop for InitialOperationLease {
+    fn drop(&mut self) {
+        if !self.retained {
+            if self.reconcile.as_ref().is_some_and(|reconcile| reconcile()) {
+                return;
+            }
+            if let Err(error) = self.selection.release_operation(self.operation_id) {
+                eprintln!("Unable to release the unfinished Lens operation: {error}");
+            }
+        }
+    }
+}
+
 struct DesktopBlockingExecutor<R: tauri::Runtime> {
     app: AppHandle<R>,
     authority: ContextReadAuthority,
+    registered: bool,
 }
 
 impl<R: tauri::Runtime> DesktopBlockingExecutor<R> {
     fn admit(&self) -> Result<(), String> {
-        if self.authority.admits(&self.app.state::<AppState>().lens()?) {
+        let state = self.app.state::<AppState>();
+        let snapshot = state
+            .runtime
+            .read()
+            .map_err(|_| "application state lock is poisoned")?;
+        let operation_id = match self.authority {
+            ContextReadAuthority::Initial { operation_id }
+            | ContextReadAuthority::Refresh { operation_id, .. } => operation_id,
+        };
+        if self.authority.admits(&snapshot.lens)
+            && (!self.registered || state.read_operations.is_open(operation_id)?)
+        {
             Ok(())
         } else {
             Err("Lens source read authority was revoked".into())
         }
+    }
+}
+
+impl<R: tauri::Runtime> ReadIssuer for DesktopBlockingExecutor<R> {
+    fn reserve(
+        &self,
+        target: port_platform::authority::TargetAuthority,
+    ) -> Result<port_platform::authority::TargetReadKey, String> {
+        if !self.registered {
+            return Err("legacy diagnostic reads cannot issue registered read keys".into());
+        }
+        let state = self.app.state::<AppState>();
+        let snapshot = state
+            .runtime
+            .read()
+            .map_err(|_| "application state lock is poisoned")?;
+        if !self.authority.admits(&snapshot.lens)
+            || snapshot.lens.operation_id != Some(target.operation_id)
+        {
+            return Err("Lens source read authority was revoked".into());
+        }
+        state.read_operations.reserve(target)
     }
 }
 
@@ -57,6 +163,7 @@ impl<R: tauri::Runtime> BlockingExecutor for DesktopBlockingExecutor<R> {
         let executor = Self {
             app: self.app.clone(),
             authority: self.authority,
+            registered: self.registered,
         };
         let task = tauri::async_runtime::spawn_blocking(move || {
             // A worker queued before Pause/Stop must recheck when it actually starts.
@@ -201,13 +308,17 @@ fn update_config<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub fn accessibility_permission(state: State<'_, AppState>) -> bool {
-    state.platform.trust.inspect()
+pub fn accessibility_permission(
+    state: State<'_, AppState>,
+) -> usecase::platform::AccessibilityAccessReply {
+    usecase::platform::accessibility_access(state.platform.trust.inspect())
 }
 
 #[tauri::command]
-pub fn request_accessibility_permission(state: State<'_, AppState>) -> bool {
-    state.platform.trust.request()
+pub fn request_accessibility_permission(
+    state: State<'_, AppState>,
+) -> usecase::platform::AccessibilityAccessReply {
+    usecase::platform::request_accessibility_access(state.platform.trust.as_ref())
 }
 
 async fn select_single_window<R: tauri::Runtime>(
@@ -215,7 +326,6 @@ async fn select_single_window<R: tauri::Runtime>(
     operation_id: Uuid,
 ) -> Result<Option<SelectedWindow>, String> {
     let state = app.state::<AppState>();
-    let _picker_lease = state.picker_control.try_begin()?;
     let reply = state
         .platform
         .selection
@@ -247,8 +357,25 @@ fn validation_window_count() -> usize {
 
 pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
+    let _picker_lease = state.picker_control.try_begin()?;
+    let previous = state.lens()?;
+    if previous.live.is_some() {
+        return Err("stop the active Lens before selecting another target set".into());
+    }
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
+    let mut operation =
+        InitialOperationLease::open(state.platform.selection.clone(), operation_id)?;
+    operation.track_state(app.clone());
+    if let Some(previous_id) = previous.operation_id {
+        state.read_operations.close(previous_id)?;
+        state
+            .platform
+            .selection
+            .release_operation(previous_id)
+            .map_err(|error| error.to_string())?;
+    }
+    state.read_operations.open(operation_id)?;
     state.lens_media.begin(operation_id)?;
     publish_lens_state(
         &app,
@@ -307,17 +434,29 @@ pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
     if !replace_operation_state(&app, operation_id, extracting)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
-    extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Registered)
-        .await
+    let result = extract_target_set_for_operation(
+        app.clone(),
+        operation_id,
+        target_set,
+        WindowAccessMode::Registered,
+    )
+    .await?;
+    if app.state::<AppState>().lens()?.operation_id != Some(operation_id) {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    operation.retain();
+    Ok(result)
 }
 
 pub async fn extract_target<R: tauri::Runtime>(
     app: AppHandle<R>,
     target: SelectedWindow,
+    window_id: u32,
+    pid: i32,
 ) -> Result<LensState, String> {
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
-    let operation_id = Uuid::new_v4();
+    let operation_id = target.identity.operation_id;
     let target_set =
         LensTargetSet::try_new(operation_id, vec![target]).map_err(|error| error.to_string())?;
     state.lens_media.begin(operation_id)?;
@@ -330,7 +469,13 @@ pub async fn extract_target<R: tauri::Runtime>(
             ..LensState::default()
         },
     )?;
-    extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Legacy).await
+    extract_target_set_for_operation(
+        app,
+        operation_id,
+        target_set,
+        WindowAccessMode::Legacy { window_id, pid },
+    )
+    .await
 }
 
 async fn extract_target_set_for_operation<R: tauri::Runtime>(
@@ -339,6 +484,11 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
     target_set: LensTargetSet,
     access_mode: WindowAccessMode,
 ) -> Result<LensState, String> {
+    let state = app.state::<AppState>();
+    let _read_workflow = state
+        .read_workflow
+        .try_lock()
+        .map_err(|_| "Lens source read is already active")?;
     let context_revision = 1;
     let source_revisions = target_set
         .targets
@@ -353,6 +503,12 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         &DesktopBlockingExecutor {
             app: app.clone(),
             authority: ContextReadAuthority::Initial { operation_id },
+            registered: access_mode == WindowAccessMode::Registered,
+        },
+        &DesktopBlockingExecutor {
+            app: app.clone(),
+            authority: ContextReadAuthority::Initial { operation_id },
+            registered: access_mode == WindowAccessMode::Registered,
         },
         app.state::<AppState>().platform.accessibility.clone(),
         app.state::<AppState>().platform.capture.clone(),
@@ -425,12 +581,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         if !commit_initial_lens_context(&app, operation_id, next.clone(), payloads)? {
             return Err(OPERATION_SUPERSEDED.into());
         }
-    } else if !app.state::<AppState>().lens_media.replace_context(
-        operation_id,
-        context_revision,
-        payloads,
-    )? || !replace_operation_state(&app, operation_id, next.clone())?
-    {
+    } else if !commit_initial_lens_failure(&app, operation_id, next.clone(), payloads)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
     if let Err(error) = ui::show_lens_window(&app, &refreshed_target_set) {
@@ -451,6 +602,11 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
     operation_id: Uuid,
     expected_context_revision: u64,
 ) -> Result<LensContextRefreshOutcome, String> {
+    let state = app.state::<AppState>();
+    let _read_workflow = state
+        .read_workflow
+        .try_lock()
+        .map_err(|_| "Lens source read is already active")?;
     let current = app.state::<AppState>().lens()?;
     let context = current
         .context
@@ -513,6 +669,16 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
                 context_id,
                 previous_revision: expected_context_revision,
             },
+            registered: true,
+        },
+        &DesktopBlockingExecutor {
+            app: app.clone(),
+            authority: ContextReadAuthority::Refresh {
+                operation_id,
+                context_id,
+                previous_revision: expected_context_revision,
+            },
+            registered: true,
         },
         app.state::<AppState>().platform.accessibility.clone(),
         app.state::<AppState>().platform.capture.clone(),
@@ -655,13 +821,42 @@ fn source_health(quality: ExtractionQuality) -> LensSourceHealth {
     }
 }
 
-async fn build_target_selection_item(
-    capture_service: std::sync::Arc<dyn port_platform::capture::Capture>,
+async fn build_target_selection_item<R: tauri::Runtime>(
+    app: AppHandle<R>,
     operation_id: Uuid,
     window: SelectedWindow,
-) -> (LensTargetSelectionItem, Option<LensMediaPayload>) {
+) -> Result<(LensTargetSelectionItem, Option<LensMediaPayload>), String> {
+    let state = app.state::<AppState>();
+    let _read_workflow = state
+        .read_workflow
+        .try_lock()
+        .map_err(|_| "Lens source read is already active")?;
+    let read = {
+        let snapshot = state
+            .runtime
+            .read()
+            .map_err(|_| "application state lock is poisoned")?;
+        if snapshot.lens.operation_id != Some(operation_id)
+            || snapshot.lens.stage != LensStage::Selecting
+            || !snapshot
+                .lens
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.stage == LensTargetSelectionStage::Picking)
+            || window.identity.operation_id != operation_id
+        {
+            return Err("Lens preview read authority was revoked".into());
+        }
+        state
+            .read_operations
+            .reserve(port_platform::authority::TargetAuthority {
+                operation_id,
+                receipt: window.identity.receipt.try_into().map_err(str::to_owned)?,
+            })?
+    };
+    let capture_service = state.platform.capture.clone();
     let id = target_id(&window);
-    let attachment_id = format!("selection-preview-window-{}", window.identity.window_id);
+    let attachment_id = format!("selection-preview-window-{}", window.identity.receipt);
     let plan = LensMediaPlan {
         requests: vec![LensMediaRequest {
             id: attachment_id,
@@ -671,16 +866,30 @@ async fn build_target_selection_item(
         }],
         omissions: Vec::new(),
     };
-    let capture_window = window.clone();
     let capture_target_id = id.clone();
+    let worker_app = app.clone();
     let capture = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        let snapshot = state.runtime.read().map_err(|_| {
+            port_platform::PlatformError::Operation("application state lock is poisoned".into())
+        })?;
+        if snapshot.lens.operation_id != Some(operation_id)
+            || snapshot.lens.stage != LensStage::Selecting
+            || !state
+                .read_operations
+                .is_open(operation_id)
+                .map_err(port_platform::PlatformError::Operation)?
+        {
+            return Err(port_platform::PlatformError::Operation(
+                "Lens preview read authority was revoked".into(),
+            ));
+        }
+        drop(snapshot);
         usecase::media::capture_media(
             capture_service.as_ref(),
             usecase::media::MediaCaptureContext {
-                target: port_platform::capture::CaptureTarget::Registered {
-                    operation_id,
-                    window_id: capture_window.identity.window_id,
-                },
+                geometry: port_platform::geometry::CaptureGeometryExpectation::ObserveCurrent,
+                target: port_platform::capture::CaptureTarget::Registered { read },
                 target_id: capture_target_id,
                 context_id: operation_id,
                 context_revision: NonZeroU64::MIN,
@@ -701,7 +910,7 @@ async fn build_target_selection_item(
             let mut payload = capture.payloads.remove(0);
             let uri = format!(
                 "lens://selection/{operation_id}/window/{}",
-                window.identity.window_id
+                window.identity.receipt
             );
             payload.uri = uri.clone();
             (Some(uri), None, Some(payload))
@@ -729,7 +938,7 @@ async fn build_target_selection_item(
         Err(error) => (None, Some(error.to_string()), None),
     };
 
-    (
+    Ok((
         LensTargetSelectionItem {
             id,
             window,
@@ -737,7 +946,7 @@ async fn build_target_selection_item(
             preview_error,
         },
         payload,
-    )
+    ))
 }
 
 fn target_selection_for_operation<R: tauri::Runtime>(
@@ -798,6 +1007,16 @@ fn store_target_selection_payload<R: tauri::Runtime>(
     payload: Option<LensMediaPayload>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
+    let snapshot = state
+        .runtime
+        .read()
+        .map_err(|_| "application state lock is poisoned")?;
+    if snapshot.lens.operation_id != Some(operation_id)
+        || snapshot.lens.stage != LensStage::Selecting
+        || !state.read_operations.is_open(operation_id)?
+    {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
     let mut payloads = state.lens_media.payloads(operation_id)?;
     if let Some(payload) = payload {
         payloads.push(payload);
@@ -808,18 +1027,141 @@ fn store_target_selection_payload<R: tauri::Runtime>(
     Ok(())
 }
 
+struct AddSelectionLease<R: tauri::Runtime> {
+    app: AppHandle<R>,
+    operation_id: Uuid,
+    accepted_window: Option<Uuid>,
+    preview_uri: Option<String>,
+}
+
+impl<R: tauri::Runtime> Drop for AddSelectionLease<R> {
+    fn drop(&mut self) {
+        let state = self.app.state::<AppState>();
+        let outcome = (|| -> Result<bool, String> {
+            let mut snapshot = state
+                .runtime
+                .write()
+                .map_err(|_| "application state lock is poisoned")?;
+            let owned = snapshot.lens.operation_id == Some(self.operation_id)
+                && self.accepted_window.is_some_and(|id| {
+                    snapshot.lens.selection.as_ref().is_some_and(|selection| {
+                        selection
+                            .items
+                            .iter()
+                            .any(|item| item.window.identity.receipt == id)
+                    }) || snapshot.lens.target_set.as_ref().is_some_and(|set| {
+                        set.targets
+                            .iter()
+                            .any(|target| target.identity.receipt == id)
+                    })
+                });
+            let restore =
+                snapshot.lens.operation_id == Some(self.operation_id)
+                    && state.read_operations.is_open(self.operation_id)?
+                    && snapshot.lens.stage == LensStage::Selecting
+                    && snapshot.lens.selection.as_ref().is_some_and(|selection| {
+                        selection.stage == LensTargetSelectionStage::Picking
+                    });
+            let notification = if restore {
+                let revision = next_revision(&snapshot)?;
+                snapshot
+                    .lens
+                    .selection
+                    .as_mut()
+                    .expect("checked selection")
+                    .stage = LensTargetSelectionStage::Reviewing;
+                snapshot.revision = revision;
+                Some(snapshot.clone())
+            } else {
+                None
+            };
+            drop(snapshot);
+            if let Some(snapshot) = notification {
+                if let Err(error) = emit_app_snapshot(&self.app, snapshot, false) {
+                    eprintln!("Unable to notify target addition rollback: {error}");
+                }
+            }
+            Ok(owned)
+        })();
+        match outcome {
+            Ok(false) => {
+                if let Some(id) = self.accepted_window {
+                    if let Err(error) = state.platform.selection.release_target(
+                        self.operation_id,
+                        match id.try_into() {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                eprintln!("Invalid added target receipt: {error}");
+                                return;
+                            }
+                        },
+                    ) {
+                        eprintln!("Unable to release unfinished added target: {error}");
+                    }
+                }
+                if let Some(uri) = &self.preview_uri {
+                    let _ = state
+                        .lens_media
+                        .remove_uri_for_operation(self.operation_id, uri);
+                }
+            }
+            Ok(true) => {}
+            Err(error) => eprintln!("Unable to reconcile unfinished target addition: {error}"),
+        }
+    }
+}
+
+async fn publish_added_selection<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    selection: LensTargetSelection,
+) -> Result<LensState, String> {
+    let next = LensState {
+        operation_id: Some(operation_id),
+        stage: LensStage::Selecting,
+        selection: Some(selection.clone()),
+        ..LensState::default()
+    };
+    if !replace_operation_state(app, operation_id, next.clone())? {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    // Publication transfers target ownership before the cancellable presentation await.
+    // A presentation error must not erase the already reviewed target set.
+    ui::show_target_selection_window(app, &selection)
+        .await
+        .map_err(|error| error.to_string())?;
+    if app.state::<AppState>().lens()?.operation_id != Some(operation_id) {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    Ok(next)
+}
+
 #[tauri::command]
 pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
+    let _picker_lease = state.picker_control.try_begin()?;
     let agent_selection = state.agent_selection()?;
     if !agent_selection.can_select_lens_target() {
         return Err("select and authenticate an AI Agent before selecting a Lens Target".into());
     }
-    if state.lens()?.live.is_some() {
+    let previous = state.lens()?;
+    if previous.live.is_some() {
         return Err("stop the active Lens before selecting another target set".into());
     }
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
+    let mut operation =
+        InitialOperationLease::open(state.platform.selection.clone(), operation_id)?;
+    operation.track_state(app.clone());
+    if let Some(previous_id) = previous.operation_id {
+        state.read_operations.close(previous_id)?;
+        state
+            .platform
+            .selection
+            .release_operation(previous_id)
+            .map_err(|error| error.to_string())?;
+    }
+    state.read_operations.open(operation_id)?;
     state.lens_media.begin(operation_id)?;
     let initial_selection = LensTargetSelection {
         selection_id: operation_id,
@@ -862,26 +1204,35 @@ pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
         }
     };
     let anchor = window.facts.frame;
-    let (item, payload) = build_target_selection_item(
-        app.state::<AppState>().platform.capture.clone(),
-        operation_id,
-        window,
-    )
-    .await;
+    let (item, payload) = build_target_selection_item(app.clone(), operation_id, window).await?;
     store_target_selection_payload(&app, operation_id, payload)?;
-    publish_target_selection(
-        &app,
-        operation_id,
-        LensTargetSelection {
-            selection_id: operation_id,
-            stage: LensTargetSelectionStage::Reviewing,
-            maximum_targets: MAX_LENS_TARGETS,
-            anchor: Some(anchor),
-            items: vec![item],
-            notice: None,
-        },
-    )
-    .await
+    let reviewed = LensTargetSelection {
+        selection_id: operation_id,
+        stage: LensTargetSelectionStage::Reviewing,
+        maximum_targets: MAX_LENS_TARGETS,
+        anchor: Some(anchor),
+        items: vec![item],
+        notice: None,
+    };
+    let selected = LensState {
+        operation_id: Some(operation_id),
+        stage: LensStage::Selecting,
+        selection: Some(reviewed.clone()),
+        ..LensState::default()
+    };
+    if !replace_operation_state(&app, operation_id, selected.clone())? {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    // Commit transfers native ownership before presentation can suspend or fail.
+    // An interrupted UI effect must not invalidate already published reviewed items.
+    operation.retain();
+    ui::show_target_selection_window(&app, &reviewed)
+        .await
+        .map_err(|error| error.to_string())?;
+    if app.state::<AppState>().lens()?.operation_id != Some(operation_id) {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    Ok(selected)
 }
 
 #[tauri::command]
@@ -889,6 +1240,8 @@ pub async fn add_lens_target<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<LensState, String> {
+    let state = app.state::<AppState>();
+    let _picker_lease = state.picker_control.try_begin()?;
     let mut selection = target_selection_for_operation(&app, operation_id)?;
     if selection.stage != LensTargetSelectionStage::Reviewing {
         return Err("Lens target selection is already picking a window".into());
@@ -899,44 +1252,57 @@ pub async fn add_lens_target<R: tauri::Runtime>(
             selection.maximum_targets
         ));
     }
+    let existing_windows: Vec<_> = selection
+        .items
+        .iter()
+        .map(|item| item.window.identity.receipt)
+        .collect();
+    let mut addition = AddSelectionLease {
+        app: app.clone(),
+        operation_id,
+        accepted_window: None,
+        preview_uri: None,
+    };
     selection.stage = LensTargetSelectionStage::Picking;
     selection.notice = None;
-    publish_target_selection(&app, operation_id, selection.clone()).await?;
+    publish_added_selection(&app, operation_id, selection.clone()).await?;
 
     let selected = select_single_window(&app, operation_id).await;
+    if let Ok(Some(window)) = &selected {
+        if !existing_windows.contains(&window.identity.receipt) {
+            addition.accepted_window = Some(window.identity.receipt);
+        }
+    }
     selection = target_selection_for_operation(&app, operation_id)?;
     match selected {
         Ok(None) => {
             selection.stage = LensTargetSelectionStage::Reviewing;
-            publish_target_selection(&app, operation_id, selection).await
+            publish_added_selection(&app, operation_id, selection).await
         }
         Err(error) => {
             selection.stage = LensTargetSelectionStage::Reviewing;
             selection.notice = Some(format!("Unable to add a window: {error}"));
-            publish_target_selection(&app, operation_id, selection).await?;
+            publish_added_selection(&app, operation_id, selection).await?;
             Err(error)
         }
         Ok(Some(window)) => {
             if selection
                 .items
                 .iter()
-                .any(|item| item.window.identity.window_id == window.identity.window_id)
+                .any(|item| item.window.identity.receipt == window.identity.receipt)
             {
                 selection.stage = LensTargetSelectionStage::Reviewing;
                 selection.notice = Some("That window is already selected.".into());
-                return publish_target_selection(&app, operation_id, selection).await;
+                return publish_added_selection(&app, operation_id, selection).await;
             }
-            let (item, payload) = build_target_selection_item(
-                app.state::<AppState>().platform.capture.clone(),
-                operation_id,
-                window,
-            )
-            .await;
+            let (item, payload) =
+                build_target_selection_item(app.clone(), operation_id, window).await?;
+            addition.preview_uri = payload.as_ref().map(|payload| payload.uri.clone());
             store_target_selection_payload(&app, operation_id, payload)?;
             selection.items.push(item);
             selection.stage = LensTargetSelectionStage::Reviewing;
             selection.notice = None;
-            publish_target_selection(&app, operation_id, selection).await
+            publish_added_selection(&app, operation_id, selection).await
         }
     }
 }
@@ -956,13 +1322,18 @@ pub async fn remove_lens_target<R: tauri::Runtime>(
         .iter()
         .position(|item| item.id == target_id)
         .ok_or_else(|| "Lens target selection item is unavailable".to_string())?;
-    let window_id = selection.items[index].window.identity.window_id;
+    let receipt = selection.items[index].window.identity.receipt;
     // Release native ownership before mutating the authoritative Rust media/state snapshot. A
     // native teardown failure therefore leaves the reviewed item intact and retryable.
     app.state::<AppState>()
         .platform
         .selection
-        .release_target(operation_id, window_id)
+        .release_target(
+            operation_id,
+            receipt
+                .try_into()
+                .map_err(|error: &str| error.to_string())?,
+        )
         .map_err(|error| error.to_string())?;
     let removed = selection.items.remove(index);
     let state = app.state::<AppState>();
@@ -1102,23 +1473,39 @@ pub fn stop_lens<R: tauri::Runtime>(
     if current.operation_id != Some(operation_id) {
         return Err("Lens operation was superseded".into());
     }
-    update_lens_state(&app, operation_id, |lens| {
+    let stopped = {
+        let state = app.state::<AppState>();
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "application state lock is poisoned")?;
+        if snapshot.lens.operation_id != Some(operation_id) {
+            return Err(OPERATION_SUPERSEDED.into());
+        }
+        let revision = next_revision(&snapshot)?;
+        state.read_operations.close(operation_id)?;
+        let lens = &mut snapshot.lens;
+        lens.stage = LensStage::Cancelled;
         if let Some(live) = lens.live.as_mut() {
             live.lifecycle = LensMonitoringLifecycle::Stopped;
             live.freshness = LensFreshness::Unverified;
         }
         lens.pending_representation = None;
-    })?;
+        snapshot.revision = revision;
+        snapshot.clone()
+    };
+    emit_app_snapshot(&app, stopped, false)?;
     live_runtime::stop(&app, operation_id)?;
-    if current.live.is_some() || current.selection.is_some() {
-        if let Err(error) = app
-            .state::<AppState>()
-            .platform
-            .selection
-            .release_operation(operation_id)
-        {
-            eprintln!("Unable to release the stopped native Lens operation: {error}");
-        }
+    // Closing an absent native operation is idempotent, including legacy reads.
+    // Do not infer native admission from a presentation stage: Stop can race
+    // initial picking or extraction before selection/live fields are published.
+    if let Err(error) = app
+        .state::<AppState>()
+        .platform
+        .selection
+        .release_operation(operation_id)
+    {
+        eprintln!("Unable to release the stopped native Lens operation: {error}");
     }
     if !clear_lens_operation(&app, operation_id)? {
         return Err("Lens operation was superseded before it stopped".into());
@@ -1192,7 +1579,26 @@ fn replace_operation_state<R: tauri::Runtime>(
     operation_id: Uuid,
     next: LensState,
 ) -> Result<bool, String> {
-    update_lens_state(app, operation_id, |state| *state = next)
+    let state = app.state::<AppState>();
+    let (snapshot, sync_tray) = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "application state lock is poisoned")?;
+        if snapshot.lens.operation_id != Some(operation_id)
+            || snapshot.lens.stage == LensStage::Cancelled
+            || ((next.selection.is_some() || next.live.is_some())
+                && !state.read_operations.is_open(operation_id)?)
+        {
+            return Ok(false);
+        }
+        let sync_tray = snapshot.lens.live.is_some() != next.live.is_some();
+        snapshot.revision = next_revision(&snapshot)?;
+        snapshot.lens = next;
+        (snapshot.clone(), sync_tray)
+    };
+    emit_app_snapshot(app, snapshot, sync_tray)?;
+    Ok(true)
 }
 
 /// Resolve model-dependent settings without persisting a draft or touching the live actor.
@@ -1238,8 +1644,295 @@ pub async fn preview_agent_model<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registered_reads_require_live_issuer_and_stop_does_not_wait_for_workflow() {
+        let state = crate::test_support::state();
+        let operation_id = Uuid::from_u128(1);
+        state.runtime.write().unwrap().lens = LensState {
+            operation_id: Some(operation_id),
+            stage: LensStage::Extracting,
+            ..LensState::default()
+        };
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        let executor = DesktopBlockingExecutor {
+            app: app.handle().clone(),
+            authority: ContextReadAuthority::Initial { operation_id },
+            registered: true,
+        };
+        assert!(executor.admit().is_err());
+        let state = app.state::<AppState>();
+        state.read_operations.open(operation_id).unwrap();
+        assert!(executor.admit().is_ok());
+        let target = port_platform::authority::TargetAuthority {
+            operation_id,
+            receipt: Uuid::from_u128(2).try_into().unwrap(),
+        };
+        assert!(executor.reserve(target).is_ok());
+        let _workflow = state.read_workflow.try_lock().unwrap();
+        assert!(state.read_workflow.try_lock().is_err());
+        state.read_operations.close(operation_id).unwrap();
+        assert!(executor.admit().is_err());
+        assert!(executor.reserve(target).is_err());
+        let legacy = DesktopBlockingExecutor {
+            registered: false,
+            ..executor
+        };
+        assert!(legacy.admit().is_ok());
+        assert!(legacy.reserve(target).is_err());
+    }
+
     use super::*;
     use crate::prompt_template::MAX_AGENT_PROMPT_TEMPLATE_SECTION_CHARS;
+
+    struct OperationFixture {
+        effects: std::sync::Mutex<Vec<&'static str>>,
+        fail_open: bool,
+    }
+
+    impl port_platform::selection::TargetSelection for OperationFixture {
+        fn open_operation(&self, _: Uuid) -> Result<(), port_platform::PlatformError> {
+            self.effects.lock().unwrap().push("open");
+            if self.fail_open {
+                Err(port_platform::PlatformError::Operation(
+                    "open rejected".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        fn pick(
+            &self,
+            _: Uuid,
+        ) -> port_platform::PlatformFuture<
+            '_,
+            Result<port_platform::selection::WindowPickerReply, port_platform::PlatformError>,
+        > {
+            panic!("lease tests do not invoke native picking")
+        }
+        fn release_target(
+            &self,
+            _: Uuid,
+            _: port_platform::authority::TargetReceipt,
+        ) -> Result<(), port_platform::PlatformError> {
+            self.effects.lock().unwrap().push("release_target");
+            Ok(())
+        }
+        fn release_operation(&self, _: Uuid) -> Result<(), port_platform::PlatformError> {
+            self.effects.lock().unwrap().push("release");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn initial_operation_lease_closes_on_drop_but_not_after_handoff() {
+        let fixture = Arc::new(OperationFixture {
+            effects: Default::default(),
+            fail_open: false,
+        });
+        let lease = InitialOperationLease::open(fixture.clone(), Uuid::new_v4()).unwrap();
+        assert_eq!(*fixture.effects.lock().unwrap(), ["open"]);
+        drop(lease);
+        assert_eq!(*fixture.effects.lock().unwrap(), ["open", "release"]);
+        let mut lease = InitialOperationLease::open(fixture.clone(), Uuid::new_v4()).unwrap();
+        lease.retain();
+        drop(lease);
+        assert_eq!(
+            *fixture.effects.lock().unwrap(),
+            ["open", "release", "open"]
+        );
+    }
+
+    #[test]
+    fn rejected_initial_open_does_not_release_an_operation_it_does_not_own() {
+        let fixture = Arc::new(OperationFixture {
+            effects: Default::default(),
+            fail_open: true,
+        });
+        assert!(InitialOperationLease::open(fixture.clone(), Uuid::new_v4()).is_err());
+        assert_eq!(*fixture.effects.lock().unwrap(), ["open"]);
+    }
+
+    #[test]
+    fn cancelling_pending_initial_workflow_releases_native_admission() {
+        let fixture = Arc::new(OperationFixture {
+            effects: Default::default(),
+            fail_open: false,
+        });
+        let source = fixture.clone();
+        let mut workflow = Box::pin(async move {
+            let _operation = InitialOperationLease::open(source, Uuid::new_v4()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(workflow.as_mut(), &mut context).is_pending());
+        assert_eq!(*fixture.effects.lock().unwrap(), ["open"]);
+        drop(workflow);
+        assert_eq!(*fixture.effects.lock().unwrap(), ["open", "release"]);
+    }
+
+    #[test]
+    fn unfinished_initial_state_is_cleared_without_touching_a_replacement_operation() {
+        struct CleanupTray(Arc<std::sync::atomic::AtomicUsize>);
+        impl crate::ui::TrayOutput<tauri::test::MockRuntime> for CleanupTray {
+            fn apply(
+                &self,
+                _: &AppHandle<tauri::test::MockRuntime>,
+                _: crate::ui::TrayMenuPresentation,
+            ) -> Result<(), String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        for superseded in [false, true] {
+            let tray_updates = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let fixture = Arc::new(OperationFixture {
+                effects: Default::default(),
+                fail_open: false,
+            });
+            let state = crate::test_support::state();
+            let operation_id = Uuid::new_v4();
+            let current_id = if superseded {
+                Uuid::new_v4()
+            } else {
+                operation_id
+            };
+            state.lens_media.begin(current_id).unwrap();
+            state.runtime.write().unwrap().lens = LensState {
+                operation_id: Some(current_id),
+                stage: LensStage::Selecting,
+                ..LensState::default()
+            };
+            let app = tauri::test::mock_builder()
+                .manage(state)
+                .manage(crate::ui::TrayPresentation(Arc::new(CleanupTray(
+                    tray_updates.clone(),
+                ))))
+                .build(crate::product_context())
+                .unwrap();
+            let mut lease = InitialOperationLease::open(fixture.clone(), operation_id).unwrap();
+            lease.track_state(app.handle().clone());
+            drop(lease);
+            assert_eq!(*fixture.effects.lock().unwrap(), ["open", "release"]);
+            assert_eq!(
+                app.state::<AppState>().lens().unwrap().operation_id,
+                superseded.then_some(current_id)
+            );
+            assert_eq!(
+                app.state::<AppState>()
+                    .lens_media
+                    .payloads(current_id)
+                    .is_ok(),
+                superseded
+            );
+            assert_eq!(
+                tray_updates.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(!superseded)
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_addition_restores_latest_selection_and_releases_only_unpublished_target() {
+        for published in [false, true] {
+            let fixture = Arc::new(OperationFixture {
+                effects: Default::default(),
+                fail_open: false,
+            });
+            let mut state = crate::test_support::state();
+            state.platform.selection = fixture.clone();
+            let operation_id = Uuid::new_v4();
+            state.read_operations.open(operation_id).unwrap();
+            let window = SelectedWindow {
+                identity: crate::model::WindowIdentity {
+                    operation_id,
+                    receipt: Uuid::from_u128(42),
+                    selection_ordinal: 1,
+                },
+                facts: crate::model::WindowObservableFacts {
+                    application_id: "example.fixture".into(),
+                    title: "Fixture".into(),
+                    application_name: "Fixture".into(),
+                    frame: crate::model::Bounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 10.0,
+                    },
+                },
+            };
+            state.runtime.write().unwrap().lens = LensState {
+                operation_id: Some(operation_id),
+                stage: LensStage::Selecting,
+                selection: Some(LensTargetSelection {
+                    selection_id: operation_id,
+                    stage: if published {
+                        LensTargetSelectionStage::Reviewing
+                    } else {
+                        LensTargetSelectionStage::Picking
+                    },
+                    maximum_targets: MAX_LENS_TARGETS,
+                    anchor: Some(window.facts.frame),
+                    items: {
+                        let mut old_window = window.clone();
+                        old_window.identity.receipt = Uuid::from_u128(41);
+                        let mut items = vec![LensTargetSelectionItem {
+                            id: "old".into(),
+                            window: old_window,
+                            preview_uri: None,
+                            preview_error: None,
+                        }];
+                        if published {
+                            items.push(LensTargetSelectionItem {
+                                id: "new".into(),
+                                window,
+                                preview_uri: None,
+                                preview_error: None,
+                            });
+                        }
+                        items
+                    },
+                    notice: Some("latest notice must survive rollback".into()),
+                }),
+                ..LensState::default()
+            };
+            let app = tauri::test::mock_builder()
+                .manage(state)
+                .build(crate::product_context())
+                .unwrap();
+            let handle = app.handle().clone();
+            let mut pending = Box::pin(async move {
+                let _addition = AddSelectionLease {
+                    app: handle,
+                    operation_id,
+                    accepted_window: Some(Uuid::from_u128(42)),
+                    preview_uri: None,
+                };
+                std::future::pending::<()>().await;
+            });
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
+            drop(pending);
+            let selection = app.state::<AppState>().lens().unwrap().selection.unwrap();
+            assert_eq!(selection.stage, LensTargetSelectionStage::Reviewing);
+            assert_eq!(
+                selection.notice.as_deref(),
+                Some("latest notice must survive rollback")
+            );
+            assert_eq!(selection.items.len(), 1 + usize::from(published));
+            assert_eq!(selection.items[0].id, "old");
+            assert_eq!(
+                *fixture.effects.lock().unwrap(),
+                if published {
+                    vec![]
+                } else {
+                    vec!["release_target"]
+                }
+            );
+        }
+    }
 
     #[test]
     fn agent_prompt_template_is_complete_bounded_and_has_deterministic_line_endings() {
@@ -1281,11 +1974,12 @@ mod tests {
         let operation_id = Uuid::new_v4();
         let target = SelectedWindow {
             identity: crate::model::WindowIdentity {
-                window_id: 42,
-                bundle_id: "example.browser".into(),
-                pid: 100,
+                operation_id,
+                receipt: Uuid::from_u128(42),
+                selection_ordinal: 1,
             },
             facts: crate::model::WindowObservableFacts {
+                application_id: "example.browser".into(),
                 title: "Document".into(),
                 application_name: "Browser".into(),
                 frame: crate::model::Bounds {

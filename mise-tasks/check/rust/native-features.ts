@@ -41,15 +41,15 @@ const nodeKey = (node: ContextNode) => JSON.stringify(node);
 export const NATIVE_FEATURE_CONSUMER = `
 use std::sync::Arc;
 use port_platform::{accessibility::Accessibility, capture::Capture};
-use usecase::{context::{BlockingExecutor, ContextBuildRequest, build_context},
+use usecase::{acquisition::ReadIssuer, context::{BlockingExecutor, ContextBuildRequest, build_context},
     confirm_targets::{ConfirmationHost, confirm_targets}};
 fn requires_send<T: Send>(_: T) {}
-pub fn check_async_consumers<E: BlockingExecutor, H: ConfirmationHost + Sync>(
-    executor: &E, host: &H, accessibility: Arc<dyn Accessibility>, capture: Arc<dyn Capture>,
+pub fn check_async_consumers<E: BlockingExecutor, I: ReadIssuer, H: ConfirmationHost + Sync>(
+    executor: &E, issuer: &I, host: &H, accessibility: Arc<dyn Accessibility>, capture: Arc<dyn Capture>,
     request: ContextBuildRequest<'_>,
 ) {
     let operation = request.operation_id;
-    requires_send(build_context(executor, accessibility, capture, request));
+    requires_send(build_context(executor, issuer, accessibility, capture, request));
     requires_send(confirm_targets(host, operation));
 }
 `;

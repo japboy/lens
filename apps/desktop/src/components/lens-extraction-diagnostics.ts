@@ -20,7 +20,7 @@ export class LensExtractionDiagnostics extends LitElement {
     const mediaMetrics = [
       [
         "AX image regions",
-        context.media.filter((item) => item.scope === "ax_element_region").length,
+        context.media.filter((item) => item.scope === "accessibility_element_region").length,
       ],
       ["Window fallbacks", context.media.filter((item) => item.scope === "window_fallback").length],
       ["PNG bytes", context.media.reduce((total, item) => total + item.encoded_bytes, 0)],

@@ -33,10 +33,17 @@ impl Capture for UnusedSources {
     }
 }
 impl TargetSelection for UnusedSources {
+    fn open_operation(&self, _: Uuid) -> Result<(), PlatformError> {
+        panic!("unexpected native operation open")
+    }
     fn pick(&self, _: Uuid) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>> {
         panic!("unexpected native picker")
     }
-    fn release_target(&self, _: Uuid, _: u32) -> Result<(), PlatformError> {
+    fn release_target(
+        &self,
+        _: Uuid,
+        _: port_platform::authority::TargetReceipt,
+    ) -> Result<(), PlatformError> {
         panic!("unexpected target release")
     }
     fn release_operation(&self, _: Uuid) -> Result<(), PlatformError> {
@@ -49,10 +56,10 @@ impl Observation for UnusedSources {
     }
 }
 impl AccessibilityTrust for UnusedSources {
-    fn inspect(&self) -> bool {
-        false
+    fn inspect(&self) -> port_platform::trust::AccessibilityAccess {
+        port_platform::trust::AccessibilityAccess::PermissionRequired
     }
-    fn request(&self) -> bool {
+    fn request(&self) -> port_platform::trust::AccessibilityAccess {
         panic!("unexpected permission request")
     }
 }

@@ -35,32 +35,34 @@ const snapshot: AppSnapshot = {
     operation_id: operationId,
     stage: "completed",
     target_set: {
-      schema_version: 2,
+      schema_version: 3,
       selection_id: operationId,
       targets: [
         {
-          id: "macos:com.apple.Safari:417",
+          id: "target:11111111-1111-4111-8111-111111111111",
           identity: {
-            window_id: 417,
-            bundle_id: "com.apple.Safari",
-            pid: 417,
+            operation_id: operationId,
+            receipt: "11111111-1111-4111-8111-111111111111",
+            selection_ordinal: 1,
           },
           facts_revision: 1,
           facts: {
+            application_id: "com.apple.Safari",
             title: "Fixture",
             application_name: "Safari",
             frame: { x: 0, y: 0, width: 800, height: 600 },
           },
         },
         {
-          id: "macos:com.apple.TextEdit:512",
+          id: "target:22222222-2222-4222-8222-222222222222",
           identity: {
-            window_id: 512,
-            bundle_id: "com.apple.TextEdit",
-            pid: 512,
+            operation_id: operationId,
+            receipt: "22222222-2222-4222-8222-222222222222",
+            selection_ordinal: 2,
           },
           facts_revision: 1,
           facts: {
+            application_id: "com.apple.TextEdit",
             title: "Notes",
             application_name: "TextEdit",
             frame: { x: 80, y: 80, width: 600, height: 500 },
@@ -69,25 +71,27 @@ const snapshot: AppSnapshot = {
       ],
     },
     input: {
-      schema_version: 3,
+      schema_version: 8,
       context_id: operationId,
       context_revision: 1,
       sources: [
         {
-          source_id: "macos:com.apple.Safari:417:accessibility",
-          target_id: "macos:com.apple.Safari:417",
+          source_id: "target:11111111-1111-4111-8111-111111111111:accessibility",
+          target_id: "target:11111111-1111-4111-8111-111111111111",
           source_revision: 1,
           source: {
             application: "Safari",
             window_title: "Fixture",
-            bundle_id: "com.apple.Safari",
-            window_id: 417,
+            application_id: "com.apple.Safari",
+            receipt: "11111111-1111-4111-8111-111111111111",
           },
           document: {
             nodes: [
               {
                 id: "node-000001",
                 kind: "image",
+                source_api: "macos_ax",
+                node_purpose: "content",
                 media_refs: ["media-node-000001"],
                 resource_refs: [
                   { uri: "https://example.test/first.png", source_attribute: "AXURL" },
@@ -96,6 +100,8 @@ const snapshot: AppSnapshot = {
               {
                 id: "node-000002",
                 kind: "image",
+                source_api: "macos_ax",
+                node_purpose: "content",
                 media_refs: ["media-node-000002"],
               },
             ],
@@ -107,9 +113,9 @@ const snapshot: AppSnapshot = {
       media: [
         {
           id: "media-node-000001",
-          target_id: "macos:com.apple.Safari:417",
+          target_id: "target:11111111-1111-4111-8111-111111111111",
           uri: `lens://context/${operationId}/1/media/media-node-000001`,
-          scope: "ax_element_region",
+          scope: "accessibility_element_region",
           source_node_id: "node-000001",
           source_bounds: { x: 10, y: 20, width: 30, height: 40 },
           captured_bounds: { x: 10, y: 20, width: 30, height: 40 },
@@ -122,9 +128,9 @@ const snapshot: AppSnapshot = {
         },
         {
           id: "media-node-000002",
-          target_id: "macos:com.apple.Safari:417",
+          target_id: "target:11111111-1111-4111-8111-111111111111",
           uri: `lens://context/${operationId}/1/media/media-node-000002`,
-          scope: "ax_element_region",
+          scope: "accessibility_element_region",
           source_node_id: "node-000002",
           source_bounds: { x: 45, y: 50, width: 100, height: 120 },
           captured_bounds: { x: 50, y: 60, width: 70, height: 80 },
@@ -168,7 +174,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         notice: "Original project by Yu Inao",
       };
     if (command === "get_app_snapshot") return snapshot;
-    if (command === "accessibility_permission") return true;
+    if (command === "accessibility_permission") return { schema_version: 1, status: "ready" };
     return undefined;
   }),
 }));
@@ -244,7 +250,7 @@ describe("progressive DSD resources", () => {
       expect(root.querySelector("#agent-heading")?.textContent).toBe("AI Agent");
       expect(root.querySelector(".settings-sidebar-status-value")?.textContent?.trim()).toBe("");
       await vi.waitFor(() =>
-        expect(root.querySelector(".permission-row output")?.textContent).toContain("Allowed"),
+        expect(root.querySelector(".permission-row output")?.textContent).toContain("Ready"),
       );
       const navigation = Array.from(root.querySelectorAll<HTMLButtonElement>(".settings-nav-item"));
       expect(navigation.every((button) => !button.disabled)).toBe(true);
@@ -481,28 +487,30 @@ describe("Lens target selection preview", () => {
         anchor: { x: 0, y: 0, width: 800, height: 600 },
         items: [
           {
-            id: "macos:com.apple.Safari:417",
+            id: "target:11111111-1111-4111-8111-111111111111",
             window: {
-              window_id: 417,
+              operation_id: operationId,
+              selection_ordinal: 1,
+              receipt: "11111111-1111-4111-8111-111111111111",
               title: "Fixture",
               application_name: "Safari",
-              bundle_id: "com.apple.Safari",
-              pid: 417,
+              application_id: "com.apple.Safari",
               frame: { x: 0, y: 0, width: 800, height: 600 },
             },
-            preview_uri: `lens://selection/${operationId}/window/417`,
+            preview_uri: `lens://selection/${operationId}/window/11111111-1111-4111-8111-111111111111`,
           },
           {
-            id: "macos:com.apple.TextEdit:512",
+            id: "target:22222222-2222-4222-8222-222222222222",
             window: {
-              window_id: 512,
+              operation_id: operationId,
+              selection_ordinal: 2,
+              receipt: "22222222-2222-4222-8222-222222222222",
               title: "Notes",
               application_name: "TextEdit",
-              bundle_id: "com.apple.TextEdit",
-              pid: 512,
+              application_id: "com.apple.TextEdit",
               frame: { x: 80, y: 80, width: 600, height: 500 },
             },
-            preview_uri: `lens://selection/${operationId}/window/512`,
+            preview_uri: `lens://selection/${operationId}/window/22222222-2222-4222-8222-222222222222`,
           },
         ],
       },
@@ -524,8 +532,8 @@ describe("Lens target selection preview", () => {
       selectionRoot?.querySelectorAll<HTMLImageElement>(".target-selection-image > img") ?? [],
     );
     expect(images.map((image) => image.getAttribute("src"))).toEqual([
-      `lens://selection/${operationId}/window/417`,
-      `lens://selection/${operationId}/window/512`,
+      `lens://selection/${operationId}/window/11111111-1111-4111-8111-111111111111`,
+      `lens://selection/${operationId}/window/22222222-2222-4222-8222-222222222222`,
     ]);
     expect(selectionRoot?.querySelector(".overlay-header")).toBeNull();
     expect(selectionRoot?.querySelector("[data-tauri-drag-region]")).toBeNull();
@@ -547,7 +555,7 @@ describe("Lens target selection preview", () => {
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("remove_lens_target", {
         operationId,
-        targetId: "macos:com.apple.Safari:417",
+        targetId: "target:11111111-1111-4111-8111-111111111111",
       });
     });
     const confirmButton = selectionRoot?.querySelector<HTMLButtonElement>(

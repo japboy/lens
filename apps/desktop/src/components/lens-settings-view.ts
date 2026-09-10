@@ -800,11 +800,15 @@ export class LensSettingsView extends LitElement {
         case "checking":
           return "Checking…";
         case "allowed":
-          return "Allowed";
+          return "Ready";
         case "required":
           return "Permission required";
         case "failed":
-          return "Permission check failed";
+          return "Access check failed";
+        case "restricted":
+          return "Access restricted";
+        case "unsupported":
+          return "Not supported";
       }
     })();
     const permissionAllowed = permission.stage === "allowed";
@@ -898,11 +902,11 @@ export class LensSettingsView extends LitElement {
                     ${permissionLabel}
                   </output>
                   ${
-                    permissionAllowed || permission.stage === "checking"
+                    permission.stage !== "required"
                       ? nothing
                       : html`<button
                           @click=${() => this.emit({ type: "request-accessibility-permission" })}
-                          ?disabled=${!this.active || this.commandPending || permission.stage === "inactive"}
+                          ?disabled=${!this.active || this.commandPending}
                         >
                           Open System Settings
                         </button>`

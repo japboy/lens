@@ -12,10 +12,17 @@ pub enum WindowPickerReply {
 }
 
 pub trait TargetSelection: Send + Sync {
+    /// Opens an operation before any picker can admit native resources. A picker
+    /// must never reopen a released operation as a side effect of completion.
+    fn open_operation(&self, operation_id: Uuid) -> Result<(), PlatformError>;
     fn pick(
         &self,
         operation_id: Uuid,
     ) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>>;
-    fn release_target(&self, operation_id: Uuid, window_id: u32) -> Result<(), PlatformError>;
+    fn release_target(
+        &self,
+        operation_id: Uuid,
+        receipt: crate::authority::TargetReceipt,
+    ) -> Result<(), PlatformError>;
     fn release_operation(&self, operation_id: Uuid) -> Result<(), PlatformError>;
 }

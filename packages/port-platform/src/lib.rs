@@ -3,7 +3,9 @@
 //! Platform capabilities expose owned facts, never domain state or native objects.
 
 pub mod accessibility;
+pub mod authority;
 pub mod capture;
+pub mod geometry;
 pub mod model;
 pub mod observation;
 pub mod selection;

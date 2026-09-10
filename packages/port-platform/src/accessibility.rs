@@ -1,17 +1,16 @@
 use crate::{
-    model::{ExtractionResult, SelectedWindow, WindowIdentity},
+    authority::TargetReadKey,
+    model::{ExtractionResult, LegacyWindow},
     ExtractionLimits, PlatformError,
 };
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub enum ExtractionTarget {
     Registered {
-        operation_id: Uuid,
-        identity: WindowIdentity,
+        read: TargetReadKey,
     },
     /// The existing explicit one-shot diagnostic path, never a registered fallback.
-    Legacy(SelectedWindow),
+    Legacy(LegacyWindow),
 }
 
 pub trait Accessibility: Send + Sync {

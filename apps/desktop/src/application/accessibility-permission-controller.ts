@@ -1,12 +1,14 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
-import type { WebviewPort } from "./webview-port";
+import type { AccessibilityAccess, WebviewPort } from "./webview-port";
 
 export type AccessibilityPermissionState =
   | { stage: "inactive" }
   | { stage: "checking" }
   | { stage: "allowed" }
   | { stage: "required" }
-  | { stage: "failed"; message: string };
+  | { stage: "restricted" }
+  | { stage: "unsupported" }
+  | { stage: "failed"; message: string; origin: "inspection" | "request" | "native" };
 
 export class AccessibilityPermissionController implements ReactiveController {
   state: AccessibilityPermissionState = { stage: "inactive" };
@@ -14,6 +16,10 @@ export class AccessibilityPermissionController implements ReactiveController {
   private connected = false;
   private active = false;
   private generation = 0;
+  private inFlight: "idle" | "inspection" | "request" = "idle";
+  private readonly onVisibilityChange = (): void => {
+    void this.refresh();
+  };
   private pollTimer: number | undefined;
   private followUpTimer: number | undefined;
 
@@ -47,23 +53,41 @@ export class AccessibilityPermissionController implements ReactiveController {
   }
 
   async request(): Promise<void> {
-    await this.port.requestAccessibilityPermission();
+    if (!this.active || !this.connected || this.state.stage !== "required") return;
+    const generation = ++this.generation;
+    this.inFlight = "request";
     this.setState({ stage: "checking" });
-    if (this.followUpTimer !== undefined) window.clearTimeout(this.followUpTimer);
-    this.followUpTimer = window.setTimeout(() => void this.refresh(), 1_200);
+    try {
+      const access = await this.port.requestAccessibilityPermission();
+      if (generation !== this.generation || !this.active || !this.connected) return;
+      this.applyAccess(access);
+      if (access.status === "permission_required") {
+        if (this.followUpTimer !== undefined) window.clearTimeout(this.followUpTimer);
+        this.followUpTimer = window.setTimeout(() => void this.refresh(), 1_200);
+      }
+    } catch (error) {
+      if (generation !== this.generation || !this.active || !this.connected) return;
+      this.setState({ stage: "failed", message: String(error), origin: "request" });
+    } finally {
+      if (generation === this.generation) this.inFlight = "idle";
+    }
   }
 
   async refresh(): Promise<void> {
     if (!this.active || !this.connected || document.visibilityState !== "visible") return;
-    if (this.state.stage === "allowed") return;
-    const generation = this.generation;
+    if (!this.canInspect()) return;
+    if (this.inFlight !== "idle") return;
+    const generation = ++this.generation;
+    this.inFlight = "inspection";
     try {
-      const allowed = await this.port.getAccessibilityPermission();
+      const access = await this.port.getAccessibilityPermission();
       if (generation !== this.generation || !this.active || !this.connected) return;
-      this.setState(allowed ? { stage: "allowed" } : { stage: "required" });
+      this.applyAccess(access);
     } catch (error) {
       if (generation !== this.generation || !this.active || !this.connected) return;
-      this.setState({ stage: "failed", message: String(error) });
+      this.setState({ stage: "failed", message: String(error), origin: "inspection" });
+    } finally {
+      if (generation === this.generation) this.inFlight = "idle";
     }
   }
 
@@ -71,12 +95,45 @@ export class AccessibilityPermissionController implements ReactiveController {
     this.stop();
     this.generation += 1;
     this.setState({ stage: "checking" });
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     void this.refresh();
-    this.pollTimer = window.setInterval(() => void this.refresh(), 2_000);
+    this.pollTimer = window.setInterval(() => {
+      void this.refresh();
+    }, 2_000);
+  }
+
+  private applyAccess(access: AccessibilityAccess): void {
+    switch (access.status) {
+      case "ready":
+        this.setState({ stage: "allowed" });
+        break;
+      case "permission_required":
+        this.setState({ stage: "required" });
+        break;
+      case "access_restricted":
+        this.setState({ stage: "restricted" });
+        break;
+      case "unsupported":
+        this.setState({ stage: "unsupported" });
+        break;
+      case "failed":
+        this.setState({ stage: "failed", message: access.message, origin: "native" });
+        break;
+    }
+  }
+
+  private canInspect(): boolean {
+    return (
+      this.state.stage === "required" ||
+      this.state.stage === "checking" ||
+      (this.state.stage === "failed" && this.state.origin === "inspection")
+    );
   }
 
   private stop(): void {
     this.generation += 1;
+    this.inFlight = "idle";
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
     if (this.followUpTimer !== undefined) window.clearTimeout(this.followUpTimer);
     this.pollTimer = undefined;
