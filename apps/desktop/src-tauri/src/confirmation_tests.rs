@@ -33,6 +33,7 @@ const OPERATION: Uuid = Uuid::from_u128(7);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     Success,
+    HtmlPublication,
     NativeUnavailable,
     ObserverUnavailable,
     AgentUnavailable,
@@ -306,10 +307,6 @@ impl ui::TrayOutput<MockRuntime> for Fixture {
 
 struct AgentFixture(Arc<Fixture>);
 impl agent::AgentHost<MockRuntime> for AgentFixture {
-    fn output_server(&self) -> Result<std::path::PathBuf, String> {
-        Ok("/fixture/lens-output-mcp".into())
-    }
-
     fn resolve<'a>(
         &'a self,
         _: &'a tauri::AppHandle<MockRuntime>,
@@ -356,6 +353,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         responder.respond(
                             InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
                                 AgentCapabilities::new()
+                                    .mcp_capabilities(McpCapabilities::new().http(true))
                                     .prompt_capabilities(PromptCapabilities::new().image(true)),
                             ),
                         )
@@ -390,7 +388,13 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                     async move |request: PromptRequest,
                                 responder: Responder<PromptResponse>,
                                 connection: ConnectionTo<Client>| {
-                        prompt.record(Effect::Prompt(serde_json::to_value(&request).unwrap()));
+                        let prompt_value = serde_json::to_value(&request).unwrap();
+                        prompt.record(Effect::Prompt(prompt_value.clone()));
+                        if prompt.scenario == Scenario::HtmlPublication
+                            || prompt.scenario == Scenario::StopDuringPrompt
+                        {
+                            publish_fixture_html(&prompt, &prompt_value).await;
+                        }
                         if prompt.scenario == Scenario::StopDuringPrompt {
                             let fixture = prompt.clone();
                             let sender = connection.clone();
@@ -420,6 +424,86 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                 ),
         )
     }
+}
+
+/// Exercise the actual registered MCP endpoint instead of fabricating ACP HTML updates.
+async fn publish_fixture_html(fixture: &Fixture, prompt: &Value) {
+    let server = fixture
+        .effects
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|effect| {
+            if let Effect::NewSession(request) = effect {
+                Some(request["mcpServers"][0].clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let context: Value = prompt["prompt"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|block| {
+            let text = block["text"]
+                .as_str()
+                .or_else(|| block["resource"]["text"].as_str())?;
+            let value: Value = serde_json::from_str(text).ok()?;
+            (value["kind"] == "lens_output_publication").then_some(value)
+        })
+        .expect("explicit publication context");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let post = |payload: Value, session: Option<&str>| {
+        let mut request = client
+            .post(server["url"].as_str().unwrap())
+            .header(
+                "authorization",
+                server["headers"][0]["value"].as_str().unwrap(),
+            )
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .body(payload.to_string());
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        request.send()
+    };
+    let response = post(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
+    }}), None).await.unwrap();
+    assert!(response.status().is_success());
+    let session = response
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| v.to_str().unwrap().to_owned());
+    let _ = response.text().await.unwrap();
+    assert!(post(
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        session.as_deref()
+    )
+    .await
+    .unwrap()
+    .status()
+    .is_success());
+    let response = post(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"publish_html","arguments":{"turn_id":context["turn_id"],"html":"<h1>Fixture HTML</h1>"}
+    }}), session.as_deref()).await.unwrap();
+    assert!(response.status().is_success());
+    let raw = response.text().await.unwrap();
+    let result: Value = serde_json::from_str(&raw).unwrap_or_else(|_| {
+        raw.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .find_map(|data| serde_json::from_str(data).ok())
+            .expect("MCP response")
+    });
+    assert!(result.get("error").is_none());
+    assert_ne!(result["result"]["isError"], true);
 }
 
 struct Harness {
@@ -587,12 +671,21 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             }
         })
         .unwrap();
-    assert_eq!(
-        request,
-        &json!({"cwd":"/fixture","mcpServers":[{
-            "name":"lens_output", "command":"/fixture/lens-output-mcp", "args":[], "env":[]
-        }]})
-    );
+    assert_eq!(request["cwd"], "/fixture");
+    assert_eq!(request["mcpServers"].as_array().unwrap().len(), 1);
+    let server = &request["mcpServers"][0];
+    assert_eq!(server["name"], "lens_output");
+    assert_eq!(server["type"], "http");
+    let endpoint = reqwest::Url::parse(server["url"].as_str().unwrap()).unwrap();
+    assert_eq!(endpoint.scheme(), "http");
+    assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+    assert!(endpoint.port().is_some());
+    assert_eq!(server["headers"][0]["name"], "Authorization");
+    assert!(server["headers"][0]["value"]
+        .as_str()
+        .unwrap()
+        .starts_with("Bearer "));
+    assert!(server.get("command").is_none());
     let prompt = effects
         .iter()
         .find_map(|e| {
@@ -633,6 +726,26 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
         .unwrap()
         .contains(&Effect::ObserverClosed));
     assert!(fixture.effects.lock().unwrap().contains(&Effect::Released));
+}
+
+#[test]
+fn http_publication_commits_exact_private_html() {
+    let harness = setup(Scenario::HtmlPublication);
+    let first = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(first.stage, LensStage::Completed);
+    let retained = harness.app.state::<AppState>().lens().unwrap();
+    let html: Vec<_> = retained
+        .representation
+        .as_ref()
+        .unwrap()
+        .output_blocks
+        .iter()
+        .filter_map(|block| match block {
+            LensOutputBlock::Html { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(html, vec!["<h1>Fixture HTML</h1>"]);
 }
 
 #[test]

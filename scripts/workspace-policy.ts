@@ -7,7 +7,7 @@ export type Member = {
   directory: string;
   role: "repository" | "application" | "domain" | "usecase" | "port" | "adapter" | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
-  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "sidecar";
+  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "transport";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
 };
 
@@ -50,6 +50,7 @@ export const MEMBERS: readonly Member[] = [
       normal: [
         "usecase",
         "port-platform",
+        "adapter-output-mcp",
         "agent-client-protocol",
         "base64",
         "dirs",
@@ -131,10 +132,20 @@ export const MEMBERS: readonly Member[] = [
     directory: "packages/adapter-output-mcp",
     role: "adapter",
     capability: "desktop",
-    implementation: "sidecar",
+    implementation: "transport",
     dependencies: {
-      normal: ["rmcp", "serde", "uuid", "tokio"],
-      dev: ["serde_json", "tokio"],
+      normal: [
+        "rmcp",
+        "axum",
+        "hyper",
+        "hyper-util",
+        "serde",
+        "serde_json",
+        "uuid",
+        "tokio",
+        "tokio-util",
+      ],
+      dev: ["reqwest", "tokio"],
     },
   },
   {

@@ -35,7 +35,7 @@ const PNPM_DIST_SHA256: &str = "a8533087155540515892e6f022ba5c673bb2e62fcbcc124b
 const PNPM_ARCHIVE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const TAKUMI_GUARD_REGISTRY: &str = "https://npm.flatt.tech/";
 const REGISTRY_MAX_BYTES: usize = 2 * 1024 * 1024;
-const AGENT_INSTALL_RECORD_VERSION: u32 = 4;
+const AGENT_INSTALL_RECORD_VERSION: u32 = 5;
 const NODE_INSTALL_RECORD_VERSION: u32 = 2;
 const PNPM_INSTALL_RECORD_VERSION: u32 = 1;
 const NODE_TEAM_ID: &str = "HX7739G8FX";
@@ -46,26 +46,9 @@ const OPENAI_TEAM_ID: &str = "2DC432GLL2";
 const CLAUDE_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/claude/package.json");
 const CLAUDE_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/claude/pnpm-lock.yaml");
 const CLAUDE_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/claude/pnpm-workspace.yaml");
-const CLAUDE_HTML_FORWARDING: &str =
-    include_str!("../agent-runtime/claude/lens-html-forwarding.js");
-const CLAUDE_ORIGINAL_SHA256: &str =
-    "d8053c7880d61a0ffa25c8bd367eb2d5adc78ee7c0a3eb65b4d33be3a6c07ab4";
-const CLAUDE_PATCHED_SHA256: &str =
-    "b33bae689875210ba1e5bbfde5f4554710bf5c49f6cc0730ff7eebce55c81213";
-const CLAUDE_TOOLS_PATH: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/tools.js";
-const CLAUDE_TOOL_ANCHOR: &str = "export function toolUpdateFromToolResult(toolResult, toolUse, supportsTerminalOutput = false, toolUseResult) {";
 const CODEX_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/codex/package.json");
 const CODEX_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-lock.yaml");
 const CODEX_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-workspace.yaml");
-const CODEX_HTML_FORWARDING: &str = include_str!("../agent-runtime/codex/lens-html-forwarding.js");
-const CODEX_ORIGINAL_SHA256: &str =
-    "4602784c5896fbf05a7d89b09655bacc768d0bf281e0d03a10333ff81da45268";
-const CODEX_PATCHED_SHA256: &str =
-    "3eac125dbe1f8fbc58bf4eb4c4030cabc59646b555ddeac190e9cfdb587cf076";
-const CODEX_REPLAY_ANCHOR: &str = "    _meta: { is_mcp_tool_call: true }";
-const CODEX_LIVE_ANCHOR: &str =
-    "          rawOutput: createMcpRawOutput(event.item.result, event.item.error)";
-
 #[derive(Debug, Clone)]
 pub struct ResolvedAgentRuntime {
     pub kind: AgentKind,
@@ -222,7 +205,6 @@ struct InstallRecord {
     pnpm_archive_sha512: String,
     pnpm_lock_sha256: String,
     pnpm_workspace_sha256: String,
-    adapter_patch_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -451,7 +433,6 @@ fn verify_install_record(agent_root: &Path, approved: AgentRuntimePolicy) -> Res
         || record.pnpm_archive_sha512 != PNPM_ARCHIVE_SHA512
         || record.pnpm_lock_sha256 != sha256_bytes(approved.pnpm_lock)
         || record.pnpm_workspace_sha256 != sha256_bytes(approved.pnpm_workspace)
-        || record.adapter_patch_sha256 != adapter_patch_sha256(approved.kind)
     {
         return Err("managed Agent install record does not match the approved policy".into());
     }
@@ -464,117 +445,7 @@ fn verify_install_record(agent_root: &Path, approved: AgentRuntimePolicy) -> Res
     {
         return Err("managed Agent package policy files were modified".into());
     }
-    verify_adapter_patch(agent_root, approved)?;
     Ok(())
-}
-
-fn adapter_patch_sha256(kind: AgentKind) -> Option<String> {
-    match kind {
-        AgentKind::Codex => Some(sha256_bytes(CODEX_HTML_FORWARDING.as_bytes())),
-        AgentKind::Claude => Some(sha256_bytes(CLAUDE_HTML_FORWARDING.as_bytes())),
-    }
-}
-
-fn patched_codex_source(source: &str) -> Result<String, String> {
-    let actual = sha256_bytes(source.as_bytes());
-    let replay_count = source.matches(CODEX_REPLAY_ANCHOR).count();
-    let live_count = source.matches(CODEX_LIVE_ANCHOR).count();
-    if actual != CODEX_ORIGINAL_SHA256 || replay_count != 1 || live_count != 1 {
-        return Err(format!("Codex adapter does not match the approved HTML compatibility patch (version {}; expected SHA-256 {CODEX_ORIGINAL_SHA256}; actual {actual}; replay anchors {replay_count}; live anchors {live_count})", policy(AgentKind::Codex).adapter_version));
-    }
-    let patched = patch_unique_anchors(
-        source,
-        &[
-            (
-                CODEX_REPLAY_ANCHOR,
-                format!("    ...lensHtmlToolContent(item),\n{CODEX_REPLAY_ANCHOR}"),
-            ),
-            (
-                CODEX_LIVE_ANCHOR,
-                format!("{CODEX_LIVE_ANCHOR},\n          ...lensHtmlToolContent(event.item)"),
-            ),
-        ],
-        CODEX_HTML_FORWARDING,
-    )?;
-    let patched_hash = sha256_bytes(patched.as_bytes());
-    if patched_hash != CODEX_PATCHED_SHA256 {
-        return Err(format!("Codex HTML compatibility patch output checksum mismatch (version {}; expected SHA-256 {CODEX_PATCHED_SHA256}; actual {patched_hash})", policy(AgentKind::Codex).adapter_version));
-    }
-    Ok(patched)
-}
-
-fn apply_adapter_patch(agent_root: &Path, approved: AgentRuntimePolicy) -> Result<(), String> {
-    let path = canonical_managed_file(
-        agent_root,
-        &agent_root.join(adapter_patch_path(approved)),
-        "Agent compatibility patch target",
-    )?;
-    let source = fs::read_to_string(&path).map_err(|error| {
-        format!("unable to read Agent adapter for compatibility patch: {error}")
-    })?;
-    let patched = match approved.kind {
-        AgentKind::Codex => patched_codex_source(&source)?,
-        AgentKind::Claude => patched_claude_source(&source)?,
-    };
-    fs::write(path, patched)
-        .map_err(|error| format!("unable to apply Agent HTML compatibility patch: {error}"))
-}
-
-fn verify_adapter_patch(agent_root: &Path, approved: AgentRuntimePolicy) -> Result<(), String> {
-    let path = canonical_managed_file(
-        agent_root,
-        &agent_root.join(adapter_patch_path(approved)),
-        "Agent compatibility patch target",
-    )?;
-    let bytes = fs::read(path)
-        .map_err(|error| format!("unable to verify patched Agent adapter: {error}"))?;
-    let expected = match approved.kind {
-        AgentKind::Codex => CODEX_PATCHED_SHA256,
-        AgentKind::Claude => CLAUDE_PATCHED_SHA256,
-    };
-    let actual = sha256_bytes(&bytes);
-    if actual != expected {
-        return Err(format!("patched Agent adapter checksum mismatch ({} {}; expected SHA-256 {expected}; actual {actual})", approved.adapter_name, approved.adapter_version));
-    }
-    Ok(())
-}
-
-fn adapter_patch_path(approved: AgentRuntimePolicy) -> &'static str {
-    match approved.kind {
-        AgentKind::Codex => approved.entrypoint,
-        AgentKind::Claude => CLAUDE_TOOLS_PATH,
-    }
-}
-
-fn patched_claude_source(source: &str) -> Result<String, String> {
-    let actual = sha256_bytes(source.as_bytes());
-    let anchor_count = source.matches(CLAUDE_TOOL_ANCHOR).count();
-    if actual != CLAUDE_ORIGINAL_SHA256 || anchor_count != 1 {
-        return Err(format!("Claude adapter does not match the approved HTML compatibility patch (version {}; expected SHA-256 {CLAUDE_ORIGINAL_SHA256}; actual {actual}; tool anchors {anchor_count})", policy(AgentKind::Claude).adapter_version));
-    }
-    let patched = patch_unique_anchors(source, &[(CLAUDE_TOOL_ANCHOR,
-        format!("{CLAUDE_TOOL_ANCHOR}\n    const lensHtmlUpdate = lensHtmlToolUpdate(toolResult, toolUse);\n    if (lensHtmlUpdate) return lensHtmlUpdate;"))], CLAUDE_HTML_FORWARDING)?;
-    let patched_hash = sha256_bytes(patched.as_bytes());
-    if patched_hash != CLAUDE_PATCHED_SHA256 {
-        return Err(format!("Claude HTML compatibility patch output checksum mismatch (version {}; expected SHA-256 {CLAUDE_PATCHED_SHA256}; actual {patched_hash})", policy(AgentKind::Claude).adapter_version));
-    }
-    Ok(patched)
-}
-
-fn patch_unique_anchors(
-    source: &str,
-    replacements: &[(&str, String)],
-    helper: &str,
-) -> Result<String, String> {
-    let mut patched = source.to_owned();
-    for (anchor, replacement) in replacements {
-        if patched.matches(anchor).count() != 1 {
-            return Err("Agent compatibility patch anchor is missing or ambiguous".into());
-        }
-        patched = patched.replacen(anchor, replacement, 1);
-    }
-    // Keep the upstream shebang first; JS function declarations are hoisted.
-    Ok(format!("{patched}\n{helper}"))
 }
 
 async fn verify_runtime_paths(
@@ -1153,7 +1024,6 @@ async fn ensure_agent_runtime<R: tauri::Runtime>(
             &staging_root,
         )
         .await?;
-        apply_adapter_patch(&staged_agent, approved)?;
         verify_runtime_paths(node_root, &staged_agent, approved).await?;
         let record = serde_json::to_vec_pretty(&install_record(approved))
             .map_err(|error| format!("unable to serialize Agent install record: {error}"))?;
@@ -1236,7 +1106,6 @@ fn install_record(approved: AgentRuntimePolicy) -> InstallRecord {
         pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
         pnpm_lock_sha256: sha256_bytes(approved.pnpm_lock),
         pnpm_workspace_sha256: sha256_bytes(approved.pnpm_workspace),
-        adapter_patch_sha256: adapter_patch_sha256(approved.kind),
     }
 }
 
@@ -1501,59 +1370,39 @@ mod tests {
         assert_eq!(record.pnpm_lock_sha256, sha256_bytes(CLAUDE_PNPM_LOCK));
         assert_eq!(record.pnpm_version, "11.22.0");
         assert_eq!(
-            record.adapter_patch_sha256,
-            Some(sha256_bytes(CLAUDE_HTML_FORWARDING.as_bytes()))
-        );
-        assert_eq!(
             record.pnpm_workspace_sha256,
             sha256_bytes(CLAUDE_PNPM_WORKSPACE)
         );
     }
 
     #[test]
-    fn codex_record_tracks_the_compatibility_patch() {
-        let record = install_record(policy(AgentKind::Codex));
-        assert_eq!(
-            record.adapter_patch_sha256,
-            Some(sha256_bytes(CODEX_HTML_FORWARDING.as_bytes()))
-        );
-        assert_eq!(record.schema_version, 4);
-    }
-
-    #[test]
-    fn codex_patch_rejects_unapproved_or_already_patched_source() {
-        assert!(patched_codex_source("").is_err());
-        assert!(
-            patched_codex_source(&format!("{CODEX_LIVE_ANCHOR}\n{CODEX_REPLAY_ANCHOR}")).is_err()
-        );
-        assert!(patched_codex_source(CODEX_HTML_FORWARDING).is_err());
-        assert!(patched_claude_source("").is_err());
-        assert!(patched_claude_source(CLAUDE_TOOL_ANCHOR).is_err());
-        assert!(patched_claude_source(CLAUDE_HTML_FORWARDING).is_err());
-    }
-
-    #[test]
-    fn codex_patch_verification_rejects_missing_and_modified_code() {
-        let root = std::env::temp_dir().join(format!("lens-adapter-patch-{}", Uuid::new_v4()));
-        let approved = policy(AgentKind::Codex);
-        assert!(verify_adapter_patch(&root, approved).is_err());
-        let entry = root.join(approved.entrypoint);
-        fs::create_dir_all(entry.parent().unwrap()).unwrap();
-        fs::write(&entry, "modified").unwrap();
-        assert!(verify_adapter_patch(&root, approved).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn patch_anchor_transform_is_exact_and_preserves_shebang() {
-        let replacements = [("original", "patched".to_string())];
-        assert_eq!(
-            patch_unique_anchors("#!/usr/bin/env node\noriginal\n", &replacements, "helper")
-                .unwrap(),
-            "#!/usr/bin/env node\npatched\n\nhelper"
-        );
-        assert!(patch_unique_anchors("missing", &replacements, "helper").is_err());
-        assert!(patch_unique_anchors("original original", &replacements, "helper").is_err());
+    fn install_record_rejects_previously_patched_runtime() {
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            let approved = policy(kind);
+            let root = std::env::temp_dir().join(format!("lens-runtime-record-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("package.json"), approved.package_json).unwrap();
+            fs::write(root.join("pnpm-lock.yaml"), approved.pnpm_lock).unwrap();
+            fs::write(root.join("pnpm-workspace.yaml"), approved.pnpm_workspace).unwrap();
+            let mut record = serde_json::to_value(install_record(approved)).unwrap();
+            record["schema_version"] = serde_json::json!(4);
+            record["adapter_patch_sha256"] = serde_json::json!("legacy-patch");
+            fs::write(
+                root.join("lens-runtime.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+            assert!(verify_install_record(&root, approved)
+                .unwrap_err()
+                .contains("does not match"));
+            fs::write(
+                root.join("lens-runtime.json"),
+                serde_json::to_vec(&install_record(approved)).unwrap(),
+            )
+            .unwrap();
+            verify_install_record(&root, approved).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -1621,14 +1470,14 @@ mod tests {
     }
 
     /// Explicit acceptance test against fresh, disposable installs of the checked-in
-    /// manifests. It applies production patches and verifies signatures/CLI versions.
+    /// manifests. It verifies signatures/CLI versions without modifying adapters.
     #[tokio::test]
-    #[ignore = "requires LENS_PATCH_CODEX_ROOT, LENS_PATCH_CLAUDE_ROOT and LENS_PATCH_NODE_ROOT"]
-    async fn freshly_installed_adapters_pass_production_patch_and_runtime_verification() {
-        let node = PathBuf::from(std::env::var_os("LENS_PATCH_NODE_ROOT").unwrap());
+    #[ignore = "requires LENS_UNPATCHED_CODEX_ROOT, LENS_UNPATCHED_CLAUDE_ROOT and LENS_UNPATCHED_NODE_ROOT"]
+    async fn freshly_installed_unpatched_adapters_pass_runtime_verification() {
+        let node = PathBuf::from(std::env::var_os("LENS_UNPATCHED_NODE_ROOT").unwrap());
         for (kind, variable) in [
-            (AgentKind::Codex, "LENS_PATCH_CODEX_ROOT"),
-            (AgentKind::Claude, "LENS_PATCH_CLAUDE_ROOT"),
+            (AgentKind::Codex, "LENS_UNPATCHED_CODEX_ROOT"),
+            (AgentKind::Claude, "LENS_UNPATCHED_CLAUDE_ROOT"),
         ] {
             let root =
                 fs::canonicalize(PathBuf::from(std::env::var_os(variable).unwrap())).unwrap();
@@ -1649,8 +1498,6 @@ mod tests {
                 fs::read(root.join("pnpm-lock.yaml")).unwrap(),
                 approved.pnpm_lock
             );
-            apply_adapter_patch(&root, approved).unwrap();
-            verify_adapter_patch(&root, approved).unwrap();
             verify_runtime_paths(&node, &root, approved).await.unwrap();
         }
     }

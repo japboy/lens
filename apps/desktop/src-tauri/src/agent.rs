@@ -19,6 +19,7 @@ use crate::{
     },
     prompt_template::{AgentPromptMode, AgentPromptTemplate},
 };
+use adapter_output_mcp::HttpPublisher;
 use agent_client_protocol::{
     schema::{
         v1::{
@@ -137,6 +138,7 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     shutdown: &'a mut watch::Receiver<bool>,
     session: &'a mut ActiveSession<'static, Agent>,
     prompt_capabilities: &'a PromptCapabilities,
+    publisher: &'a HttpPublisher,
 }
 
 #[derive(Serialize)]
@@ -161,7 +163,6 @@ pub(crate) type HostFuture<'a, T> =
 
 /// Approved runtime acquisition and ACP transport, not session or output policy.
 pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
-    fn output_server(&self) -> Result<PathBuf, String>;
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -183,10 +184,6 @@ pub(crate) struct AgentServices<R: tauri::Runtime>(pub Arc<dyn AgentHost<R>>);
 pub(crate) struct ManagedAgentHost;
 
 impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
-    fn output_server(&self) -> Result<PathBuf, String> {
-        crate::output_mcp::bundled_executable()
-    }
-
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -987,11 +984,12 @@ async fn run_persistent_session<R: tauri::Runtime>(
     mailbox: Arc<AgentSessionMailbox>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), Error> {
-    let output_server = app
-        .state::<AgentServices<R>>()
-        .0
-        .output_server()
-        .map_err(state_error)?;
+    if *shutdown.borrow() {
+        return Err(Error::request_cancelled());
+    }
+    let publisher = HttpPublisher::start()
+        .await
+        .map_err(|error| state_error(error.to_string()))?;
     let process = transport(&app, &descriptor);
     agent_client_protocol::Client
         .builder()
@@ -1013,11 +1011,15 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 .agent_info
                 .as_ref()
                 .map(|info| (info.name.clone(), info.version.clone()));
+            crate::output_mcp::require_http(&initialize.agent_capabilities.mcp_capabilities)?;
+            if *shutdown.borrow() {
+                return Err(Error::request_cancelled());
+            }
             let mut session = tokio::select! {
                 result = connection
                     .build_session_from(crate::output_mcp::session_request(
                         &identity.config.working_directory,
-                        output_server,
+                        &publisher,
                     ))
                     .block_task()
                     .start_session() => result?,
@@ -1119,6 +1121,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         shutdown: &mut shutdown,
                         session: &mut session,
                         prompt_capabilities: &initialize.agent_capabilities.prompt_capabilities,
+                        publisher: &publisher,
                     },
                     run.key,
                     &mut run.cancellation,
@@ -1763,20 +1766,31 @@ async fn run_session_turn<R: tauri::Runtime>(
         shutdown,
         session,
         prompt_capabilities,
+        publisher,
     } = execution;
     let AgentTurnTarget {
         context_revision: target_context_revision,
         projection: target_projection,
     } = target;
+    if *cancellation.borrow() || *shutdown.borrow() {
+        return Err(Error::request_cancelled());
+    }
+    let publication = publisher
+        .begin_turn(key.run_id)
+        .map_err(|error| state_error(error.to_string()))?;
     controls.begin_turn(key.run_id)?;
     let _turn_lifetime = session_controls::TurnLifetime { controls, app };
-    let prompt = build_prompt_blocks(
+    let mut prompt = build_prompt_blocks(
         &identity.config.agent_prompt_template,
         projection,
         &target_projection,
         prompt_mode,
         prompt_capabilities,
     )?;
+    prompt.push(crate::output_mcp::publication_context(
+        key.run_id,
+        prompt_capabilities.embedded_context,
+    ));
     let session_id = session.session_id().clone();
     let session_connection = session.connection().clone();
     let prompt_response = session_connection
@@ -1840,6 +1854,12 @@ async fn run_session_turn<R: tauri::Runtime>(
                 let cancelled = stop_reason == StopReason::Cancelled
                     || *cancellation.borrow()
                     || *shutdown.borrow();
+                let published = publication.finish().map_err(|error| state_error(error.to_string()))?;
+                if stop_reason == StopReason::EndTurn && !cancelled {
+                    if let Some(published) = published {
+                        candidate.accept_published_html(published)?;
+                    }
+                }
                 let _ = update_lens_state_for_run(
                     app,
                     key,
@@ -2282,6 +2302,7 @@ mod tests {
     use agent_client_protocol::schema::v1::{SessionMode, SessionModeState};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
+        use adapter_output_mcp::HttpPublisher;
         use agent_client_protocol::{
             schema::v1::{NewSessionRequest, NewSessionResponse},
             Client, Responder,
@@ -2294,10 +2315,9 @@ mod tests {
         let agent_response = expected.clone();
         let working_directory = std::env::current_dir().unwrap();
         let expected_directory = working_directory.clone();
-        let output_server = PathBuf::from("/bundle/lens-output-mcp");
+        let publisher = HttpPublisher::start().await.unwrap();
         let expected_servers =
-            crate::output_mcp::session_request(&working_directory, output_server.clone())
-                .mcp_servers;
+            crate::output_mcp::session_request(&working_directory, &publisher).mcp_servers;
         let agent = Agent.builder().on_receive_request(
             async move |request: NewSessionRequest,
                         responder: Responder<NewSessionResponse>,
@@ -2315,7 +2335,7 @@ mod tests {
                 let session = connection
                     .build_session_from(crate::output_mcp::session_request(
                         &working_directory,
-                        output_server,
+                        &publisher,
                     ))
                     .block_task()
                     .start_session()
