@@ -1,5 +1,5 @@
 //! Operation-scoped ACP controls. Protocol responders never cross the WebView boundary.
-use crate::app_state::{update_lens_state, AppState};
+use crate::app_state::{emit_app_snapshot, next_revision, update_lens_state, AppState};
 use agent_client_protocol::{schema::v1::*, Agent, ConnectionTo, Error, Responder};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -119,6 +119,41 @@ impl SessionControls {
     pub fn snapshot(&self) -> Result<AgentSessionControlState, String> {
         Ok(self.runtime.lock().map_err(|_| lock_error())?.state.clone())
     }
+    /// Install the runtime slot and its public instance in one authorized transition.
+    /// Lock order: this control runtime, application runtime, then the active-control slot.
+    /// Old controls are closed only after releasing every application lock.
+    pub(crate) fn install<R: tauri::Runtime>(
+        self: &Arc<Self>,
+        app: &AppHandle<R>,
+        expected_config: &crate::model::AppConfig,
+    ) -> Result<(), String> {
+        let (previous, snapshot) = {
+            let controls = self.runtime.lock().map_err(|_| lock_error())?;
+            self.ensure_active(&controls)?;
+            let state = app.state::<AppState>();
+            let mut snapshot = state.runtime.write().map_err(|_| lock_error())?;
+            if snapshot.lens.operation_id != Some(controls.state.operation_id)
+                || !snapshot.config.same_execution_config(expected_config)
+                || snapshot.lens.live.as_ref().is_some_and(|live| {
+                    live.lifecycle != crate::model::LensMonitoringLifecycle::Watching
+                })
+                || *self.shutdown.borrow()
+            {
+                return Err("Agent controls belong to a superseded session".into());
+            }
+            let revision = next_revision(&snapshot)?;
+            let mut active = state.session_controls.lock().map_err(|_| lock_error())?;
+            let previous = active.replace(Arc::clone(self));
+            snapshot.lens.session_controls = Some(controls.state.clone());
+            snapshot.revision = revision;
+            (previous, snapshot.clone())
+        };
+        if let Some(previous) = previous.filter(|previous| !Arc::ptr_eq(previous, self)) {
+            previous.close(app);
+        }
+        emit_app_snapshot(app, snapshot, false)
+    }
+
     pub fn publish<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
         // Serialize mutation/publication so a slower publisher cannot replace a newer snapshot.
         let runtime = self.runtime.lock().map_err(|_| lock_error())?;
@@ -127,7 +162,7 @@ impl SessionControls {
             if lens
                 .session_controls
                 .as_ref()
-                .is_none_or(|s| s.instance_id == snapshot.instance_id)
+                .is_some_and(|s| s.instance_id == snapshot.instance_id)
             {
                 lens.session_controls = Some(snapshot);
             }
@@ -1171,6 +1206,75 @@ mod tests {
             from: "safe".into(),
             to: "write".into(),
         }
+    }
+
+    #[test]
+    fn control_installation_rejects_stale_execution_and_old_publishers() {
+        let (old, _old_shutdown) = controls();
+        let operation = old.snapshot().unwrap().operation_id;
+        let state = crate::test_support::state();
+        state.runtime.write().unwrap().lens.operation_id = Some(operation);
+        let config = state.config().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        old.install(app.handle(), &config).unwrap();
+        let (shutdown, receiver) = watch::channel(false);
+        let (next, _) = SessionControls::new(
+            operation,
+            "next".into(),
+            "Agent".into(),
+            "safe".into(),
+            None,
+            vec![],
+            receiver,
+        )
+        .unwrap();
+        let mut changed = config.clone();
+        changed.prompt_presets = changed
+            .prompt_presets
+            .apply(usecase::prompt_presets::PromptPresetMutation::Select {
+                id: "conceptual-learner".into(),
+            })
+            .unwrap();
+        changed.sync_prompt_template().unwrap();
+        app.state::<AppState>().runtime.write().unwrap().config = changed.clone();
+        assert!(next.install(app.handle(), &config).is_err());
+        assert!(Arc::ptr_eq(
+            &active_controls(app.handle(), operation).unwrap(),
+            &old
+        ));
+        next.install(app.handle(), &changed).unwrap();
+        old.close(app.handle());
+        old.publish(app.handle()).unwrap();
+        let current = app
+            .state::<AppState>()
+            .lens()
+            .unwrap()
+            .session_controls
+            .unwrap();
+        assert_eq!(current.instance_id, next.snapshot().unwrap().instance_id);
+        assert!(current.active);
+        assert!(Arc::ptr_eq(
+            &active_controls(app.handle(), operation).unwrap(),
+            &next
+        ));
+        shutdown.send(true).unwrap();
+        assert!(next.install(app.handle(), &changed).is_err());
+        app.state::<AppState>()
+            .runtime
+            .write()
+            .unwrap()
+            .lens
+            .session_controls = None;
+        old.publish(app.handle()).unwrap();
+        assert!(app
+            .state::<AppState>()
+            .lens()
+            .unwrap()
+            .session_controls
+            .is_none());
     }
 
     #[test]

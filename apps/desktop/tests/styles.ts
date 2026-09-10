@@ -80,14 +80,14 @@ describe("macOS Settings surface colors", () => {
     expect(settingsStyles).not.toMatch(/\.settings-sidebar \{[^}]*display: none;/s);
   });
 
-  it("keeps the rendered prompt visible in a bounded static section", () => {
+  it("keeps the composed prompt bounded when its disclosure is expanded", () => {
     const header = settingsStyles.match(/\.prompt-preview-header \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
     const output = settingsStyles.match(/\.prompt-preview-output \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
 
     expect(header).toContain("display: flex;");
-    expect(header).toContain("padding: 11px 14px;");
+    expect(header).toContain("padding: 0 0 var(--disclosure-content-gap);");
     expect(header).toContain("border-bottom: 1px solid var(--settings-group-border);");
     expect(output).toContain("min-height: 180px;");
     expect(output).toContain("max-height: 420px;");

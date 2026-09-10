@@ -599,6 +599,7 @@ describe("media and narrative composition", () => {
     element.lens = {
       operation_id: "operation",
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "Initial prose" }],
     };
     document.body.append(element);
@@ -607,6 +608,7 @@ describe("media and narrative composition", () => {
     output.scrollTop = 500;
     element.lens = {
       ...element.lens,
+      prompt_execution_revision: 1,
       output_blocks: [
         { type: "markdown", text: "Initial prose" },
         { type: "image", mime_type: "image/png", data: "aA==" },
@@ -631,6 +633,7 @@ describe("media and narrative composition", () => {
     element.lens = {
       operation_id: "next",
       stage: "completed",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "No media" }],
     } satisfies LensState;
     await element.updateComplete;

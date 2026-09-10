@@ -151,19 +151,115 @@ pub fn set_agent_prompt_template<R: tauri::Runtime>(
     agent_prompt_template: AgentPromptTemplate,
     app: AppHandle<R>,
 ) -> Result<AppConfig, String> {
-    let agent_prompt_template = agent_prompt_template.normalize()?;
-    update_config(&app, |config| {
-        config.agent_prompt_template = agent_prompt_template
-    })
+    let config = app.state::<AppState>().config()?;
+    let preset = config.prompt_presets.selected();
+    update_prompt_presets(
+        usecase::prompt_presets::PromptPresetMutation::Update {
+            id: preset.id.clone(),
+            expected_revision: preset.revision,
+            name: preset.name.clone(),
+            template: agent_prompt_template,
+        },
+        app,
+    )
 }
 
 #[tauri::command]
 pub fn reset_agent_prompt_template<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<AppConfig, String> {
-    update_config(&app, |config| {
-        config.agent_prompt_template = AgentPromptTemplate::default();
-    })
+    set_agent_prompt_template(AgentPromptTemplate::default(), app)
+}
+
+/// Catalog edits are atomic persisted state changes. Changing the selected identity or its
+/// effective instructions revokes the current Agent session; unrelated edits do not.
+#[tauri::command]
+pub fn update_prompt_presets<R: tauri::Runtime>(
+    change: usecase::prompt_presets::PromptPresetMutation,
+    app: AppHandle<R>,
+) -> Result<AppConfig, String> {
+    let (snapshot, restart) = commit_prompt_presets(&app, change)?;
+    let config = snapshot.config.clone();
+    let publication = emit_app_snapshot(&app, snapshot, true);
+    if let Some(operation_id) = restart {
+        let expected = config.clone();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) =
+                agent::transform_prompt_selection(handle, operation_id, &expected).await
+            {
+                // Superseded requests must not publish an error onto a newer selection.
+                eprintln!("Prompt preset transformation ended: {error}");
+            }
+        });
+    }
+    publication?;
+    Ok(config)
+}
+
+pub(crate) fn commit_prompt_presets<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    change: usecase::prompt_presets::PromptPresetMutation,
+) -> Result<(AppSnapshot, Option<Uuid>), String> {
+    let state = app.state::<AppState>();
+    let mut snapshot = state
+        .runtime
+        .write()
+        .map_err(|_| "application state lock is poisoned")?;
+    let mut next = snapshot.config.clone();
+    let creation_id = matches!(
+        &change,
+        usecase::prompt_presets::PromptPresetMutation::Create { .. }
+    )
+    .then(Uuid::new_v4);
+    next.prompt_presets = next
+        .prompt_presets
+        .apply_with_creation_id(change, creation_id)?;
+    next.sync_prompt_template()?;
+    if next == snapshot.config {
+        return Ok((snapshot.clone(), None));
+    }
+    let changed = !snapshot.config.same_execution_config(&next);
+    let revision = next_revision(&snapshot)?;
+    // Validation and persistence must succeed before any currently running work is cancelled.
+    state.store.save(&next).map_err(|error| error.to_string())?;
+    snapshot.config = next;
+    snapshot.revision = revision;
+    let restart = if changed {
+        state.agent_control.cancel_active()?;
+        let execution_revision = snapshot.config.prompt_presets.execution_revision;
+        let lens = &mut snapshot.lens;
+        lens.prompt_execution_revision = execution_revision;
+        lens.pending_representation = None;
+        if lens.input.is_some()
+            && lens.projection.is_some()
+            && matches!(
+                lens.stage,
+                LensStage::Ready
+                    | LensStage::Connecting
+                    | LensStage::Transforming
+                    | LensStage::Completed
+                    | LensStage::Failed
+                    | LensStage::AuthenticationRequired
+            )
+            && lens
+                .live
+                .as_ref()
+                .is_none_or(|live| live.lifecycle == LensMonitoringLifecycle::Watching)
+        {
+            lens.stage = LensStage::Ready;
+            lens.error = None;
+            if let Some(live) = lens.live.as_mut() {
+                live.freshness = LensFreshness::Stale;
+            }
+            lens.operation_id
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok((snapshot.clone(), restart))
 }
 
 pub fn update_working_directory<R: tauri::Runtime>(
@@ -402,6 +498,11 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         error: None,
     });
     let next = LensState {
+        prompt_execution_revision: app
+            .state::<AppState>()
+            .config()?
+            .prompt_presets
+            .execution_revision,
         session_controls: None,
         operation_id: Some(operation_id),
         stage: if input.is_some() {
@@ -767,6 +868,11 @@ async fn publish_target_selection<R: tauri::Runtime>(
     selection: LensTargetSelection,
 ) -> Result<LensState, String> {
     let next = LensState {
+        prompt_execution_revision: app
+            .state::<AppState>()
+            .config()?
+            .prompt_presets
+            .execution_revision,
         session_controls: None,
         operation_id: Some(operation_id),
         stage: LensStage::Selecting,

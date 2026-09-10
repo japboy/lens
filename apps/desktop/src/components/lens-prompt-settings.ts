@@ -11,13 +11,12 @@ import {
   templatePlaceholderOccurrences,
   validateAgentPromptTemplate,
   type AgentPromptPreviewMode,
-  type PromptEditorLayer,
   type PromptSectionDescriptor,
   type PromptTemplateSection,
   type PromptVariableDescriptor,
 } from "../agent-prompt-template";
 import type { PromptSynchronization, SettingsFeedbackMessage } from "../application/view-models";
-import type { AgentPromptTemplate } from "../types";
+import type { AgentPromptTemplate, PromptPresetCollection, PromptPreset } from "../types";
 import { dispatchComponentEvent, PROMPT_INTENT_EVENT, type PromptIntent } from "./events";
 import { renderSettingsFeedback } from "./settings-feedback";
 
@@ -25,6 +24,17 @@ import { renderSettingsFeedback } from "./settings-feedback";
 export class LensPromptSettings extends LitElement {
   @property({ attribute: false })
   agentPromptTemplate: AgentPromptTemplate | undefined;
+
+  @property({ attribute: false })
+  promptPresets: PromptPresetCollection | undefined;
+
+  @state() private editingId = "";
+  @state() private draftName = "";
+  private basePreset: PromptPreset | undefined;
+  private readonly retainedDrafts = new Map<
+    string,
+    { base: PromptPreset; template: AgentPromptTemplate; name: string }
+  >();
 
   @property({ attribute: false })
   synchronization: PromptSynchronization = "preserve-local-draft";
@@ -42,9 +52,6 @@ export class LensPromptSettings extends LitElement {
   private dirty = false;
 
   @state()
-  private editorLayer: PromptEditorLayer = "shared";
-
-  @state()
   private requestMode: AgentPromptPreviewMode = "full_projection";
 
   @state()
@@ -58,6 +65,16 @@ export class LensPromptSettings extends LitElement {
   }
 
   protected willUpdate(changed: PropertyValues<this>): void {
+    if (this.promptPresets) {
+      if (!changed.has("promptPresets") && this.editingId) return;
+      const current = this.promptPresets.presets.find((preset) => preset.id === this.editingId);
+      if (!this.editingId) this.loadPreset(this.promptPresets.selected_id);
+      else if (current && (!this.dirty || this.matchesDraft(current))) {
+        this.retainedDrafts.delete(current.id);
+        this.loadPreset(current.id);
+      } else if (!current && !this.dirty) this.loadPreset(this.promptPresets.selected_id);
+      return;
+    }
     if (changed.has("synchronization") && this.synchronization === "preserve-local-draft") {
       this.acceptedSynchronization = false;
       this.acceptsNextAuthoritativeChange = false;
@@ -98,99 +115,65 @@ export class LensPromptSettings extends LitElement {
 
   protected render() {
     const template = this.draft;
-    const activeSection = this.activeSection();
-    const descriptor = promptSectionDescriptor(activeSection);
     const errors = template ? validateAgentPromptTemplate(template) : {};
     const invalid = Object.keys(errors).length > 0;
-
-    return html`
-      <span class="prompt-draft-status" data-dirty=${this.dirty ? "true" : "false"}>
-        ${template ? (this.dirty ? "Unsaved Changes" : "Saved") : nothing}
-      </span>
-
-      ${renderSettingsFeedback(this.feedback)}
-      ${
-        !template
-          ? html`<p class="settings-empty-state">Loading the Agent prompt template…</p>`
-          : html`
-              ${this.renderComposition()}
-              ${this.renderEditor(
-                template,
-                activeSection,
-                descriptor,
-                errors[activeSection],
-                invalid,
-              )}
-              ${this.renderPreview(template, errors)}
-            `
-      }
-    `;
-  }
-
-  private renderComposition() {
-    const request = promptRequestSectionDescriptor(this.requestMode);
-    return html`
-      <section class="prompt-composition" aria-labelledby="prompt-composition-heading">
-        <div class="prompt-composition-heading-row">
-          <div>
-            <h2 id="prompt-composition-heading">Prompt Composition</h2>
-            <p>Choose either input layer to edit. The rendered prompt always combines both.</p>
-          </div>
-          <label class="prompt-request-mode" for="prompt-request-mode">
-            <span>Request type</span>
-            <select
-              id="prompt-request-mode"
-              .value=${this.requestMode}
-              @change=${this.changeRequestMode}
+    const editor = !template
+      ? html`<p class="settings-empty-state">Loading the Agent prompt template…</p>`
+      : html` ${this.renderEditor(template, "common", { ...promptSectionDescriptor("common"), title: "Instructions" }, errors.common)}
+          ${Object.entries(errors).some(([key]) => key !== "common") ? html`<p class="error" role="alert">A request template needs attention. Open Advanced Prompt Settings to review the validation errors before saving.</p>` : nothing}
+          <details class="settings-disclosure prompt-advanced">
+            <summary>Advanced Prompt Settings</summary>
+            <label class="prompt-request-mode" for="prompt-request-mode">
+              <span>Request type</span>
+              <select
+                id="prompt-request-mode"
+                .value=${this.requestMode}
+                @change=${this.changeRequestMode}
+              >
+                ${REQUEST_PROMPT_SECTIONS.map(({ key, title }) => html`<option value=${key}>${title}</option>`)}
+              </select>
+            </label>
+            ${this.renderEditor(template, this.requestMode, { ...promptSectionDescriptor(this.requestMode), title: "Request instructions" }, errors[this.requestMode], true)}
+          </details>
+          <details class="settings-disclosure prompt-preview">
+            <summary>Prompt Preview</summary>
+            ${this.renderPreview(template, errors)}
+          </details>
+          <div class="prompt-actions prompt-save-actions">
+            <button
+              type="button"
+              @click=${this.revert}
+              ?hidden=${Boolean(this.promptPresets)}
+              ?disabled=${this.disabled || !this.dirty}
             >
-              ${REQUEST_PROMPT_SECTIONS.map(
-                ({ key, title }) => html`<option value=${key}>${title}</option>`,
-              )}
-            </select>
-          </label>
-        </div>
-
-        <div class="prompt-composition-flow">
-          <label
-            class="prompt-composition-part"
-            data-active=${this.editorLayer === "shared" ? "true" : "false"}
-          >
-            <span class="prompt-composition-title">
-              <input
-                type="radio"
-                name="prompt-editor-layer"
-                value="shared"
-                .checked=${this.editorLayer === "shared"}
-                @change=${this.changeEditorLayer}
-              />
-              <strong>Shared Instructions</strong>
-            </span>
-            <span>Always included · contains the request instruction tag</span>
-          </label>
-          <span class="prompt-composition-operator" aria-hidden="true">+</span>
-          <label
-            class="prompt-composition-part"
-            data-active=${this.editorLayer === "request" ? "true" : "false"}
-          >
-            <span class="prompt-composition-title">
-              <input
-                type="radio"
-                name="prompt-editor-layer"
-                value="request"
-                .checked=${this.editorLayer === "request"}
-                @change=${this.changeEditorLayer}
-              />
-              <strong>Request Instructions</strong>
-            </span>
-            <span>One variant included · ${request.title}</span>
-          </label>
-          <span class="prompt-composition-operator" aria-hidden="true">=</span>
-          <div class="prompt-composition-result">
-            <strong>Rendered Prompt</strong>
-            <span>Exact composed output · updates automatically</span>
-          </div>
-        </div>
-      </section>
+              Revert Changes
+            </button>
+            <button
+              type="button"
+              ?hidden=${Boolean(this.promptPresets)}
+              @click=${() => this.emit({ type: "reset" })}
+              ?disabled=${this.disabled}
+            >
+              Reset All to Default…
+            </button>
+            <span
+              class="prompt-draft-status"
+              data-dirty=${this.dirty ? "true" : "false"}
+              role="status"
+              >${this.dirty ? "Unsaved Changes" : "Saved"}</span
+            >
+            <span class="prompt-action-spacer"></span>
+            <button
+              type="submit"
+              class="primary"
+              ?disabled=${this.disabled || !this.dirty || invalid || (Boolean(this.promptPresets) && (!this.validMetadata() || !this.currentPreset()))}
+            >
+              ${this.promptPresets ? "Save Preset" : "Save Template"}
+            </button>
+          </div>`;
+    return html`
+      ${renderSettingsFeedback(this.feedback)}
+      ${this.promptPresets ? this.renderPresets(editor) : html`<form class="settings-group prompt-presets" @submit=${this.save}>${editor}</form>`}
     `;
   }
 
@@ -199,22 +182,45 @@ export class LensPromptSettings extends LitElement {
     section: PromptTemplateSection,
     descriptor: PromptSectionDescriptor,
     error: string | undefined,
-    invalid: boolean,
+    advanced = false,
   ) {
     const value = template[section];
     const length = [...value].length;
     const occurrences = templatePlaceholderOccurrences(value);
     return html`
-      <section class="prompt-editor-section" aria-labelledby="prompt-editor-heading">
+      <section
+        class="prompt-editor-section"
+        aria-labelledby=${advanced ? "prompt-request-editor-heading" : "prompt-editor-heading"}
+      >
         <header class="prompt-editor-header">
           <div>
-            <span>${descriptor.layer === "shared" ? "Shared layer" : "Request layer"}</span>
-            <h2 id="prompt-editor-heading">${descriptor.title}</h2>
-            <p id="prompt-editor-description">${descriptor.description}</p>
+            <h2 id=${advanced ? "prompt-request-editor-heading" : "prompt-editor-heading"}>
+              ${descriptor.title}
+            </h2>
+            <p
+              class="visually-hidden"
+              id=${advanced ? "prompt-request-editor-description" : "prompt-editor-description"}
+            >
+              ${descriptor.description}
+            </p>
           </div>
         </header>
 
-        <form class="prompt-form" @submit=${this.save}>
+        <div class="prompt-form">
+          <label class="visually-hidden" for=${advanced ? "prompt-request-editor" : "prompt-editor"}
+            >${descriptor.title}</label
+          >
+          <textarea
+            id=${advanced ? "prompt-request-editor" : "prompt-editor"}
+            class="prompt-editor"
+            aria-describedby=${advanced ? "prompt-request-editor-description prompt-request-editor-validation" : "prompt-editor-description prompt-editor-validation"}
+            aria-invalid=${error ? "true" : "false"}
+            rows=${advanced ? 3 : 7}
+            required
+            .value=${value}
+            @input=${(event: Event) => this.updateDraft(section, (event.currentTarget as HTMLTextAreaElement).value)}
+            ?disabled=${this.disabled || !this.agentPromptTemplate}
+          ></textarea>
           <div class="prompt-variable-bar" aria-label="Insert template variables">
             <span>Insert variable</span>
             ${
@@ -232,7 +238,7 @@ export class LensPromptSettings extends LitElement {
                           : `Select ${variable.label} ${variable.token}`
                       }
                       title=${variable.description}
-                      @click=${() => this.insertVariable(variable)}
+                      @click=${() => this.insertVariable(variable, section, advanced)}
                       ?disabled=${this.disabled || !this.agentPromptTemplate}
                     >
                       <span>${variable.label}</span>
@@ -245,27 +251,15 @@ export class LensPromptSettings extends LitElement {
                 : html`<span class="prompt-no-variables">None for this request type</span>`
             }
           </div>
-
-          <label class="visually-hidden" for="prompt-editor">${descriptor.title}</label>
-          <textarea
-            id="prompt-editor"
-            class="prompt-editor"
-            aria-describedby="prompt-editor-description prompt-editor-validation"
-            aria-invalid=${error ? "true" : "false"}
-            required
-            .value=${value}
-            @input=${this.edit}
-            ?disabled=${this.disabled || !this.agentPromptTemplate}
-          ></textarea>
           <p class="visually-hidden" role="status" aria-live="polite">
             ${this.variableAnnouncement}
           </p>
           <div class="prompt-editor-meta">
-            <p id="prompt-editor-validation" class=${error ? "prompt-validation error" : "help"}>
-              ${
-                error ??
-                "The complete template is saved atomically. Use {{ and }} for literal braces."
-              }
+            <p
+              id=${advanced ? "prompt-request-editor-validation" : "prompt-editor-validation"}
+              class=${error ? "prompt-validation error" : "help"}
+            >
+              ${error ?? "Use {{ and }} for literal braces."}
             </p>
             <span
               class="prompt-character-count"
@@ -275,31 +269,7 @@ export class LensPromptSettings extends LitElement {
               ${MAX_AGENT_PROMPT_TEMPLATE_SECTION_CHARS.toLocaleString()}
             </span>
           </div>
-          <div class="prompt-actions">
-            <button
-              type="button"
-              @click=${this.revert}
-              ?disabled=${this.disabled || !this.dirty || !this.agentPromptTemplate}
-            >
-              Revert Changes
-            </button>
-            <span class="prompt-action-spacer"></span>
-            <button
-              type="button"
-              @click=${() => this.emit({ type: "reset" })}
-              ?disabled=${this.disabled || !this.agentPromptTemplate}
-            >
-              Reset All to Default…
-            </button>
-            <button
-              type="submit"
-              class="primary"
-              ?disabled=${this.disabled || !this.dirty || invalid}
-            >
-              Save Template
-            </button>
-          </div>
-        </form>
+        </div>
       </section>
     `;
   }
@@ -317,9 +287,7 @@ export class LensPromptSettings extends LitElement {
             <h2 id="prompt-preview-heading">Rendered Prompt</h2>
             <span>Shared Instructions + ${request.title}</span>
           </div>
-          <span class="prompt-preview-status"
-            >${invalid ? "Needs attention" : `Schema ${template.schema_version}`}</span
-          >
+          <span class="prompt-preview-status">${invalid ? "Needs attention" : ""}</span>
         </header>
         <div class="prompt-preview-content">
           ${
@@ -346,26 +314,208 @@ export class LensPromptSettings extends LitElement {
     `;
   }
 
-  private activeSection(): PromptTemplateSection {
-    return this.editorLayer === "shared" ? "common" : this.requestMode;
+  private currentPreset(): PromptPreset | undefined {
+    return this.promptPresets?.presets.find((preset) => preset.id === this.editingId);
   }
 
-  private changeEditorLayer = (event: Event): void => {
-    this.editorLayer = (event.currentTarget as HTMLInputElement).value as PromptEditorLayer;
-    this.variableAnnouncement = "";
+  private matchesDraft(preset: PromptPreset): boolean {
+    return preset.name === this.draftName && agentPromptTemplatesEqual(preset.template, this.draft);
+  }
+
+  private updateDirty(): void {
+    this.dirty = this.promptPresets
+      ? Boolean(this.basePreset && !this.matchesDraft(this.basePreset))
+      : !agentPromptTemplatesEqual(this.draft, this.agentPromptTemplate);
+  }
+
+  private loadPreset(id: string): void {
+    const preset = this.promptPresets?.presets.find((item) => item.id === id);
+    if (!preset) return;
+    this.editingId = id;
+    this.basePreset = preset;
+    this.draft = cloneAgentPromptTemplate(preset.template);
+    this.draftName = preset.name;
+    this.dirty = false;
+  }
+
+  private changePreset = (event: Event): void => {
+    if (this.dirty && this.basePreset && this.draft)
+      this.retainedDrafts.set(this.editingId, {
+        base: this.basePreset,
+        template: this.draft,
+        name: this.draftName,
+      });
+    else this.retainedDrafts.delete(this.editingId);
+    const id = (event.currentTarget as HTMLSelectElement).value;
+    this.loadPreset(id);
+    const retained = this.retainedDrafts.get(id);
+    if (retained) {
+      this.editingId = id;
+      this.basePreset = retained.base;
+      this.draft = retained.template;
+      this.draftName = retained.name;
+      this.updateDirty();
+    }
   };
+
+  private renderPresets(editor: ReturnType<typeof html>) {
+    const collection = this.promptPresets!;
+    const preset = this.currentPreset();
+    const selected = collection.presets.find((item) => item.id === collection.selected_id);
+    const conflict = this.dirty && (!preset || preset.revision !== this.basePreset?.revision);
+    return html` <div class="prompt-preset-active">
+        <span role="status">In use: <strong>${selected?.name}</strong></span>
+        <button
+          type="button"
+          ?disabled=${this.disabled || !preset || preset.id === collection.selected_id}
+          @click=${() => preset && this.emit({ type: "presets", change: { type: "select", id: preset.id } })}
+        >
+          Use This Preset
+        </button>
+      </div>
+      <form
+        class="settings-group prompt-presets"
+        aria-labelledby="prompt-presets-heading"
+        @submit=${this.save}
+      >
+        <div class="prompt-preset-heading">
+          <h2 id="prompt-presets-heading">Presets</h2>
+          <div class="prompt-actions">
+            <button
+              type="button"
+              ?disabled=${this.disabled || !this.draft || collection.presets.length >= 64 || Object.keys(validateAgentPromptTemplate(this.draft)).length > 0}
+              @click=${() => this.duplicatePreset()}
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              ?disabled=${this.disabled || !preset || collection.presets.length <= 1}
+              @click=${() => {
+                if (preset)
+                  this.emit({
+                    type: "presets",
+                    change: {
+                      type: "delete",
+                      id: preset.id,
+                      expected_revision: this.basePreset!.revision,
+                    },
+                  });
+              }}
+            >
+              Delete…
+            </button>
+          </div>
+        </div>
+        <label
+          >Preset to edit
+          <select
+            id="prompt-preset-list"
+            .value=${this.editingId}
+            @change=${this.changePreset}
+            ?disabled=${this.disabled}
+          >
+            ${!preset && !this.retainedDrafts.has(this.editingId) ? html`<option value=${this.editingId} .selected=${true}>Deleted preset (unsaved draft)</option>` : nothing}
+            ${[...this.retainedDrafts.entries()].filter(([id]) => !collection.presets.some((item) => item.id === id)).map(([id, retained]) => html`<option value=${id} .selected=${id === this.editingId}>${retained.name} · Deleted, unsaved draft</option>`)}
+            ${collection.presets.map((item) => html`<option value=${item.id} .selected=${item.id === this.editingId}>${item.name}${item.id === collection.selected_id ? " · In use" : ""}</option>`)}
+          </select>
+        </label>
+        <label
+          >Name
+          <input
+            id="prompt-preset-name"
+            class="prompt-preset-field"
+            type="text"
+            maxlength="80"
+            .value=${this.draftName}
+            ?disabled=${this.disabled}
+            @input=${(event: Event) => {
+              this.draftName = (event.currentTarget as HTMLInputElement).value;
+              this.updateDirty();
+            }}
+        /></label>
+        ${!this.validMetadata() ? html`<p role="alert">Enter a name of 1–80 characters without control characters</p>` : nothing}
+        ${
+          conflict
+            ? html`<p role="alert">
+                  This preset was changed or deleted elsewhere. Your draft is preserved. Duplicate
+                  it to keep your changes, or reload the latest saved preset.
+                </p>
+                <button type="button" ?disabled=${this.disabled} @click=${this.revert}>
+                  Reload Saved Preset
+                </button>`
+            : nothing
+        }
+        ${editor}
+      </form>
+      <div class="prompt-preset-reset">
+        <button
+          type="button"
+          ?disabled=${this.disabled}
+          @click=${() => this.emit({ type: "presets", change: { type: "reset_all", expected_catalog_revision: collection.revision } })}
+        >
+          Reset All Presets…
+        </button>
+      </div>`;
+  }
+
+  private validMetadata(): boolean {
+    return (
+      Boolean(this.draftName.trim()) &&
+      [...this.draftName].length <= 80 &&
+      !/\p{Cc}/u.test(this.draftName)
+    );
+  }
+
+  openCreatedPreset(collection: PromptPresetCollection, id: string): void {
+    if (this.dirty && this.basePreset && this.draft)
+      this.retainedDrafts.set(this.editingId, {
+        base: this.basePreset,
+        template: this.draft,
+        name: this.draftName,
+      });
+    if (!this.promptPresets || collection.revision >= this.promptPresets.revision)
+      this.promptPresets = collection;
+    this.loadPreset(id);
+  }
+
+  acceptResetPresets(collection: PromptPresetCollection): void {
+    this.retainedDrafts.clear();
+    if (!this.promptPresets || collection.revision >= this.promptPresets.revision)
+      this.promptPresets = collection;
+    this.loadPreset(this.promptPresets.selected_id);
+  }
+
+  private duplicatePreset(): void {
+    const template = this.draft;
+    if (
+      !template ||
+      (this.promptPresets?.presets.length ?? 0) >= 64 ||
+      Object.keys(validateAgentPromptTemplate(template)).length > 0
+    )
+      return;
+    this.emit({
+      type: "presets",
+      change: {
+        type: "create",
+        name: `${[...this.draftName].slice(0, 75).join("")} Copy`,
+        template: cloneAgentPromptTemplate(template),
+      },
+    });
+  }
 
   private changeRequestMode = (event: Event): void => {
     this.requestMode = (event.currentTarget as HTMLSelectElement).value as AgentPromptPreviewMode;
     this.variableAnnouncement = "";
   };
 
-  private edit = (event: Event): void => {
-    this.updateDraft(this.activeSection(), (event.currentTarget as HTMLTextAreaElement).value);
-  };
-
-  private insertVariable(variable: PromptVariableDescriptor): void {
-    const editor = this.querySelector<HTMLTextAreaElement>("#prompt-editor");
+  private insertVariable(
+    variable: PromptVariableDescriptor,
+    section: PromptTemplateSection,
+    advanced: boolean,
+  ): void {
+    const selector = advanced ? "#prompt-request-editor" : "#prompt-editor";
+    const editor = this.querySelector<HTMLTextAreaElement>(selector);
     if (!editor || !this.draft) return;
     const occurrences = templatePlaceholderOccurrences(editor.value).filter(
       ({ name }) => name === variable.name,
@@ -376,7 +526,7 @@ export class LensPromptSettings extends LitElement {
         occurrences.length === 1
           ? `${variable.label} selected.`
           : `Selected the first of ${occurrences.length} ${variable.label} variables.`;
-      this.focusEditorSelection(first.start, first.end);
+      this.focusEditorSelection(first.start, first.end, selector);
       return;
     }
 
@@ -384,26 +534,31 @@ export class LensPromptSettings extends LitElement {
     const end = editor.selectionEnd;
     editor.setRangeText(variable.token, start, end, "end");
     const caret = editor.selectionStart;
-    this.updateDraft(this.activeSection(), editor.value);
+    this.updateDraft(section, editor.value);
     this.variableAnnouncement = `${variable.label} inserted.`;
-    this.focusEditorSelection(caret, caret);
+    this.focusEditorSelection(caret, caret, selector);
   }
 
   private updateDraft(section: PromptTemplateSection, value: string): void {
     if (!this.draft) return;
     this.draft = { ...this.draft, [section]: value };
-    this.dirty = !agentPromptTemplatesEqual(this.draft, this.agentPromptTemplate);
+    this.updateDirty();
   }
 
-  private focusEditorSelection(start: number, end: number): void {
+  private focusEditorSelection(start: number, end: number, selector: string): void {
     void this.updateComplete.then(() => {
-      const editor = this.querySelector<HTMLTextAreaElement>("#prompt-editor");
+      const editor = this.querySelector<HTMLTextAreaElement>(selector);
       editor?.focus();
       editor?.setSelectionRange(start, end);
     });
   }
 
   private revert = (): void => {
+    if (this.promptPresets) {
+      this.retainedDrafts.delete(this.editingId);
+      this.loadPreset(this.currentPreset()?.id ?? this.promptPresets.selected_id);
+      return;
+    }
     if (!this.agentPromptTemplate) return;
     this.draft = cloneAgentPromptTemplate(this.agentPromptTemplate);
     this.dirty = false;
@@ -414,7 +569,19 @@ export class LensPromptSettings extends LitElement {
     event.preventDefault();
     if (!this.dirty || !this.draft) return;
     if (Object.keys(validateAgentPromptTemplate(this.draft)).length > 0) return;
-    this.emit({ type: "save", agentPromptTemplate: cloneAgentPromptTemplate(this.draft) });
+    if (this.promptPresets && this.basePreset) {
+      if (!this.validMetadata() || !this.currentPreset()) return;
+      this.emit({
+        type: "presets",
+        change: {
+          type: "update",
+          id: this.basePreset.id,
+          expected_revision: this.basePreset.revision,
+          name: this.draftName,
+          template: cloneAgentPromptTemplate(this.draft),
+        },
+      });
+    } else this.emit({ type: "save", agentPromptTemplate: cloneAgentPromptTemplate(this.draft) });
   };
 
   private emit(intent: PromptIntent): void {

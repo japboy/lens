@@ -70,43 +70,21 @@ export class LensAgentDefaults extends LitElement {
     const savedModel = this.draft.choices.find((c) => c.config_id === model?.id)?.value;
     const unresolvedModel = savedModel && savedModel !== model?.currentValue;
     return html`<section class="settings-group" aria-labelledby="agent-defaults-heading">
-      <h2 id="agent-defaults-heading">Shared Agent Settings</h2>
+      <h2 id="agent-defaults-heading">Model & Behavior</h2>
       <p class="help">
         Defaults apply to new Lens sessions for this Agent. Saving ends its current session. Choices
         are supplied by the Agent.
       </p>
       ${unresolvedModel ? html`<p role="status">Model settings have not been loaded for this selection. Select the model again to refresh its reasoning levels.</p>` : nothing}
       <fieldset ?disabled=${this.disabled}>
-        <legend>Session defaults</legend>
+        <legend class="visually-hidden">Session defaults</legend>
         ${
           options
-            ? options.map(
-                (option) => html`<label class="settings-field"
-                  ><span>${option.name}</span>
-                  <select
-                    aria-label=${`${option.name} default`}
-                    data-agent-config-id=${option.id}
-                    ?disabled=${option.type !== "select"}
-                    @change=${(e: Event) => this.choose(option.id, (e.target as HTMLSelectElement).value)}
-                  >
-                    <option value="">
-                      ${option.category === "mode" ? "Lens safe default" : "Agent default"}
-                    </option>
-                    ${this.unlistedChoice(
-                      option.id,
-                      (option.options ?? []).flatMap((choice) =>
-                        "group" in choice
-                          ? choice.options.map((item) => item.value)
-                          : [choice.value],
-                      ),
-                    )}
-                    ${agentOptionChoices(option)}
-                  </select>
-                  <span class="help"
-                    >${option.description ?? ""}${option.type !== "select" ? " This control type is not supported." : ""}</span
-                  ></label
-                >`,
-              )
+            ? options
+                .filter((option) =>
+                  ["model", "mode", "thought_level"].includes(option.category ?? ""),
+                )
+                .map((option) => this.renderOption(option))
             : html`<label
                 >Mode default<select
                   aria-label="Mode default"
@@ -135,35 +113,50 @@ export class LensAgentDefaults extends LitElement {
             : nothing
         }
       </fieldset>
-      <fieldset ?disabled=${this.disabled}>
-        <legend>Permission request response policy</legend>
-        ${EFFECTS.map(
-          ({ key, label }) =>
-            html`<label class="settings-field"
-              ><span>${label}</span
-              ><select
-                aria-label=${`${label} policy`}
-                .value=${this.draft.tools[key]}
-                @change=${(e: Event) => this.setPolicy(key, (e.target as HTMLSelectElement).value as ToolPolicy)}
-              >
-                <option value="ask">Ask each time</option>
-                <option value="allow">Automatically approve</option>
-                <option value="deny">Automatically reject</option>
-              </select></label
-            >`,
-        )}
-      </fieldset>
-      <p class="help">
-        Applies only to permission requests sent by this Agent, including in future sessions.
-        Operations without a request follow the Agent’s own settings and mode. Unclassified requests
-        require confirmation; unsupported requests are never automatically approved. Forms and URL
-        requests always require a response.
-      </p>
+      ${
+        options?.some(
+          (option) => !["model", "mode", "thought_level"].includes(option.category ?? ""),
+        )
+          ? html`<details class="settings-disclosure">
+              <summary>Additional Agent Options</summary>
+              <fieldset ?disabled=${this.disabled}>
+                ${options.filter((option) => !["model", "mode", "thought_level"].includes(option.category ?? "")).map((option) => this.renderOption(option))}
+              </fieldset>
+            </details>`
+          : nothing
+      }
+      <details class="settings-disclosure">
+        <summary>Tool Approval Policies</summary>
+        <fieldset ?disabled=${this.disabled}>
+          <legend>Permission request response policy</legend>
+          ${EFFECTS.map(
+            ({ key, label }) =>
+              html`<label class="settings-field"
+                ><span>${label}</span
+                ><select
+                  aria-label=${`${label} policy`}
+                  .value=${this.draft.tools[key]}
+                  @change=${(e: Event) => this.setPolicy(key, (e.target as HTMLSelectElement).value as ToolPolicy)}
+                >
+                  <option value="ask">Ask each time</option>
+                  <option value="allow">Automatically approve</option>
+                  <option value="deny">Automatically reject</option>
+                </select></label
+              >`,
+          )}
+        </fieldset>
+        <p class="help">
+          Applies only to permission requests sent by this Agent, including in future sessions.
+          Operations without a request follow the Agent’s own settings and mode. Unclassified
+          requests require confirmation; unsupported requests are never automatically approved.
+          Forms and URL requests always require a response.
+        </p>
+      </details>
       <button
         ?disabled=${this.disabled}
         @click=${() => dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, { type: "save-defaults", defaults: structuredClone(this.draft) })}
       >
-        Save Shared Settings
+        Save Defaults
       </button>
       <button
         ?disabled=${this.disabled}
@@ -181,6 +174,31 @@ export class LensAgentDefaults extends LitElement {
         Revert
       </button>
     </section>`;
+  }
+  private renderOption(option: NonNullable<AgentSelectionState["config_options"]>[number]) {
+    return html`<label class="settings-field"
+      ><span>${option.name}</span>
+      <select
+        aria-label=${`${option.name} default`}
+        data-agent-config-id=${option.id}
+        ?disabled=${option.type !== "select"}
+        @change=${(e: Event) => this.choose(option.id, (e.target as HTMLSelectElement).value)}
+      >
+        <option value="">
+          ${option.category === "mode" ? "Lens safe default" : "Agent default"}
+        </option>
+        ${this.unlistedChoice(
+          option.id,
+          (option.options ?? []).flatMap((choice) =>
+            "group" in choice ? choice.options.map((item) => item.value) : [choice.value],
+          ),
+        )}
+        ${agentOptionChoices(option)}
+      </select>
+      <span class="help"
+        >${option.description ?? ""}${option.type !== "select" ? " This control type is not supported." : ""}</span
+      ></label
+    >`;
   }
   private choose(configId: string, value: string) {
     const isModel = this.selection?.config_options?.some(

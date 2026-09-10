@@ -61,6 +61,7 @@ describe("output media composition", () => {
     const output = lensOutputPresentation({
       operation_id: "operation",
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "image", mime_type: "image/png", data: "private candidate" }],
       representation: {
         representation_id: "published",
@@ -68,6 +69,7 @@ describe("output media composition", () => {
         context_revision: 1,
         projection: { revision: 1, digest: "sha256:published" },
         run_id: "run",
+        prompt_execution_revision: 1,
         output_blocks: [{ type: "markdown", text: "Published text only" }],
       },
     });

@@ -76,16 +76,19 @@ function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestinati
   switch (command) {
     case "preview-agent-model":
     case "save-agent-defaults":
+      return "session-defaults";
     case "select-agent":
     case "authenticate-agent-selection":
     case "reauthenticate-agent-selection":
     case "sign-out-agent-selection":
     case "choose-directory":
+      return "connection";
     case "request-accessibility-permission":
-      return "general";
+      return "privacy-security";
+    case "update-prompt-presets":
     case "save-agent-prompt-template":
     case "reset-agent-prompt-template":
-      return "agent-prompt";
+      return "prompt-presets";
   }
 }
 

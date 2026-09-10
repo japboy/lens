@@ -9,10 +9,10 @@ use crate::{
 use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     utils::{config::WindowEffectsConfig, WindowEffect, WindowEffectState},
-    App, AppHandle, LogicalPosition, LogicalSize, LogicalUnit, Manager, WebviewUrl,
+    App, AppHandle, Emitter, LogicalPosition, LogicalSize, LogicalUnit, Manager, WebviewUrl,
     WebviewWindowBuilder, WindowSizeConstraints,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -100,6 +100,8 @@ struct TrayMenuItems<R: tauri::Runtime> {
     agent_claude: CheckMenuItem<R>,
     agent_codex: CheckMenuItem<R>,
     working_directory: MenuItem<R>,
+    prompt_presets: Submenu<R>,
+    prompt_presentation: Mutex<Vec<PromptPresetMenuItem>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -342,6 +344,26 @@ fn lens_window_geometry<R: tauri::Runtime>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptPresetMenuItem {
+    id: String,
+    name: String,
+    checked: bool,
+}
+
+fn prompt_preset_menu(config: &AppConfig) -> Vec<PromptPresetMenuItem> {
+    config
+        .prompt_presets
+        .presets
+        .iter()
+        .map(|preset| PromptPresetMenuItem {
+            id: preset.id.clone(),
+            name: preset.name.replace('&', "&&"),
+            checked: preset.id == config.prompt_presets.selected_id,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrayMenuPresentation {
     select_target_enabled: bool,
     target_selection_active: bool,
@@ -415,6 +437,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
     let settings = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
     let about = MenuItem::with_id(app, "about", "About", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let prompt_presets = Submenu::with_id(app, "prompt_presets", "Prompt Presets", true)?;
     let separator_one = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
     let separator_three = PredefinedMenuItem::separator(app)?;
@@ -431,6 +454,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             &directory_label,
             &working_directory,
             &separator_three,
+            &prompt_presets,
             &settings,
             &about,
             &separator_four,
@@ -466,6 +490,24 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
                     eprintln!("Unable to show Settings: {error}");
                 }
             }
+            "manage_prompt_presets" => {
+                if let Err(error) = show_prompt_settings(app) {
+                    eprintln!("Unable to show prompt presets: {error}");
+                }
+            }
+            id if id.starts_with("prompt_preset:") => {
+                let id = id.trim_start_matches("prompt_preset:").to_string();
+                if let Err(error) = commands::update_prompt_presets(
+                    usecase::prompt_presets::PromptPresetMutation::Select { id },
+                    app.clone(),
+                ) {
+                    let _ = sync_prompt_preset_menu(app);
+                    app.dialog()
+                        .message(format!("Unable to change prompt preset: {error}"))
+                        .title("Lens")
+                        .show(|_| {});
+                }
+            }
             "about" => {
                 if let Err(error) = show_about(app) {
                     eprintln!("Unable to show About: {error}");
@@ -480,6 +522,8 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         agent_claude: use_claude,
         agent_codex: use_codex,
         working_directory,
+        prompt_presets,
+        prompt_presentation: Mutex::new(Vec::new()),
     });
     sync_tray_menu(app.handle()).map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
     Ok(())
@@ -497,6 +541,7 @@ pub fn sync_tray_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Strin
 
 impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     fn apply(&self, app: &AppHandle<R>, presentation: TrayMenuPresentation) -> Result<(), String> {
+        sync_prompt_preset_menu(app)?;
         let items = app.state::<TrayMenuItems<R>>();
         items
             .select_target
@@ -547,6 +592,76 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     }
 }
 
+fn sync_prompt_preset_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = (|| -> Result<(), String> {
+            // Read the latest state on the menu's owning thread: queued updates cannot rebuild
+            // an older catalog over a newer one, and native calls never wait holding a worker lock.
+            let config = handle.state::<crate::app_state::AppState>().config()?;
+            let presentation = prompt_preset_menu(&config);
+            let items = handle.state::<TrayMenuItems<R>>();
+            let mut previous = items
+                .prompt_presentation
+                .lock()
+                .map_err(|_| "prompt menu lock is poisoned")?;
+            let menu = &items.prompt_presets;
+            if *previous == presentation {
+                // Native check items toggle before dispatching their event, including a
+                // no-op selection. Reapply saved radio state even when labels did not change.
+                for item in menu.items().map_err(|error| error.to_string())? {
+                    if let Some(check) = item.as_check_menuitem() {
+                        let checked = presentation.iter().any(|preset| {
+                            item.id().as_ref() == format!("prompt_preset:{}", preset.id)
+                                && preset.checked
+                        });
+                        check
+                            .set_checked(checked)
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                return Ok(());
+            }
+            while !menu.items().map_err(|error| error.to_string())?.is_empty() {
+                menu.remove_at(0).map_err(|error| error.to_string())?;
+            }
+            for preset in &presentation {
+                let item = CheckMenuItem::with_id(
+                    &handle,
+                    format!("prompt_preset:{}", preset.id),
+                    &preset.name,
+                    true,
+                    preset.checked,
+                    None::<&str>,
+                )
+                .map_err(|error| error.to_string())?;
+                menu.append(&item).map_err(|error| error.to_string())?;
+            }
+            menu.append(
+                &PredefinedMenuItem::separator(&handle).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            menu.append(
+                &MenuItem::with_id(
+                    &handle,
+                    "manage_prompt_presets",
+                    "Manage Presets…",
+                    true,
+                    None::<&str>,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            *previous = presentation;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Unable to update prompt preset menu: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
 fn select_lens_target_from_tray<R: tauri::Runtime>(app: &AppHandle<R>) {
     let snapshot = app.state::<crate::app_state::AppState>().snapshot();
     let Ok(snapshot) = snapshot else {
@@ -580,13 +695,17 @@ fn select_agent_from_menu<R: tauri::Runtime>(app: &AppHandle<R>, agent: AgentKin
         match commands::select_agent(handle.clone(), agent).await {
             Ok(selection) if selection.selected_agent().is_some() => {}
             Ok(_) => {
-                if let Err(error) = show_settings(&handle) {
+                if let Err(error) =
+                    show_settings_destination(&handle, Some(SettingsDestination::Connection))
+                {
                     eprintln!("Unable to show Agent authentication in Settings: {error}");
                 }
             }
             Err(error) => {
                 eprintln!("Unable to select Agent: {error}");
-                if let Err(settings_error) = show_settings(&handle) {
+                if let Err(settings_error) =
+                    show_settings_destination(&handle, Some(SettingsDestination::Connection))
+                {
                     eprintln!("Unable to show Agent error in Settings: {settings_error}");
                 }
             }
@@ -682,9 +801,38 @@ pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 }
 
 pub fn show_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    show_settings_destination(app, None)
+}
+
+fn show_prompt_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    show_settings_destination(app, Some(SettingsDestination::PromptPresets))
+}
+
+#[derive(Clone, Copy)]
+enum SettingsDestination {
+    Connection,
+    PromptPresets,
+}
+
+impl SettingsDestination {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Connection => "connection",
+            Self::PromptPresets => "prompt-presets",
+        }
+    }
+}
+
+fn show_settings_destination<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    destination: Option<SettingsDestination>,
+) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
         window.show()?;
         window.set_focus()?;
+        if let Some(destination) = destination {
+            window.emit("settings-destination", destination.id())?;
+        }
         return Ok(());
     }
 
@@ -697,7 +845,18 @@ pub fn show_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()>
         .unwrap_or(SETTINGS_WINDOW_SIZE_POLICY.preferred);
 
     let background = settings_background(app)?;
-    let window = WebviewWindowBuilder::new(app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
+    let url = if let Some(destination) = destination {
+        WebviewUrl::App(
+            format!(
+                "settings.html?platform={DESKTOP_PLATFORM}&destination={}",
+                destination.id()
+            )
+            .into(),
+        )
+    } else {
+        webview_url(WebviewView::Settings)
+    };
+    let window = WebviewWindowBuilder::new(app, SETTINGS_LABEL, url)
         .background_color(background)
         .title("Lens Settings")
         .minimizable(false)
@@ -871,6 +1030,32 @@ mod tests {
     use super::*;
     use crate::model::AgentSelectionStage;
     use std::path::PathBuf;
+
+    #[test]
+    fn prompt_menu_has_one_saved_selection_and_literal_user_names() {
+        let mut config = crate::store::default_config();
+        config.prompt_presets.presets[0].name = "A & B".into();
+        let items = prompt_preset_menu(&config);
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].name, "A && B");
+        assert_eq!(items.iter().filter(|item| item.checked).count(), 1);
+        assert_eq!(
+            items.iter().find(|item| item.checked).unwrap().id,
+            config.prompt_presets.selected_id
+        );
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            config
+                .prompt_presets
+                .presets
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn settings_size_prefers_content_height_and_is_capped_by_hd_work_area() {
@@ -1118,6 +1303,7 @@ mod tests {
             agent: AgentKind::Codex,
             working_directory: PathBuf::from("/Users/example/Work"),
             agent_prompt_template: crate::store::default_config().agent_prompt_template,
+            prompt_presets: crate::store::default_config().prompt_presets,
             agent_preferences: Default::default(),
         };
         let selected = AgentSelectionState {

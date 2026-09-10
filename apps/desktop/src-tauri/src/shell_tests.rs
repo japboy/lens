@@ -55,6 +55,7 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
     state.runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation),
         representation: Some(LensRepresentation {
+            prompt_execution_revision: 1,
             representation_id: representation,
             context_id: Uuid::nil(),
             context_revision: 1,
@@ -239,4 +240,152 @@ fn production_confirmation_ipc_rejects_stale_and_empty_selection_before_effects(
         json!(expected)
     );
     assert_eq!(app.state::<AppState>().snapshot().unwrap(), before);
+}
+
+struct PresetTestTray;
+impl<R: tauri::Runtime> crate::ui::TrayOutput<R> for PresetTestTray {
+    fn apply(
+        &self,
+        _: &tauri::AppHandle<R>,
+        _: crate::ui::TrayMenuPresentation,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
+    let app = crate::configure_shell(
+        tauri::test::mock_builder(),
+        test_support::state(),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let settings = window(&app);
+    let original = app.state::<AppState>().config().unwrap();
+    let template = original.agent_prompt_template.clone();
+    let created = invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"create", "name":"My preset", "template":template
+        }}),
+    )
+    .unwrap();
+    let catalog = &created["prompt_presets"];
+    assert_eq!(catalog["selected_id"], "visual-learner");
+    let preset = catalog["presets"].as_array().unwrap().last().unwrap();
+    let id = preset["id"].as_str().unwrap();
+    let updated = invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"update", "id":id, "expected_revision":1, "name":"Renamed", "template":template
+        }}),
+    )
+    .unwrap();
+    assert_eq!(updated["prompt_presets"]["execution_revision"], 1);
+    assert!(invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"update", "id":id, "expected_revision":1, "name":"Stale", "template":template
+        }})
+    )
+    .is_err());
+    let selected = invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {"type":"select", "id":id}}),
+    )
+    .unwrap();
+    assert_eq!(selected["prompt_presets"]["selected_id"], id);
+    assert_eq!(
+        selected["agent_prompt_template"],
+        serde_json::to_value(template).unwrap()
+    );
+    assert_eq!(
+        app.state::<AppState>()
+            .store
+            .load()
+            .prompt_presets
+            .selected_id,
+        id
+    );
+    let mut bundled_template = original.prompt_presets.presets[0].template.clone();
+    bundled_template
+        .common
+        .push_str("\nPrefer annotated figures.");
+    let renamed = invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"update", "id":"visual-learner", "expected_revision":1,
+            "name":"My visual notes", "template":bundled_template
+        }}),
+    )
+    .unwrap();
+    let saved = app.state::<AppState>().store.load();
+    let visual = saved
+        .prompt_presets
+        .presets
+        .iter()
+        .find(|p| p.id == "visual-learner")
+        .unwrap();
+    assert_eq!(visual.name, "My visual notes");
+    assert_eq!(visual.template, bundled_template);
+    let deleted = invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"delete", "id":"visual-learner", "expected_revision":visual.revision
+        }}),
+    )
+    .unwrap();
+    assert!(!app
+        .state::<AppState>()
+        .store
+        .load()
+        .prompt_presets
+        .presets
+        .iter()
+        .any(|p| p.id == "visual-learner"));
+    assert!(invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"reset_all", "expected_catalog_revision":renamed["prompt_presets"]["revision"]
+        }})
+    )
+    .is_err());
+    let restored = invoke(
+        &settings,
+        "update_prompt_presets",
+        json!({"change": {
+            "type":"reset_all", "expected_catalog_revision":deleted["prompt_presets"]["revision"]
+        }}),
+    )
+    .unwrap();
+    let saved = app.state::<AppState>().store.load();
+    assert_eq!(
+        serde_json::to_value(&saved.prompt_presets).unwrap(),
+        restored["prompt_presets"]
+    );
+    assert_eq!(saved.prompt_presets.selected_id, "visual-learner");
+    assert_eq!(saved.prompt_presets.selected().name, "Visual Learner");
+    assert_eq!(saved.prompt_presets.presets.len(), 4);
+    let restored_visual = saved
+        .prompt_presets
+        .presets
+        .iter()
+        .find(|p| p.id == "visual-learner")
+        .unwrap();
+    assert_eq!(restored_visual.name, "Visual Learner");
+    assert_eq!(
+        restored_visual.template,
+        original.prompt_presets.presets[0].template
+    );
 }

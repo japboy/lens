@@ -477,7 +477,7 @@ async fn resolve_at<R: tauri::Runtime>(
     let result = async {
         let version = fetch_registry_version(kind).await?;
         if let Some(runtime) = &existing {
-            if runtime.adapter_version == version {
+            if version_order(&runtime.adapter_version, &version) != std::cmp::Ordering::Less {
                 return Ok(runtime.clone());
             }
         }
@@ -489,7 +489,21 @@ async fn resolve_at<R: tauri::Runtime>(
         }
         let node = ensure_node_runtime(app, root, operation_id).await?;
         let pnpm = ensure_pnpm_runtime(app, root, &node, operation_id).await?;
-        install_candidate(app, root, &node, &pnpm, kind, &version, operation_id).await
+        install_requested_candidate(
+            app,
+            root,
+            &node,
+            &pnpm,
+            kind,
+            CandidateRequest::Eligible {
+                ceiling: &version,
+                after: existing
+                    .as_ref()
+                    .map(|runtime| runtime.adapter_version.as_str()),
+            },
+            operation_id,
+        )
+        .await
     }
     .await;
     match result {
@@ -1338,6 +1352,83 @@ impl Drop for StagingCleanup {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CandidateRequest<'a> {
+    #[cfg(test)]
+    Exact(&'a str),
+    Eligible {
+        ceiling: &'a str,
+        after: Option<&'a str>,
+    },
+}
+impl<'a> CandidateRequest<'a> {
+    fn ceiling(self) -> &'a str {
+        match self {
+            #[cfg(test)]
+            Self::Exact(version) => version,
+            Self::Eligible { ceiling, .. } => ceiling,
+        }
+    }
+    fn selector(self) -> Result<Option<String>, String> {
+        if !valid_version(self.ceiling()) {
+            return Err("invalid registry version ceiling".into());
+        }
+        match self {
+            #[cfg(test)]
+            Self::Exact(_) => Ok(None),
+            Self::Eligible { ceiling, after } => {
+                if let Some(after) = after {
+                    if !valid_version(after)
+                        || version_order(after, ceiling) != std::cmp::Ordering::Less
+                    {
+                        return Err("no newer registry candidate is available".into());
+                    }
+                }
+                Ok(Some(after.map_or_else(
+                    || format!("<={ceiling}"),
+                    |after| format!(">{after} <={ceiling}"),
+                )))
+            }
+        }
+    }
+    fn accepts(self, version: &str) -> bool {
+        valid_version(version)
+            && match self {
+                #[cfg(test)]
+                Self::Exact(expected) => version == expected,
+                Self::Eligible { ceiling, after } => {
+                    version_order(version, ceiling) != std::cmp::Ordering::Greater
+                        && after.is_none_or(|after| {
+                            version_order(version, after) == std::cmp::Ordering::Greater
+                        })
+                }
+            }
+    }
+}
+
+fn resolved_candidate_manifest(
+    bytes: &[u8],
+    kind: AgentKind,
+    request: CandidateRequest<'_>,
+) -> Result<(String, Vec<u8>), String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let version = value["dependencies"][provider(kind).adapter_name]
+        .as_str()
+        .filter(|version| request.accepts(version))
+        .ok_or("resolved Agent version is not an exact permitted registry candidate")?
+        .to_owned();
+    let canonical = manifest(kind, &version)?;
+    if value
+        != serde_json::from_slice::<serde_json::Value>(&canonical)
+            .map_err(|error| error.to_string())?
+    {
+        return Err("dependency resolution modified the managed Agent manifest".into());
+    }
+    Ok((version, canonical))
+}
+
+#[cfg(test)]
 async fn install_candidate<R: tauri::Runtime>(
     app: &AppHandle<R>,
     root: &Path,
@@ -1347,10 +1438,33 @@ async fn install_candidate<R: tauri::Runtime>(
     version: &str,
     operation: Uuid,
 ) -> Result<ResolvedAgentRuntime, String> {
+    install_requested_candidate(
+        app,
+        root,
+        node,
+        pnpm,
+        kind,
+        CandidateRequest::Exact(version),
+        operation,
+    )
+    .await
+}
+
+async fn install_requested_candidate<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    root: &Path,
+    node: &Path,
+    pnpm: &Path,
+    kind: AgentKind,
+    request: CandidateRequest<'_>,
+    operation: Uuid,
+) -> Result<ResolvedAgentRuntime, String> {
+    let version = request.ceiling();
+    let selector = request.selector()?;
     update_agent_runtime(app, operation, |state| {
         state.stage = AgentRuntimeStage::Installing;
         state.message = Some(format!(
-            "Installing {} {version} through Takumi Guard and Safe-chain…",
+            "Resolving {} up to {version} through Takumi Guard and Safe-chain…",
             display_name(kind)
         ));
     })?;
@@ -1369,7 +1483,33 @@ async fn install_candidate<R: tauri::Runtime>(
     fs::write(staging.join("blank-user-npmrc"), []).map_err(|error| error.to_string())?;
     fs::write(staging.join("blank-global-npmrc"), []).map_err(|error| error.to_string())?;
     let result = async {
-        run_pnpm_install(node, pnpm, &agent, &staging, true).await?;
+        let specification = selector
+            .as_ref()
+            .map(|selector| format!("{}@{selector}", provider(kind).adapter_name));
+        let mode = specification.as_deref().map_or(
+            PnpmInstallMode::ResolveExact,
+            PnpmInstallMode::ResolveEligible,
+        );
+        run_pnpm_install(node, pnpm, &agent, &staging, mode).await?;
+        let resolved_manifest =
+            fs::read(agent.join("package.json")).map_err(|error| error.to_string())?;
+        let (version, package) = resolved_candidate_manifest(&resolved_manifest, kind, request)?;
+        if read_selector(root, kind)?.rejected_version.as_deref() == Some(&version) {
+            return Err(format!(
+                "{} {version} previously failed required ACP compatibility checks",
+                display_name(kind)
+            ));
+        }
+        // pnpm add saves the selected exact version in both manifest and lock. Canonicalize
+        // formatting only after validating every field, then keep both inputs frozen.
+        fs::write(agent.join("package.json"), &package).map_err(|error| error.to_string())?;
+        update_agent_runtime(app, operation, |state| {
+            state.version = Some(version.clone());
+            state.message = Some(format!(
+                "Installing {} {version}, the newest release allowed by the installation policy…",
+                display_name(kind)
+            ));
+        })?;
         let lock = fs::read(agent.join("pnpm-lock.yaml")).map_err(|error| error.to_string())?;
         if lock.is_empty() {
             return Err("resolved dependency lock is empty".into());
@@ -1380,7 +1520,7 @@ async fn install_candidate<R: tauri::Runtime>(
         {
             return Err("dependency resolution modified install policy".into());
         }
-        run_pnpm_install(node, pnpm, &agent, &staging, false).await?;
+        run_pnpm_install(node, pnpm, &agent, &staging, PnpmInstallMode::Frozen).await?;
         if fs::read(agent.join("package.json")).map_err(|error| error.to_string())? != package
             || fs::read(agent.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?
                 != AGENT_WORKSPACE
@@ -1390,13 +1530,13 @@ async fn install_candidate<R: tauri::Runtime>(
                 "Agent installation modified its manifest, lock or Safe-chain policy".into(),
             );
         }
-        verify_runtime_paths(node, &agent, kind, version).await?;
+        verify_runtime_paths(node, &agent, kind, &version).await?;
         let policy = provider(kind);
         let record = InstallRecord {
             schema_version: AGENT_INSTALL_RECORD_VERSION,
             registry_id: policy.registry_id.into(),
             adapter_name: policy.adapter_name.into(),
-            adapter_version: version.into(),
+            adapter_version: version,
             node_version: NODE_VERSION.into(),
             node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
             pnpm_version: PNPM_VERSION.into(),
@@ -1437,12 +1577,18 @@ fn package_manager_override(key: &str) -> bool {
             "node_options" | "node_path" | "node_tls_reject_unauthorized"
         )
 }
+enum PnpmInstallMode<'a> {
+    ResolveExact,
+    ResolveEligible(&'a str),
+    Frozen,
+}
+
 async fn run_pnpm_install(
     node_root: &Path,
     pnpm_root: &Path,
     agent: &Path,
     staging: &Path,
-    resolve: bool,
+    mode: PnpmInstallMode<'_>,
 ) -> Result<(), String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
     let pnpm = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
@@ -1452,16 +1598,27 @@ async fn run_pnpm_install(
             command.env_remove(key);
         }
     }
-    command.arg(pnpm).args([
-        "install",
-        "--prod",
-        "--pm-on-fail=error",
-        "--registry=https://npm.flatt.tech/",
-    ]);
-    if resolve {
-        command.args(["--lockfile-only", "--no-frozen-lockfile"]);
-    } else {
-        command.arg("--frozen-lockfile");
+    command
+        .arg(pnpm)
+        .arg(match mode {
+            PnpmInstallMode::ResolveEligible(_) => "add",
+            _ => "install",
+        })
+        .args([
+            "--prod",
+            "--pm-on-fail=error",
+            "--registry=https://npm.flatt.tech/",
+        ]);
+    match mode {
+        PnpmInstallMode::ResolveExact => {
+            command.args(["--lockfile-only", "--no-frozen-lockfile"]);
+        }
+        PnpmInstallMode::ResolveEligible(specification) => {
+            command.args(["--lockfile-only", "--save-exact", specification]);
+        }
+        PnpmInstallMode::Frozen => {
+            command.arg("--frozen-lockfile");
+        }
     }
     command
         .arg(format!(
@@ -2176,6 +2333,110 @@ mod tests {
             assert!(!package_manager_override(key));
         }
     }
+    #[test]
+    fn eligible_candidate_is_exact_bounded_and_preserves_the_entire_manifest() {
+        let request = CandidateRequest::Eligible {
+            ceiling: "1.11.0",
+            after: None,
+        };
+        assert_eq!(request.selector().unwrap().as_deref(), Some("<=1.11.0"));
+        let selected = manifest(AgentKind::Codex, "1.10.0").unwrap();
+        assert_eq!(
+            resolved_candidate_manifest(&selected, AgentKind::Codex, request)
+                .unwrap()
+                .0,
+            "1.10.0"
+        );
+        for version in ["1.12.0", "^1.10.0", "latest", "npm:other@1.10.0"] {
+            let mut value: serde_json::Value = serde_json::from_slice(&selected).unwrap();
+            value["dependencies"][provider(AgentKind::Codex).adapter_name] = version.into();
+            assert!(resolved_candidate_manifest(
+                &serde_json::to_vec(&value).unwrap(),
+                AgentKind::Codex,
+                request
+            )
+            .is_err());
+        }
+        let mut modified: serde_json::Value = serde_json::from_slice(&selected).unwrap();
+        modified["scripts"] = serde_json::json!({"install":"unexpected"});
+        assert!(resolved_candidate_manifest(
+            &serde_json::to_vec(&modified).unwrap(),
+            AgentKind::Codex,
+            request
+        )
+        .is_err());
+        let update = CandidateRequest::Eligible {
+            ceiling: "1.11.0",
+            after: Some("1.10.0"),
+        };
+        assert_eq!(
+            update.selector().unwrap().as_deref(),
+            Some(">1.10.0 <=1.11.0")
+        );
+        assert!(!update.accepts("1.10.0"));
+        assert!(!update.accepts("1.9.0"));
+        assert!(update.accepts("1.11.0"));
+        assert!(CandidateRequest::Eligible {
+            ceiling: "1.9.0",
+            after: Some("1.10.0")
+        }
+        .selector()
+        .is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable LENS_DYNAMIC_ROOT and network; installs currently mature candidates without fixed version overrides"]
+    async fn fresh_mature_install_uses_registry_ceiling_and_unchanged_safe_chain() {
+        let root = fs::canonicalize(PathBuf::from(
+            std::env::var_os("LENS_DYNAMIC_ROOT").unwrap(),
+        ))
+        .unwrap();
+        assert!(
+            root.starts_with(fs::canonicalize(std::env::temp_dir()).unwrap())
+                || root.starts_with("/private/tmp")
+        );
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("lens-"));
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .build(crate::product_context())
+            .unwrap();
+        for kind in [AgentKind::Codex, AgentKind::Claude] {
+            assert_eq!(read_selector(&root, kind).unwrap(), Selector::default());
+            let ceiling = fetch_registry_version(kind).await.unwrap();
+            let runtime = resolve_at(app.handle(), kind, true, &root).await.unwrap();
+            assert!(CandidateRequest::Eligible {
+                ceiling: &ceiling,
+                after: None
+            }
+            .accepts(&runtime.adapter_version));
+            let id = runtime.installation.as_ref().unwrap().id.clone();
+            let path = install_root(&root, kind, &id).unwrap();
+            let record = read_record(&path, kind).unwrap();
+            assert_eq!(record.adapter_version, runtime.adapter_version);
+            assert_eq!(
+                fs::read(path.join("package.json")).unwrap(),
+                manifest(kind, &runtime.adapter_version).unwrap()
+            );
+            assert_eq!(
+                fs::read(path.join("pnpm-workspace.yaml")).unwrap(),
+                AGENT_WORKSPACE
+            );
+            confirm_ready(&runtime).unwrap();
+            let again = resolve_at(app.handle(), kind, true, &root).await.unwrap();
+            assert_eq!(again.installation.as_ref().unwrap().id, id);
+            assert!(read_selector(&root, kind).unwrap().candidate.is_none());
+            eprintln!(
+                "Mature resolution {:?}: registry {}, selected {}, repeat reused {}",
+                kind, ceiling, runtime.adapter_version, id
+            );
+        }
+    }
+
     fn expected_policy_rejection(error: &str) -> bool {
         [
             "ERR_PNPM_NO_MATURE_MATCHING_VERSION",

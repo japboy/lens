@@ -1,9 +1,12 @@
+import { parseSettingsDestination, type SettingsDestination } from "../agent-prompt-template";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
+  AppConfig,
+  PromptPresetChange,
   AgentKind,
   AgentPromptTemplate,
   AppSnapshot,
@@ -25,6 +28,10 @@ export interface AboutDocuments {
 }
 
 export interface WebviewPort {
+  updatePromptPresets(change: PromptPresetChange): Promise<AppConfig>;
+  subscribeToSettingsDestination(
+    listener: (destination: SettingsDestination) => void,
+  ): Promise<Unlisten>;
   getHtmlOutput(operationId: string, representationId: string, resourceId: string): Promise<string>;
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
@@ -75,6 +82,14 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  updatePromptPresets: (change) => invoke<AppConfig>("update_prompt_presets", { change }),
+  subscribeToSettingsDestination: (listener) =>
+    listen<string>("settings-destination", (event) => {
+      const destination = parseSettingsDestination(
+        typeof event.payload === "string" ? event.payload : null,
+      );
+      if (destination) listener(destination);
+    }),
   getHtmlOutput: (operationId, representationId, resourceId) =>
     invoke<string>("get_html_output", { operationId, representationId, resourceId }),
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),

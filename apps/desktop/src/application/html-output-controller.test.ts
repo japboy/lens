@@ -7,6 +7,7 @@ function lens(representationId = "rep", resourceId = "html", bytes = 3): LensSta
   return {
     operation_id: "op",
     stage: "completed",
+    prompt_execution_revision: 1,
     output_blocks: [],
     representation: {
       representation_id: representationId,
@@ -14,6 +15,7 @@ function lens(representationId = "rep", resourceId = "html", bytes = 3): LensSta
       context_revision: 1,
       projection: { revision: 1, digest: "digest" },
       run_id: "run",
+      prompt_execution_revision: 1,
       output_blocks: [
         {
           type: "html",
@@ -50,6 +52,7 @@ describe("HtmlOutputController", () => {
     controller.synchronize({
       ...current,
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "candidate" }],
     });
     expect(getHtmlOutput).toHaveBeenCalledExactlyOnceWith("op", "rep", "html");
@@ -64,6 +67,7 @@ describe("HtmlOutputController", () => {
     controller.synchronize({
       ...current,
       representation: undefined,
+      prompt_execution_revision: 1,
       output_blocks: current.representation!.output_blocks,
     });
     expect(getHtmlOutput).not.toHaveBeenCalled();

@@ -1,5 +1,10 @@
 use crate::model::AppConfig;
-use std::{fs, io, path::PathBuf};
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 pub(crate) fn default_config() -> AppConfig {
     AppConfig::new(dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
@@ -22,20 +27,71 @@ impl ConfigStore {
         Self { path }
     }
 
-    pub fn load(&self) -> AppConfig {
+    pub fn try_load(&self) -> Result<AppConfig, String> {
         let defaults = default_config();
-        let default_directory = defaults.working_directory.clone();
-        let mut config: AppConfig = fs::read(&self.path)
-            .ok()
-            .and_then(|bytes| AppConfig::decode_settings(&bytes, default_directory.clone()).ok())
-            .unwrap_or(defaults);
-        if !config.working_directory.is_dir() {
-            config.working_directory = default_directory;
+        let bytes = match fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(defaults),
+            Err(error) => return Err(format!("Unable to read Lens settings: {error}")),
+        };
+        let migrate = AppConfig::settings_require_prompt_migration(&bytes)
+            .map_err(|error| error.to_string())?;
+        let mut config = AppConfig::decode_settings(&bytes, defaults.working_directory.clone())
+            .map_err(|error| format!("Unable to decode Lens settings: {error}"))?;
+        if migrate {
+            self.save(&config)
+                .map_err(|error| format!("Unable to back up and migrate Lens settings: {error}"))?;
         }
-        config.agent_prompt_template = std::mem::take(&mut config.agent_prompt_template)
-            .normalize()
-            .unwrap_or_default();
-        config
+        // Host path recovery affects this runtime only; a prompt migration must not
+        // rewrite an unavailable saved working directory as a side effect.
+        if !config.working_directory.is_dir() {
+            config.working_directory = defaults.working_directory;
+        }
+        Ok(config)
+    }
+
+    #[cfg(test)]
+    pub fn load(&self) -> AppConfig {
+        self.try_load().expect("load valid test settings")
+    }
+
+    fn backup_legacy(&self, bytes: &[u8]) -> io::Result<()> {
+        if !AppConfig::settings_require_prompt_migration(bytes).map_err(io::Error::other)? {
+            return Ok(());
+        }
+        let digest = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let backup = self
+            .path
+            .with_file_name(format!("settings.before-prompt-presets-v2.{digest}.json"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup)
+        {
+            Ok(mut file) => {
+                if let Err(error) = fs::metadata(&self.path)
+                    .and_then(|metadata| file.set_permissions(metadata.permissions()))
+                    .and_then(|_| file.write_all(bytes))
+                    .and_then(|_| file.sync_all())
+                {
+                    drop(file);
+                    let _ = fs::remove_file(&backup);
+                    return Err(error);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if fs::read(&backup)? != bytes {
+                    return Err(io::Error::other(
+                        "Existing settings backup does not match the original bytes",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
     }
 
     pub fn save(&self, config: &AppConfig) -> io::Result<()> {
@@ -44,131 +100,187 @@ impl ConfigStore {
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid config path"))?;
         fs::create_dir_all(parent)?;
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(&temporary, serde_json::to_vec_pretty(config)?)?;
-        fs::rename(temporary, &self.path)
+        config.prompt_presets.validate().map_err(io::Error::other)?;
+        let mut value = match fs::read(&self.path) {
+            Ok(bytes) => {
+                self.backup_legacy(&bytes)?;
+                serde_json::from_slice::<serde_json::Value>(&bytes)?
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(error) => return Err(error),
+        };
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("Settings must be an object"))?;
+        object.remove("response_prompt");
+        object.extend(
+            serde_json::to_value(config)?
+                .as_object()
+                .expect("AppConfig serializes as an object")
+                .clone(),
+        );
+        let temporary = self
+            .path
+            .with_extension(format!("json.tmp.{}", uuid::Uuid::new_v4()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| {
+            match fs::metadata(&self.path) {
+                Ok(metadata) => file.set_permissions(metadata.permissions())?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+            file.sync_all()?;
+            fs::rename(&temporary, &self.path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::AgentKind;
     use uuid::Uuid;
 
-    #[test]
-    fn load_normalizes_an_unavailable_directory_without_resetting_the_agent() {
-        let test_root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
-        fs::create_dir_all(&test_root).expect("create test settings directory");
-        let store = ConfigStore {
-            path: test_root.join("settings.json"),
-        };
-        let mut agent_prompt_template = crate::store::default_config().agent_prompt_template;
-        agent_prompt_template.common =
-            "Summarize the source.\n\n{turn_instruction}\n\nUse only attached observations.".into();
-        let config = AppConfig {
-            agent: AgentKind::Codex,
-            working_directory: test_root.join("unmounted"),
-            agent_prompt_template: agent_prompt_template.clone(),
-            agent_preferences: Default::default(),
-        };
-        fs::write(
-            &store.path,
-            serde_json::to_vec(&config).expect("serialize test settings"),
-        )
-        .expect("write test settings");
-
-        let loaded = store.load();
-
-        assert_eq!(loaded.agent, AgentKind::Codex);
-        assert_eq!(loaded.agent_prompt_template, agent_prompt_template);
-        assert_eq!(
-            loaded.working_directory,
-            crate::store::default_config().working_directory
-        );
-        fs::remove_dir_all(test_root).expect("remove test settings directory");
+    fn store() -> (PathBuf, ConfigStore) {
+        let root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let store = ConfigStore::at_path(root.join("settings.json"));
+        (root, store)
+    }
+    fn backup_path(store: &ConfigStore, bytes: &[u8]) -> PathBuf {
+        store.path.with_file_name(format!(
+            "settings.before-prompt-presets-v2.{}.json",
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ))
     }
 
     #[test]
-    fn load_migrates_settings_without_a_prompt_to_the_built_in_template() {
-        let test_root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
-        fs::create_dir_all(&test_root).expect("create test settings directory");
-        let store = ConfigStore {
-            path: test_root.join("settings.json"),
-        };
-        fs::write(
-            &store.path,
-            serde_json::to_vec(&serde_json::json!({
-                "agent": "codex",
-                "working_directory": test_root,
-            }))
-            .expect("serialize legacy settings"),
-        )
-        .expect("write legacy settings");
-
-        let loaded = store.load();
-
-        assert_eq!(
-            loaded.agent_prompt_template,
-            crate::store::default_config().agent_prompt_template
-        );
-        fs::remove_dir_all(test_root).expect("remove test settings directory");
+    fn migration_backs_up_exact_bytes_once_preserves_other_settings_and_keeps_v2_edits() {
+        let mut empty = serde_json::to_value(default_config().prompt_presets).unwrap();
+        empty["presets"] = serde_json::json!([]);
+        let mut missing = empty.clone();
+        missing.as_object_mut().unwrap().remove("presets");
+        for catalog in [
+            Some(empty),
+            Some(missing),
+            None,
+            Some(
+                serde_json::json!({"schema_version":1,"presets":[{"name":"Custom","description":"old"}]}),
+            ),
+        ] {
+            let (root, store) = store();
+            let mut legacy = serde_json::json!({"agent":"codex", "working_directory":root, "response_prompt":"My exact {legacy} prompt", "unrecognized_setting":{"keep":true}});
+            if let Some(catalog) = catalog {
+                legacy["prompt_presets"] = catalog;
+            }
+            let bytes =
+                format!(" \n{}\n\n", serde_json::to_string_pretty(&legacy).unwrap()).into_bytes();
+            fs::write(&store.path, &bytes).unwrap();
+            let original_permissions = fs::metadata(&store.path).unwrap().permissions();
+            let config = store.try_load().unwrap();
+            assert_eq!(
+                fs::metadata(backup_path(&store, &bytes))
+                    .unwrap()
+                    .permissions(),
+                original_permissions
+            );
+            assert_eq!(fs::read(backup_path(&store, &bytes)).unwrap(), bytes);
+            assert_eq!(config.agent, crate::model::AgentKind::Codex);
+            assert_eq!(config.working_directory, root);
+            assert_eq!(config.prompt_presets, Default::default());
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+            assert_eq!(
+                persisted["unrecognized_setting"],
+                legacy["unrecognized_setting"]
+            );
+            assert!(persisted.get("response_prompt").is_none());
+            let migrated_bytes = fs::read(&store.path).unwrap();
+            assert_eq!(store.try_load().unwrap(), config);
+            assert_eq!(fs::read(&store.path).unwrap(), migrated_bytes);
+            let mut edited = config;
+            edited.prompt_presets.presets[0].name = "My visual".into();
+            store.save(&edited).unwrap();
+            assert_eq!(store.try_load().unwrap(), edited);
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+            assert_eq!(fs::read(backup_path(&store, &bytes)).unwrap(), bytes);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
-    fn load_migrates_a_legacy_response_prompt_into_the_complete_template() {
-        let test_root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
-        fs::create_dir_all(&test_root).expect("create test settings directory");
-        let store = ConfigStore {
-            path: test_root.join("settings.json"),
-        };
-        fs::write(
-            &store.path,
-            serde_json::to_vec(&serde_json::json!({
-                "agent": "codex",
-                "working_directory": test_root,
-                "response_prompt": "Explain this for a beginner."
-            }))
-            .expect("serialize legacy settings"),
-        )
-        .expect("write legacy settings");
-
-        let loaded = store.load();
-
-        assert!(loaded
-            .agent_prompt_template
-            .common
-            .starts_with("Explain this for a beginner."));
-        assert!(loaded
-            .agent_prompt_template
-            .common
-            .contains("{turn_instruction}"));
-        fs::remove_dir_all(test_root).expect("remove test settings directory");
+    fn missing_selected_record_uses_first_survivor_once_without_resetting_edits() {
+        for missing_id in [false, true] {
+            let (root, store) = store();
+            let mut config = default_config();
+            config.working_directory = root.clone();
+            config.prompt_presets.presets.remove(0);
+            config.prompt_presets.presets[0].name = "Kept custom name".into();
+            let mut value = serde_json::to_value(&config).unwrap();
+            if missing_id {
+                value["prompt_presets"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("selected_id");
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(&store.path, &bytes).unwrap();
+            config.prompt_presets.selected_id = config.prompt_presets.presets[0].id.clone();
+            config.agent_prompt_template = config.prompt_presets.selected().template.clone();
+            assert_eq!(store.try_load().unwrap(), config);
+            let normalized = fs::read(&store.path).unwrap();
+            assert_eq!(store.try_load().unwrap(), config);
+            assert_eq!(fs::read(&store.path).unwrap(), normalized);
+            assert_eq!(fs::read(backup_path(&store, &bytes)).unwrap(), bytes);
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
-    fn save_persists_the_complete_template_without_the_legacy_prompt_field() {
-        let test_root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
-        fs::create_dir_all(&test_root).expect("create test settings directory");
-        let store = ConfigStore {
-            path: test_root.join("settings.json"),
-        };
-        let config = AppConfig {
-            working_directory: test_root.clone(),
-            ..crate::store::default_config()
-        };
+    fn backup_failure_aborts_load_and_later_save_without_overwriting_original() {
+        let (root, store) = store();
+        let bytes = b"{\"agent\":\"codex\",\"response_prompt\":\"precious old text\"}";
+        fs::write(&store.path, bytes).unwrap();
+        fs::create_dir(backup_path(&store, bytes)).unwrap();
+        assert!(store.try_load().is_err());
+        assert!(store.save(&default_config()).is_err());
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        store.save(&config).expect("save settings");
+    #[test]
+    fn mismatched_existing_backup_never_gets_overwritten() {
+        let (root, store) = store();
+        let bytes = b"{}";
+        fs::write(&store.path, bytes).unwrap();
+        let backup = backup_path(&store, bytes);
+        fs::write(&backup, b"different content").unwrap();
+        assert!(store.try_load().is_err());
+        assert_eq!(fs::read(&backup).unwrap(), b"different content");
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&fs::read(&store.path).expect("read persisted settings"))
-                .expect("parse persisted settings");
-        assert_eq!(
-            persisted["agent_prompt_template"],
-            serde_json::to_value(&config.agent_prompt_template).expect("serialize prompt template")
-        );
-        assert!(persisted.get("response_prompt").is_none());
-        assert!(!store.path.with_extension("json.tmp").exists());
-        fs::remove_dir_all(test_root).expect("remove test settings directory");
+    #[test]
+    fn missing_file_uses_defaults_and_invalid_v2_never_resets_silently() {
+        let (root, store) = store();
+        assert_eq!(store.try_load().unwrap(), default_config());
+        let bytes = b"{\"prompt_presets\":{\"schema_version\":2}}";
+        fs::write(&store.path, bytes).unwrap();
+        assert!(store.try_load().is_err());
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 }

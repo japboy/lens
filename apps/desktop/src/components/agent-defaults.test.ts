@@ -98,13 +98,45 @@ function expectSavedDisplay(element: LensAgentDefaults) {
   expect(select(element, "Mode").value).toBe("write");
 }
 
-describe("Shared Agent Settings selection persistence", () => {
+describe("Model & Behavior selection persistence", () => {
+  it("keeps all seven editable policies collapsed while Save and Revert remain outside", async () => {
+    const { element, intents } = await mount();
+    const details = element.querySelector<HTMLDetailsElement>("details")!;
+    expect(details.open).toBe(false);
+    const policies = details.querySelectorAll<HTMLSelectElement>('select[aria-label$=" policy"]');
+    expect(policies).toHaveLength(7);
+    for (const policy of policies) {
+      expect([...policy.options].map((option) => option.value)).toEqual(["ask", "allow", "deny"]);
+      policy.value = "allow";
+      policy.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await element.updateComplete;
+    const save = [...element.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Save Defaults"),
+    )!;
+    expect(save.closest("details")).toBeNull();
+    save.click();
+    expect(intents.at(-1)).toMatchObject({
+      type: "save-defaults",
+      defaults: {
+        tools: {
+          read: "allow",
+          search: "allow",
+          fetch: "allow",
+          edit: "allow",
+          delete: "allow",
+          move: "allow",
+          execute: "allow",
+        },
+      },
+    });
+  });
   it("displays saved flat and grouped choices on first mount and reopening without emitting edits", async () => {
     for (let opening = 0; opening < 2; opening++) {
       const { element, intents } = await mount();
       expectSavedDisplay(element);
       expect(intents).toEqual([]);
-      click(element, "Save Shared Settings");
+      click(element, "Save Defaults");
       expect(intents).toEqual([{ type: "save-defaults", defaults: saved() }]);
       element.remove();
     }
@@ -142,7 +174,7 @@ describe("Shared Agent Settings selection persistence", () => {
       expect(option.textContent).toContain("not in current choices");
     }
     expect(intents).toEqual([]);
-    click(element, "Save Shared Settings");
+    click(element, "Save Defaults");
     expect(intents).toEqual([{ type: "save-defaults", defaults: saved() }]);
     element.selection = selection();
     await element.updateComplete;
@@ -159,7 +191,7 @@ describe("Shared Agent Settings selection persistence", () => {
     await element.updateComplete;
     expect(select(element, "Mode").value).toBe("safe");
     expect(select(element, "Reasoning effort").value).toBe("medium");
-    click(element, "Save Shared Settings");
+    click(element, "Save Defaults");
     expect(intents.at(-1)).toMatchObject({
       type: "save-defaults",
       defaults: {
@@ -182,7 +214,7 @@ describe("Shared Agent Settings selection persistence", () => {
     expect(select(element, "Model").value).toBe("first");
     expect(select(element, "Reasoning effort").value).toBe("");
     expect(intents).toEqual([{ type: "preview-model", configId: "model", value: "first" }]);
-    click(element, "Save Shared Settings");
+    click(element, "Save Defaults");
     expect(intents.at(-1)).toMatchObject({
       type: "save-defaults",
       defaults: {
@@ -216,11 +248,11 @@ describe("Shared Agent Settings selection persistence", () => {
     expect(select(element, "Mode").value).toBe("write");
     expect(select(element, "Mode").selectedOptions[0]?.disabled).toBe(true);
     expect(intents).toEqual([]);
-    click(element, "Save Shared Settings");
+    click(element, "Save Defaults");
     expect(intents).toEqual([{ type: "save-defaults", defaults }]);
     await choose(element, "Mode", "");
     expect(select(element, "Mode").selectedOptions[0]?.textContent).toContain("Lens safe default");
-    click(element, "Save Shared Settings");
+    click(element, "Save Defaults");
     expect(intents.at(-1)).toMatchObject({ type: "save-defaults", defaults: { choices: [] } });
   });
 });

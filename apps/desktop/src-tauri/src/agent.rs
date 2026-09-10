@@ -892,6 +892,7 @@ pub async fn transform_current<R: tauri::Runtime>(
         app,
         expected_operation_id,
         AgentTransformAdmission::InitialOrRetry,
+        None,
     )
     .await
 }
@@ -904,6 +905,7 @@ pub(crate) async fn transform_live_projection<R: tauri::Runtime>(
         app,
         expected_operation_id,
         AgentTransformAdmission::LiveProjectionUpdate,
+        None,
     )
     .await
 }
@@ -916,6 +918,21 @@ pub(crate) async fn transform_recovery_projection<R: tauri::Runtime>(
         app,
         expected_operation_id,
         AgentTransformAdmission::RecoveryCheckpoint,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn transform_prompt_selection<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+    expected_config: &AppConfig,
+) -> Result<LensState, String> {
+    submit_current_projection(
+        app,
+        operation_id,
+        AgentTransformAdmission::InitialOrRetry,
+        Some(expected_config),
     )
     .await
 }
@@ -924,19 +941,42 @@ async fn submit_current_projection<R: tauri::Runtime>(
     app: AppHandle<R>,
     expected_operation_id: Uuid,
     admission: AgentTransformAdmission,
+    expected_config: Option<&AppConfig>,
 ) -> Result<LensState, String> {
     let input = current_transform_input(&app, expected_operation_id, admission)?;
-    let completion = app.state::<AppState>().agent_control.submit_session(
-        app.clone(),
-        AgentSessionIdentity {
-            operation_id: input.operation_id,
-            context_id: input.context_id,
-            config: input.config,
-        },
-        input.context_revision,
-        input.projection_ref,
-        input.projection,
-    )?;
+    if expected_config.is_some_and(|expected| !input.config.same_execution_config(expected)) {
+        return Err("Prompt preset selection was superseded".into());
+    }
+    let completion = {
+        let state = app.state::<AppState>();
+        // Keep admission and mailbox submission ordered against persisted configuration changes.
+        let snapshot = state
+            .runtime
+            .read()
+            .map_err(|_| "application state lock is poisoned")?;
+        if !snapshot.config.same_execution_config(&input.config)
+            || snapshot.lens.operation_id != Some(input.operation_id)
+            || snapshot.lens.projection.as_ref() != Some(&input.projection_ref)
+            || snapshot
+                .lens
+                .live
+                .as_ref()
+                .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
+        {
+            return Err("Lens transformation authority was superseded before submission".into());
+        }
+        state.agent_control.submit_session(
+            app.clone(),
+            AgentSessionIdentity {
+                operation_id: input.operation_id,
+                context_id: input.context_id,
+                config: input.config,
+            },
+            input.context_revision,
+            input.projection_ref,
+            input.projection,
+        )?
+    };
     let _completion = completion
         .await
         .map_err(|_| "Agent session actor ended before reporting its turn result".to_string())??;
@@ -1170,13 +1210,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             )?;
             controls.set_initial_authority(effective_mode, defaults.tools.clone())?;
             if let Some(options) = initial_options { controls.replace_options(options)?; }
-            {
-                let state = app.state::<AppState>();
-                let mut active = state.session_controls.lock().map_err(|_| state_error("Agent controls unavailable".into()))?;
-                if let Some(previous) = active.replace(Arc::clone(&controls)) { previous.close(&app); }
-            }
-            update_lens_state(&app, identity.operation_id, |lens| lens.session_controls = None).map_err(state_error)?;
-            controls.publish(&app).map_err(state_error)?;
+            controls.install(&app, &identity.config).map_err(state_error)?;
             let _control_lifetime = session_controls::ControlLifetime { app: app.clone(), controls: Arc::clone(&controls) };
             if *shutdown.borrow() {
                 return Err(Error::request_cancelled());
@@ -1342,7 +1376,7 @@ fn agent_session_identity_is_current<R: tauri::Runtime>(
     identity: &AgentSessionIdentity,
 ) -> Result<bool, String> {
     let snapshot = app.state::<AppState>().snapshot()?;
-    Ok(snapshot.config == identity.config
+    Ok(snapshot.config.same_execution_config(&identity.config)
         && snapshot.agent_selection.selected_agent() == Some(identity.config.agent)
         && snapshot.lens.operation_id == Some(identity.operation_id)
         && snapshot
@@ -1654,7 +1688,10 @@ fn retained_representation_freshness(lens: &LensState) -> LensFreshness {
         return LensFreshness::Unverified;
     }
     match (&lens.representation, &lens.projection) {
-        (Some(representation), Some(projection)) if &representation.projection == projection => {
+        (Some(representation), Some(projection))
+            if &representation.projection == projection
+                && representation.prompt_execution_revision == lens.prompt_execution_revision =>
+        {
             LensFreshness::Current
         }
         (Some(_), _) => LensFreshness::Stale,
@@ -1831,6 +1868,7 @@ fn finish_prompt_response(
         target_context_revision
     };
     lens.representation = Some(LensRepresentation {
+        prompt_execution_revision: lens.prompt_execution_revision,
         representation_id: Uuid::new_v4(),
         context_id,
         context_revision,
@@ -2733,7 +2771,7 @@ mod tests {
         };
         assert!(instruction
             .text
-            .contains("existing instructions, memory, and preferences"));
+            .contains("instructions, preferences, and relevant memory actually available"));
         let ContentBlock::Resource(resource) = &blocks[1] else {
             panic!("second block must be embedded context")
         };
@@ -3077,6 +3115,7 @@ mod tests {
         let target_projection = projection_ref("New source", 2);
         let run_id = Uuid::from_u128(22);
         let old_representation = LensRepresentation {
+            prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),
             context_revision: 1,
@@ -3342,6 +3381,7 @@ mod tests {
         let target_projection = projection_ref("New source", 2);
         let run_id = Uuid::from_u128(22);
         let old_representation = LensRepresentation {
+            prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),
             context_revision: 1,
@@ -3406,6 +3446,7 @@ mod tests {
         let projection = projection_ref("Source", 1);
         let run_id = Uuid::from_u128(22);
         let representation = LensRepresentation {
+            prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),
             context_revision: 1,

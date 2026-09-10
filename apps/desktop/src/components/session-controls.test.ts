@@ -328,7 +328,7 @@ describe("shared Agent defaults", () => {
     await element.updateComplete;
     expect(model.value).toBe("first");
     expect(policy.value).toBe("allow");
-    click(element, "Save Shared Settings");
+    click(element, "Save Defaults");
     expect(intents[1]).toMatchObject({
       type: "save-defaults",
       defaults: {

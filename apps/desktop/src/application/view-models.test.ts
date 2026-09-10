@@ -18,10 +18,31 @@ const SNAPSHOT: AppSnapshot = {
       source_checkpoint: "{base_revision} {target_revision}",
       current_projection_retry: "{applied_revision}",
     },
+    prompt_presets: {
+      schema_version: 2,
+      execution_revision: 1,
+      revision: 1,
+      selected_id: "visual-learner",
+      presets: [
+        {
+          id: "visual-learner",
+          name: "Visual Learner",
+
+          revision: 1,
+          template: {
+            schema_version: 1,
+            common: "{turn_instruction}",
+            full_projection: "Initial",
+            source_checkpoint: "{base_revision} {target_revision}",
+            current_projection_retry: "{applied_revision}",
+          },
+        },
+      ],
+    },
   },
   agent_selection: { stage: "unselected", auth_methods: [] },
   agent_runtime: { stage: "not_installed", downloaded_bytes: 0 },
-  lens: { stage: "idle", output_blocks: [] },
+  lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
 };
 
 const PERMISSION: AccessibilityPermissionState = { stage: "allowed" };
@@ -57,13 +78,12 @@ describe("Settings view model", () => {
       "reauthenticate-agent-selection",
       "sign-out-agent-selection",
       "choose-directory",
-      "request-accessibility-permission",
     ] as const satisfies readonly SettingsIntent["type"][];
 
     for (const type of generalCommands) {
       expect(model(succeeded(type)).feedback).toEqual({
         stage: "status",
-        target: "general",
+        target: "connection",
         message: `${type} completed`,
       });
     }
@@ -78,7 +98,7 @@ describe("Settings view model", () => {
     for (const type of promptCommands) {
       expect(model(succeeded(type)).feedback).toEqual({
         stage: "status",
-        target: "agent-prompt",
+        target: "prompt-presets",
         message: `${type} completed`,
       });
     }

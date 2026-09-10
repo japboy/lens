@@ -16,10 +16,31 @@ const snapshot = (revision: number): AppSnapshot => ({
       source_checkpoint: "Replace revision {base_revision} with {target_revision}.",
       current_projection_retry: "Retry revision {applied_revision}.",
     },
+    prompt_presets: {
+      schema_version: 2,
+      execution_revision: 1,
+      revision: 1,
+      selected_id: "visual-learner",
+      presets: [
+        {
+          id: "visual-learner",
+          name: "Visual Learner",
+
+          revision: 1,
+          template: {
+            schema_version: 1,
+            common: "Transform the selected content.\n\n{turn_instruction}",
+            full_projection: "Use the initial projection.",
+            source_checkpoint: "Replace revision {base_revision} with {target_revision}.",
+            current_projection_retry: "Retry revision {applied_revision}.",
+          },
+        },
+      ],
+    },
   },
   agent_selection: { stage: "unselected", auth_methods: [] },
   agent_runtime: { stage: "not_installed", downloaded_bytes: 0 },
-  lens: { stage: "idle", output_blocks: [] },
+  lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
 });
 
 class TestHost implements ReactiveControllerHost {

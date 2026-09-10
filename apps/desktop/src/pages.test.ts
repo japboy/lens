@@ -20,6 +20,27 @@ const snapshot: AppSnapshot = {
       source_checkpoint: "Replace revision {base_revision} with {target_revision}.",
       current_projection_retry: "Retry revision {applied_revision}.",
     },
+    prompt_presets: {
+      schema_version: 2,
+      execution_revision: 1,
+      revision: 1,
+      selected_id: "visual-learner",
+      presets: [
+        {
+          id: "visual-learner",
+          name: "Visual Learner",
+
+          revision: 1,
+          template: {
+            schema_version: 1,
+            common: "Transform the selected content.\n\n{turn_instruction}",
+            full_projection: "Use the initial projection.",
+            source_checkpoint: "Replace revision {base_revision} with {target_revision}.",
+            current_projection_retry: "Retry revision {applied_revision}.",
+          },
+        },
+      ],
+    },
   },
   agent_selection: {
     stage: "selected",
@@ -139,6 +160,7 @@ const snapshot: AppSnapshot = {
       media_omissions: [],
       quality: "full",
     },
+    prompt_execution_revision: 1,
     output_blocks: [
       { type: "markdown", message_id: "message-1", text: "Before image" },
       {
@@ -248,7 +270,7 @@ describe("progressive DSD resources", () => {
       );
       const navigation = Array.from(root.querySelectorAll<HTMLButtonElement>(".settings-nav-item"));
       expect(navigation.every((button) => !button.disabled)).toBe(true);
-      navigation.find((button) => button.textContent?.trim() === "Agent Prompt")!.click();
+      navigation.find((button) => button.textContent?.trim() === "Prompt Presets")!.click();
       await vi.waitFor(() =>
         expect(root.querySelector("#agent-prompt-heading")?.closest("[hidden]")).toBeNull(),
       );
@@ -459,7 +481,7 @@ describe("About", () => {
     );
     const root = viewRoot(element, "lens-settings-view")!;
     const prompt = [...root.querySelectorAll<HTMLButtonElement>(".settings-nav-item")].find(
-      (button) => button.textContent?.includes("Agent Prompt"),
+      (button) => button.textContent?.includes("Prompt Presets"),
     )!;
     prompt.click();
     await vi.waitFor(() => expect(prompt.getAttribute("aria-current")).toBe("page"));
@@ -506,6 +528,7 @@ describe("Lens target selection preview", () => {
           },
         ],
       },
+      prompt_execution_revision: 1,
       output_blocks: [],
     };
     const { invoke } = await import("@tauri-apps/api/core");
@@ -897,26 +920,42 @@ describe("Lens Settings", () => {
     expect(settingsRoot?.querySelector(".settings-footer")).toBeNull();
     expect(settingsRoot?.querySelector(".settings-compact-navigation")).toBeNull();
     expect(settingsRoot?.querySelector("#settings-destination")).toBeNull();
-    expect(items.map((item) => item.textContent?.trim())).toEqual(["General", "Agent Prompt"]);
+    expect(items.map((item) => item.textContent?.trim())).toEqual([
+      "Connection",
+      "Session Defaults",
+      "Prompt Presets",
+      "Privacy & Security",
+    ]);
+    expect(
+      Array.from(navigation?.querySelectorAll(".settings-nav-group") ?? []).map((group) => ({
+        heading: group.querySelector(".settings-nav-heading")?.textContent?.trim(),
+        destinations: Array.from(group.querySelectorAll("button")).map((button) =>
+          button.textContent?.trim(),
+        ),
+      })),
+    ).toEqual([
+      { heading: "Agent", destinations: ["Connection", "Session Defaults", "Prompt Presets"] },
+      { heading: "General", destinations: ["Privacy & Security"] },
+    ]);
     expect(items[0]?.getAttribute("aria-current")).toBe("page");
     expect(
       settingsRoot?.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent,
-    ).toBe("General");
+    ).toBe("Connection");
 
-    items.find((item) => item.textContent?.trim() === "Agent Prompt")?.click();
+    items.find((item) => item.textContent?.trim() === "Prompt Presets")?.click();
     await vi.waitFor(() => {
       expect(
         settingsRoot?.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent?.trim(),
-      ).toBe("Agent Prompt");
+      ).toBe("Prompt Presets");
     });
     expect(
       items
-        .find((item) => item.textContent?.trim() === "Agent Prompt")
+        .find((item) => item.textContent?.trim() === "Prompt Presets")
         ?.getAttribute("aria-current"),
     ).toBe("page");
-    expect(
-      settingsRoot?.querySelector(".prompt-composition-result strong")?.textContent?.trim(),
-    ).toBe("Rendered Prompt");
+    expect(settingsRoot?.querySelector(".prompt-preview summary")?.textContent?.trim()).toBe(
+      "Prompt Preview",
+    );
   });
 
   it("keeps actionable Settings failures in their owning detail pane", async () => {
@@ -950,11 +989,11 @@ describe("Lens Settings", () => {
       );
 
       Array.from(settingsRoot?.querySelectorAll<HTMLButtonElement>(".settings-nav-item") ?? [])
-        .find((button) => button.textContent?.trim() === "Agent Prompt")
+        .find((button) => button.textContent?.trim() === "Prompt Presets")
         ?.click();
       await vi.waitFor(() => {
         const visiblePanel = settingsRoot?.querySelector(".settings-detail-panel:not([hidden])");
-        expect(visiblePanel?.querySelector("h1")?.textContent?.trim()).toBe("Agent Prompt");
+        expect(visiblePanel?.querySelector("h1")?.textContent?.trim()).toBe("Prompt Presets");
         expect(visiblePanel?.querySelector(".settings-context-feedback[role='alert']")).toBeNull();
       });
     } finally {
@@ -973,7 +1012,7 @@ describe("Lens Settings", () => {
     const settingsRoot = viewRoot(element, "lens-settings-view");
     const agentPrompt = Array.from(
       settingsRoot?.querySelectorAll<HTMLButtonElement>(".settings-nav-item") ?? [],
-    ).find((button) => button.textContent?.trim() === "Agent Prompt");
+    ).find((button) => button.textContent?.trim() === "Prompt Presets");
     agentPrompt?.click();
     await vi.waitFor(() => {
       expect(settingsRoot?.querySelector(".prompt-editor")).not.toBeNull();
@@ -996,10 +1035,16 @@ describe("Lens Settings", () => {
 
     const { invoke } = await import("@tauri-apps/api/core");
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("set_agent_prompt_template", {
-        agentPromptTemplate: {
-          ...snapshot.config.agent_prompt_template,
-          common: "Updated instruction.\n\n{turn_instruction}",
+      expect(invoke).toHaveBeenCalledWith("update_prompt_presets", {
+        change: {
+          type: "update",
+          id: "visual-learner",
+          expected_revision: 1,
+          name: "Visual Learner",
+          template: {
+            ...snapshot.config.agent_prompt_template,
+            common: "Updated instruction.\n\n{turn_instruction}",
+          },
         },
       });
     });
@@ -1007,7 +1052,7 @@ describe("Lens Settings", () => {
       const feedback = settingsRoot?.querySelector(
         "lens-prompt-settings .settings-context-feedback[role='status']",
       );
-      expect(feedback?.textContent).toContain("Agent prompt template updated.");
+      expect(feedback?.textContent).toContain("Prompt presets updated.");
     });
     expect(
       settingsRoot?.querySelector(".settings-sidebar-status [role='status']")?.textContent?.trim(),

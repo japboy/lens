@@ -100,3 +100,58 @@ fn print_workspace_contract_baseline() {
         serde_json::to_string(&contract_snapshot()).unwrap()
     );
 }
+
+#[test]
+#[ignore = "Explicit export of production-rendered prompts for live Agent validation"]
+fn print_prompt_preset_validation_cases() {
+    use crate::live_sync::ProjectionRef;
+    use std::num::NonZeroU64;
+    use usecase::prompt_presets::bundled_presets;
+    let projection = |revision| {
+        ProjectionRef::new(
+            NonZeroU64::new(revision).unwrap(),
+            format!("{revision:064x}").parse().unwrap(),
+        )
+    };
+    let cases: Vec<_> = bundled_presets()
+        .into_iter()
+        .map(|preset| {
+            let turns: Vec<_> = [
+                ("initial", AgentPromptMode::FullProjection, projection(1)),
+                (
+                    "update",
+                    AgentPromptMode::SourceCheckpoint {
+                        base_projection: projection(1),
+                    },
+                    projection(2),
+                ),
+                (
+                    "retry",
+                    AgentPromptMode::CurrentProjectionRetry {
+                        applied_projection: projection(2),
+                    },
+                    projection(2),
+                ),
+                (
+                    "unchanged",
+                    AgentPromptMode::SourceCheckpoint {
+                        base_projection: projection(2),
+                    },
+                    projection(3),
+                ),
+            ]
+            .into_iter()
+            .map(|(kind, mode, target)| {
+                serde_json::json!({
+                    "kind": kind, "prompt": preset.template.render(&mode, &target).unwrap(),
+                })
+            })
+            .collect();
+            serde_json::json!({"id": preset.id, "turns": turns})
+        })
+        .collect();
+    println!(
+        "PROMPT_PRESET_VALIDATION={}",
+        serde_json::to_string(&cases).unwrap()
+    );
+}

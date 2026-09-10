@@ -112,6 +112,7 @@ describe("Lens view model", () => {
   it("preserves ordered typed output without falling back to extraction text", () => {
     const lens = {
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [
         { type: "markdown", message_id: "message-1", text: "Agent output" },
         {
@@ -136,6 +137,7 @@ describe("Lens view model", () => {
     const lens = {
       operation_id: "operation",
       stage: "transforming",
+      prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "Private replacement stream" }],
       representation: {
         representation_id: "representation-2",
@@ -143,6 +145,7 @@ describe("Lens view model", () => {
         context_revision: 2,
         projection: { revision: 2, digest: "sha256:projection-2" },
         run_id: "run-2",
+        prompt_execution_revision: 1,
         output_blocks: [{ type: "markdown", text: "Published interpretation" }],
       },
     } satisfies LensState;
@@ -170,6 +173,7 @@ describe("Lens view model", () => {
   it("pretty-prints only the normalized LensInput in the Source view", () => {
     const lens = {
       stage: "ready",
+      prompt_execution_revision: 1,
       output_blocks: [],
       context: {
         schema_version: 4,
@@ -243,6 +247,7 @@ describe("Lens view model", () => {
     const lens = {
       operation_id: input.context_id,
       stage: "ready",
+      prompt_execution_revision: 1,
       output_blocks: [],
       input,
     } satisfies LensState;
@@ -262,6 +267,7 @@ describe("Lens view model", () => {
   it("offers only authentication methods the client supports", () => {
     const lens = {
       stage: "authentication_required",
+      prompt_execution_revision: 1,
       output_blocks: [],
       agent: {
         run_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
