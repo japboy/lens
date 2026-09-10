@@ -221,6 +221,12 @@ fn write_selector(root: &Path, kind: AgentKind, selector: &Selector) -> Result<(
 }
 fn prune_installations(root: &Path, kind: AgentKind) -> Result<(), String> {
     let selector = read_selector(root, kind)?;
+    // Only a confirmed replacement authorizes retiring pre-migration installations.
+    // Authentication, cancellation, and candidate rejection can all drop leases first.
+    let retire_legacy = selector
+        .current
+        .as_deref()
+        .is_some_and(|id| Uuid::parse_str(id).is_ok());
     let provider = provider_root(root, kind);
     let mut entries = Vec::new();
     for dir in [&provider, &provider.join("installs")] {
@@ -238,6 +244,9 @@ fn prune_installations(root: &Path, kind: AgentKind) -> Result<(), String> {
             }
             let name = entry.file_name().to_string_lossy().into_owned();
             let id = if dir == &provider && valid_version(&name) {
+                if !retire_legacy {
+                    continue;
+                }
                 format!("legacy:{name}")
             } else if dir != &provider && Uuid::parse_str(&name).is_ok() {
                 name
@@ -1879,6 +1888,96 @@ mod tests {
         drop(runtime);
         fs::remove_dir_all(root).unwrap();
     }
+    #[tokio::test]
+    async fn unconfirmed_candidate_lifecycle_preserves_all_legacy_bytes() {
+        for current in [None, Some("legacy:1.2.3".to_owned())] {
+            let root = root();
+            let kind = AgentKind::Codex;
+            let legacy = install_root(&root, kind, "legacy:1.2.3").unwrap();
+            let unselected = install_root(&root, kind, "legacy:1.1.0").unwrap();
+            for path in [&legacy, &unselected] {
+                fs::create_dir_all(path).unwrap();
+                fs::write(path.join("lens-runtime.json"), b"old schema record").unwrap();
+                fs::write(path.join("adapter.js"), b"original adapter bytes").unwrap();
+            }
+            let id = Uuid::new_v4().to_string();
+            fs::create_dir_all(install_root(&root, kind, &id).unwrap()).unwrap();
+            write_selector(
+                &root,
+                kind,
+                &Selector {
+                    current,
+                    candidate: Some(id.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            // Auth failure and cancellation release the descriptor without confirming it.
+            for _ in 0..2 {
+                drop(runtime(&root, kind, &id));
+                for path in [&legacy, &unselected] {
+                    assert_eq!(
+                        fs::read(path.join("adapter.js")).unwrap(),
+                        b"original adapter bytes"
+                    );
+                }
+            }
+            // No current is needed to exercise rejection without loading a native fixture.
+            let mut selector = read_selector(&root, kind).unwrap();
+            selector.current = None;
+            write_selector(&root, kind, &selector).unwrap();
+            let candidate = runtime(&root, kind, &id);
+            assert!(reject_candidate(&candidate).await.unwrap().is_none());
+            drop(candidate);
+            assert!(!install_root(&root, kind, &id).unwrap().exists());
+            for path in [&legacy, &unselected] {
+                assert_eq!(
+                    fs::read(path.join("lens-runtime.json")).unwrap(),
+                    b"old schema record"
+                );
+                assert_eq!(
+                    fs::read(path.join("adapter.js")).unwrap(),
+                    b"original adapter bytes"
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn confirmed_replacement_retires_only_unreferenced_unleased_legacy_installs() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let previous = "legacy:1.2.3";
+        let leased = "legacy:1.1.0";
+        let retired = "legacy:1.0.0";
+        let next = Uuid::new_v4().to_string();
+        for id in [previous, leased, retired, &next] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(previous.into()),
+                candidate: Some(next.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let legacy_lease = runtime(&root, kind, leased);
+        let candidate = runtime(&root, kind, &next);
+        confirm_ready(&candidate).unwrap();
+        assert!(!install_root(&root, kind, retired).unwrap().exists());
+        assert!(install_root(&root, kind, previous).unwrap().exists());
+        assert!(install_root(&root, kind, leased).unwrap().exists());
+        drop(legacy_lease);
+        assert!(!install_root(&root, kind, leased).unwrap().exists());
+        assert!(install_root(&root, kind, previous).unwrap().exists());
+        drop(candidate);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn selectors_reject_paths_and_staging_is_cleaned_when_cancelled() {
         let root = root();
