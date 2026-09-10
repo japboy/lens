@@ -41,7 +41,8 @@ function declaration(content: string, field: string): string {
   return values[0]![1]!;
 }
 
-export function versionState(files: Readonly<Record<string, string>>): {
+// Release Please owns manifests; Cargo resolves the lock in the following step.
+export function manifestVersionState(files: Readonly<Record<string, string>>): {
   version: string;
   bootstrapped: boolean;
 } {
@@ -67,6 +68,18 @@ export function versionState(files: Readonly<Record<string, string>>): {
         `${path}: expected the declared package identity and inherited workspace version`,
       );
   }
+  if (mirrors.some((value) => stableVersion(value) !== version))
+    throw new Error("Workspace version mirrors disagree with Tauri authority");
+  if (!keys.length && version !== "0.1.0")
+    throw new Error("Only initial 0.1.0 may precede the first release PR");
+  return { version, bootstrapped: keys.length === 1 };
+}
+
+export function versionState(files: Readonly<Record<string, string>>): {
+  version: string;
+  bootstrapped: boolean;
+} {
+  const state = manifestVersionState(files);
   const entries = files["Cargo.lock"]!.split(/^\[\[package\]\]\s*$/mu).slice(1);
   const local = entries.filter((entry) => !/^source\s*=/mu.test(entry));
   if (local.length !== cargoMembers.length)
@@ -75,13 +88,10 @@ export function versionState(files: Readonly<Record<string, string>>): {
     const matching = local.filter((entry) => declaration(entry, "name") === member.name);
     if (matching.length !== 1)
       throw new Error(`Expected exactly one local ${member.name} Cargo.lock entry`);
-    mirrors.push(declaration(matching[0]!, "version"));
+    if (stableVersion(declaration(matching[0]!, "version")) !== state.version)
+      throw new Error("Workspace version mirrors disagree with Tauri authority");
   }
-  if (mirrors.some((value) => stableVersion(value) !== version))
-    throw new Error("Workspace version mirrors disagree with Tauri authority");
-  if (!keys.length && version !== "0.1.0")
-    throw new Error("Only initial 0.1.0 may precede the first release PR");
-  return { version, bootstrapped: keys.length === 1 };
+  return state;
 }
 
 export function readVersion(root: string) {

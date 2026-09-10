@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MEMBERS } from "../workspace-policy.ts";
-import { VERSION_FILES, compareVersions, tagVersion, versionState } from "./version.ts";
+import {
+  VERSION_FILES,
+  compareVersions,
+  manifestVersionState,
+  tagVersion,
+  versionState,
+} from "./version.ts";
 
 const cargo = MEMBERS.filter((member) => member.ecosystem === "cargo");
 const files = (version = "0.1.0", bootstrapped = false) => {
@@ -25,6 +31,12 @@ const files = (version = "0.1.0", bootstrapped = false) => {
 };
 
 describe("workspace release authority", () => {
+  it("admits manifest proposals but requires a synchronized lock before release admission", () => {
+    const proposal = files("0.3.0", true);
+    proposal["Cargo.lock"] = files("0.2.0", true)["Cargo.lock"]!;
+    expect(manifestVersionState(proposal)).toEqual({ version: "0.3.0", bootstrapped: true });
+    expect(() => versionState(proposal)).toThrow("disagree");
+  });
   it("admits initial unshipped state and synchronized patch, minor and major releases", () => {
     expect(versionState(files())).toEqual({ version: "0.1.0", bootstrapped: false });
     for (const version of ["0.1.1", "0.2.0", "1.0.0"])

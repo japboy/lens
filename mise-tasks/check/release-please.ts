@@ -9,8 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInThisContext } from "node:vm";
 import { actionRevision, withActionSource } from "../../scripts/release/action-source.ts";
-import { VERSION_FILES, versionState } from "../../scripts/release/version.ts";
-import { MEMBERS } from "../../scripts/workspace-policy.ts";
+import { VERSION_FILES, manifestVersionState } from "../../scripts/release/version.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const revision = actionRevision(
@@ -153,9 +152,6 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
     `${major}.${minor + 1}.0`,
     `${major + 1}.0.0`,
   ];
-  const localCargoPackages = MEMBERS.filter((member) => member.ecosystem === "cargo").map(
-    (member) => member.name,
-  );
   for (const version of futureVersions) {
     const parsed = bundled.Version.parse(version);
     const updates = [
@@ -173,41 +169,22 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       const matching = updates.filter((update) => update.path === path);
       assert.equal(matching.length, 1, `Exactly one updater for ${path}`);
       const content = readFileSync(join(root, path), "utf8");
-      let expected: string;
-      if (path === "Cargo.lock") {
-        expected = content;
-        for (const name of localCargoPackages) {
-          const entry = `name = "${name}"\nversion = "${current}"`;
-          assert.equal(content.split(entry).length, 2, `Exactly one local lock entry for ${name}`);
-          expected = expected.replace(entry, `name = "${name}"\nversion = "${version}"`);
-        }
-      } else {
-        expected = content
-          .replace(`"version": "${current}"`, `"version": "${version}"`)
-          .replace(`version = "${current}"`, `version = "${version}"`);
-      }
+      const expected = content
+        .replace(`"version": "${current}"`, `"version": "${version}"`)
+        .replace(`version = "${current}"`, `version = "${version}"`);
       assert.equal(
         matching[0]!.updater.updateContent(content),
         expected,
         `Exact version-only update of ${path}`,
       );
-      if (path === "Cargo.lock") {
-        const externalEntries = localCargoPackages
-          .map(
-            (name) =>
-              `\n[[package]]\nname = "${name}"\nversion = "${current}"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`,
-          )
-          .join("");
-        assert.equal(
-          matching[0]!.updater.updateContent(content + externalEntries),
-          expected + externalEntries,
-          "Same-name registry packages must retain their independent versions",
-        );
-        cases++;
-      }
       cases++;
     }
     const byPath = new Map(updates.map((update) => [update.path, update]));
+    assert.equal(
+      byPath.has("Cargo.lock"),
+      false,
+      "Cargo owns package identities and dependency references together",
+    );
     const files = Object.fromEntries(
       VERSION_FILES.map((path) => {
         const content = readFileSync(join(root, path), "utf8");
@@ -219,7 +196,7 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
         ];
       }),
     );
-    assert.deepEqual(versionState(files), { version, bootstrapped: true });
+    assert.deepEqual(manifestVersionState(files), { version, bootstrapped: true });
     cases++;
   }
   for (const [previous, message, expected] of [
@@ -359,6 +336,7 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       assert.deepEqual(proposal.labels, ["autorelease: pending"]);
       const updates = new Map(proposal.updates.map((update) => [update.path, update]));
       assert.equal(updates.size, proposal.updates.length);
+      assert.equal(updates.has("Cargo.lock"), false);
       const applicable = [...updates.values()].filter(
         (update) => update.createIfMissing || existsSync(join(root, update.path)),
       );
@@ -383,7 +361,7 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
             ) ?? readFileSync(join(root, path), "utf8"),
         ]),
       );
-      assert.deepEqual(versionState(files), { version: "0.1.0", bootstrapped: true });
+      assert.deepEqual(manifestVersionState(files), { version: "0.1.0", bootstrapped: true });
       const changelog = updates.get("CHANGELOG.md")!.updater.updateContent("");
       assert.match(changelog, /## .*0\.1\.0/u);
       assert.ok(changelog.includes("first supported capability"));

@@ -33,11 +33,6 @@
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
-        },
-        {
-          "type": "toml",
-          "path": "Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value==\"desktop\" || @.name.value==\"domain\" || @.name.value==\"usecase\" || @.name.value==\"port-platform\" || @.name.value==\"adapter-platform-macos\" || @.name.value==\"adapter-output-mcp\"))].version"
         }
       ]
     }
