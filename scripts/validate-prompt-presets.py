@@ -23,6 +23,7 @@ args = parser.parse_args()
 for path in (args.node, args.adapter_entry, args.prompts):
     if not path.is_absolute() or not path.is_file():
         parser.error("All input paths must be existing absolute files")
+args.output = args.output.resolve()
 args.output.mkdir(parents=True, exist_ok=True)
 repo = Path(__file__).resolve().parent.parent
 
