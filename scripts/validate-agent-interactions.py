@@ -4,28 +4,23 @@ from pathlib import Path
 parser = argparse.ArgumentParser(
     description="Opt-in provider acceptance tests using isolated MCP fixtures; requires Agent authentication."
 )
-parser.add_argument("--agent", choices=["claude", "codex", "both"], default="both")
-parser.add_argument(
-    "--runtime-root",
-    type=Path,
-    default=Path.home()
-    / "Library/Application Support/com.github.japboy.lens/agent-runtimes",
-)
+parser.add_argument("--agent", choices=["claude", "codex"], required=True,
+                    help="Provider corresponding to the explicit Adapter entry point.")
+parser.add_argument("--node", type=Path, required=True,
+                    help="Absolute path to the verified managed Node executable.")
+parser.add_argument("--adapter-entry", type=Path, required=True,
+                    help="Absolute path to the installed ACP Adapter JavaScript entry point.")
 parser.add_argument("--output", type=Path, required=True)
 args = parser.parse_args()
-ROOT = args.runtime_root
+for option, path in [("--node", args.node), ("--adapter-entry", args.adapter_entry)]:
+    if not path.is_absolute() or not path.is_file():
+        parser.error(f"{option} must identify an existing absolute file")
 REPO = Path(__file__).resolve().parent.parent
 OUT = args.output
 OUT.mkdir(parents=True, exist_ok=True)
 
 
 async def probe(name, safe):
-    package_name = "claude-agent-acp" if name == "claude" else "codex-acp"
-    manifest = json.loads(
-        (REPO / f"apps/desktop/src-tauri/agent-runtime/{name}/package.json").read_text()
-    )
-    version = manifest["dependencies"][f"@agentclientprotocol/{package_name}"]
-    node_version = manifest["engines"]["node"]
     cwd = Path(tempfile.mkdtemp(prefix="lens-provider-"))
     (cwd / ".claude").mkdir()
     (cwd / ".claude/settings.json").write_text(
@@ -41,14 +36,9 @@ async def probe(name, safe):
             }
         )
     )
-    node = ROOT / f"node/v{node_version}-darwin-arm64/bin/node"
-    entry = (
-        ROOT
-        / f"agents/{name}-acp/{version}/node_modules/@agentclientprotocol/{package_name}/dist/index.js"
-    )
     proc = await asyncio.create_subprocess_exec(
-        str(node),
-        str(entry),
+        str(args.node),
+        str(args.adapter_entry),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -247,7 +237,8 @@ async def probe(name, safe):
             json.dumps(
                 {
                     "adapter": name,
-                    "version": version,
+                    "node": str(args.node),
+                    "adapterEntry": str(args.adapter_entry),
                     "counts": counts,
                     "results": results,
                 },
@@ -275,12 +266,8 @@ async def probe(name, safe):
 
 
 async def main():
-    results = []
-    if args.agent in ["codex", "both"]:
-        results.append(await probe("codex", "read-only"))
-    if args.agent in ["claude", "both"]:
-        results.append(await probe("claude", "plan"))
-    return all(results)
+    safe = {"codex": "read-only", "claude": "plan"}[args.agent]
+    return await probe(args.agent, safe)
 
 
 raise SystemExit(0 if asyncio.run(main()) else 1)

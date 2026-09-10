@@ -2,13 +2,11 @@
 //! Development configuration owns the version; its lock owns artifact provenance.
 use std::{fs, path::Path};
 
-pub const INPUTS: [&str; 6] = [
+pub const INPUTS: [&str; 4] = [
     "mise.toml",
     "mise.lock",
     "package.json",
     "apps/desktop/package.json",
-    "apps/desktop/src-tauri/agent-runtime/claude/package.json",
-    "apps/desktop/src-tauri/agent-runtime/codex/package.json",
 ];
 
 #[derive(Debug, PartialEq, Eq)]

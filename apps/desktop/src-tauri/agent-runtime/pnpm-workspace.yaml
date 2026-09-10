@@ -12,3 +12,4 @@ allowBuilds: {}
 engineStrict: true
 strictPeerDependencies: true
 saveExact: true
+pmOnFail: error

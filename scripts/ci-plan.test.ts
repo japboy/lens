@@ -29,7 +29,7 @@ describe("finite Linux-first change plans", () => {
     ["apps/desktop/src-tauri/src/native/mod.rs", "native-bundle"],
     ["packages/adapter-platform-macos/native/LensNative.m", "native-bundle"],
     ["apps/desktop/src-tauri/tauri.macos.conf.json", "full"],
-    ["apps/desktop/src-tauri/agent-runtime/claude/pnpm-lock.yaml", "full"],
+    ["apps/desktop/src-tauri/agent-runtime/pnpm-workspace.yaml", "full"],
     ["apps/desktop/src/package.json", "full"],
     ["scripts/new-policy.ts", "full"],
     ["mise-tasks/check/identity.ts", "full"],

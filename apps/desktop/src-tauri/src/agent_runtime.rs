@@ -35,7 +35,7 @@ const PNPM_DIST_SHA256: &str = "a8533087155540515892e6f022ba5c673bb2e62fcbcc124b
 const PNPM_ARCHIVE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const TAKUMI_GUARD_REGISTRY: &str = "https://npm.flatt.tech/";
 const REGISTRY_MAX_BYTES: usize = 2 * 1024 * 1024;
-const AGENT_INSTALL_RECORD_VERSION: u32 = 5;
+const AGENT_INSTALL_RECORD_VERSION: u32 = 6;
 const NODE_INSTALL_RECORD_VERSION: u32 = 2;
 const PNPM_INSTALL_RECORD_VERSION: u32 = 1;
 const NODE_TEAM_ID: &str = "HX7739G8FX";
@@ -43,157 +43,94 @@ const NODE_SIGNING_IDENTIFIER: &str = "node";
 const CLAUDE_TEAM_ID: &str = "Q6L2SF6YDW";
 const OPENAI_TEAM_ID: &str = "2DC432GLL2";
 
-const CLAUDE_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/claude/package.json");
-const CLAUDE_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/claude/pnpm-lock.yaml");
-const CLAUDE_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/claude/pnpm-workspace.yaml");
-const CODEX_PACKAGE_JSON: &[u8] = include_bytes!("../agent-runtime/codex/package.json");
-const CODEX_PNPM_LOCK: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-lock.yaml");
-const CODEX_PNPM_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/codex/pnpm-workspace.yaml");
+const AGENT_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/pnpm-workspace.yaml");
+
 #[derive(Debug, Clone)]
 pub struct ResolvedAgentRuntime {
     pub kind: AgentKind,
     pub adapter_name: &'static str,
-    pub adapter_version: &'static str,
+    pub adapter_version: String,
     pub safe_mode_id: &'static str,
     pub command: PathBuf,
     pub args: Vec<String>,
+    pub(crate) installation: Option<std::sync::Arc<RuntimeInstallation>>,
 }
 
-#[derive(Clone, Copy)]
-struct SignedExecutablePolicy {
-    relative_path: &'static str,
-    team_id: &'static str,
-    signing_identifier: &'static str,
-    label: &'static str,
+/// A lease keeps immutable files available while any Agent process references them.
+#[derive(Debug)]
+pub(crate) struct RuntimeInstallation {
+    root: PathBuf,
+    kind: AgentKind,
+    id: String,
 }
-
+impl Drop for RuntimeInstallation {
+    fn drop(&mut self) {
+        if let Ok(_guard) = selector_mutex().lock() {
+            let _ = prune_installations(&self.root, self.kind);
+        }
+    }
+}
+type LeaseMap = std::collections::HashMap<PathBuf, std::sync::Weak<RuntimeInstallation>>;
+fn leases() -> &'static std::sync::Mutex<LeaseMap> {
+    static VALUE: std::sync::OnceLock<std::sync::Mutex<LeaseMap>> = std::sync::OnceLock::new();
+    VALUE.get_or_init(Default::default)
+}
+fn selector_mutex() -> &'static std::sync::Mutex<()> {
+    static VALUE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &VALUE
+}
 #[derive(Clone, Copy)]
-struct AgentRuntimePolicy {
+struct Provider {
     kind: AgentKind,
     registry_id: &'static str,
     adapter_name: &'static str,
-    adapter_version: &'static str,
-    adapter_version_output: &'static str,
     safe_mode_id: &'static str,
-    package_json: &'static [u8],
-    pnpm_lock: &'static [u8],
-    pnpm_workspace: &'static [u8],
-    entrypoint: &'static str,
-    signed_executables: &'static [SignedExecutablePolicy],
+    bin_name: &'static str,
 }
-
-const CLAUDE_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[SignedExecutablePolicy {
-    relative_path: "node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-darwin-arm64@0.3.257/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
-    team_id: CLAUDE_TEAM_ID,
-    signing_identifier: "com.anthropic.claude-code",
-    label: "Claude runtime",
-}];
-
-const CODEX_SIGNED_EXECUTABLES: &[SignedExecutablePolicy] = &[
-    SignedExecutablePolicy {
-        relative_path: "node_modules/.pnpm/@openai+codex@0.153.4-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex",
-        team_id: OPENAI_TEAM_ID,
-        signing_identifier: "codex",
-        label: "Codex runtime",
-    },
-    SignedExecutablePolicy {
-        relative_path: "node_modules/.pnpm/@openai+codex@0.153.4-darwin-arm64/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
-        team_id: OPENAI_TEAM_ID,
-        signing_identifier: "codex-code-mode-host",
-        label: "Codex code-mode host",
-    },
-];
-
-fn policy(kind: AgentKind) -> AgentRuntimePolicy {
+fn provider(kind: AgentKind) -> Provider {
     match kind {
-        AgentKind::Claude => AgentRuntimePolicy {
+        AgentKind::Claude => Provider {
             kind,
             registry_id: "claude-acp",
             adapter_name: "@agentclientprotocol/claude-agent-acp",
-            adapter_version: "0.74.0",
-            adapter_version_output: "0.74.0",
             safe_mode_id: "plan",
-            package_json: CLAUDE_PACKAGE_JSON,
-            pnpm_lock: CLAUDE_PNPM_LOCK,
-            pnpm_workspace: CLAUDE_PNPM_WORKSPACE,
-            entrypoint: "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
-            signed_executables: CLAUDE_SIGNED_EXECUTABLES,
+            bin_name: "claude-agent-acp",
         },
-        AgentKind::Codex => AgentRuntimePolicy {
+        AgentKind::Codex => Provider {
             kind,
             registry_id: "codex-acp",
             adapter_name: "@agentclientprotocol/codex-acp",
-            adapter_version: "1.10.0",
-            adapter_version_output: "@agentclientprotocol/codex-acp 1.10.0",
             safe_mode_id: "read-only",
-            package_json: CODEX_PACKAGE_JSON,
-            pnpm_lock: CODEX_PNPM_LOCK,
-            pnpm_workspace: CODEX_PNPM_WORKSPACE,
-            entrypoint: "node_modules/@agentclientprotocol/codex-acp/dist/index.js",
-            signed_executables: CODEX_SIGNED_EXECUTABLES,
+            bin_name: "codex-acp",
         },
     }
 }
-
-/// Reject inconsistent embedded policy before consulting caches or downloading.
-fn validate_policy_inputs(approved: AgentRuntimePolicy) -> Result<(), String> {
-    let package: serde_json::Value = serde_json::from_slice(approved.package_json)
-        .map_err(|error| format!("invalid embedded Agent package policy: {error}"))?;
-    let manifest_version = package["dependencies"][approved.adapter_name].as_str();
-    if manifest_version != Some(approved.adapter_version) {
-        return Err(format!(
-            "{} runtime policy version {} does not match embedded package version {:?}",
-            approved.adapter_name, approved.adapter_version, manifest_version
-        ));
-    }
-    let expected_output = match approved.kind {
-        AgentKind::Codex => format!("{} {}", approved.adapter_name, approved.adapter_version),
-        AgentKind::Claude => approved.adapter_version.to_owned(),
-    };
-    if approved.adapter_version_output != expected_output {
-        return Err("Agent runtime version-output policy is inconsistent".into());
-    }
-    let lock = std::str::from_utf8(approved.pnpm_lock)
-        .map_err(|error| format!("invalid embedded Agent lock encoding: {error}"))?;
-    for executable in approved.signed_executables {
-        let locked_package = executable
-            .relative_path
-            .strip_prefix("node_modules/.pnpm/")
-            .and_then(|path| path.split('/').next())
-            .ok_or_else(|| "Agent signature policy has no managed package path".to_string())?
-            .replace('+', "/");
-        if !lock.contains(&format!("  '{locked_package}':")) {
-            return Err(format!("{} signature policy references a package absent from the embedded lock: {locked_package}", approved.adapter_name));
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug, Deserialize)]
 struct RegistryIndex {
     version: String,
     agents: Vec<RegistryAgent>,
 }
-
 #[derive(Debug, Deserialize)]
 struct RegistryAgent {
     id: String,
     version: String,
     distribution: RegistryDistribution,
 }
-
 #[derive(Debug, Deserialize)]
 struct RegistryDistribution {
     #[serde(default)]
     npx: Option<RegistryNpxDistribution>,
 }
-
 #[derive(Debug, Deserialize)]
 struct RegistryNpxDistribution {
     package: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize)]
 struct InstallRecord {
     schema_version: u32,
     registry_id: String,
@@ -205,8 +142,9 @@ struct InstallRecord {
     pnpm_archive_sha512: String,
     pnpm_lock_sha256: String,
     pnpm_workspace_sha256: String,
+    #[serde(default)]
+    package_json_sha256: Option<String>,
 }
-
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct NodeInstallRecord {
     schema_version: u32,
@@ -214,7 +152,6 @@ struct NodeInstallRecord {
     node_target: String,
     archive_sha256: String,
 }
-
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct PnpmInstallRecord {
     schema_version: u32,
@@ -225,344 +162,759 @@ struct PnpmInstallRecord {
     dist_sha256: String,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct Selector {
+    current: Option<String>,
+    previous: Option<String>,
+    candidate: Option<String>,
+    #[serde(default)]
+    rejected_version: Option<String>,
+}
+fn provider_root(root: &Path, kind: AgentKind) -> PathBuf {
+    root.join("agents").join(provider(kind).registry_id)
+}
+fn install_root(root: &Path, kind: AgentKind, id: &str) -> Result<PathBuf, String> {
+    if let Some(version) = id.strip_prefix("legacy:") {
+        if !valid_version(version) {
+            return Err("invalid legacy installation identity".into());
+        }
+        return Ok(provider_root(root, kind).join(version));
+    }
+    Uuid::parse_str(id).map_err(|_| "invalid managed installation identity".to_string())?;
+    Ok(provider_root(root, kind).join("installs").join(id))
+}
+fn read_selector(root: &Path, kind: AgentKind) -> Result<Selector, String> {
+    let path = provider_root(root, kind).join("selector.json");
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Selector::default())
+        }
+        Err(error) => return Err(format!("unable to read runtime selector: {error}")),
+    };
+    let selector: Selector = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid runtime selector: {error}"))?;
+    for id in [&selector.current, &selector.previous, &selector.candidate]
+        .into_iter()
+        .flatten()
+    {
+        install_root(root, kind, id)?;
+    }
+    Ok(selector)
+}
+fn write_selector(root: &Path, kind: AgentKind, selector: &Selector) -> Result<(), String> {
+    let dir = provider_root(root, kind);
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(format!(".selector-{}.json", Uuid::new_v4()));
+    let result = (|| {
+        let mut file = File::create(&path).map_err(|error| error.to_string())?;
+        use std::io::Write;
+        file.write_all(&serde_json::to_vec(selector).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        fs::rename(&path, dir.join("selector.json")).map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+fn prune_installations(root: &Path, kind: AgentKind) -> Result<(), String> {
+    let selector = read_selector(root, kind)?;
+    let provider = provider_root(root, kind);
+    let mut entries = Vec::new();
+    for dir in [&provider, &provider.join("installs")] {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(dir).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let id = if dir == &provider && valid_version(&name) {
+                format!("legacy:{name}")
+            } else if dir != &provider && Uuid::parse_str(&name).is_ok() {
+                name
+            } else {
+                continue;
+            };
+            entries.push((entry.path(), id));
+        }
+    }
+    let mut map = leases().lock().map_err(|_| "runtime leases unavailable")?;
+    map.retain(|_, lease| lease.strong_count() > 0);
+    for (path, id) in entries {
+        if [&selector.current, &selector.previous, &selector.candidate]
+            .into_iter()
+            .flatten()
+            .any(|keep| keep == &id)
+            || map.get(&path).is_some_and(|lease| lease.strong_count() > 0)
+        {
+            continue;
+        }
+        fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+fn acquire_lease(
+    root: &Path,
+    kind: AgentKind,
+    id: &str,
+) -> Result<std::sync::Arc<RuntimeInstallation>, String> {
+    let path = install_root(root, kind, id)?;
+    let mut map = leases().lock().map_err(|_| "runtime leases unavailable")?;
+    if let Some(lease) = map.get(&path).and_then(std::sync::Weak::upgrade) {
+        return Ok(lease);
+    }
+    let lease = std::sync::Arc::new(RuntimeInstallation {
+        root: root.to_owned(),
+        kind,
+        id: id.into(),
+    });
+    map.insert(path, std::sync::Arc::downgrade(&lease));
+    Ok(lease)
+}
+pub(crate) fn confirm_ready(runtime: &ResolvedAgentRuntime) -> Result<(), String> {
+    let Some(install) = &runtime.installation else {
+        return Ok(());
+    };
+    let _guard = selector_mutex()
+        .lock()
+        .map_err(|_| "runtime selector unavailable")?;
+    let mut selector = read_selector(&install.root, install.kind)?;
+    if selector.current.as_deref() == Some(&install.id) {
+        return Ok(());
+    }
+    if selector.candidate.as_deref() != Some(&install.id) {
+        return Err("runtime candidate was superseded".into());
+    }
+    selector.previous = selector.current.take();
+    selector.current = selector.candidate.take();
+    selector.rejected_version = None;
+    write_selector(&install.root, install.kind, &selector)?;
+    prune_installations(&install.root, install.kind)
+}
+pub(crate) async fn reject_candidate(
+    runtime: &ResolvedAgentRuntime,
+) -> Result<Option<ResolvedAgentRuntime>, String> {
+    let Some(install) = &runtime.installation else {
+        return Ok(None);
+    };
+    let fallback = {
+        let _guard = selector_mutex()
+            .lock()
+            .map_err(|_| "runtime selector unavailable")?;
+        let mut selector = read_selector(&install.root, install.kind)?;
+        if selector.candidate.as_deref() != Some(&install.id) {
+            return Ok(None);
+        }
+        selector.candidate = None;
+        selector.rejected_version = Some(runtime.adapter_version.clone());
+        write_selector(&install.root, install.kind, &selector)?;
+        selector.current
+    };
+    match fallback {
+        Some(id) => load_runtime(&install.root, install.kind, &id)
+            .await
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
 pub async fn resolve<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
 ) -> Result<ResolvedAgentRuntime, String> {
-    let state = app.state::<AppState>();
-    let _install_guard = state.agent_runtime_install.lock().await;
-    let operation_id = Uuid::new_v4();
-    publish_agent_runtime(
-        app,
-        runtime_state(
-            operation_id,
-            kind,
-            AgentRuntimeStage::Resolving,
-            "Resolving approved Agent runtime…",
-        ),
-    )?;
-
-    let result = resolve_inner(app, kind, operation_id, true).await;
-    if let Err(error) = &result {
-        update_agent_runtime(app, operation_id, |runtime| {
-            runtime.stage = AgentRuntimeStage::Failed;
-            runtime.message = None;
-            runtime.error = Some(error.clone());
-            runtime.total_bytes = None;
-        })?;
-    }
-    result
+    resolve_available(app, kind, false).await
 }
-
+pub async fn resolve_for_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+) -> Result<ResolvedAgentRuntime, String> {
+    resolve_available(app, kind, true).await
+}
 pub async fn resolve_installed<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
 ) -> Result<Option<ResolvedAgentRuntime>, String> {
     let state = app.state::<AppState>();
-    let _install_guard = state.agent_runtime_install.lock().await;
-    let operation_id = Uuid::new_v4();
+    let _guard = state.agent_runtime_install.lock().await;
+    let operation = Uuid::new_v4();
     publish_agent_runtime(
         app,
-        runtime_state(
-            operation_id,
-            kind,
-            AgentRuntimeStage::Resolving,
-            "Checking the installed Agent runtime…",
-        ),
+        AgentRuntimeState {
+            operation_id: Some(operation),
+            agent: Some(kind),
+            stage: AgentRuntimeStage::Resolving,
+            message: Some("Checking the installed Agent runtime…".into()),
+            ..Default::default()
+        },
     )?;
-
-    match resolve_inner(app, kind, operation_id, false).await {
-        Ok(runtime) => Ok(Some(runtime)),
-        Err(error) if error == not_installed_error(kind) => {
-            update_agent_runtime(app, operation_id, |runtime| {
-                runtime.stage = AgentRuntimeStage::NotInstalled;
-                runtime.message = Some(format!(
+    let result = async {
+        ensure_supported_target()?;
+        let root = runtime_root(app)?;
+        migrate_legacy(&root, kind).await?;
+        selected_runtime(&root, kind).await
+    }
+    .await;
+    match &result {
+        Ok(Some(runtime)) => publish_ready(app, operation, runtime, None)?,
+        Ok(None) => {
+            update_agent_runtime(app, operation, |state| {
+                state.stage = AgentRuntimeStage::NotInstalled;
+                state.message = Some(format!(
                     "{} will be downloaded when selected.",
                     display_name(kind)
                 ));
-                runtime.error = None;
+                state.error = None;
             })?;
-            Ok(None)
         }
         Err(error) => {
-            update_agent_runtime(app, operation_id, |runtime| {
-                runtime.stage = AgentRuntimeStage::Failed;
-                runtime.message = None;
-                runtime.error = Some(error.clone());
+            update_agent_runtime(app, operation, |state| {
+                state.stage = AgentRuntimeStage::Failed;
+                state.message = None;
+                state.error = Some(error.clone());
             })?;
-            Err(error)
         }
     }
+    result
 }
-
-async fn resolve_inner<R: tauri::Runtime>(
+async fn selected_runtime(
+    root: &Path,
+    kind: AgentKind,
+) -> Result<Option<ResolvedAgentRuntime>, String> {
+    let snapshot = read_selector(root, kind)?;
+    for id in [snapshot.candidate, snapshot.current, snapshot.previous]
+        .into_iter()
+        .flatten()
+    {
+        match load_runtime(root, kind, &id).await {
+            Ok(runtime) => {
+                let _guard = selector_mutex()
+                    .lock()
+                    .map_err(|_| "runtime selector unavailable")?;
+                let mut selector = read_selector(root, kind)?;
+                if selector.previous.as_deref() == Some(&id) && selector.current.is_none() {
+                    selector.current = selector.previous.take();
+                    write_selector(root, kind, &selector)?;
+                }
+                return Ok(Some(runtime));
+            }
+            Err(_) => {
+                let _guard = selector_mutex()
+                    .lock()
+                    .map_err(|_| "runtime selector unavailable")?;
+                let mut selector = read_selector(root, kind)?;
+                for reference in [
+                    &mut selector.candidate,
+                    &mut selector.current,
+                    &mut selector.previous,
+                ] {
+                    if reference.as_deref() == Some(&id) {
+                        *reference = None;
+                    }
+                }
+                write_selector(root, kind, &selector)?;
+            }
+        }
+    }
+    Ok(None)
+}
+async fn resolve_available<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
-    operation_id: Uuid,
-    install_if_missing: bool,
+    update: bool,
+) -> Result<ResolvedAgentRuntime, String> {
+    let state = app.state::<AppState>();
+    let _guard = state.agent_runtime_install.lock().await;
+    let root = runtime_root(app)?;
+    resolve_at(app, kind, update, &root).await
+}
+async fn resolve_at<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+    update: bool,
+    root: &Path,
 ) -> Result<ResolvedAgentRuntime, String> {
     ensure_supported_target()?;
-    let approved = policy(kind);
-    validate_policy_inputs(approved)?;
-    let root = runtime_root(app)?;
-
-    match verify_installed_runtime(&root, approved, operation_id, app).await {
+    migrate_legacy(root, kind).await?;
+    let existing = selected_runtime(root, kind).await?;
+    let operation_id = Uuid::new_v4();
+    publish_agent_runtime(
+        app,
+        AgentRuntimeState {
+            operation_id: Some(operation_id),
+            stage: AgentRuntimeStage::Resolving,
+            agent: Some(kind),
+            version: existing
+                .as_ref()
+                .map(|runtime| runtime.adapter_version.clone()),
+            message: Some("Checking the official ACP Registry…".into()),
+            ..Default::default()
+        },
+    )?;
+    if !update || read_selector(root, kind)?.candidate.is_some() {
+        if let Some(runtime) = &existing {
+            publish_ready(app, operation_id, runtime, None)?;
+            return Ok(runtime.clone());
+        }
+    }
+    let result = async {
+        let version = fetch_registry_version(kind).await?;
+        if let Some(runtime) = &existing {
+            if runtime.adapter_version == version {
+                return Ok(runtime.clone());
+            }
+        }
+        if read_selector(root, kind)?.rejected_version.as_deref() == Some(&version) {
+            return Err(format!(
+                "{} {version} previously failed required ACP compatibility checks",
+                display_name(kind)
+            ));
+        }
+        let node = ensure_node_runtime(app, root, operation_id).await?;
+        let pnpm = ensure_pnpm_runtime(app, root, &node, operation_id).await?;
+        install_candidate(app, root, &node, &pnpm, kind, &version, operation_id).await
+    }
+    .await;
+    match result {
         Ok(runtime) => {
-            publish_ready(app, operation_id, approved)?;
-            return Ok(runtime);
+            publish_ready(app, operation_id, &runtime, None)?;
+            Ok(runtime)
         }
-        Err(error) if !install_if_missing && error != not_installed_error(kind) => {
-            return Err(error);
+        Err(error) => {
+            if let Some(runtime) = existing {
+                publish_ready(app, operation_id, &runtime, Some(error))?;
+                Ok(runtime)
+            } else {
+                update_agent_runtime(app, operation_id, |state| {
+                    state.stage = AgentRuntimeStage::Failed;
+                    state.error = Some(error.clone());
+                    state.message = None;
+                })?;
+                Err(error)
+            }
         }
-        Err(_) if !install_if_missing => return Err(not_installed_error(kind)),
-        Err(_) => {}
-    }
-
-    update_agent_runtime(app, operation_id, |runtime| {
-        runtime.stage = AgentRuntimeStage::Resolving;
-        runtime.message = Some("Checking the official ACP Registry entry…".into());
-        runtime.error = None;
-    })?;
-    verify_registry_entry(approved).await?;
-
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("unable to create managed runtime directory: {error}"))?;
-    let node_root = ensure_node_runtime(app, &root, operation_id).await?;
-    let pnpm_root = ensure_pnpm_runtime(app, &root, &node_root, operation_id).await?;
-    let agent_root =
-        ensure_agent_runtime(app, &root, &node_root, &pnpm_root, approved, operation_id).await?;
-    verify_install_record(&agent_root, approved)?;
-    let runtime = verify_runtime_paths(&node_root, &agent_root, approved).await?;
-    publish_ready(app, operation_id, approved)?;
-    Ok(runtime)
-}
-
-fn runtime_state(
-    operation_id: Uuid,
-    kind: AgentKind,
-    stage: AgentRuntimeStage,
-    message: &str,
-) -> AgentRuntimeState {
-    AgentRuntimeState {
-        operation_id: Some(operation_id),
-        stage,
-        agent: Some(kind),
-        version: Some(policy(kind).adapter_version.into()),
-        downloaded_bytes: 0,
-        total_bytes: None,
-        message: Some(message.into()),
-        error: None,
     }
 }
-
 fn publish_ready<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    operation_id: Uuid,
-    approved: AgentRuntimePolicy,
+    operation: Uuid,
+    runtime: &ResolvedAgentRuntime,
+    failure: Option<String>,
 ) -> Result<(), String> {
-    update_agent_runtime(app, operation_id, |runtime| {
-        runtime.stage = AgentRuntimeStage::Ready;
-        runtime.version = Some(approved.adapter_version.into());
-        runtime.downloaded_bytes = 0;
-        runtime.total_bytes = None;
-        runtime.message = Some(format!(
-            "{} {} is installed and verified.",
-            display_name(approved.kind),
-            approved.adapter_version
-        ));
-        runtime.error = None;
-    })?;
-    Ok(())
+    update_agent_runtime(app, operation, |state| {
+        state.stage = AgentRuntimeStage::Ready;
+        state.version = Some(runtime.adapter_version.clone());
+        state.message = Some(match &failure {
+            Some(error) => format!(
+                "Update failed; continuing with verified {} {}: {error}",
+                display_name(runtime.kind),
+                runtime.adapter_version
+            ),
+            None => format!(
+                "{} {} is installed and verified.",
+                display_name(runtime.kind),
+                runtime.adapter_version
+            ),
+        });
+        state.error = failure;
+        state.downloaded_bytes = 0;
+        state.total_bytes = None;
+    })
+    .map(|_| ())
 }
-
 fn runtime_root<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map(|path| path.join("agent-runtimes"))
-        .map_err(|error| format!("unable to resolve application data directory: {error}"))
+        .map_err(|error| error.to_string())
 }
-
 fn node_install_root(root: &Path) -> PathBuf {
     root.join("node")
         .join(format!("v{NODE_VERSION}-{NODE_TARGET}"))
 }
-
 fn pnpm_install_root(root: &Path) -> PathBuf {
     root.join("pnpm").join(format!("v{PNPM_VERSION}"))
 }
-
-fn agent_install_root(root: &Path, approved: AgentRuntimePolicy) -> PathBuf {
-    root.join("agents")
-        .join(approved.registry_id)
-        .join(approved.adapter_version)
-}
-
-async fn verify_installed_runtime<R: tauri::Runtime>(
-    root: &Path,
-    approved: AgentRuntimePolicy,
-    operation_id: Uuid,
-    app: &AppHandle<R>,
-) -> Result<ResolvedAgentRuntime, String> {
-    let node_root = node_install_root(root);
-    let agent_root = agent_install_root(root, approved);
-    if !node_root.is_dir() || !agent_root.is_dir() {
-        return Err(not_installed_error(approved.kind));
+fn valid_version(version: &str) -> bool {
+    if version.is_empty() || version.len() > 128 {
+        return false;
     }
-
-    update_agent_runtime(app, operation_id, |runtime| {
-        runtime.stage = AgentRuntimeStage::Verifying;
-        runtime.message = Some("Verifying the installed Agent runtime…".into());
-    })?;
-    verify_install_record(&agent_root, approved)?;
-    verify_runtime_paths(&node_root, &agent_root, approved).await
+    let (release, build) = version
+        .split_once('+')
+        .map_or((version, None), |(a, b)| (a, Some(b)));
+    let (core, pre) = release
+        .split_once('-')
+        .map_or((release, None), |(a, b)| (a, Some(b)));
+    let numeric = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|b| b.is_ascii_digit())
+            && (part.len() == 1 || !part.starts_with('0'))
+    };
+    let core: Vec<_> = core.split('.').collect();
+    if core.len() != 3 || !core.into_iter().all(numeric) {
+        return false;
+    }
+    let identifiers = |value: &str, prerelease: bool| {
+        value.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && (!prerelease || !part.bytes().all(|b| b.is_ascii_digit()) || numeric(part))
+        })
+    };
+    pre.is_none_or(|value| identifiers(value, true))
+        && build.is_none_or(|value| identifiers(value, false))
 }
-
-fn verify_install_record(agent_root: &Path, approved: AgentRuntimePolicy) -> Result<(), String> {
-    let record_path = agent_root.join("lens-runtime.json");
-    let record_bytes = fs::read(&record_path)
-        .map_err(|error| format!("managed Agent install record is unavailable: {error}"))?;
-    let record = serde_json::from_slice::<InstallRecord>(&record_bytes)
-        .map_err(|error| format!("managed Agent install record is invalid: {error}"))?;
-    if record.schema_version != AGENT_INSTALL_RECORD_VERSION
-        || record.registry_id != approved.registry_id
-        || record.adapter_name != approved.adapter_name
-        || record.adapter_version != approved.adapter_version
+fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let release = |s: &str| s.split('+').next().unwrap_or("").to_owned();
+    let a = release(a);
+    let b = release(b);
+    let split = |s: &str| {
+        let (core, pre) = s.split_once('-').map_or((s, None), |(a, b)| (a, Some(b)));
+        (
+            core.split('.').map(str::to_owned).collect::<Vec<_>>(),
+            pre.map(str::to_owned),
+        )
+    };
+    let (a, ap) = split(&a);
+    let (b, bp) = split(&b);
+    let number = |a: &str, b: &str| a.len().cmp(&b.len()).then_with(|| a.cmp(b));
+    for (a, b) in a.iter().zip(&b) {
+        let cmp = number(a, b);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+    }
+    match (ap, bp) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => {
+            let a: Vec<_> = a.split('.').collect();
+            let b: Vec<_> = b.split('.').collect();
+            for (a, b) in a.iter().zip(&b) {
+                let an = a.bytes().all(|c| c.is_ascii_digit());
+                let bn = b.bytes().all(|c| c.is_ascii_digit());
+                let cmp = match (an, bn) {
+                    (true, true) => number(a, b),
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => a.cmp(b),
+                };
+                if cmp != Ordering::Equal {
+                    return cmp;
+                }
+            }
+            a.len().cmp(&b.len())
+        }
+    }
+}
+fn validate_registry_entry(bytes: &[u8], kind: AgentKind) -> Result<String, String> {
+    if bytes.len() > REGISTRY_MAX_BYTES {
+        return Err("official ACP Registry response exceeds the supported size".into());
+    }
+    let registry: RegistryIndex =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if registry.version != REGISTRY_SCHEMA_VERSION {
+        return Err("unsupported ACP Registry schema".into());
+    }
+    let provider = provider(kind);
+    let mut entries = registry
+        .agents
+        .into_iter()
+        .filter(|agent| agent.id == provider.registry_id);
+    let entry = entries
+        .next()
+        .ok_or("Agent is absent from official ACP Registry")?;
+    if entries.next().is_some() || !valid_version(&entry.version) {
+        return Err("invalid or duplicate official ACP Registry entry".into());
+    }
+    let distribution = entry
+        .distribution
+        .npx
+        .ok_or("Agent has no supported npm distribution")?;
+    if !distribution.args.is_empty()
+        || !distribution.env.is_empty()
+        || distribution.package != format!("{}@{}", provider.adapter_name, entry.version)
+    {
+        return Err("official ACP Registry package identity mismatch".into());
+    }
+    Ok(entry.version)
+}
+async fn fetch_registry_version(kind: AgentKind) -> Result<String, String> {
+    let mut response = http_client()?
+        .get(REGISTRY_URL)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > REGISTRY_MAX_BYTES as u64)
+    {
+        return Err("ACP Registry response too large".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if bytes.len().saturating_add(chunk.len()) > REGISTRY_MAX_BYTES {
+            return Err("ACP Registry response too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    validate_registry_entry(&bytes, kind)
+}
+fn manifest(kind: AgentKind, version: &str) -> Result<Vec<u8>, String> {
+    if !valid_version(version) {
+        return Err("invalid exact Adapter version".into());
+    }
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "name": format!("lens-managed-{}", provider(kind).registry_id), "private": true,
+        "dependencies": { provider(kind).adapter_name: version },
+        "engines": { "node": NODE_VERSION }, "packageManager": format!("pnpm@{PNPM_VERSION}")
+    }))
+    .map_err(|error| error.to_string())
+}
+fn read_record(path: &Path, kind: AgentKind) -> Result<InstallRecord, String> {
+    let record: InstallRecord = serde_json::from_slice(
+        &fs::read(path.join("lens-runtime.json")).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let provider = provider(kind);
+    if ![5, AGENT_INSTALL_RECORD_VERSION].contains(&record.schema_version)
+        || record.registry_id != provider.registry_id
+        || record.adapter_name != provider.adapter_name
+        || !valid_version(&record.adapter_version)
         || record.node_version != NODE_VERSION
         || record.node_archive_sha256 != NODE_ARCHIVE_SHA256
         || record.pnpm_version != PNPM_VERSION
         || record.pnpm_archive_sha512 != PNPM_ARCHIVE_SHA512
-        || record.pnpm_lock_sha256 != sha256_bytes(approved.pnpm_lock)
-        || record.pnpm_workspace_sha256 != sha256_bytes(approved.pnpm_workspace)
     {
-        return Err("managed Agent install record does not match the approved policy".into());
+        return Err("managed Agent install record does not match runtime policy".into());
     }
-    if fs::read(agent_root.join("package.json")).ok().as_deref() != Some(approved.package_json)
-        || fs::read(agent_root.join("pnpm-lock.yaml")).ok().as_deref() != Some(approved.pnpm_lock)
-        || fs::read(agent_root.join("pnpm-workspace.yaml"))
-            .ok()
-            .as_deref()
-            != Some(approved.pnpm_workspace)
+    let package = fs::read(path.join("package.json")).map_err(|error| error.to_string())?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&package).map_err(|error| error.to_string())?;
+    if json["dependencies"][provider.adapter_name].as_str() != Some(&record.adapter_version)
+        || sha256_file(&path.join("pnpm-lock.yaml"), "Agent dependency lock")?
+            != record.pnpm_lock_sha256
+        || sha256_file(&path.join("pnpm-workspace.yaml"), "Agent workspace policy")?
+            != record.pnpm_workspace_sha256
     {
-        return Err("managed Agent package policy files were modified".into());
+        return Err("managed Agent dependency policy was modified".into());
     }
-    Ok(())
+    if record.schema_version == AGENT_INSTALL_RECORD_VERSION
+        && (record.package_json_sha256.as_deref() != Some(&sha256_bytes(&package))
+            || package != manifest(kind, &record.adapter_version)?
+            || fs::read(path.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?
+                != AGENT_WORKSPACE)
+    {
+        return Err("managed Agent install policy was modified".into());
+    }
+    Ok(record)
 }
-
+fn package_directory(root: &Path, from: &Path, package: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let mut cursor = fs::canonicalize(from).map_err(|error| error.to_string())?;
+    while cursor.starts_with(&root) {
+        let candidate = cursor.join("node_modules").join(package);
+        if candidate.join("package.json").is_file() {
+            let file = canonical_managed_file(
+                &root,
+                &candidate.join("package.json"),
+                "Agent dependency manifest",
+            )?;
+            return file
+                .parent()
+                .map(Path::to_owned)
+                .ok_or("invalid dependency path".into());
+        }
+        if !cursor.pop() {
+            break;
+        }
+    }
+    Err(format!("Agent dependency {package} is missing"))
+}
+fn package_json(root: &Path) -> Result<serde_json::Value, String> {
+    serde_json::from_slice(&fs::read(root.join("package.json")).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())
+}
+fn dependency(root: &Path, from: &Path, name: &str) -> Result<PathBuf, String> {
+    let package = package_json(from)?;
+    if package["dependencies"].get(name).is_none()
+        && package["optionalDependencies"].get(name).is_none()
+    {
+        return Err(format!("Agent does not declare required dependency {name}"));
+    }
+    package_directory(root, from, name)
+}
 async fn verify_runtime_paths(
     node_root: &Path,
     agent_root: &Path,
-    approved: AgentRuntimePolicy,
+    kind: AgentKind,
+    version: &str,
 ) -> Result<ResolvedAgentRuntime, String> {
     verify_node_runtime(node_root).await?;
+    let policy = provider(kind);
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
-    let entrypoint = canonical_managed_file(
-        agent_root,
-        &agent_root.join(approved.entrypoint),
-        "ACP adapter",
-    )?;
-
-    for executable in approved.signed_executables {
-        let path = canonical_managed_file(
-            agent_root,
-            &agent_root.join(executable.relative_path),
-            executable.label,
-        )?;
-        verify_code_signature(
-            &path,
-            executable.team_id,
-            executable.signing_identifier,
-            executable.label,
-        )
-        .await?;
+    let adapter = package_directory(agent_root, agent_root, policy.adapter_name)?;
+    let package = package_json(&adapter)?;
+    if package["name"].as_str() != Some(policy.adapter_name)
+        || package["version"].as_str() != Some(version)
+    {
+        return Err("installed Adapter identity mismatch".into());
     }
-
+    let bin = package["bin"][policy.bin_name]
+        .as_str()
+        .ok_or("Adapter executable entry is missing")?;
+    let entrypoint = canonical_managed_file(agent_root, &adapter.join(bin), "ACP adapter")?;
+    let paths = match kind {
+        AgentKind::Claude => {
+            let sdk = dependency(agent_root, &adapter, "@anthropic-ai/claude-agent-sdk")?;
+            let platform = dependency(
+                agent_root,
+                &sdk,
+                "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+            )?;
+            vec![(
+                platform.join("claude"),
+                CLAUDE_TEAM_ID,
+                "com.anthropic.claude-code",
+            )]
+        }
+        AgentKind::Codex => {
+            let cli = dependency(agent_root, &adapter, "@openai/codex")?;
+            let platform = dependency(agent_root, &cli, "@openai/codex-darwin-arm64")?;
+            vec![
+                (
+                    platform.join("vendor/aarch64-apple-darwin/bin/codex"),
+                    OPENAI_TEAM_ID,
+                    "codex",
+                ),
+                (
+                    platform.join("vendor/aarch64-apple-darwin/bin/codex-code-mode-host"),
+                    OPENAI_TEAM_ID,
+                    "codex-code-mode-host",
+                ),
+            ]
+        }
+    };
+    for (path, team, identifier) in paths {
+        let path = canonical_managed_file(agent_root, &path, "Agent native executable")?;
+        verify_code_signature(&path, team, identifier, "Agent native executable").await?;
+    }
+    let expected = match kind {
+        AgentKind::Claude => version.to_owned(),
+        AgentKind::Codex => format!("{} {version}", policy.adapter_name),
+    };
     verify_version_command(
         &node,
         &[entrypoint.to_string_lossy().as_ref(), "--version"],
-        approved.adapter_version_output,
+        &expected,
         "ACP adapter",
     )
     .await?;
-
     Ok(ResolvedAgentRuntime {
-        kind: approved.kind,
-        adapter_name: approved.adapter_name,
-        adapter_version: approved.adapter_version,
-        safe_mode_id: approved.safe_mode_id,
+        kind: policy.kind,
+        adapter_name: policy.adapter_name,
+        adapter_version: version.into(),
+        safe_mode_id: policy.safe_mode_id,
         command: node,
         args: vec![entrypoint.to_string_lossy().into_owned()],
+        installation: None,
     })
 }
-
-async fn verify_registry_entry(approved: AgentRuntimePolicy) -> Result<(), String> {
-    let client = http_client()?;
-    let mut response =
-        tokio::time::timeout(Duration::from_secs(30), client.get(REGISTRY_URL).send())
-            .await
-            .map_err(|_| "official ACP Registry request timed out".to_string())?
-            .map_err(|error| format!("unable to fetch official ACP Registry: {error}"))?
-            .error_for_status()
-            .map_err(|error| format!("official ACP Registry returned an error: {error}"))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > REGISTRY_MAX_BYTES as u64)
+async fn load_runtime(
+    root: &Path,
+    kind: AgentKind,
+    id: &str,
+) -> Result<ResolvedAgentRuntime, String> {
+    let lease = {
+        let _guard = selector_mutex()
+            .lock()
+            .map_err(|_| "runtime selector unavailable")?;
+        acquire_lease(root, kind, id)?
+    };
+    let path = install_root(root, kind, id)?;
+    if !fs::symlink_metadata(&path)
+        .map_err(|error| error.to_string())?
+        .is_dir()
     {
-        return Err("official ACP Registry response exceeds the supported size".into());
+        return Err("managed installation is not a directory".into());
     }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("unable to read official ACP Registry: {error}"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > REGISTRY_MAX_BYTES {
-            return Err("official ACP Registry response exceeds the supported size".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    validate_registry_entry(&bytes, approved)
+    let record = read_record(&path, kind)?;
+    let mut runtime = verify_runtime_paths(
+        &node_install_root(root),
+        &path,
+        kind,
+        &record.adapter_version,
+    )
+    .await?;
+    runtime.installation = Some(lease);
+    Ok(runtime)
 }
-
-fn validate_registry_entry(bytes: &[u8], approved: AgentRuntimePolicy) -> Result<(), String> {
-    if bytes.len() > REGISTRY_MAX_BYTES {
-        return Err("official ACP Registry response exceeds the supported size".into());
+async fn migrate_legacy(root: &Path, kind: AgentKind) -> Result<(), String> {
+    let selector = read_selector(root, kind)?;
+    if selector.current.is_some() || selector.candidate.is_some() {
+        return Ok(());
     }
-    let registry = serde_json::from_slice::<RegistryIndex>(bytes)
-        .map_err(|error| format!("official ACP Registry is invalid: {error}"))?;
-    if registry.version != REGISTRY_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported ACP Registry schema version {}",
-            registry.version
-        ));
+    let dir = provider_root(root, kind);
+    if !dir.is_dir() {
+        return Ok(());
     }
-    let mut matches = registry
-        .agents
-        .into_iter()
-        .filter(|agent| agent.id == approved.registry_id);
-    let entry = matches.next().ok_or_else(|| {
-        format!(
-            "{} is absent from the official ACP Registry",
-            approved.registry_id
+    let mut entries = fs::read_dir(&dir)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|ty| ty.is_dir())
+                && valid_version(&entry.file_name().to_string_lossy())
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        version_order(
+            &a.file_name().to_string_lossy(),
+            &b.file_name().to_string_lossy(),
         )
-    })?;
-    if matches.next().is_some() {
-        return Err(format!(
-            "{} appears more than once in the official ACP Registry",
-            approved.registry_id
-        ));
-    }
-    let npx = entry.distribution.npx.ok_or_else(|| {
-        format!(
-            "{} has no npm distribution in the official ACP Registry",
-            approved.registry_id
+    });
+    for entry in entries.into_iter().rev() {
+        let path = entry.path();
+        let Ok(record) = read_record(&path, kind) else {
+            continue;
+        };
+        if record.schema_version != 5
+            || record.adapter_version != entry.file_name().to_string_lossy()
+        {
+            continue;
+        }
+        if verify_runtime_paths(
+            &node_install_root(root),
+            &path,
+            kind,
+            &record.adapter_version,
         )
-    })?;
-    let expected_registry_spec = format!("{}@{}", approved.adapter_name, entry.version);
-    if npx.package != expected_registry_spec {
-        return Err(format!(
-            "official ACP Registry package {} does not match {}",
-            npx.package, expected_registry_spec
-        ));
+        .await
+        .is_err()
+        {
+            continue;
+        }
+        let _guard = selector_mutex()
+            .lock()
+            .map_err(|_| "runtime selector unavailable")?;
+        let mut selector = read_selector(root, kind)?;
+        if selector.current.is_none() {
+            selector.current = Some(format!("legacy:{}", record.adapter_version));
+            write_selector(root, kind, &selector)?;
+        }
+        return Ok(());
     }
     Ok(())
 }
@@ -893,7 +1245,11 @@ async fn verify_pnpm_runtime_payload(node_root: &Path, pnpm_root: &Path) -> Resu
     }
     verify_version_command(
         &node,
-        &[pnpm_cli.to_string_lossy().as_ref(), "--version"],
+        &[
+            pnpm_cli.to_string_lossy().as_ref(),
+            "--pm-on-fail=error",
+            "--version",
+        ],
         PNPM_VERSION,
         "pnpm",
     )
@@ -963,150 +1319,186 @@ async fn download_pnpm_archive<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn ensure_agent_runtime<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    root: &Path,
-    node_root: &Path,
-    pnpm_root: &Path,
-    approved: AgentRuntimePolicy,
-    operation_id: Uuid,
-) -> Result<PathBuf, String> {
-    let final_root = agent_install_root(root, approved);
-    if final_root.is_dir() {
-        match verify_install_record(&final_root, approved) {
-            Ok(())
-                if verify_runtime_paths(node_root, &final_root, approved)
-                    .await
-                    .is_ok() =>
-            {
-                return Ok(final_root)
-            }
-            _ => quarantine_existing(root, &final_root, approved.registry_id)?,
-        }
+struct StagingCleanup {
+    root: PathBuf,
+    path: PathBuf,
+}
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        cleanup_staging(&self.root, &self.path);
     }
-
-    update_agent_runtime(app, operation_id, |runtime| {
-        runtime.stage = AgentRuntimeStage::Installing;
-        runtime.message = Some(format!(
-            "Installing {} {} from its approved pnpm dependency lock through Takumi Guard…",
-            display_name(approved.kind),
-            approved.adapter_version
-        ));
-        runtime.downloaded_bytes = 0;
-        runtime.total_bytes = None;
-    })?;
-
-    let staging_root = root.join(".staging").join(Uuid::new_v4().to_string());
-    let staged_agent = staging_root.join("agent");
-    let pnpm_store = staging_root.join("pnpm-store");
-    fs::create_dir_all(&staged_agent)
-        .map_err(|error| format!("unable to create Agent staging directory: {error}"))?;
-    fs::write(staged_agent.join("package.json"), approved.package_json)
-        .map_err(|error| format!("unable to write Agent package policy: {error}"))?;
-    fs::write(staged_agent.join("pnpm-lock.yaml"), approved.pnpm_lock)
-        .map_err(|error| format!("unable to write Agent dependency lock: {error}"))?;
-    fs::write(
-        staged_agent.join("pnpm-workspace.yaml"),
-        approved.pnpm_workspace,
-    )
-    .map_err(|error| format!("unable to write Agent pnpm policy: {error}"))?;
-    fs::write(staging_root.join("blank-user-npmrc"), [])
-        .map_err(|error| format!("unable to create pnpm policy file: {error}"))?;
-    fs::write(staging_root.join("blank-global-npmrc"), [])
-        .map_err(|error| format!("unable to create pnpm policy file: {error}"))?;
-
-    let result = async {
-        run_pnpm_install(
-            node_root,
-            pnpm_root,
-            &staged_agent,
-            &pnpm_store,
-            &staging_root,
-        )
-        .await?;
-        verify_runtime_paths(node_root, &staged_agent, approved).await?;
-        let record = serde_json::to_vec_pretty(&install_record(approved))
-            .map_err(|error| format!("unable to serialize Agent install record: {error}"))?;
-        fs::write(staged_agent.join("lens-runtime.json"), record)
-            .map_err(|error| format!("unable to write Agent install record: {error}"))?;
-        let parent = final_root
-            .parent()
-            .ok_or_else(|| "managed Agent path has no parent".to_string())?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("unable to create managed Agent directory: {error}"))?;
-        match fs::rename(&staged_agent, &final_root) {
-            Ok(()) => Ok(final_root.clone()),
-            Err(_error) if final_root.is_dir() => {
-                verify_install_record(&final_root, approved)?;
-                Ok(final_root.clone())
-            }
-            Err(error) => Err(format!("unable to activate managed Agent runtime: {error}")),
-        }
-    }
-    .await;
-    cleanup_staging(root, &staging_root);
-    result
 }
 
+async fn install_candidate<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    root: &Path,
+    node: &Path,
+    pnpm: &Path,
+    kind: AgentKind,
+    version: &str,
+    operation: Uuid,
+) -> Result<ResolvedAgentRuntime, String> {
+    update_agent_runtime(app, operation, |state| {
+        state.stage = AgentRuntimeStage::Installing;
+        state.message = Some(format!(
+            "Installing {} {version} through Takumi Guard and Safe-chain…",
+            display_name(kind)
+        ));
+    })?;
+    let id = Uuid::new_v4().to_string();
+    let staging = root.join(".staging").join(&id);
+    let agent = staging.join("agent");
+    fs::create_dir_all(&agent).map_err(|error| error.to_string())?;
+    let _cleanup = StagingCleanup {
+        root: root.to_owned(),
+        path: staging.clone(),
+    };
+    let package = manifest(kind, version)?;
+    fs::write(agent.join("package.json"), &package).map_err(|error| error.to_string())?;
+    fs::write(agent.join("pnpm-workspace.yaml"), AGENT_WORKSPACE)
+        .map_err(|error| error.to_string())?;
+    fs::write(staging.join("blank-user-npmrc"), []).map_err(|error| error.to_string())?;
+    fs::write(staging.join("blank-global-npmrc"), []).map_err(|error| error.to_string())?;
+    let result = async {
+        run_pnpm_install(node, pnpm, &agent, &staging, true).await?;
+        let lock = fs::read(agent.join("pnpm-lock.yaml")).map_err(|error| error.to_string())?;
+        if lock.is_empty() {
+            return Err("resolved dependency lock is empty".into());
+        }
+        if fs::read(agent.join("package.json")).map_err(|error| error.to_string())? != package
+            || fs::read(agent.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?
+                != AGENT_WORKSPACE
+        {
+            return Err("dependency resolution modified install policy".into());
+        }
+        run_pnpm_install(node, pnpm, &agent, &staging, false).await?;
+        if fs::read(agent.join("package.json")).map_err(|error| error.to_string())? != package
+            || fs::read(agent.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?
+                != AGENT_WORKSPACE
+            || fs::read(agent.join("pnpm-lock.yaml")).map_err(|error| error.to_string())? != lock
+        {
+            return Err(
+                "Agent installation modified its manifest, lock or Safe-chain policy".into(),
+            );
+        }
+        verify_runtime_paths(node, &agent, kind, version).await?;
+        let policy = provider(kind);
+        let record = InstallRecord {
+            schema_version: AGENT_INSTALL_RECORD_VERSION,
+            registry_id: policy.registry_id.into(),
+            adapter_name: policy.adapter_name.into(),
+            adapter_version: version.into(),
+            node_version: NODE_VERSION.into(),
+            node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
+            pnpm_version: PNPM_VERSION.into(),
+            pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+            pnpm_lock_sha256: sha256_bytes(&lock),
+            pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE),
+            package_json_sha256: Some(sha256_bytes(&package)),
+        };
+        fs::write(
+            agent.join("lens-runtime.json"),
+            serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let destination = install_root(root, kind, &id)?;
+        fs::create_dir_all(destination.parent().unwrap()).map_err(|error| error.to_string())?;
+        {
+            let _guard = selector_mutex()
+                .lock()
+                .map_err(|_| "runtime selector unavailable")?;
+            fs::rename(&agent, &destination).map_err(|error| error.to_string())?;
+            let mut selector = read_selector(root, kind)?;
+            selector.candidate = Some(id.clone());
+            write_selector(root, kind, &selector)?;
+        }
+        load_runtime(root, kind, &id).await
+    }
+    .await;
+    cleanup_staging(root, &staging);
+    result
+}
+fn package_manager_override(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.starts_with("npm_config_")
+        || key.starts_with("pnpm_")
+        || key.starts_with("corepack_")
+        || matches!(
+            key.as_str(),
+            "node_options" | "node_path" | "node_tls_reject_unauthorized"
+        )
+}
 async fn run_pnpm_install(
     node_root: &Path,
     pnpm_root: &Path,
-    agent_root: &Path,
-    pnpm_store: &Path,
-    staging_root: &Path,
+    agent: &Path,
+    staging: &Path,
+    resolve: bool,
 ) -> Result<(), String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
-    let pnpm_cli = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
-    let user_config = staging_root.join("blank-user-npmrc");
-    let global_config = staging_root.join("blank-global-npmrc");
-    let future = Command::new(&node)
-        .arg(&pnpm_cli)
-        .args([
-            "install",
-            "--prod",
-            "--frozen-lockfile",
-            "--registry=https://npm.flatt.tech/",
-        ])
-        .arg(format!("--store-dir={}", pnpm_store.display()))
-        .current_dir(agent_root)
+    let pnpm = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
+    let mut command = Command::new(node);
+    for (key, _) in std::env::vars_os() {
+        if package_manager_override(&key.to_string_lossy()) {
+            command.env_remove(key);
+        }
+    }
+    command.arg(pnpm).args([
+        "install",
+        "--prod",
+        "--pm-on-fail=error",
+        "--registry=https://npm.flatt.tech/",
+    ]);
+    if resolve {
+        command.args(["--lockfile-only", "--no-frozen-lockfile"]);
+    } else {
+        command.arg("--frozen-lockfile");
+    }
+    command
+        .arg(format!(
+            "--store-dir={}",
+            staging.join("pnpm-store").display()
+        ))
+        .current_dir(agent)
+        .env("CI", "true")
         .env("NODE_OPTIONS", "")
         .env("NODE_PATH", "")
         .env("NODE_TLS_REJECT_UNAUTHORIZED", "1")
         .env("PNPM_HOME", "")
         .env("COREPACK_HOME", "")
-        .env("NPM_CONFIG_USERCONFIG", &user_config)
-        .env("NPM_CONFIG_GLOBALCONFIG", &global_config)
+        .env("NPM_CONFIG_USERCONFIG", staging.join("blank-user-npmrc"))
+        .env(
+            "NPM_CONFIG_GLOBALCONFIG",
+            staging.join("blank-global-npmrc"),
+        )
         .env("npm_config_node_options", "")
         .env("npm_config_update_notifier", "false")
         .env("npm_config_registry", TAKUMI_GUARD_REGISTRY)
         .stdin(Stdio::null())
-        .output();
-    let output = tokio::time::timeout(Duration::from_secs(600), future)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(600), command.output())
         .await
         .map_err(|_| "managed Agent pnpm installation timed out".to_string())?
-        .map_err(|error| format!("unable to start managed Agent pnpm installation: {error}"))?;
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "managed Agent pnpm installation failed: {}",
+            "managed Agent Safe-chain installation failed: {} {}",
+            String::from_utf8_lossy(&output.stdout).trim(),
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
     Ok(())
 }
-
-fn install_record(approved: AgentRuntimePolicy) -> InstallRecord {
-    InstallRecord {
-        schema_version: AGENT_INSTALL_RECORD_VERSION,
-        registry_id: approved.registry_id.into(),
-        adapter_name: approved.adapter_name.into(),
-        adapter_version: approved.adapter_version.into(),
-        node_version: NODE_VERSION.into(),
-        node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
-        pnpm_version: PNPM_VERSION.into(),
-        pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
-        pnpm_lock_sha256: sha256_bytes(approved.pnpm_lock),
-        pnpm_workspace_sha256: sha256_bytes(approved.pnpm_workspace),
-    }
+pub(crate) fn publish_recovery<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    runtime: &ResolvedAgentRuntime,
+    reason: &str,
+) -> Result<(), String> {
+    publish_agent_runtime(app, AgentRuntimeState {
+        operation_id: Some(Uuid::new_v4()), agent: Some(runtime.kind), stage: AgentRuntimeStage::Ready,
+        version: Some(runtime.adapter_version.clone()), message: Some(format!("The update did not meet required ACP capabilities. Continuing with verified {} {}.", display_name(runtime.kind), runtime.adapter_version)),
+        error: Some(format!("Agent update failed required startup compatibility checks: {reason}")), ..Default::default()
+    })
 }
 
 async fn verify_code_signature(
@@ -1141,7 +1533,17 @@ async fn verify_version_command(
     expected: &str,
     label: &str,
 ) -> Result<(), String> {
-    let future = Command::new(command)
+    let mut process = Command::new(command);
+    for (key, _) in std::env::vars_os() {
+        if package_manager_override(&key.to_string_lossy()) {
+            process.env_remove(key);
+        }
+    }
+    let future = process
+        .current_dir(command.parent().ok_or("version command has no parent")?)
+        .env("NPM_CONFIG_USERCONFIG", "/dev/null")
+        .env("NPM_CONFIG_GLOBALCONFIG", "/dev/null")
+        .kill_on_drop(true)
         .args(args)
         .env("NODE_OPTIONS", "")
         .env("NODE_PATH", "")
@@ -1292,61 +1694,256 @@ fn ensure_supported_target() -> Result<(), String> {
     }
 }
 
-fn not_installed_error(kind: AgentKind) -> String {
-    format!("{} managed runtime is not installed", display_name(kind))
-}
-
 fn display_name(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "Claude Agent",
         AgentKind::Codex => "Codex",
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn registry(agent: serde_json::Value) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({
-            "version": "1.0.0",
-            "agents": [agent]
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn approved_registry_identity_accepts_a_newer_version_of_the_same_package() {
-        let bytes = registry(serde_json::json!({
-            "id": "codex-acp",
-            "version": "1.7.0",
-            "distribution": {
-                "npx": { "package": "@agentclientprotocol/codex-acp@1.7.0" }
+    fn copy_fixture(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let to = destination.join(entry.file_name());
+            let ty = entry.file_type().unwrap();
+            if ty.is_symlink() {
+                std::os::unix::fs::symlink(fs::read_link(entry.path()).unwrap(), to).unwrap();
+            } else if ty.is_dir() {
+                copy_fixture(&entry.path(), &to);
+            } else {
+                fs::copy(entry.path(), to).unwrap();
             }
-        }));
-        assert!(validate_registry_entry(&bytes, policy(AgentKind::Codex)).is_ok());
+        }
     }
-
-    #[test]
-    fn registry_package_identity_must_match_the_approved_adapter() {
-        let bytes = registry(serde_json::json!({
-            "id": "codex-acp",
-            "version": "1.6.2",
-            "distribution": {
-                "npx": { "package": "@example/impersonator@1.6.2" }
-            }
-        }));
-        assert!(validate_registry_entry(&bytes, policy(AgentKind::Codex)).is_err());
+    fn root() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lens-runtime-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        root
     }
-
+    fn runtime(root: &Path, kind: AgentKind, id: &str) -> ResolvedAgentRuntime {
+        let policy = provider(kind);
+        ResolvedAgentRuntime {
+            kind,
+            adapter_name: policy.adapter_name,
+            adapter_version: "1.2.3".into(),
+            safe_mode_id: policy.safe_mode_id,
+            command: PathBuf::new(),
+            args: vec![],
+            installation: Some(acquire_lease(root, kind, id).unwrap()),
+        }
+    }
     #[test]
-    fn archive_paths_and_links_are_contained_by_the_approved_root() {
-        assert!(validate_archive_path(
-            &Path::new(NODE_ARCHIVE_ROOT).join("bin/node"),
-            NODE_ARCHIVE_ROOT
+    fn registry_requires_unique_supported_identity_and_exact_version() {
+        let valid = serde_json::json!({"version":"1.0.0","agents":[{"id":"codex-acp","version":"1.2.3","distribution":{"npx":{"package":"@agentclientprotocol/codex-acp@1.2.3"}}}]});
+        assert_eq!(
+            validate_registry_entry(&serde_json::to_vec(&valid).unwrap(), AgentKind::Codex)
+                .unwrap(),
+            "1.2.3"
+        );
+        for field in [
+            "wrong-package@1.2.3",
+            "@agentclientprotocol/codex-acp@latest",
+            "@agentclientprotocol/codex-acp@1.2.4",
+        ] {
+            let mut invalid = valid.clone();
+            invalid["agents"][0]["distribution"]["npx"]["package"] = field.into();
+            assert!(validate_registry_entry(
+                &serde_json::to_vec(&invalid).unwrap(),
+                AgentKind::Codex
+            )
+            .is_err());
+        }
+        let mut duplicate = valid.clone();
+        duplicate["agents"]
+            .as_array_mut()
+            .unwrap()
+            .push(valid["agents"][0].clone());
+        assert!(validate_registry_entry(
+            &serde_json::to_vec(&duplicate).unwrap(),
+            AgentKind::Codex
         )
-        .is_ok());
-        assert!(validate_archive_path(Path::new("../escape"), NODE_ARCHIVE_ROOT).is_err());
+        .is_err());
+        assert!(
+            validate_registry_entry(&vec![0; REGISTRY_MAX_BYTES + 1], AgentKind::Codex).is_err()
+        );
+        assert!(!valid_version("../../escape"));
+    }
+    #[test]
+    fn manifest_keeps_managed_package_manager_and_safe_chain_authority() {
+        let json: serde_json::Value =
+            serde_json::from_slice(&manifest(AgentKind::Claude, "0.99.0").unwrap()).unwrap();
+        assert_eq!(
+            json["dependencies"]["@agentclientprotocol/claude-agent-acp"],
+            "0.99.0"
+        );
+        assert_eq!(json["packageManager"], format!("pnpm@{PNPM_VERSION}"));
+        assert_eq!(json["engines"]["node"], NODE_VERSION);
+        let policy = std::str::from_utf8(AGENT_WORKSPACE).unwrap();
+        for required in [
+            "minimumReleaseAge: 4320",
+            "minimumReleaseAgeStrict: true",
+            "trustPolicy: no-downgrade",
+            "allowBuilds: {}",
+            "pmOnFail: error",
+        ] {
+            assert!(policy.contains(required));
+        }
+    }
+    #[test]
+    fn ready_callback_promotes_only_the_exact_candidate_and_retains_one_previous() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let old = Uuid::new_v4().to_string();
+        let next = Uuid::new_v4().to_string();
+        fs::create_dir_all(install_root(&root, kind, &old).unwrap()).unwrap();
+        fs::create_dir_all(install_root(&root, kind, &next).unwrap()).unwrap();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(old.clone()),
+                candidate: Some(next.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stale = runtime(&root, kind, &Uuid::new_v4().to_string());
+        assert!(confirm_ready(&stale).is_err());
+        let next_runtime = runtime(&root, kind, &next);
+        confirm_ready(&next_runtime).unwrap();
+        let selector = read_selector(&root, kind).unwrap();
+        assert_eq!(selector.current, Some(next));
+        assert_eq!(selector.previous, Some(old));
+        assert_eq!(selector.candidate, None);
+        confirm_ready(&next_runtime).unwrap();
+        drop(stale);
+        drop(next_runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pruning_never_removes_an_installation_with_a_live_process_lease() {
+        let root = root();
+        let kind = AgentKind::Claude;
+        let old = Uuid::new_v4().to_string();
+        let current = Uuid::new_v4().to_string();
+        let next = Uuid::new_v4().to_string();
+        for id in [&old, &current, &next] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(current.clone()),
+                previous: Some(old.clone()),
+                candidate: Some(next.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let old_lease = runtime(&root, kind, &old);
+        let next_lease = runtime(&root, kind, &next);
+        confirm_ready(&next_lease).unwrap();
+        assert!(install_root(&root, kind, &old).unwrap().exists());
+        drop(old_lease);
+        assert!(!install_root(&root, kind, &old).unwrap().exists());
+        assert!(install_root(&root, kind, &current).unwrap().exists());
+        drop(next_lease);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn incompatible_first_candidate_is_not_activated_or_replaced_by_an_arbitrary_version() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let id = Uuid::new_v4().to_string();
+        fs::create_dir_all(install_root(&root, kind, &id).unwrap()).unwrap();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                candidate: Some(id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let runtime = runtime(&root, kind, &id);
+        assert!(reject_candidate(&runtime).await.unwrap().is_none());
+        let selector = read_selector(&root, kind).unwrap();
+        assert_eq!(selector.current, None);
+        assert_eq!(selector.previous, None);
+        assert_eq!(selector.candidate, None);
+        assert_eq!(selector.rejected_version.as_deref(), Some("1.2.3"));
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn selectors_reject_paths_and_staging_is_cleaned_when_cancelled() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some("../escape".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(read_selector(&root, kind).is_err());
+        let path = root.join(".staging").join("discard");
+        fs::create_dir_all(&path).unwrap();
+        {
+            let _guard = StagingCleanup {
+                root: root.clone(),
+                path: path.clone(),
+            };
+        }
+        assert!(!path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn legacy_record_requires_unpatched_schema_and_all_stored_policy_hashes() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        fs::write(root.join("package.json"), manifest(kind, "1.2.3").unwrap()).unwrap();
+        fs::write(root.join("pnpm-lock.yaml"), "test-lock").unwrap();
+        fs::write(root.join("pnpm-workspace.yaml"), AGENT_WORKSPACE).unwrap();
+        let mut record = InstallRecord {
+            schema_version: 5,
+            registry_id: provider(kind).registry_id.into(),
+            adapter_name: provider(kind).adapter_name.into(),
+            adapter_version: "1.2.3".into(),
+            node_version: NODE_VERSION.into(),
+            node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
+            pnpm_version: PNPM_VERSION.into(),
+            pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+            pnpm_lock_sha256: sha256_bytes(b"test-lock"),
+            pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE),
+            package_json_sha256: None,
+        };
+        let save = |record: &InstallRecord| {
+            fs::write(
+                root.join("lens-runtime.json"),
+                serde_json::to_vec(record).unwrap(),
+            )
+            .unwrap()
+        };
+        save(&record);
+        assert!(read_record(&root, kind).is_ok());
+        record.schema_version = 4;
+        save(&record);
+        assert!(read_record(&root, kind).is_err());
+        record.schema_version = 5;
+        save(&record);
+        fs::write(root.join("pnpm-lock.yaml"), "tampered").unwrap();
+        assert!(read_record(&root, kind).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn archive_links_stay_within_the_managed_archive() {
         assert!(validate_archive_link(
             &Path::new(NODE_ARCHIVE_ROOT).join("bin/npm"),
             Path::new("../lib/node_modules/npm/bin/npm-cli.js"),
@@ -1360,117 +1957,6 @@ mod tests {
         )
         .is_err());
     }
-
-    #[test]
-    fn install_record_is_derived_from_the_embedded_dependency_lock() {
-        let approved = policy(AgentKind::Claude);
-        let record = install_record(approved);
-        assert_eq!(record.schema_version, AGENT_INSTALL_RECORD_VERSION);
-        assert_eq!(record.adapter_version, "0.74.0");
-        assert_eq!(record.pnpm_lock_sha256, sha256_bytes(CLAUDE_PNPM_LOCK));
-        assert_eq!(record.pnpm_version, "11.22.0");
-        assert_eq!(
-            record.pnpm_workspace_sha256,
-            sha256_bytes(CLAUDE_PNPM_WORKSPACE)
-        );
-    }
-
-    #[test]
-    fn install_record_rejects_previously_patched_runtime() {
-        for kind in [AgentKind::Claude, AgentKind::Codex] {
-            let approved = policy(kind);
-            let root = std::env::temp_dir().join(format!("lens-runtime-record-{}", Uuid::new_v4()));
-            fs::create_dir_all(&root).unwrap();
-            fs::write(root.join("package.json"), approved.package_json).unwrap();
-            fs::write(root.join("pnpm-lock.yaml"), approved.pnpm_lock).unwrap();
-            fs::write(root.join("pnpm-workspace.yaml"), approved.pnpm_workspace).unwrap();
-            let mut record = serde_json::to_value(install_record(approved)).unwrap();
-            record["schema_version"] = serde_json::json!(4);
-            record["adapter_patch_sha256"] = serde_json::json!("legacy-patch");
-            fs::write(
-                root.join("lens-runtime.json"),
-                serde_json::to_vec(&record).unwrap(),
-            )
-            .unwrap();
-            assert!(verify_install_record(&root, approved)
-                .unwrap_err()
-                .contains("does not match"));
-            fs::write(
-                root.join("lens-runtime.json"),
-                serde_json::to_vec(&install_record(approved)).unwrap(),
-            )
-            .unwrap();
-            verify_install_record(&root, approved).unwrap();
-            fs::remove_dir_all(root).unwrap();
-        }
-    }
-
-    #[test]
-    fn adapter_policy_matches_embedded_package_versions() {
-        for kind in [AgentKind::Codex, AgentKind::Claude] {
-            let approved = policy(kind);
-            let package: serde_json::Value = serde_json::from_slice(approved.package_json).unwrap();
-            assert_eq!(
-                package["dependencies"][approved.adapter_name].as_str(),
-                Some(approved.adapter_version),
-                "{} policy is stale",
-                approved.adapter_name
-            );
-            let expected_output = match kind {
-                AgentKind::Codex => {
-                    format!("{} {}", approved.adapter_name, approved.adapter_version)
-                }
-                AgentKind::Claude => approved.adapter_version.to_string(),
-            };
-            assert_eq!(approved.adapter_version_output, expected_output);
-            validate_policy_inputs(approved).unwrap();
-        }
-    }
-
-    #[test]
-    fn policy_validation_rejects_version_and_signature_drift_before_install() {
-        let mut stale = policy(AgentKind::Codex);
-        stale.adapter_version = "1.6.2";
-        assert!(validate_policy_inputs(stale)
-            .unwrap_err()
-            .contains("does not match"));
-        let mut stale = policy(AgentKind::Codex);
-        stale.adapter_version_output = "@agentclientprotocol/codex-acp 1.6.2";
-        assert!(validate_policy_inputs(stale)
-            .unwrap_err()
-            .contains("version-output"));
-        let mut stale = policy(AgentKind::Claude);
-        stale.signed_executables = CODEX_SIGNED_EXECUTABLES;
-        assert!(validate_policy_inputs(stale)
-            .unwrap_err()
-            .contains("absent from the embedded lock"));
-    }
-
-    #[test]
-    fn signature_policy_packages_exist_in_the_embedded_lock() {
-        for kind in [AgentKind::Codex, AgentKind::Claude] {
-            let approved = policy(kind);
-            let lock = std::str::from_utf8(approved.pnpm_lock).unwrap();
-            for executable in approved.signed_executables {
-                let package = executable
-                    .relative_path
-                    .strip_prefix("node_modules/.pnpm/")
-                    .unwrap()
-                    .split('/')
-                    .next()
-                    .unwrap()
-                    .replace('+', "/");
-                assert!(
-                    lock.contains(&format!("  '{package}':")),
-                    "{} signature policy references an unlocked package: {package}",
-                    approved.adapter_name
-                );
-            }
-        }
-    }
-
-    /// Explicit acceptance test against fresh, disposable installs of the checked-in
-    /// manifests. It verifies signatures/CLI versions without modifying adapters.
     #[tokio::test]
     #[ignore = "requires LENS_UNPATCHED_CODEX_ROOT, LENS_UNPATCHED_CLAUDE_ROOT and LENS_UNPATCHED_NODE_ROOT"]
     async fn freshly_installed_unpatched_adapters_pass_runtime_verification() {
@@ -1481,24 +1967,219 @@ mod tests {
         ] {
             let root =
                 fs::canonicalize(PathBuf::from(std::env::var_os(variable).unwrap())).unwrap();
-            let temporary = fs::canonicalize(std::env::temp_dir()).unwrap();
-            assert!(root.starts_with(&temporary) || root.starts_with("/private/tmp"));
+            assert!(
+                root.starts_with(fs::canonicalize(std::env::temp_dir()).unwrap())
+                    || root.starts_with("/private/tmp")
+            );
             assert!(root
                 .file_name()
                 .unwrap()
                 .to_str()
                 .unwrap()
                 .starts_with("lens-"));
-            let approved = policy(kind);
+            let json = package_json(&root).unwrap();
+            let version = json["dependencies"][provider(kind).adapter_name]
+                .as_str()
+                .unwrap();
+            verify_runtime_paths(&node, &root, kind, version)
+                .await
+                .unwrap();
+            let migration = super::tests::root();
+            let node_path = node_install_root(&migration);
+            fs::create_dir_all(node_path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&node, &node_path).unwrap();
+            let legacy = provider_root(&migration, kind).join(version);
+            copy_fixture(&root, &legacy);
+            let policy = provider(kind);
+            let record = InstallRecord {
+                schema_version: 5,
+                registry_id: policy.registry_id.into(),
+                adapter_name: policy.adapter_name.into(),
+                adapter_version: version.into(),
+                node_version: NODE_VERSION.into(),
+                node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
+                pnpm_version: PNPM_VERSION.into(),
+                pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+                pnpm_lock_sha256: sha256_file(&legacy.join("pnpm-lock.yaml"), "lock").unwrap(),
+                pnpm_workspace_sha256: sha256_file(
+                    &legacy.join("pnpm-workspace.yaml"),
+                    "workspace",
+                )
+                .unwrap(),
+                package_json_sha256: None,
+            };
+            fs::write(
+                legacy.join("lens-runtime.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+            migrate_legacy(&migration, kind).await.unwrap();
             assert_eq!(
-                fs::read(root.join("package.json")).unwrap(),
-                approved.package_json
+                read_selector(&migration, kind).unwrap().current,
+                Some(format!("legacy:{version}"))
             );
-            assert_eq!(
-                fs::read(root.join("pnpm-lock.yaml")).unwrap(),
-                approved.pnpm_lock
+            let restored = selected_runtime(&migration, kind).await.unwrap().unwrap();
+            assert_eq!(restored.adapter_version, version);
+            assert!(legacy.exists());
+            drop(restored);
+            fs::remove_dir_all(migration).unwrap();
+        }
+    }
+
+    #[test]
+    fn versions_and_registry_configuration_are_explicit() {
+        for invalid in [
+            "01.2.3",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3-01",
+            "1.2.3+a..b",
+            "latest",
+        ] {
+            assert!(!valid_version(invalid), "{invalid}");
+        }
+        for valid in ["1.2.3", "0.0.0", "1.2.3-rc.1+build.01"] {
+            assert!(valid_version(valid), "{valid}");
+        }
+        assert!(version_order("1.10.0", "1.9.0").is_gt());
+        assert!(version_order("1.10.0", "1.10.0-rc.1").is_gt());
+        for extra in [
+            serde_json::json!({"args":["--unsafe"]}),
+            serde_json::json!({"env":{"NODE_OPTIONS":"--import=evil"}}),
+        ] {
+            let mut distribution =
+                serde_json::json!({"package":"@agentclientprotocol/codex-acp@1.2.3"});
+            distribution
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let registry = serde_json::json!({"version":"1.0.0","agents":[{"id":"codex-acp","version":"1.2.3","distribution":{"npx":distribution}}]});
+            assert!(validate_registry_entry(
+                &serde_json::to_vec(&registry).unwrap(),
+                AgentKind::Codex
+            )
+            .is_err());
+        }
+    }
+    #[test]
+    fn ambient_package_manager_policy_overrides_are_removed_case_insensitively() {
+        for key in [
+            "npm_config_minimumReleaseAge",
+            "NPM_CONFIG_IGNORE_SCRIPTS",
+            "PnPm_PACKAGE_MANAGER_STRICT",
+            "COREPACK_ENABLE_PROJECT_SPEC",
+            "NODE_OPTIONS",
+            "NODE_PATH",
+        ] {
+            assert!(package_manager_override(key));
+        }
+        for key in ["PATH", "TMPDIR", "HTTPS_PROXY"] {
+            assert!(!package_manager_override(key));
+        }
+    }
+    fn expected_policy_rejection(error: &str) -> bool {
+        [
+            "ERR_PNPM_NO_MATURE_MATCHING_VERSION",
+            "ERR_PNPM_TRUST_DOWNGRADE",
+            "ERR_PNPM_MINIMUM_RELEASE_AGE",
+        ]
+        .iter()
+        .any(|code| error.contains(code))
+    }
+    #[tokio::test]
+    #[ignore = "requires disposable LENS_DYNAMIC_ROOT plus explicitly age-eligible LENS_DYNAMIC_CODEX_VERSION/LENS_DYNAMIC_CLAUDE_VERSION"]
+    async fn fresh_dynamic_install_resolves_and_preserves_exact_inputs() {
+        let root = fs::canonicalize(PathBuf::from(
+            std::env::var_os("LENS_DYNAMIC_ROOT").unwrap(),
+        ))
+        .unwrap();
+        assert!(
+            root.starts_with(fs::canonicalize(std::env::temp_dir()).unwrap())
+                || root.starts_with("/private/tmp")
+        );
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("lens-"));
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .build(crate::product_context())
+            .unwrap();
+        let operation = Uuid::new_v4();
+        let node = ensure_node_runtime(app.handle(), &root, operation)
+            .await
+            .unwrap();
+        let pnpm = ensure_pnpm_runtime(app.handle(), &root, &node, operation)
+            .await
+            .unwrap();
+        for (kind, env) in [
+            (AgentKind::Codex, "LENS_DYNAMIC_CODEX_VERSION"),
+            (AgentKind::Claude, "LENS_DYNAMIC_CLAUDE_VERSION"),
+        ] {
+            assert_eq!(read_selector(&root, kind).unwrap(), Selector::default());
+            let latest = fetch_registry_version(kind).await.unwrap();
+            let latest_result =
+                install_candidate(app.handle(), &root, &node, &pnpm, kind, &latest, operation)
+                    .await;
+            let latest_blocked = match latest_result {
+                Ok(runtime) => {
+                    // Test-only state transition, not a claim of authenticated provider validation.
+                    reject_candidate(&runtime).await.unwrap();
+                    drop(runtime);
+                    let _guard = selector_mutex().lock().unwrap();
+                    write_selector(&root, kind, &Selector::default()).unwrap();
+                    false
+                }
+                Err(error) => {
+                    assert!(expected_policy_rejection(&error), "{error}");
+                    assert_eq!(read_selector(&root, kind).unwrap(), Selector::default());
+                    eprintln!("Official latest blocked by retained policy: {error}");
+                    true
+                }
+            };
+            // This explicit version override exists only in the opt-in acceptance fixture.
+            let eligible = std::env::var(env).expect("explicit age-eligible test version");
+            let runtime = install_candidate(
+                app.handle(),
+                &root,
+                &node,
+                &pnpm,
+                kind,
+                &eligible,
+                operation,
+            )
+            .await
+            .expect(
+                "age-eligible exact fixture must install successfully through unchanged Safe-chain",
             );
-            verify_runtime_paths(&node, &root, approved).await.unwrap();
+            assert_eq!(runtime.adapter_version, eligible);
+            let selector = read_selector(&root, kind).unwrap();
+            assert!(selector.current.is_none());
+            assert!(selector.candidate.is_some());
+            let id = runtime.installation.as_ref().unwrap().id.clone();
+            let record = read_record(&install_root(&root, kind, &id).unwrap(), kind).unwrap();
+            assert_eq!(record.schema_version, AGENT_INSTALL_RECORD_VERSION);
+            // Exercise the exact callback; actual initialize/session validation belongs to live tests.
+            confirm_ready(&runtime).unwrap();
+            let selected = resolve_at(app.handle(), kind, true, &root).await.unwrap();
+            if latest_blocked {
+                assert_eq!(selected.installation.as_ref().unwrap().id, id);
+                let snapshot = app
+                    .state::<AppState>()
+                    .runtime
+                    .read()
+                    .unwrap()
+                    .agent_runtime
+                    .clone();
+                assert_eq!(snapshot.stage, AgentRuntimeStage::Ready);
+                assert!(snapshot
+                    .error
+                    .as_deref()
+                    .is_some_and(expected_policy_rejection));
+                assert_eq!(read_selector(&root, kind).unwrap().current, Some(id));
+            }
         }
     }
 }

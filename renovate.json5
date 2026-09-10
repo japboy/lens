@@ -117,12 +117,6 @@
       automerge: false,
     },
     {
-      description: "Managed runtime dependency updates require manual review.",
-      matchManagers: ["npm"],
-      matchFileNames: ["apps/desktop/src-tauri/agent-runtime/**"],
-      automerge: false,
-    },
-    {
       description: "Development and managed Agent Node versions share the mise lock and update together.",
       matchPackageNames: ["node"],
       groupName: "Node.js runtime",

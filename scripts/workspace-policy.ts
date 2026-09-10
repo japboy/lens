@@ -172,12 +172,6 @@ export const TARGET_DEPENDENCIES = [
   { member: "desktop", target: 'cfg(target_os = "macos")', kind: "normal", name: "tauri" },
 ] as const;
 
-// These are separate production trust domains, not development workspace members.
-export const MANAGED_RUNTIME_DIRECTORIES = [
-  "apps/desktop/src-tauri/agent-runtime/claude",
-  "apps/desktop/src-tauri/agent-runtime/codex",
-] as const;
-
 export type BuildVariant = {
   id: string;
   target: "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin";

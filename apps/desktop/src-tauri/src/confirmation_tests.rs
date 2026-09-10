@@ -37,6 +37,11 @@ enum Scenario {
     NativeUnavailable,
     ObserverUnavailable,
     AgentUnavailable,
+    CandidateMissingHttp,
+    CandidateAlwaysMissingHttp,
+    CandidateAuthRequired,
+    CandidateSetupFailure,
+    CandidatePromptFailure,
     StopDuringDismiss,
     StopDuringPrompt,
     StopDuringExtraction,
@@ -50,6 +55,9 @@ enum Effect {
     Capture,
     Observe,
     Resolve,
+    ResolveForSession,
+    ConfirmReady(String),
+    RejectCandidate(String),
     Connect,
     Initialize,
     NewSession(Value),
@@ -321,13 +329,41 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
             Ok(ResolvedAgentRuntime {
                 kind,
                 adapter_name: "fixture-acp",
-                adapter_version: "1",
+                adapter_version: "2.0.0".into(),
+                installation: None,
                 safe_mode_id: "safe",
                 command: "/fixture/not-executed".into(),
                 args: vec![],
             })
         })
     }
+    fn resolve_for_session<'a>(
+        &'a self,
+        app: &'a tauri::AppHandle<MockRuntime>,
+        kind: AgentKind,
+    ) -> agent::HostFuture<'a, ResolvedAgentRuntime> {
+        self.0.record(Effect::ResolveForSession);
+        self.resolve(app, kind)
+    }
+    fn confirm_ready(&self, runtime: &ResolvedAgentRuntime) -> Result<(), String> {
+        self.0
+            .record(Effect::ConfirmReady(runtime.adapter_version.clone()));
+        Ok(())
+    }
+    fn reject_candidate<'a>(
+        &'a self,
+        runtime: &'a ResolvedAgentRuntime,
+    ) -> agent::HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        self.0
+            .record(Effect::RejectCandidate(runtime.adapter_version.clone()));
+        Box::pin(async move {
+            Ok(Some(ResolvedAgentRuntime {
+                adapter_version: "1.0.0".into(),
+                ..runtime.clone()
+            }))
+        })
+    }
+
     fn resolve_installed<'a>(
         &'a self,
         _: &'a tauri::AppHandle<MockRuntime>,
@@ -336,6 +372,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
         panic!("confirmation does not restore an installation")
     }
     fn connect(&self, _: &agent::AgentDescriptor) -> DynConnectTo<Client> {
+        let first_connection = !self.0.effects.lock().unwrap().contains(&Effect::Connect);
         self.0.record(Effect::Connect);
         let initialize = self.0.clone();
         let new_session = self.0.clone();
@@ -353,7 +390,12 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         responder.respond(
                             InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
                                 AgentCapabilities::new()
-                                    .mcp_capabilities(McpCapabilities::new().http(true))
+                                    .mcp_capabilities(McpCapabilities::new().http(
+                                        initialize.scenario != Scenario::CandidateAlwaysMissingHttp
+                                            && !(first_connection
+                                                && initialize.scenario
+                                                    == Scenario::CandidateMissingHttp),
+                                    ))
                                     .prompt_capabilities(PromptCapabilities::new().image(true)),
                             ),
                         )
@@ -366,6 +408,10 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 _| {
                         new_session
                             .record(Effect::NewSession(serde_json::to_value(request).unwrap()));
+                        if new_session.scenario == Scenario::CandidateAuthRequired {
+                            return responder
+                                .respond_with_error(agent_client_protocol::Error::auth_required());
+                        }
                         responder.respond(
                             NewSessionResponse::new("fixture-session")
                                 .config_options(Fixture::options()),
@@ -378,6 +424,12 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 responder: Responder<SetSessionConfigOptionResponse>,
                                 _| {
                         configure.record(Effect::Configure);
+                        if configure.scenario == Scenario::CandidateSetupFailure {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::invalid_params()
+                                    .data("fixture saved settings rejected"),
+                            );
+                        }
                         assert_eq!(request.config_id.to_string(), "mode");
                         assert_eq!(serde_json::to_value(&request).unwrap()["value"], "safe");
                         responder.respond(SetSessionConfigOptionResponse::new(Fixture::options()))
@@ -390,6 +442,12 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 connection: ConnectionTo<Client>| {
                         let prompt_value = serde_json::to_value(&request).unwrap();
                         prompt.record(Effect::Prompt(prompt_value.clone()));
+                        if prompt.scenario == Scenario::CandidatePromptFailure {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("fixture provider prompt failure"),
+                            );
+                        }
                         if prompt.scenario == Scenario::HtmlPublication
                             || prompt.scenario == Scenario::StopDuringPrompt
                         {
@@ -749,6 +807,135 @@ fn http_publication_commits_exact_private_html() {
 }
 
 #[test]
+fn incompatible_candidate_falls_back_once_before_exactly_one_prompt() {
+    let harness = setup(Scenario::CandidateMissingHttp);
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Completed);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| **e == Effect::ResolveForSession)
+            .count(),
+        1
+    );
+    assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 2);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RejectCandidate(_)))
+            .count(),
+        1
+    );
+    assert!(effects.contains(&Effect::RejectCandidate("2.0.0".into())));
+    assert!(effects.contains(&Effect::ConfirmReady("1.0.0".into())));
+    assert!(!effects.contains(&Effect::ConfirmReady("2.0.0".into())));
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+    let configured = effects
+        .iter()
+        .position(|e| *e == Effect::Configure)
+        .unwrap();
+    let confirmed = effects
+        .iter()
+        .position(|e| matches!(e, Effect::ConfirmReady(_)))
+        .unwrap();
+    let prompted = effects
+        .iter()
+        .position(|e| matches!(e, Effect::Prompt(_)))
+        .unwrap();
+    assert!(configured < confirmed && confirmed < prompted);
+    invoke(&harness.window, "stop_lens");
+}
+
+#[test]
+fn incompatible_fallback_is_not_retried_or_prompted_again() {
+    let harness = setup(Scenario::CandidateAlwaysMissingHttp);
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Failed);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 2);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::RejectCandidate(_)))
+            .count(),
+        1
+    );
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::ConfirmReady(_) | Effect::Prompt(_))));
+    invoke(&harness.window, "stop_lens");
+}
+
+#[test]
+fn authentication_or_saved_settings_failure_never_rolls_back_candidate() {
+    for (scenario, stage) in [
+        (
+            Scenario::CandidateAuthRequired,
+            LensStage::AuthenticationRequired,
+        ),
+        (Scenario::CandidateSetupFailure, LensStage::Failed),
+    ] {
+        let harness = setup(scenario);
+        let result = invoke(&harness.window, "confirm_lens_targets");
+        assert_eq!(result.stage, stage);
+        let effects = harness.fixture.effects.lock().unwrap().clone();
+        assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 1);
+        assert!(!effects.iter().any(|e| matches!(
+            e,
+            Effect::RejectCandidate(_) | Effect::ConfirmReady(_) | Effect::Prompt(_)
+        )));
+        invoke(&harness.window, "stop_lens");
+    }
+}
+
+#[test]
+fn provider_failure_after_confirmation_never_rolls_back_or_replays_prompt() {
+    let harness = setup(Scenario::CandidatePromptFailure);
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Failed);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(effects.iter().filter(|e| **e == Effect::Connect).count(), 1);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::ConfirmReady(_)))
+            .count(),
+        1
+    );
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::RejectCandidate(_))));
+    let configured = effects
+        .iter()
+        .position(|e| *e == Effect::Configure)
+        .unwrap();
+    let confirmed = effects
+        .iter()
+        .position(|e| matches!(e, Effect::ConfirmReady(_)))
+        .unwrap();
+    let prompted = effects
+        .iter()
+        .position(|e| matches!(e, Effect::Prompt(_)))
+        .unwrap();
+    assert!(configured < confirmed && confirmed < prompted);
+    invoke(&harness.window, "stop_lens");
+}
+
+#[test]
 fn unavailable_source_publishes_failure_without_observation_or_agent_work() {
     let harness = setup(Scenario::NativeUnavailable);
     let Harness {
@@ -928,6 +1115,16 @@ fn stop_during_agent_prompt_revokes_publication_and_releases_observation() {
     let effects = fixture.effects.lock().unwrap();
     assert!(effects.contains(&Effect::ObserverClosed));
     assert!(effects.contains(&Effect::Released));
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::RejectCandidate(_))));
 }
 
 #[test]

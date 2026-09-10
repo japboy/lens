@@ -14,7 +14,7 @@ describe("product terminology policy", () => {
     ["packages/domain/src/projection.rs", true],
     ["apps/desktop/public/new-output.html", true],
     ["experiments/translation-continuity/results.json", false],
-    ["apps/desktop/src-tauri/agent-runtime/codex/pnpm-lock.yaml", false],
+    ["apps/desktop/src-tauri/agent-runtime/pnpm-workspace.yaml", false],
     ["mise-tasks/check/terminology.test.ts", false],
   ] as const)("classifies %s as product source: %s", (path, expected) => {
     expect(isProductTerminologyPath(path)).toBe(expected);
