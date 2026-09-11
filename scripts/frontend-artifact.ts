@@ -2,7 +2,6 @@ import { BUILD_PATHS } from "../apps/desktop/tooling/build-paths.ts";
 import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
 import { verifyGeneration } from "../apps/desktop/tooling/prerender/verify.ts";
 import { sourceDigest, sourceInputs } from "../apps/desktop/tooling/prerender/source.ts";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -34,8 +33,7 @@ export function frontendFiles(directory: string): Record<string, string> {
 export function frontendArtifact(mode: string, root: string): void {
   if (!["write", "check"].includes(mode))
     throw new Error("An explicit frontend artifact mode is required");
-  if (!isCleanCheckout(root))
-    throw new Error("Frontend artifact requires a clean source checkout");
+  if (!isCleanCheckout(root)) throw new Error("Frontend artifact requires a clean source checkout");
   const source = headCommit(root);
   const manifest = {
     version: 1,

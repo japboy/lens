@@ -6,10 +6,10 @@ use crate::{
     agent_runtime::{self, ResolvedAgentRuntime},
     app_state::{
         begin_agent_run, emit_app_snapshot, freshness_while_checking, next_revision,
-        publish_agent_selection, representation_is_current,
-        update_agent_selection, update_lens_state, update_lens_state_for_projection,
-        update_lens_state_for_run, AgentRunHandle, AgentRunKey, AgentSessionIdentity,
-        AgentSessionMailbox, AgentSessionTurn, AgentSessionTurnCompletion, AppState,
+        publish_agent_selection, representation_is_current, update_agent_selection,
+        update_lens_state, update_lens_state_for_projection, update_lens_state_for_run,
+        AgentRunHandle, AgentRunKey, AgentSessionIdentity, AgentSessionMailbox, AgentSessionTurn,
+        AgentSessionTurnCompletion, AppState,
     },
     live_sync::{LensAgentProjection, ProjectionRef},
     model::{

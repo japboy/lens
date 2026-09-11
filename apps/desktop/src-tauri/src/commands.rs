@@ -3,9 +3,8 @@ use crate::{
     app_state::{
         clear_lens_operation, commit_initial_lens_context, commit_lens_context_refresh,
         emit_app_snapshot, freshness_while_checking, next_revision, publish_lens_state,
-        update_lens_state,
-        update_lens_state_for_context, AgentRunKey, AppState, LensContextRefreshCommit,
-        LensContextRefreshOutcome,
+        update_lens_state, update_lens_state_for_context, AgentRunKey, AppState,
+        LensContextRefreshCommit, LensContextRefreshOutcome,
     },
     confirm_targets::{confirm_targets, ConfirmationHost, OPERATION_SUPERSEDED},
     lens::{
@@ -278,7 +277,7 @@ fn update_config<R: tauri::Runtime>(
     update: impl FnOnce(&mut AppConfig),
 ) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
-    let (snapshot, cancel) = {
+    let snapshot = {
         let mut snapshot = state
             .runtime
             .write()
@@ -294,11 +293,15 @@ fn update_config<R: tauri::Runtime>(
         state.store.save(&next).map_err(|error| error.to_string())?;
         snapshot.config = next;
         snapshot.revision = revision;
-        (snapshot.clone(), cancel)
+        // Cancel while the commit lock is still held, as the prompt-preset path does.
+        // Releasing first publishes the new configuration before the old work is stopped,
+        // and `begin_agent_run` entering that gap would register a run against the new
+        // configuration only for this cancellation to discard it.
+        if cancel {
+            let _ = state.agent_control.cancel_active()?;
+        }
+        snapshot.clone()
     };
-    if cancel {
-        let _ = state.agent_control.cancel_active()?;
-    }
     let config = snapshot.config.clone();
     emit_app_snapshot(app, snapshot, true)?;
     Ok(config)

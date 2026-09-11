@@ -16,7 +16,13 @@ use port_platform::{
     capture::{Capture, CaptureTarget},
     ExtractionLimits, ImageCaptureLimits, PlatformError,
 };
-use std::{collections::BTreeMap, future::Future, num::NonZeroU64, pin::Pin, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    num::NonZeroU64,
+    pin::Pin,
+    sync::Arc,
+};
 use uuid::Uuid;
 
 /// The host owns worker scheduling. Each AX read and capture remains a separate await:
@@ -78,18 +84,20 @@ fn source_extraction_budget(
 }
 
 /// Truncates an extraction to the budget it was issued and reports whether anything was
-/// dropped along with the text bytes actually retained. The flat `text` and the per-node
-/// attributes share one byte budget: the platform adapter copies node attributes verbatim
-/// and no adapter limit covers them, so the published context is bounded here.
+/// dropped along with the text bytes actually retained. The platform adapter copies node
+/// attributes verbatim and no adapter limit covers them, so the published context is
+/// bounded here.
 fn enforce_source_extraction_budget(
     extraction: &mut domain::model::ExtractionResult,
     max_nodes: usize,
     max_text_bytes: usize,
 ) -> (bool, usize) {
-    let mut truncated = extraction.nodes.len() > max_nodes;
-    extraction.nodes.truncate(max_nodes);
+    let mut truncated = truncate_nodes_to_budget(extraction, max_nodes);
     let mut remaining = max_text_bytes;
-    truncated |= charge_text(&mut extraction.text, &mut remaining);
+    // The structured attributes are what the Agent projection is built from, and nothing
+    // else bounds them. The flat `text` is a diagnostic duplicate the adapter has already
+    // capped at this same limit, so it is charged last: charging it first spent the whole
+    // allowance and emptied every title, value and description behind it.
     for node in &mut extraction.nodes {
         for field in [
             node.title.as_mut(),
@@ -102,7 +110,52 @@ fn enforce_source_extraction_budget(
             truncated |= charge_text(field, &mut remaining);
         }
     }
+    truncated |= charge_text(&mut extraction.text, &mut remaining);
     (truncated, max_text_bytes - remaining)
+}
+
+/// Keeps at most `max_nodes` nodes and leaves the remaining graph internally consistent.
+///
+/// Dropping nodes cuts edges: a retained parent keeps `children` entries that no longer
+/// exist, and a retained node can lose its parent. `LensDocument::from_accessibility`
+/// rejects either as `MissingChild`/`MissingParent`, which would discard the whole
+/// structured document — and with it the AX-image plan — rather than keep the safe prefix
+/// this bound exists to produce.
+fn truncate_nodes_to_budget(
+    extraction: &mut domain::model::ExtractionResult,
+    max_nodes: usize,
+) -> bool {
+    if extraction.nodes.len() <= max_nodes {
+        return false;
+    }
+    extraction.nodes.truncate(max_nodes);
+    // A node whose parent was dropped cannot be re-rooted: depth is validated against the
+    // parent's, so the only consistent repair is to drop the orphaned subtree as well.
+    loop {
+        let retained = extraction
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        let before = extraction.nodes.len();
+        extraction.nodes.retain(|node| {
+            node.parent_id
+                .as_deref()
+                .is_none_or(|parent| retained.contains(parent))
+        });
+        if extraction.nodes.len() == before {
+            break;
+        }
+    }
+    let retained = extraction
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    for node in &mut extraction.nodes {
+        node.children.retain(|child| retained.contains(child));
+    }
+    true
 }
 
 /// Charges `remaining` for `text`, truncating on a char boundary once it is exhausted.
@@ -424,6 +477,77 @@ fn failed_media_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::model::ExtractedNode as DomainNode;
+
+    fn node(id: &str, parent: Option<&str>, depth: usize, order: usize) -> DomainNode {
+        DomainNode {
+            id: id.into(),
+            parent_id: parent.map(Into::into),
+            order,
+            depth,
+            role: None,
+            subrole: None,
+            title: None,
+            value: None,
+            description: None,
+            bounds: None,
+            resource_refs: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    fn extraction_with(nodes: Vec<DomainNode>, text: &str) -> domain::model::ExtractionResult {
+        domain::model::ExtractionResult {
+            quality: domain::model::ExtractionQuality::Full,
+            resolved_window: None,
+            nodes,
+            text: text.into(),
+            metrics: Default::default(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn structured_attributes_outlive_the_duplicate_flat_text() {
+        // The Agent projection is built from the node attributes, not the flat diagnostic
+        // text, so spending the allowance on the text would leave the source effectively
+        // empty for the only consumer that matters.
+        let mut leaf = node("leaf", None, 0, 0);
+        leaf.value = Some("kept".into());
+        let mut extraction = extraction_with(vec![leaf], "0123456789");
+        let (truncated, charged) = enforce_source_extraction_budget(&mut extraction, 16, 6);
+
+        assert!(truncated);
+        assert_eq!(charged, 6);
+        assert_eq!(extraction.nodes[0].value.as_deref(), Some("kept"));
+        assert_eq!(extraction.text, "01");
+    }
+
+    #[test]
+    fn node_truncation_leaves_a_graph_the_document_still_accepts() {
+        // Truncation cuts edges. A retained parent must not keep a dropped child, and a
+        // node that lost its parent cannot be re-rooted because depth is validated
+        // against it, so the orphaned subtree goes too.
+        let mut root = node("root", None, 0, 0);
+        root.children = vec!["kept".into(), "dropped".into()];
+        let mut kept = node("kept", Some("root"), 1, 1);
+        kept.children = vec!["grandchild".into()];
+        let nodes = vec![
+            root,
+            kept,
+            node("dropped", Some("root"), 1, 2),
+            node("grandchild", Some("kept"), 2, 3),
+        ];
+        let mut extraction = extraction_with(nodes, "");
+        let (truncated, _) = enforce_source_extraction_budget(&mut extraction, 2, 1024);
+
+        assert!(truncated);
+        let ids: Vec<&str> = extraction.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["root", "kept"]);
+        assert_eq!(extraction.nodes[0].children, ["kept"]);
+        assert!(extraction.nodes[1].children.is_empty());
+    }
+
     use domain::{lens::LensInput, model::SelectedWindow};
     use port_platform::{
         capture::{CaptureBatch, CaptureCoverage, CaptureRequest, CaptureScope, CapturedImage},

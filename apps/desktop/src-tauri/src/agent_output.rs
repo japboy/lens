@@ -139,9 +139,8 @@ impl AgentOutputCandidate {
                     || text_bytes + message_text_bytes(added) > MAX_MESSAGE_TEXT_BYTES
                     || image_bytes + encoded_image_bytes(added) > MAX_MESSAGE_IMAGE_ENCODED_BYTES
                 {
-                    return Err(
-                        Error::invalid_params().data("Agent message output exceeded the per-turn limit")
-                    );
+                    return Err(Error::invalid_params()
+                        .data("Agent message output exceeded the per-turn limit"));
                 }
                 if let Some(OutputEntry::Message(blocks)) = self.entries.last_mut() {
                     push_output_block(blocks, block);

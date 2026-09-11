@@ -141,7 +141,10 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         ("LENS_VALIDATE_TARGET_SELECTION", validate_target_selection),
         ("LENS_VALIDATE_RICH_OUTPUT", validate_rich_output),
         ("LENS_VALIDATE_RUNTIME", validation_runtime.is_some()),
-        ("LENS_VALIDATE_A11Y/LENS_VALIDATE_ACP", validate_a11y || validate_acp),
+        (
+            "LENS_VALIDATE_A11Y/LENS_VALIDATE_ACP",
+            validate_a11y || validate_acp,
+        ),
     ]
     .into_iter()
     .filter_map(|(name, requested)| requested.then_some(name))

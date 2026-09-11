@@ -474,16 +474,10 @@ impl SessionControls {
         request: RequestPermissionRequest,
     ) -> Result<InteractionDetails, String> {
         let Ok(state) = self.snapshot() else {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         };
         if !state.active || request.session_id.to_string() != state.session_id {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         }
         let fields = {
             let Ok(runtime) = self.runtime.lock() else {
@@ -512,16 +506,10 @@ impl SessionControls {
         };
         let kind = fields.kind.unwrap_or(ToolKind::Other);
         let Some(title) = fields.title else {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         };
         let Some(arguments) = fields.raw_input else {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         };
         if title.is_empty()
             || title.len() > 1024
@@ -529,10 +517,7 @@ impl SessionControls {
             || request.tool_call.tool_call_id.to_string().is_empty()
             || serde_json::to_vec(&arguments).map_or(true, |v| v.len() > 16 * 1024)
         {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         }
         let mut ids = BTreeSet::new();
         if request.options.len() > 16
@@ -548,10 +533,7 @@ impl SessionControls {
             .iter()
             .any(|o| !ids.insert(o.option_id.to_string()))
         {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         }
         let options = request
             .options
@@ -564,10 +546,7 @@ impl SessionControls {
             })
             .collect::<Vec<_>>();
         if options.is_empty() {
-            return Err(
-                PERMISSION_UNVERIFIED
-                    .into(),
-            );
+            return Err(PERMISSION_UNVERIFIED.into());
         }
         Ok(InteractionDetails::Permission {
             tool_call_id: request.tool_call.tool_call_id.to_string(),
@@ -1036,7 +1015,9 @@ pub async fn apply_defaults(
         .transpose()?
         .flatten()
         .map(|o| o.id.to_string());
-    let mode_key = mode_id.clone().unwrap_or_else(|| MODE_CONFIG_SENTINEL.into());
+    let mode_key = mode_id
+        .clone()
+        .unwrap_or_else(|| MODE_CONFIG_SENTINEL.into());
     let requested_mode = defaults
         .choices
         .iter()

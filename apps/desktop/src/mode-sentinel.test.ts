@@ -9,7 +9,10 @@ import { MODE_CONFIG_SENTINEL } from "./types";
 // records.
 it("keys a saved mode choice by the same sentinel the Rust validators use", () => {
   const fixture = JSON.parse(
-    readFileSync(fileURLToPath(new URL("../tests/fixtures/workspace-contracts.json", import.meta.url)), "utf8"),
+    readFileSync(
+      fileURLToPath(new URL("../tests/fixtures/workspace-contracts.json", import.meta.url)),
+      "utf8",
+    ),
   );
   expect(fixture.mode_config_sentinel).toBe(MODE_CONFIG_SENTINEL);
 });

@@ -15,78 +15,78 @@ export class LensAboutView extends LitElement {
   static styles = [
     viewHostStyles,
     css`
-    main {
-      box-sizing: border-box;
-      height: 100%;
-      padding: 24px;
-      display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
-      gap: 18px;
-    }
-    header {
-      display: grid;
-      grid-template-columns: 96px minmax(0, 1fr);
-      align-items: center;
-      gap: 20px;
-      justify-self: center;
-      width: min(100%, 340px);
-    }
-    .app-icon {
-      width: 96px;
-      height: 96px;
-      object-fit: contain;
-    }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 24px;
-    }
-    p {
-      margin: 4px 0;
-      min-height: 1lh;
-    }
-    .documents {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .documents select {
-      font: inherit;
-    }
-    .document-region {
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      min-height: 0;
-    }
-    lens-license-document {
-      grid-row: 2;
-      display: block;
-      box-sizing: border-box;
-      width: 100%;
-      height: 100%;
-      min-width: 0;
-      min-height: 0;
-      overflow: auto;
-      padding: 12px;
-      font:
-        12px/1.55 ui-monospace,
-        monospace;
-      color: CanvasText;
-      background: Field;
-      border: 1px solid GrayText;
-      border-radius: 4px;
-    }
-    lens-license-document:focus-visible {
-      outline: 2px solid Highlight;
-      outline-offset: -2px;
-    }
-    .document-chunk {
-      display: block;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      content-visibility: auto;
-      contain-intrinsic-block-size: auto 32lh;
-    }
-  `,
+      main {
+        box-sizing: border-box;
+        height: 100%;
+        padding: 24px;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 18px;
+      }
+      header {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        align-items: center;
+        gap: 20px;
+        justify-self: center;
+        width: min(100%, 340px);
+      }
+      .app-icon {
+        width: 96px;
+        height: 96px;
+        object-fit: contain;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 24px;
+      }
+      p {
+        margin: 4px 0;
+        min-height: 1lh;
+      }
+      .documents {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .documents select {
+        font: inherit;
+      }
+      .document-region {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        min-height: 0;
+      }
+      lens-license-document {
+        grid-row: 2;
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow: auto;
+        padding: 12px;
+        font:
+          12px/1.55 ui-monospace,
+          monospace;
+        color: CanvasText;
+        background: Field;
+        border: 1px solid GrayText;
+        border-radius: 4px;
+      }
+      lens-license-document:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+      }
+      .document-chunk {
+        display: block;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        content-visibility: auto;
+        contain-intrinsic-block-size: auto 32lh;
+      }
+    `,
   ];
   @property({ attribute: false }) info: Resource<AboutInfo> = initialAboutState().info;
   @property({ attribute: false }) documents: Resource<AboutDocuments> =

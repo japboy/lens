@@ -248,6 +248,9 @@ typedef struct {
     LensNativeObservationRegistration
         _registrations[LensMaximumObservationRegistrations];
     NSUInteger _registrationCount;
+    /// Incremented on every release so an AX resolution that was already in flight cannot
+    /// install its result into a source that has since been revoked.
+    NSUInteger _releaseGeneration;
 }
 @property(nonatomic, copy) NSString *operationID;
 @property(nonatomic, assign) uint32_t windowID;
@@ -1423,6 +1426,7 @@ static void LensNativeAXObserverCallback(
     pid_t pid = 0;
     NSString *pickerTitle = nil;
     CGRect pickerFrame = CGRectZero;
+    NSUInteger generation = 0;
     @synchronized(self) {
         if (_windowElement != NULL && _applicationElement != NULL) {
             return YES;
@@ -1431,6 +1435,7 @@ static void LensNativeAXObserverCallback(
         pid = self.pid;
         pickerTitle = self.pickerTitle;
         pickerFrame = self.pickerFrame;
+        generation = _releaseGeneration;
     }
     if (screenWindow == nil || pid <= 0) {
         [diagnostics addObject:@"The exact picker-retained SCWindow is unavailable."];
@@ -1483,6 +1488,15 @@ static void LensNativeAXObserverCallback(
         return NO;
     }
     @synchronized(self) {
+        // Releasing the target while this resolution ran revokes it. Installing the result
+        // now would resurrect a source that `lens_release_registered_window` has already
+        // removed from the registry, letting extraction keep traversing it after Stop.
+        if (_releaseGeneration != generation) {
+            CFRelease(application);
+            CFRelease(window);
+            [diagnostics addObject:@"The retained target was released while its AXWindow was being resolved."];
+            return NO;
+        }
         // A concurrent caller may have promoted while this resolution ran. Keep the first
         // promotion so observers already registered against it stay valid.
         if (_windowElement != NULL && _applicationElement != NULL) {
@@ -1697,6 +1711,7 @@ static void LensNativeAXObserverCallback(
     NSAssert([NSThread isMainThread], @"Selected-source release is main-thread confined");
     [self stopObservation];
     @synchronized(self) {
+        _releaseGeneration += 1;
         if (_windowElement != NULL) {
             CFRelease(_windowElement);
             _windowElement = NULL;

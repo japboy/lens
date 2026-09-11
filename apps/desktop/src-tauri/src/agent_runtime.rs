@@ -1,8 +1,8 @@
+use crate::model::hex_digest;
 use crate::{
     app_state::{publish_agent_runtime, update_agent_runtime, AppState},
     model::{AgentKind, AgentRuntimeStage, AgentRuntimeState},
 };
-use crate::model::hex_digest;
 use flate2::read::GzDecoder;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

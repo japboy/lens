@@ -186,8 +186,7 @@ export class SettingsPage extends ReactiveElement {
         const selection = snapshot?.agent_selection;
         if (!selection?.operation_id) return;
         const modeId =
-          selection.config_options?.find((o) => o.category === "mode")?.id ??
-          MODE_CONFIG_SENTINEL;
+          selection.config_options?.find((o) => o.category === "mode")?.id ?? MODE_CONFIG_SENTINEL;
         const mode = intent.defaults.choices.find((c) => c.config_id === modeId)?.value;
         const elevated = Boolean(mode && mode !== selection.policy_default);
         const approved =

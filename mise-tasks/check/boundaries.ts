@@ -3,7 +3,7 @@
 //MISE dir = "{{config_root}}"
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repositoryFiles } from "../../scripts/repository-files.ts";

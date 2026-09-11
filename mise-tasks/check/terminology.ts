@@ -2,8 +2,7 @@
 //MISE description = "Check product terminology"
 //MISE dir = "{{config_root}}"
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
