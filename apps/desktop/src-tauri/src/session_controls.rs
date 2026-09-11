@@ -227,7 +227,9 @@ impl SessionControls {
                 return Err(invalid("Unknown Agent choice"));
             }
             Ok(option.category == Some(SessionConfigOptionCategory::Mode))
-        } else if id == "mode" && state.modes.iter().any(|m| m.id.to_string() == value) {
+        } else if id == MODE_CONFIG_SENTINEL
+            && state.modes.iter().any(|m| m.id.to_string() == value)
+        {
             Ok(true)
         } else {
             Err(invalid("Unknown Agent selector"))
@@ -1034,7 +1036,7 @@ pub async fn apply_defaults(
         .transpose()?
         .flatten()
         .map(|o| o.id.to_string());
-    let mode_key = mode_id.clone().unwrap_or_else(|| "mode".into());
+    let mode_key = mode_id.clone().unwrap_or_else(|| MODE_CONFIG_SENTINEL.into());
     let requested_mode = defaults
         .choices
         .iter()

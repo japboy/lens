@@ -132,6 +132,25 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         serde_json::from_str::<model::SelectedWindow>(&json)
             .expect("LENS_VALIDATE_TARGET must be a SelectedWindow JSON object")
     });
+    // The `RunEvent::Ready` arms below are mutually exclusive: only the first matching arm
+    // runs, so two harnesses requested at once used to drop one of them without a word.
+    // Resolve the flags to a single finite answer here — at most one harness, and one
+    // question for the normal startup path instead of a negation of every flag in turn.
+    let requested_harnesses: Vec<&str> = [
+        ("LENS_VALIDATE_INTERACTIONS", validate_interactions),
+        ("LENS_VALIDATE_TARGET_SELECTION", validate_target_selection),
+        ("LENS_VALIDATE_RICH_OUTPUT", validate_rich_output),
+        ("LENS_VALIDATE_RUNTIME", validation_runtime.is_some()),
+        ("LENS_VALIDATE_A11Y/LENS_VALIDATE_ACP", validate_a11y || validate_acp),
+    ]
+    .into_iter()
+    .filter_map(|(name, requested)| requested.then_some(name))
+    .collect();
+    assert!(
+        requested_harnesses.len() <= 1,
+        "At most one diagnostic harness may be requested; found {requested_harnesses:?}"
+    );
+    let diagnostic_harness = !requested_harnesses.is_empty();
     configure_shell(
         builder,
         app_state::AppState::load_or_recover(services),
@@ -160,13 +179,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                     }
                 });
             }
-            if std::env::var_os("LENS_VALIDATE_A11Y").is_none()
-                && std::env::var_os("LENS_VALIDATE_ACP").is_none()
-                && std::env::var_os("LENS_VALIDATE_RUNTIME").is_none()
-                && !validate_rich_output
-                && !validate_target_selection
-                && !validate_interactions
-            {
+            if !diagnostic_harness {
                 let handle = app.handle().clone();
                 let preferred_agent = handle
                     .state::<app_state::AppState>()

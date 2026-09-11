@@ -6,6 +6,7 @@ import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
 import type { CommandIdentity } from "../application/command-state";
+import { MODE_CONFIG_SENTINEL } from "../types";
 import { settingsViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
 import { platformFromSearch } from "../presentation-context";
@@ -184,7 +185,9 @@ export class SettingsPage extends ReactiveElement {
         const snapshot = this.snapshots.snapshot;
         const selection = snapshot?.agent_selection;
         if (!selection?.operation_id) return;
-        const modeId = selection.config_options?.find((o) => o.category === "mode")?.id ?? "mode";
+        const modeId =
+          selection.config_options?.find((o) => o.category === "mode")?.id ??
+          MODE_CONFIG_SENTINEL;
         const mode = intent.defaults.choices.find((c) => c.config_id === modeId)?.value;
         const elevated = Boolean(mode && mode !== selection.policy_default);
         const approved =

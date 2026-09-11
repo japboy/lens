@@ -1525,16 +1525,9 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
     {
         return Err("Agent selection changed".into());
     }
-    let mode_id = expected
-        .agent_selection
-        .config_options
-        .as_deref()
-        .map(crate::session_controls::mode_option)
-        .transpose()
-        .map_err(|_| "Ambiguous Agent modes")?
-        .flatten()
-        .map(|o| o.id.to_string())
-        .unwrap_or_else(|| "mode".into());
+    let mode_id =
+        crate::session_controls::mode_config_id(expected.agent_selection.config_options.as_deref())
+            .map_err(|_| "Ambiguous Agent modes")?;
     let elevated = defaults.choices.iter().any(|c| {
         c.config_id == mode_id && Some(&c.value) != expected.agent_selection.policy_default.as_ref()
     });
