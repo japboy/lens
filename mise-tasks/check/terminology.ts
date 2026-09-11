@@ -6,6 +6,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  BINARY_EXTENSIONS,
+  repositoryFiles,
+  UTF8_DECODER,
+} from "../../scripts/repository-files.ts";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const PRODUCT_PATHS = new Set([
@@ -20,9 +25,7 @@ const PRODUCT_PREFIXES = [
   "packages/",
   "apps/desktop/public/",
 ] as const;
-const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const LEGACY_OUTPUT_TERM = /translation/iu;
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 // Exact, reviewed uses of the language-conversion term, never whole-file exemptions.
 const ALLOWED_USAGES = [
@@ -55,14 +58,7 @@ export function productTerminologyViolations(path: string, content: string): str
 }
 
 function run(): void {
-  const output = execFileSync(
-    "git",
-    ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { encoding: "utf8" },
-  );
-  const files = [...new Set(output.split("\0"))]
-    .filter((path) => isProductTerminologyPath(path) && existsSync(resolve(REPOSITORY_ROOT, path)))
-    .sort();
+  const files = repositoryFiles(REPOSITORY_ROOT).filter(isProductTerminologyPath);
   const violations = files.flatMap((path) => {
     let content = "";
     if (!BINARY_EXTENSIONS.has(extname(path).toLowerCase())) {

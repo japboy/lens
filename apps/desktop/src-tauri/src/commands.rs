@@ -2,7 +2,8 @@ use crate::{
     agent,
     app_state::{
         clear_lens_operation, commit_initial_lens_context, commit_lens_context_refresh,
-        emit_app_snapshot, next_revision, publish_lens_state, update_lens_state,
+        emit_app_snapshot, freshness_while_checking, next_revision, publish_lens_state,
+        update_lens_state,
         update_lens_state_for_context, AgentRunKey, AppState, LensContextRefreshCommit,
         LensContextRefreshOutcome,
     },
@@ -727,11 +728,7 @@ fn mark_context_refresh_started(lens: &mut LensState) {
         return;
     }
     if let Some(live) = lens.live.as_mut() {
-        live.freshness = if live.health == LensSourceHealth::Unavailable {
-            LensFreshness::Unverified
-        } else {
-            LensFreshness::Checking
-        };
+        live.freshness = freshness_while_checking(live.health);
         live.last_outcome = None;
         live.error = None;
     }

@@ -6,7 +6,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MEMBERS, TARGET_DEPENDENCIES } from "../../scripts/workspace-policy.ts";
+import { repositoryFiles } from "../../scripts/repository-files.ts";
+import {
+  DEPENDENCY_FEATURES,
+  MEMBERS,
+  TARGET_DEPENDENCIES,
+} from "../../scripts/workspace-policy.ts";
 import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
   portableSourceViolations,
@@ -26,6 +31,8 @@ export type CargoDependency = {
   source: string | null;
   path?: string;
   optional: boolean;
+  features: string[];
+  uses_default_features: boolean;
 };
 export type CargoPackage = {
   id: string;
@@ -228,6 +235,24 @@ export function validateInventory(
                 edge.target === dependency.target,
             );
       assert(allowed, `${member.name}: forbidden dependency ${key}`);
+      // A dependency's name says which crate is linked; its features say what that crate
+      // is allowed to do. Pin both at the same granularity so widening a capability is a
+      // reviewed policy change rather than an unnoticed manifest edit.
+      const declared = DEPENDENCY_FEATURES.find(
+        (entry) =>
+          entry.member === member.name &&
+          entry.name === dependency.name &&
+          entry.kind === kind &&
+          entry.target === dependency.target,
+      );
+      const features = [...dependency.features].sort();
+      const expected = declared ? [...declared.features].sort() : [];
+      assert(
+        dependency.uses_default_features === (declared?.default ?? true) &&
+          features.length === expected.length &&
+          features.every((feature, index) => feature === expected[index]),
+        `${member.name}: unreviewed feature selection for ${key}`,
+      );
       const local = localCargo.get(dependency.name);
       if (local) {
         assert(
@@ -317,21 +342,10 @@ export function validateInventory(
 }
 
 export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: string[] } {
-  const paths = [
-    ...new Set(
-      execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-        cwd: root,
-        encoding: "utf8",
-      })
-        .split("\0")
-        .filter((path) => path && existsSync(resolve(root, path))),
-    ),
-  ].sort();
+  // `repositoryFiles` rejects symbolic links, so every path here resolves inside the
+  // repository; the containment check below still confirms that for each one.
+  const paths = repositoryFiles(root);
   for (const path of paths) {
-    assert(
-      !lstatSync(resolve(root, path)).isSymbolicLink(),
-      `Source symlink requires explicit boundary review: ${path}`,
-    );
     repositoryPath(root, realpathSync(resolve(root, path)));
   }
   const cargo: CargoInventory = JSON.parse(

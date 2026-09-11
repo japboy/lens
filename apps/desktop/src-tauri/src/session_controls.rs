@@ -13,6 +13,10 @@ use uuid::Uuid;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
+/// One wording for every unverifiable-permission refusal, so a change to the text
+/// cannot leave some guards explaining the refusal differently from others.
+const PERMISSION_UNVERIFIED: &str =
+    "Tool permission denied: its effect, policy, or correlation could not be verified";
 const MAX_INTERACTIONS: usize = 32;
 
 enum PermissionAdmission {
@@ -469,26 +473,26 @@ impl SessionControls {
     ) -> Result<InteractionDetails, String> {
         let Ok(state) = self.snapshot() else {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         };
         if !state.active || request.session_id.to_string() != state.session_id {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         }
         let fields = {
             let Ok(runtime) = self.runtime.lock() else {
-                return Err("Tool permission denied: its effect, policy, or correlation could not be verified".into());
+                return Err(PERMISSION_UNVERIFIED.into());
             };
             if runtime.active_turn.is_none()
                 || !runtime
                     .tools
                     .contains_key(&request.tool_call.tool_call_id.to_string())
             {
-                return Err("Tool permission denied: its effect, policy, or correlation could not be verified".into());
+                return Err(PERMISSION_UNVERIFIED.into());
             }
             let mut fields = runtime.tools[&request.tool_call.tool_call_id.to_string()].clone();
             if request.tool_call.fields.kind.is_some()
@@ -507,13 +511,13 @@ impl SessionControls {
         let kind = fields.kind.unwrap_or(ToolKind::Other);
         let Some(title) = fields.title else {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         };
         let Some(arguments) = fields.raw_input else {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         };
@@ -524,7 +528,7 @@ impl SessionControls {
             || serde_json::to_vec(&arguments).map_or(true, |v| v.len() > 16 * 1024)
         {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         }
@@ -543,7 +547,7 @@ impl SessionControls {
             .any(|o| !ids.insert(o.option_id.to_string()))
         {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         }
@@ -559,7 +563,7 @@ impl SessionControls {
             .collect::<Vec<_>>();
         if options.is_empty() {
             return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
+                PERMISSION_UNVERIFIED
                     .into(),
             );
         }

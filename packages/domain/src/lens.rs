@@ -679,7 +679,7 @@ impl LensMediaPlan {
                 );
                 continue;
             };
-            if !valid_bounds(bounds) {
+            if !bounds.is_finite_positive() {
                 record_planning_omission(
                     &mut planning_omissions,
                     LensMediaOmissionReason::InvalidBounds,
@@ -760,20 +760,12 @@ fn planning_omission_detail(reason: LensMediaOmissionReason, count: usize) -> St
 }
 
 fn bounds_intersect(left: Bounds, right: Bounds) -> bool {
-    valid_bounds(left)
-        && valid_bounds(right)
+    left.is_finite_positive()
+        && right.is_finite_positive()
         && left.x < right.x + right.width
         && right.x < left.x + left.width
         && left.y < right.y + right.height
         && right.y < left.y + left.height
-}
-
-fn valid_bounds(bounds: Bounds) -> bool {
-    [bounds.x, bounds.y, bounds.width, bounds.height]
-        .into_iter()
-        .all(f64::is_finite)
-        && bounds.width > 0.0
-        && bounds.height > 0.0
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

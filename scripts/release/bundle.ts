@@ -77,6 +77,7 @@ export function verifyDmg(dmg: string, contract: ReturnType<typeof bundleContrac
   const mount = join(temporary, "mounted");
   mkdirSync(mount);
   let device: string | undefined;
+  let attachedMount = false;
   try {
     const plist = execFileSync("hdiutil", [
       "attach",
@@ -87,6 +88,7 @@ export function verifyDmg(dmg: string, contract: ReturnType<typeof bundleContrac
       "-plist",
       dmg,
     ]);
+    attachedMount = true;
     const attached = JSON.parse(
       execFileSync("plutil", ["-convert", "json", "-o", "-", "-"], {
         input: plist,
@@ -112,8 +114,15 @@ export function verifyDmg(dmg: string, contract: ReturnType<typeof bundleContrac
     if (!existsSync(join(copied, "Contents/MacOS/lens")))
       throw new Error("Copied executable missing");
   } finally {
-    // Mountpoint is a fallback cleanup target if structured attach parsing fails.
-    execFileSync("hdiutil", ["detach", device ?? mount], { stdio: "inherit" });
+    // Detaching only makes sense once something is attached, and its own failure must not
+    // replace the error that brought us here or skip the directory cleanup below — a
+    // leaked mount is what makes the next `hdiutil attach` fail as busy.
+    if (attachedMount) {
+      // Mountpoint is a fallback cleanup target if structured attach parsing fails.
+      const detached = spawnSync("hdiutil", ["detach", device ?? mount], { stdio: "inherit" });
+      if (detached.status !== 0)
+        console.error(`Unable to detach the verification mount at ${device ?? mount}`);
+    }
     rmSync(temporary, { recursive: true, force: true });
   }
 }

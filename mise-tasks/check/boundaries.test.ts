@@ -68,11 +68,31 @@ describe("workspace identities and all-kind dependency boundaries", () => {
         rename: null,
         source: null,
         optional: false,
+        features: [],
+        uses_default_features: true,
         path: resolve(root, "packages/usecase"),
       });
       expect(f.check).toThrow("forbidden dependency");
     },
   );
+
+  it("rejects a widened dependency capability", () => {
+    const f = fixture();
+    const tauri = member(f.cargo, "desktop").dependencies.find(
+      (dependency) => dependency.name === "tauri" && dependency.target === null,
+    )!;
+    tauri.features = [...tauri.features, "devtools"];
+    expect(f.check).toThrow("unreviewed feature selection");
+  });
+
+  it("rejects a flipped default-features decision", () => {
+    const f = fixture();
+    const rmcp = member(f.cargo, "adapter-output-mcp").dependencies.find(
+      (dependency) => dependency.name === "rmcp",
+    )!;
+    rmcp.uses_default_features = true;
+    expect(f.check).toThrow("unreviewed feature selection");
+  });
 
   it.each(['cfg(target_os = "macos")', 'cfg(target_os = "windows")'])(
     "checks inactive-target edges: %s",
@@ -85,6 +105,8 @@ describe("workspace identities and all-kind dependency boundaries", () => {
         rename: null,
         source: null,
         optional: false,
+        features: [],
+        uses_default_features: true,
         path: resolve(root, "packages/adapter-platform-macos"),
       });
       expect(f.check).toThrow("forbidden dependency");

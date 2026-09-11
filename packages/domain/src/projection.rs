@@ -6,7 +6,7 @@ use crate::{
         LensMediaOmissionReason, LensMediaPayload, LensMediaScope, LensTargetSet,
         ProjectionOmission,
     },
-    model::{Bounds, ExtractionQuality},
+    model::{hex_digest, Bounds, ExtractionQuality},
 };
 use base64::prelude::*;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -588,15 +588,6 @@ fn validate_i_json_numbers(
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::String(_) => {}
     }
     Ok(())
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use fmt::Write;
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
 }
 
 /// A validated lowercase hexadecimal SHA-256 digest.

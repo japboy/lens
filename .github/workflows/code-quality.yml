@@ -1,8 +1,12 @@
 name: Code Quality
 
+# `edited` fires for a description or base change as well as a title change, and with
+# `cancel-in-progress` that discarded a healthy in-flight matrix and restarted the whole
+# plan. The squash title, the only thing such an edit can invalidate, is checked by the
+# `pr-title` workflow instead.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -30,11 +34,6 @@ jobs:
           sha256: 1f5e8795d24073904ef20ba70c1250ad6389d8c5672226d152e0ed24909ba72f # linux-x64
           cache: false
           install: true
-
-      - name: Validate the squash commit title
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: node scripts/release/cli.ts pr-title
 
       - run: pnpm install --frozen-lockfile
 

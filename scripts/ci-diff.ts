@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { headCommit, isCleanCheckout } from "./git.ts";
 import { parseChangedPaths, planChanges } from "./ci-plan.ts";
 import type { Change } from "./ci-plan.ts";
 
@@ -18,9 +19,9 @@ export function planGitChanges(root: string, base: string, head: string) {
     if (decoder.decode(git(["rev-parse", "--verify", `${sha}^{commit}`])).trim() !== sha)
       throw new Error("Unexpected resolved commit");
   }
-  if (decoder.decode(git(["rev-parse", "HEAD"])).trim() !== head)
+  if (headCommit(root) !== head)
     throw new Error("Classification must use the actual tested checkout");
-  if (git(["status", "--porcelain", "-z", "--untracked-files=all"]).length)
+  if (!isCleanCheckout(root))
     throw new Error("Classification cannot use a modified source checkout");
   git(["merge-base", "--is-ancestor", base, head]);
   const paths = parseChangedPaths(

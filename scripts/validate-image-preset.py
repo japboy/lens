@@ -228,7 +228,9 @@ async def main():
     results = []
     for preset in presets:
         results.extend(await probe(preset))
-    return all(item["passed"] for item in results)
+    # `all([])` is true, so a preset whose turns were all skipped would report success
+    # without having executed — or verified — a single acceptance turn.
+    return bool(results) and all(item["passed"] for item in results)
 
 
 raise SystemExit(0 if asyncio.run(main()) else 1)

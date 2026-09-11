@@ -1,4 +1,18 @@
 use serde::{Deserialize, Serialize};
+use std::fmt::Write;
+
+/// Lowercase hexadecimal for a digest or any other byte string.
+///
+/// Settings backups, downloaded-artifact checksums and projection identities all name
+/// content by this encoding, so it is declared once: a change to the format here cannot
+/// leave those three naming schemes disagreeing.
+pub fn hex_digest(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Bounds {
@@ -6,6 +20,19 @@ pub struct Bounds {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+impl Bounds {
+    /// Finite coordinates with a positive extent: the precondition every geometry consumer
+    /// shares before intersecting, scaling or presenting a rectangle. Declared once so the
+    /// boundary cannot drift between the projection planner and the window presenter.
+    pub fn is_finite_positive(self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .into_iter()
+            .all(f64::is_finite)
+            && self.width > 0.0
+            && self.height > 0.0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 use crate::live_sync::ProjectionRef;
 use crate::prompt_presets::PromptPresetCatalog;
 pub use domain::model::{
-    Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock,
+    hex_digest, Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock,
     ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
 };
 use domain::prompt_template::AgentPromptTemplate;

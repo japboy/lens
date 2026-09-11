@@ -1,4 +1,5 @@
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
+import { allowedUrl, WEB_SCHEMES } from "./external-url";
 
 export const MAX_HTML_BYTES = 512 * 1024;
 
@@ -27,12 +28,7 @@ type Node = DefaultTreeAdapterMap["node"];
 type Element = DefaultTreeAdapterMap["element"];
 
 export function safeHtmlLink(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
-  } catch {
-    return undefined;
-  }
+  return allowedUrl(value, WEB_SCHEMES);
 }
 
 function isElement(node: Node): node is Element {

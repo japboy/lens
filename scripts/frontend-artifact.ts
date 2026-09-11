@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { headCommit, isCleanCheckout } from "./git.ts";
 
 export function frontendFiles(directory: string): Record<string, string> {
   const result: Record<string, string> = Object.create(null);
@@ -33,12 +34,9 @@ export function frontendFiles(directory: string): Record<string, string> {
 export function frontendArtifact(mode: string, root: string): void {
   if (!["write", "check"].includes(mode))
     throw new Error("An explicit frontend artifact mode is required");
-  if (
-    execFileSync("git", ["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: root })
-      .length
-  )
+  if (!isCleanCheckout(root))
     throw new Error("Frontend artifact requires a clean source checkout");
-  const source = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const source = headCommit(root);
   const manifest = {
     version: 1,
     source,

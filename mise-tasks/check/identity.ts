@@ -6,27 +6,15 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  BINARY_EXTENSIONS,
+  repositoryFiles,
+  UTF8_DECODER,
+} from "../../scripts/repository-files.ts";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const LEGACY_PRODUCT_IDENTITY = /personal(?:[-_ ]?lens)/iu;
 const LEGACY_PRODUCT_ABBREVIATION = /\b(?:PL_[A-Z0-9_]+|pl_[a-z0-9_]+)\b/u;
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-
-function repositoryFiles(): string[] {
-  const output = execFileSync(
-    "git",
-    ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { encoding: "utf8" },
-  );
-
-  return output
-    .split("\0")
-    .filter(
-      (relativePath) => Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
-    )
-    .sort();
-}
 
 function scanFile(relativePath: string): string[] {
   const violations = [];
@@ -56,7 +44,7 @@ function scanFile(relativePath: string): string[] {
   return violations;
 }
 
-const files = repositoryFiles();
+const files = repositoryFiles(REPOSITORY_ROOT);
 const violations = files.flatMap(scanFile);
 
 if (violations.length > 0) {

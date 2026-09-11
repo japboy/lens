@@ -6,32 +6,20 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  BINARY_EXTENSIONS,
+  repositoryFiles,
+  UTF8_DECODER,
+} from "../../scripts/repository-files.ts";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const LETTER = /\p{Letter}/gu;
 const LATIN_LETTER = /\p{Script=Latin}/u;
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 type ScanResult = {
   scanned: boolean;
   violations: string[];
 };
-
-function repositoryFiles(): string[] {
-  const output = execFileSync(
-    "git",
-    ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { encoding: "utf8" },
-  );
-
-  return output
-    .split("\0")
-    .filter(
-      (relativePath) => Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
-    )
-    .sort();
-}
 
 function nonLatinLetters(text: string): string[] {
   return [...text.matchAll(LETTER)]
@@ -68,7 +56,7 @@ function scanFile(relativePath: string): ScanResult {
   return { scanned: true, violations };
 }
 
-const files = repositoryFiles();
+const files = repositoryFiles(REPOSITORY_ROOT);
 const scanResults = files.map(scanFile);
 const violations = scanResults.flatMap((result) => result.violations);
 

@@ -89,3 +89,14 @@ export const reducedMotionStyles = css`
     }
   }
 `;
+
+/// The media query behind every motion decision, read once so a scroll, a carousel and a
+/// streaming cursor cannot disagree about whether the viewer asked for reduced motion.
+export function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/// Scroll behaviour honouring that preference.
+export function preferredScrollBehavior(): ScrollBehavior {
+  return prefersReducedMotion() ? "instant" : "smooth";
+}

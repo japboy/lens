@@ -6,11 +6,15 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  BINARY_EXTENSIONS,
+  repositoryFiles,
+  UTF8_DECODER,
+} from "../../scripts/repository-files.ts";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const POLICY_FILE = "mise-tasks/check/publication.ts";
 const DEFINITION_FILE = ".gitignore";
-const BINARY_EXTENSIONS = new Set([".icns", ".ico", ".png"]);
 const IGNORED_RESOURCE_REFERENCES = [
   "ARCHITECTURE.md",
   "AGENTS.md",
@@ -19,22 +23,6 @@ const IGNORED_RESOURCE_REFERENCES = [
   [".serena", "/"].join(""),
   ["docs", "/"].join(""),
 ];
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-
-function repositoryFiles(): string[] {
-  const output = execFileSync(
-    "git",
-    ["-C", REPOSITORY_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { encoding: "utf8" },
-  );
-
-  return output
-    .split("\0")
-    .filter(
-      (relativePath) => Boolean(relativePath) && existsSync(resolve(REPOSITORY_ROOT, relativePath)),
-    )
-    .sort();
-}
 
 export function ignoredResourceReferences(line: string): string[] {
   // Absolute web URLs refer to external resources, not this checkout.
@@ -66,7 +54,7 @@ function scanFile(relativePath: string): string[] {
 }
 
 function run(): void {
-  const files = repositoryFiles();
+  const files = repositoryFiles(REPOSITORY_ROOT);
   const violations = files.flatMap(scanFile);
 
   if (violations.length > 0) {

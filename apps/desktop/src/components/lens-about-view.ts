@@ -1,4 +1,5 @@
 import { LitElement, html, nothing, css } from "lit";
+import { viewHostStyles } from "../styles/component-styles";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AboutDocuments, AboutInfo } from "../application/webview-port";
 import {
@@ -11,13 +12,9 @@ import icon from "../../src-tauri/icons/128x128@2x.png";
 
 @customElement("lens-about-view")
 export class LensAboutView extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-      height: 100%;
-      min-height: 0;
-    }
-
+  static styles = [
+    viewHostStyles,
+    css`
     main {
       box-sizing: border-box;
       height: 100%;
@@ -60,9 +57,6 @@ export class LensAboutView extends LitElement {
       grid-template-rows: auto minmax(0, 1fr);
       min-height: 0;
     }
-    [data-region-error]:empty {
-      display: none;
-    }
     lens-license-document {
       grid-row: 2;
       display: block;
@@ -92,7 +86,8 @@ export class LensAboutView extends LitElement {
       content-visibility: auto;
       contain-intrinsic-block-size: auto 32lh;
     }
-  `;
+  `,
+  ];
   @property({ attribute: false }) info: Resource<AboutInfo> = initialAboutState().info;
   @property({ attribute: false }) documents: Resource<AboutDocuments> =
     initialAboutState().documents;

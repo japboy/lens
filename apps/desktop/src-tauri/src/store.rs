@@ -1,4 +1,4 @@
-use crate::model::AppConfig;
+use crate::model::{hex_digest, AppConfig};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -75,10 +75,7 @@ impl ConfigStore {
         if !AppConfig::settings_require_prompt_migration(bytes).map_err(io::Error::other)? {
             return Ok(());
         }
-        let digest = Sha256::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let digest = hex_digest(&Sha256::digest(bytes));
         let backup = self
             .path
             .with_file_name(format!("settings.before-prompt-presets-v2.{digest}.json"));
@@ -173,10 +170,7 @@ mod tests {
     fn backup_path(store: &ConfigStore, bytes: &[u8]) -> PathBuf {
         store.path.with_file_name(format!(
             "settings.before-prompt-presets-v2.{}.json",
-            Sha256::digest(bytes)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            hex_digest(&Sha256::digest(bytes))
         ))
     }
 

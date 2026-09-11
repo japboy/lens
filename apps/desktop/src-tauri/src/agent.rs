@@ -5,7 +5,8 @@ use crate::{
     },
     agent_runtime::{self, ResolvedAgentRuntime},
     app_state::{
-        begin_agent_run, emit_app_snapshot, next_revision, publish_agent_selection,
+        begin_agent_run, emit_app_snapshot, freshness_while_checking, next_revision,
+        publish_agent_selection, representation_is_current,
         update_agent_selection, update_lens_state, update_lens_state_for_projection,
         update_lens_state_for_run, AgentRunHandle, AgentRunKey, AgentSessionIdentity,
         AgentSessionMailbox, AgentSessionTurn, AgentSessionTurnCompletion, AppState,
@@ -1463,11 +1464,7 @@ fn prepare_agent_turn<R: tauri::Runtime>(
                         .map(|representation| representation.representation_id),
                 });
                 if let Some(live) = lens.live.as_mut() {
-                    live.freshness = if live.health == LensSourceHealth::Unavailable {
-                        LensFreshness::Unverified
-                    } else {
-                        LensFreshness::Checking
-                    };
+                    live.freshness = freshness_while_checking(live.health);
                     live.error = None;
                 }
             }
@@ -1699,6 +1696,18 @@ fn current_lens<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<LensState, Stri
     app.state::<AppState>().lens()
 }
 
+/// The stage to settle on once active work ends. A retained representation stays
+/// displayable, so it outranks whatever the caller would otherwise report; passing the
+/// fallback in keeps the four settle points from drifting apart, and makes the one that
+/// settles on `Cancelled` rather than `Ready` visible as a deliberate difference.
+fn settled_stage(lens: &LensState, without_representation: LensStage) -> LensStage {
+    if lens.representation.is_some() {
+        LensStage::Completed
+    } else {
+        without_representation
+    }
+}
+
 fn retained_representation_freshness(lens: &LensState) -> LensFreshness {
     if lens.live.as_ref().is_some_and(|live| {
         live.lifecycle != LensMonitoringLifecycle::Watching
@@ -1706,15 +1715,12 @@ fn retained_representation_freshness(lens: &LensState) -> LensFreshness {
     }) {
         return LensFreshness::Unverified;
     }
-    match (&lens.representation, &lens.projection) {
-        (Some(representation), Some(projection))
-            if &representation.projection == projection
-                && representation.prompt_execution_revision == lens.prompt_execution_revision =>
-        {
-            LensFreshness::Current
-        }
-        (Some(_), _) => LensFreshness::Stale,
-        (None, _) => LensFreshness::None,
+    if representation_is_current(lens) {
+        LensFreshness::Current
+    } else if lens.representation.is_some() {
+        LensFreshness::Stale
+    } else {
+        LensFreshness::None
     }
 }
 
@@ -1756,11 +1762,7 @@ fn finish_agent_run_error<R: tauri::Runtime>(
                 .as_ref()
                 .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
         {
-            if lens.representation.is_some() {
-                LensStage::Completed
-            } else {
-                LensStage::Ready
-            }
+            settled_stage(lens, LensStage::Ready)
         } else {
             stage
         };
@@ -1827,11 +1829,7 @@ fn finish_prompt_response(
             .as_ref()
             .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
         {
-            if lens.representation.is_some() {
-                LensStage::Completed
-            } else {
-                LensStage::Ready
-            }
+            settled_stage(lens, LensStage::Ready)
         } else {
             LensStage::Cancelled
         };
@@ -1845,11 +1843,7 @@ fn finish_prompt_response(
         .as_ref()
         .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
     {
-        lens.stage = if lens.representation.is_some() {
-            LensStage::Completed
-        } else {
-            LensStage::Cancelled
-        };
+        lens.stage = settled_stage(lens, LensStage::Cancelled);
         lens.error = None;
         finish_retained_representation(lens, None, None);
         return;
@@ -1864,11 +1858,7 @@ fn finish_prompt_response(
     }
 
     if !candidate_projection_advances_publication_frontier(lens, &target_projection) {
-        lens.stage = if lens.representation.is_some() {
-            LensStage::Completed
-        } else {
-            LensStage::Ready
-        };
+        lens.stage = settled_stage(lens, LensStage::Ready);
         lens.error = None;
         finish_retained_representation(lens, None, None);
         return;

@@ -10,7 +10,10 @@ it("accepts generated history and manifest while still checking current product 
   try {
     execFileSync("git", ["init", "--quiet", root]);
     mkdirSync(join(root, "mise-tasks/check"), { recursive: true });
+    mkdirSync(join(root, "scripts"), { recursive: true });
     copyFileSync("mise-tasks/check/identity.ts", join(root, "mise-tasks/check/identity.ts"));
+    // The scan shares its repository enumeration, so the fixture needs that module too.
+    copyFileSync("scripts/repository-files.ts", join(root, "scripts/repository-files.ts"));
     copyFileSync("oxfmt.config.ts", join(root, "oxfmt.config.ts"));
     symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
     writeFileSync(join(root, ".gitignore"), "node_modules\n");

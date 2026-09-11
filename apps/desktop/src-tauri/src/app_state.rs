@@ -15,8 +15,8 @@ use std::sync::{
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, Notify};
 pub use usecase::state::{
-    advance_revision, next_revision, AgentRunKey, LensContextRefreshCommit,
-    LensContextRefreshOutcome,
+    advance_revision, freshness_while_checking, next_revision, representation_is_current,
+    AgentRunKey, LensContextRefreshCommit, LensContextRefreshOutcome,
 };
 use usecase::state::{
     agent_run_has_authority, coalesce_agent_turn, prepare_context_refresh, validate_context_state,

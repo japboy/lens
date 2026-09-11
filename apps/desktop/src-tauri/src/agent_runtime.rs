@@ -2,6 +2,7 @@ use crate::{
     app_state::{publish_agent_runtime, update_agent_runtime, AppState},
     model::{AgentKind, AgentRuntimeStage, AgentRuntimeState},
 };
+use crate::model::hex_digest;
 use flate2::read::GzDecoder;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -1850,15 +1851,6 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 fn sha256_file(path: &Path, label: &str) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|error| format!("unable to read {label}: {error}"))?;
     Ok(sha256_bytes(&bytes))
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write;
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
 }
 
 fn ensure_supported_target() -> Result<(), String> {
