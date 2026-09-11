@@ -349,12 +349,16 @@ impl LensAgentProjection {
                 })?;
                 Ok(LensAgentProjectionMediaOmission {
                     source_id: source_id.clone(),
-                    attachment_id: omission.attachment_id.as_ref().map(|id| {
-                        media_ids
-                            .get(id)
-                            .cloned()
-                            .unwrap_or_else(|| normalize_opaque_id(id))
-                    }),
+                    // `media_ids` only covers attachments that produced a payload, so an
+                    // omission that never did has no canonical identity. Hashing its
+                    // transport id instead would fold the native window id and raw node id
+                    // into the canonical payload — which this module states are
+                    // deliberately absent — and make byte-identical content digest
+                    // differently in a different window.
+                    attachment_id: omission
+                        .attachment_id
+                        .as_ref()
+                        .and_then(|id| media_ids.get(id).cloned()),
                     source_node_id: omission.source_node_id.as_ref().map(|id| {
                         node_ids
                             .get(&(omission.target_id.clone(), id.clone()))
@@ -461,12 +465,29 @@ fn normalize_projection_node(
     })
 }
 
+/// Window-relative offsets must be invariant to the window's screen position. A raw f64
+/// subtraction is not: the same layout at a different origin yields a different mantissa,
+/// so the canonical bytes and the digest change and a pure window move is reported as a
+/// semantic change. Quantising the difference makes it depend only on the offset itself.
 fn relative_bounds(bounds: Bounds, window: Bounds) -> Bounds {
     Bounds {
-        x: bounds.x - window.x,
-        y: bounds.y - window.y,
+        x: quantize_offset(bounds.x - window.x),
+        y: quantize_offset(bounds.y - window.y),
         width: bounds.width,
         height: bounds.height,
+    }
+}
+
+/// Bounds are logical screen points, where a thousandth of a point is below any
+/// meaningful difference and far above the representation error subtraction introduces.
+fn quantize_offset(value: f64) -> f64 {
+    const SCALE: f64 = 1_000.0;
+    let quantized = (value * SCALE).round() / SCALE;
+    // Canonical JSON distinguishes -0 from 0, so a zero offset needs one representation.
+    if quantized == 0.0 {
+        0.0
+    } else {
+        quantized
     }
 }
 

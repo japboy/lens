@@ -162,7 +162,7 @@ async def probe(name, safe):
                 "mcpServers": [
                     {
                         "name": "lens_fixture",
-                        "command": str(node),
+                        "command": str(args.node),
                         "args": [str(REPO / "apps/desktop/tests/fixtures/mcp-interactions.mjs")],
                         "env": [
                             {

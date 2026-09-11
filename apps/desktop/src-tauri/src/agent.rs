@@ -51,6 +51,7 @@ use uuid::Uuid;
 
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
+const AGENT_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct AgentTransformInput {
@@ -688,7 +689,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
         .builder()
         .name("lens-agent-selection")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
-            let initialize = initialize(&connection).await?;
+            let initialize = initialize_within_timeout(&connection).await?;
             let auth_methods = initialize
                 .auth_methods
                 .iter()
@@ -1118,6 +1119,15 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
     {
         eprintln!("Unable to finish the Agent session actor: {error}");
     }
+    // Releasing the last runtime lease prunes superseded installs synchronously, which
+    // recursively deletes hundreds of megabytes while holding the selector and lease
+    // mutexes. Drop it on a blocking thread so a runtime worker never carries that, and
+    // never blocks the other tasks that acquire those mutexes.
+    if let Some(descriptor) = descriptor {
+        drop(tauri::async_runtime::spawn_blocking(move || {
+            drop(descriptor)
+        }));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1215,7 +1225,16 @@ async fn run_persistent_session<R: tauri::Runtime>(
             if *shutdown.borrow() {
                 return Err(Error::request_cancelled());
             }
-            app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
+            // Confirming promotes the candidate and then prunes superseded installs
+            // synchronously, which recursively deletes hundreds of megabytes while holding
+            // the selector and lease mutexes. Keep that off the runtime worker driving
+            // session startup, where it would also stall every task taking those mutexes.
+            let host = Arc::clone(&app.state::<AgentServices<R>>().0);
+            let confirmed = descriptor.runtime();
+            tauri::async_runtime::spawn_blocking(move || host.confirm_ready(&confirmed))
+                .await
+                .map_err(|error| state_error(error.to_string()))?
+                .map_err(state_error)?;
             *startup = SessionStartup::Ready;
             confirm_agent_selection_after_session(&app, identity.config.agent)
                 .map_err(state_error)?;
@@ -2066,7 +2085,7 @@ async fn run_authentication<R: tauri::Runtime>(
         .builder()
         .name("lens-auth")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
-            let response = initialize(&connection).await?;
+            let response = initialize_within_timeout(&connection).await?;
             let Some(method) = response
                 .auth_methods
                 .iter()
@@ -2102,6 +2121,24 @@ async fn run_authentication<R: tauri::Runtime>(
             Ok(AuthenticationAction::Completed)
         })
         .await
+}
+
+/// Every `initialize` handshake needs a time boundary. The selection and authentication
+/// probes publish `Checking` before connecting and only leave it once the handshake
+/// returns, so an adapter that stays alive without answering would pin that stage
+/// permanently: the tray menu, target selection and Settings all disable themselves for
+/// it, `cancel_agent` drives an unrelated channel, and the adapter's `ChildGuard` is
+/// never dropped because the future never completes.
+async fn initialize_within_timeout(
+    connection: &ConnectionTo<Agent>,
+) -> Result<agent_client_protocol::schema::v1::InitializeResponse, Error> {
+    match tokio::time::timeout(AGENT_INITIALIZE_TIMEOUT, initialize(connection)).await {
+        Ok(response) => response,
+        Err(_) => Err(Error::internal_error().data(format!(
+            "The Agent did not respond to initialize within {} seconds",
+            AGENT_INITIALIZE_TIMEOUT.as_secs()
+        ))),
+    }
 }
 
 async fn initialize(

@@ -277,20 +277,27 @@ fn update_config<R: tauri::Runtime>(
     update: impl FnOnce(&mut AppConfig),
 ) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
-    let _ = state.agent_control.cancel_active()?;
-    let snapshot = {
+    let (snapshot, cancel) = {
         let mut snapshot = state
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
         let mut next = snapshot.config.clone();
         update(&mut next);
+        if next == snapshot.config {
+            return Ok(snapshot.config.clone());
+        }
+        let cancel = !snapshot.config.same_execution_config(&next);
         let revision = next_revision(&snapshot)?;
+        // Validation and persistence must succeed before any currently running work is cancelled.
         state.store.save(&next).map_err(|error| error.to_string())?;
         snapshot.config = next;
         snapshot.revision = revision;
-        snapshot.clone()
+        (snapshot.clone(), cancel)
     };
+    if cancel {
+        let _ = state.agent_control.cancel_active()?;
+    }
     let config = snapshot.config.clone();
     emit_app_snapshot(app, snapshot, true)?;
     Ok(config)

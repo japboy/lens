@@ -15,6 +15,8 @@ export type Result = "success" | "failure" | "cancelled" | "skipped";
 
 const FRONTEND_CONTRACTS = new Set([
   "apps/desktop/src/types.ts",
+  // WebView entry filenames are duplicated in src-tauri/src/ui.rs::entry_path.
+  "apps/desktop/src/page-entries.ts",
   "apps/desktop/src/agent-prompt-template.ts",
   "apps/desktop/src/output-media.ts",
   "apps/desktop/src/presentation-context.ts",

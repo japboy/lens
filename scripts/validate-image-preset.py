@@ -139,7 +139,14 @@ async def probe(preset):
                     if msg["method"] == "session/request_permission":
                         p = msg["params"]
                         call = p.get("toolCall", {})
-                        allowed = any(name in json.dumps(call).lower() for name in ["publish_html", "image_gen", "imagegen", "generate_image", "image generation", "skill.md"])
+                        # Approval is gated on the tool kind, never on agent-supplied
+                        # arguments: a substring search over the serialized call would
+                        # auto-approve any mutating tool whose rawInput merely mentions
+                        # one of these names.
+                        kind = call.get("kind")
+                        title = str(call.get("title") or "").lower()
+                        generative = any(name in title for name in ["publish_html", "image_gen", "imagegen", "generate_image", "image generation"])
+                        allowed = kind in ["read", "search", "fetch"] or (generative and kind not in ["edit", "delete", "move", "execute"])
                         print(json.dumps({"event":"permission","title":call.get("title"),"allowed":allowed}), flush=True)
                         option = next((o for o in p.get("options", []) if o["kind"] == "allow_once"), None)
                         result = {"outcome": {"outcome": "selected", "optionId": option["optionId"]}} if allowed and option else {"outcome": {"outcome": "cancelled"}}

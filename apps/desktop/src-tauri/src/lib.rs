@@ -134,7 +134,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
     });
     configure_shell(
         builder,
-        app_state::AppState::load(services).expect("Unable to load or migrate Lens settings"),
+        app_state::AppState::load_or_recover(services),
         presentation,
         ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
         agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost)),

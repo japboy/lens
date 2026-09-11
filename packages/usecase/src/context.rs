@@ -77,6 +77,49 @@ fn source_extraction_budget(
     })
 }
 
+/// Truncates an extraction to the budget it was issued and reports whether anything was
+/// dropped along with the text bytes actually retained. The flat `text` and the per-node
+/// attributes share one byte budget: the platform adapter copies node attributes verbatim
+/// and no adapter limit covers them, so the published context is bounded here.
+fn enforce_source_extraction_budget(
+    extraction: &mut domain::model::ExtractionResult,
+    max_nodes: usize,
+    max_text_bytes: usize,
+) -> (bool, usize) {
+    let mut truncated = extraction.nodes.len() > max_nodes;
+    extraction.nodes.truncate(max_nodes);
+    let mut remaining = max_text_bytes;
+    truncated |= charge_text(&mut extraction.text, &mut remaining);
+    for node in &mut extraction.nodes {
+        for field in [
+            node.title.as_mut(),
+            node.value.as_mut(),
+            node.description.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            truncated |= charge_text(field, &mut remaining);
+        }
+    }
+    (truncated, max_text_bytes - remaining)
+}
+
+/// Charges `remaining` for `text`, truncating on a char boundary once it is exhausted.
+fn charge_text(text: &mut String, remaining: &mut usize) -> bool {
+    if text.len() <= *remaining {
+        *remaining -= text.len();
+        return false;
+    }
+    let mut keep = *remaining;
+    while keep > 0 && !text.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    text.truncate(keep);
+    *remaining = 0;
+    true
+}
+
 pub struct BuiltContext {
     pub target_set: LensTargetSet,
     pub context: LensContext,
@@ -151,9 +194,21 @@ pub async fn build_context(
                     target.id
                 ));
             }
-            remaining_nodes = remaining_nodes.saturating_sub(extraction.metrics.visited_nodes);
-            remaining_text_bytes =
-                remaining_text_bytes.saturating_sub(extraction.metrics.text_bytes);
+            // The response is data, not a promise. Bound what is actually retained and
+            // charge the group budget with the measured footprint as well as the reported
+            // traversal cost, so a metric that under-reports cannot leave the budget full.
+            let (truncated, charged_text_bytes) =
+                enforce_source_extraction_budget(&mut extraction, max_nodes, max_text_bytes);
+            if truncated {
+                extraction.diagnostics.push(format!(
+                    "{} exceeded the version 1 source extraction budget and was truncated",
+                    target.id
+                ));
+            }
+            remaining_nodes = remaining_nodes
+                .saturating_sub(extraction.nodes.len().max(extraction.metrics.visited_nodes));
+            remaining_text_bytes = remaining_text_bytes
+                .saturating_sub(charged_text_bytes.max(extraction.metrics.text_bytes));
             remaining_resource_refs =
                 remaining_resource_refs.saturating_sub(extraction.metrics.resource_ref_count);
             remaining_resource_uri_bytes =

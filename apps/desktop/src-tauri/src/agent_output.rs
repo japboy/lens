@@ -14,6 +14,12 @@ const MAX_TOOL_CALLS: usize = 256;
 const MAX_TOOL_MEDIA_BLOCKS: usize = 32;
 const MAX_TOOL_IMAGE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HTML_BYTES: usize = 512 * 1024;
+// The message path has no per-tool budget to inherit, so it carries its own. Chunks are
+// agent-supplied deltas over an unframed stdio stream, and the whole snapshot is cloned
+// and broadcast on every update, so unbounded growth here is quadratic as well as large.
+const MAX_MESSAGE_BLOCKS: usize = 512;
+const MAX_MESSAGE_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MESSAGE_IMAGE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
 /// One prompt turn owns the ordered message segments and tool-result snapshots.
 /// Tool updates replace their content at the first notification's position.
@@ -126,6 +132,16 @@ impl AgentOutputCandidate {
                 enforce_html_limit(&mut block, self.retained_html_count(None));
                 if matches!(&block, LensOutputBlock::Markdown { text, .. } if text.is_empty()) {
                     return Ok(false);
+                }
+                let (message_blocks, text_bytes, image_bytes) = self.message_totals();
+                let added = std::slice::from_ref(&block);
+                if message_blocks >= MAX_MESSAGE_BLOCKS
+                    || text_bytes + message_text_bytes(added) > MAX_MESSAGE_TEXT_BYTES
+                    || image_bytes + encoded_image_bytes(added) > MAX_MESSAGE_IMAGE_ENCODED_BYTES
+                {
+                    return Err(
+                        Error::invalid_params().data("Agent message output exceeded the per-turn limit")
+                    );
                 }
                 if let Some(OutputEntry::Message(blocks)) = self.entries.last_mut() {
                     push_output_block(blocks, block);
@@ -304,6 +320,23 @@ impl AgentOutputCandidate {
         })
     }
 
+    /// Block count, text bytes and encoded image bytes already held by message entries.
+    fn message_totals(&self) -> (usize, usize, usize) {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                OutputEntry::Message(blocks) => Some(blocks.as_slice()),
+                OutputEntry::Tool(_) => None,
+            })
+            .fold((0, 0, 0), |(count, text, images), blocks| {
+                (
+                    count + blocks.len(),
+                    text + message_text_bytes(blocks),
+                    images + encoded_image_bytes(blocks),
+                )
+            })
+    }
+
     fn retained_html_count(&self, exclude: Option<usize>) -> usize {
         self.entries
             .iter()
@@ -330,6 +363,18 @@ impl AgentOutputCandidate {
             received_updates,
         }
     }
+}
+
+fn message_text_bytes(blocks: &[LensOutputBlock]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            LensOutputBlock::Markdown { text, .. } | LensOutputBlock::Html { text, .. } => {
+                text.len()
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 fn encoded_image_bytes(blocks: &[LensOutputBlock]) -> usize {
