@@ -108,6 +108,7 @@ impl HttpPublisher {
                 ));
         // Own every accepted connection task: aborting this task drops JoinSet,
         // aborting even idle/partial HTTP connections rather than draining forever.
+        let retired = state.clone();
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             let mut consecutive_failures = 0u32;
@@ -127,8 +128,18 @@ impl HttpPublisher {
                                     eprintln!(
                                         "Lens output MCP listener stopped accepting connections: {error}"
                                     );
+                                    // Record the terminal state the publisher already has a
+                                    // variant for, so callers learn about it through the same
+                                    // state machine as every other refusal.
+                                    if let Ok(mut state) = retired.lock() {
+                                        *state = PublicationState::Closed;
+                                    }
                                     break;
                                 }
+                                // Awaiting the delay inside this branch parks the whole
+                                // `select!`, so drain anything that already finished first
+                                // rather than leaving it in the set for the retry window.
+                                while connections.try_join_next().is_some() {}
                                 tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
                                 continue;
                             }
@@ -161,16 +172,16 @@ impl HttpPublisher {
 
     /// Caller supplies a fresh UUID for every generation attempt, including retries.
     pub fn begin_turn(&self, turn_id: Uuid) -> Result<TurnPublication, ServerError> {
-        // A retired listener must be reported here. Otherwise `finish` returns the same
-        // `None` as an Agent that simply never published, and the host cannot tell a dead
-        // endpoint from an unused one.
-        if self.listener.is_finished() {
-            return Err(io::Error::other("publication endpoint is no longer accepting").into());
-        }
         let mut state = self
             .state
             .lock()
             .map_err(|_| io::Error::other("publication state unavailable"))?;
+        // A retired listener is reported here rather than left for `finish` to return the
+        // same `None` as an Agent that simply never published, which would leave the host
+        // unable to tell a dead endpoint from an unused one.
+        if matches!(*state, PublicationState::Closed) {
+            return Err(io::Error::other("publication endpoint is no longer accepting").into());
+        }
         if turn_id.is_nil() || !matches!(*state, PublicationState::Idle) {
             return Err(io::Error::other("publisher is not idle or turn ID is invalid").into());
         }

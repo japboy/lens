@@ -130,28 +130,20 @@ fn truncate_nodes_to_budget(
     }
     extraction.nodes.truncate(max_nodes);
     // A node whose parent was dropped cannot be re-rooted: depth is validated against the
-    // parent's, so the only consistent repair is to drop the orphaned subtree as well.
-    loop {
-        let retained = extraction
-            .nodes
-            .iter()
-            .map(|node| node.id.clone())
-            .collect::<BTreeSet<_>>();
-        let before = extraction.nodes.len();
-        extraction.nodes.retain(|node| {
-            node.parent_id
-                .as_deref()
-                .is_none_or(|parent| retained.contains(parent))
-        });
-        if extraction.nodes.len() == before {
-            break;
+    // parent's, so the orphaned subtree goes too. Accumulating the surviving set while
+    // walking forward keeps that to one pass, and stays correct for any node order: a
+    // child that happened to precede its parent is dropped rather than left dangling.
+    let mut retained = BTreeSet::new();
+    extraction.nodes.retain(|node| {
+        let keep = node
+            .parent_id
+            .as_deref()
+            .is_none_or(|parent| retained.contains(parent));
+        if keep {
+            retained.insert(node.id.clone());
         }
-    }
-    let retained = extraction
-        .nodes
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
+        keep
+    });
     for node in &mut extraction.nodes {
         node.children.retain(|child| retained.contains(child));
     }
@@ -164,11 +156,7 @@ fn charge_text(text: &mut String, remaining: &mut usize) -> bool {
         *remaining -= text.len();
         return false;
     }
-    let mut keep = *remaining;
-    while keep > 0 && !text.is_char_boundary(keep) {
-        keep -= 1;
-    }
-    text.truncate(keep);
+    text.truncate(domain::model::char_boundary_at_or_below(text, *remaining));
     *remaining = 0;
     true
 }

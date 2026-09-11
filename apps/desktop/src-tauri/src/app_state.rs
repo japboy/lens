@@ -933,18 +933,9 @@ fn update_lens_state_if<R: tauri::Runtime>(
         if !predicate(&snapshot) {
             return Ok(false);
         }
-        // Publishing clones and serializes the whole snapshot — AX context, structured
-        // input and the accumulating output blocks — and broadcasts it to every webview.
-        // Apply the update to a candidate first so an update that changes nothing neither
-        // advances the revision nor pays for a broadcast.
-        let mut next = snapshot.lens.clone();
-        update(&mut next);
-        if next == snapshot.lens {
-            return Ok(true);
-        }
         let was_selecting = snapshot.lens.stage == LensStage::Selecting;
         advance_revision(&mut snapshot)?;
-        snapshot.lens = next;
+        update(&mut snapshot.lens);
         let sync_tray = was_selecting != (snapshot.lens.stage == LensStage::Selecting);
         (snapshot.clone(), sync_tray)
     };

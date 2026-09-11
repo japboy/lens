@@ -1,6 +1,6 @@
 use crate::model::{
-    Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult,
-    ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
+    char_boundary_at_or_below, Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality,
+    ExtractionResult, ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -525,10 +525,7 @@ fn project_text(value: Option<&str>, truncated: &mut bool) -> Option<String> {
     if value.len() <= MAX_LENS_INPUT_FIELD_BYTES {
         return Some(value.to_string());
     }
-    let mut boundary = MAX_LENS_INPUT_FIELD_BYTES;
-    while !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
+    let boundary = char_boundary_at_or_below(value, MAX_LENS_INPUT_FIELD_BYTES);
     *truncated = true;
     Some(value[..boundary].to_string())
 }

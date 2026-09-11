@@ -823,10 +823,7 @@ mod rich_output_validation_tests {
                 let image = tauri::image::Image::from_bytes(&bytes).expect("decode image pixels");
                 assert!(image.width() > 0 && image.height() > 0);
                 image_count += 1;
-                let digest: String = Sha256::digest(&bytes)
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect();
+                let digest = crate::model::hex_digest(&Sha256::digest(&bytes));
                 println!(
                     "ACP replay image {image_count}: {}x{}, {} bytes, SHA-256 {digest}",
                     image.width(),

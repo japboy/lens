@@ -4,7 +4,7 @@
 // publication and terminology scans read link targets as if they were repository content.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
 
 /// Contents are not decodable text, so a scan reports on the path alone.
@@ -18,19 +18,27 @@ export const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 /// Throws when a path is a symbolic link: the link target is outside the enumeration, so
 /// scanning it would attribute content to a repository path that does not hold it.
 export function repositoryFiles(root: string): string[] {
-  const paths = [
+  const candidates = [
     ...new Set(
       execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
         cwd: root,
         encoding: "utf8",
       })
         .split("\0")
-        .filter((path) => path && existsSync(resolve(root, path))),
+        .filter(Boolean),
     ),
   ].sort();
-  for (const path of paths) {
-    if (lstatSync(resolve(root, path)).isSymbolicLink())
+  // One `lstat` answers both questions this needs — whether the path is still there and
+  // whether it is a link — so every scan pays one stat per path rather than two.
+  return candidates.filter((path) => {
+    let entry;
+    try {
+      entry = lstatSync(resolve(root, path));
+    } catch {
+      return false;
+    }
+    if (entry.isSymbolicLink())
       throw new Error(`Repository paths must not be symbolic links: ${path}`);
-  }
-  return paths;
+    return true;
+  });
 }

@@ -1645,10 +1645,6 @@ export class LensOverlayView extends LitElement {
     const lens = model?.lens;
     const context = lens?.context;
     const targets = lens?.target_set?.targets ?? [];
-    // Serializing the structured input is only needed by the Source tab, and `lens.input`
-    // holds the whole AX projection. Every ACP notification re-renders this view, so keep
-    // this lazy instead of pretty-printing the tree for tabs that never show it.
-    const sourceJson = () => (lens ? lensSourceJson(lens) : "");
     const activeAgent = lens?.agent;
     const authenticationMethods = lens ? supportedAuthMethods(lens) : [];
     const targetLabels = targets.map(({ facts }) =>
@@ -1812,7 +1808,7 @@ export class LensOverlayView extends LitElement {
                 </section>`
               : nothing
           }
-          ${this.renderActivePanel(lens, displayLens, sourceJson)}
+          ${this.renderActivePanel(lens, displayLens)}
         </main>
 
         <div id="lens-progress-notification" class="lens-progress-region">
@@ -1906,7 +1902,6 @@ export class LensOverlayView extends LitElement {
   private renderActivePanel(
     lens: OverlayViewModel["lens"] | undefined,
     displayLens: LensState | undefined,
-    sourceJson: () => string,
   ) {
     const activeTab = this.activeTab;
     if (!lens || !displayLens)
@@ -1933,7 +1928,9 @@ export class LensOverlayView extends LitElement {
           ></lens-agent-output>
         </section>`;
       case "source": {
-        const source = sourceJson();
+        // `lens.input` holds the whole AX projection and this view re-renders on every ACP
+        // notification, so the pretty-print stays inside the only tab that shows it.
+        const source = lensSourceJson(lens);
         return html`<section
           id="source-panel"
           class="lens-panel"

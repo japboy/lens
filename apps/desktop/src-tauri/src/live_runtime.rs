@@ -244,11 +244,7 @@ pub fn pause<R: tauri::Runtime>(
         live.freshness = LensFreshness::Unverified;
         live.error = None;
         lens.pending_representation = None;
-        if lens.representation.is_some() {
-            lens.stage = LensStage::Completed;
-        } else {
-            lens.stage = LensStage::Ready;
-        }
+        lens.stage = crate::agent::settled_stage(lens, LensStage::Ready);
     })? {
         return Err("Lens operation was superseded before monitoring paused".into());
     }
@@ -296,11 +292,7 @@ pub fn resume<R: tauri::Runtime>(
         };
         live.last_outcome = None;
         live.error = None;
-        if lens.representation.is_some() {
-            lens.stage = LensStage::Completed;
-        } else {
-            lens.stage = LensStage::Ready;
-        }
+        lens.stage = crate::agent::settled_stage(lens, LensStage::Ready);
     })? {
         app.state::<AppState>().live_control.pause(operation_id)?;
         return Err("Lens operation was superseded before monitoring resumed".into());

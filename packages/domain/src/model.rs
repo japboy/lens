@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
+/// Rounds a byte index down to the nearest UTF-8 character boundary.
+///
+/// Every place that truncates borrowed text to a byte budget needs this, and slicing on a
+/// byte index that is not a boundary panics, so the rounding is declared once.
+pub fn char_boundary_at_or_below(text: &str, index: usize) -> usize {
+    let mut boundary = index.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
 /// Lowercase hexadecimal for a digest or any other byte string.
 ///
 /// Settings backups, downloaded-artifact checksums and projection identities all name

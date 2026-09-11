@@ -1698,9 +1698,9 @@ fn current_lens<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<LensState, Stri
 
 /// The stage to settle on once active work ends. A retained representation stays
 /// displayable, so it outranks whatever the caller would otherwise report; passing the
-/// fallback in keeps the four settle points from drifting apart, and makes the one that
+/// fallback in keeps the settle points from drifting apart, and makes the one that
 /// settles on `Cancelled` rather than `Ready` visible as a deliberate difference.
-fn settled_stage(lens: &LensState, without_representation: LensStage) -> LensStage {
+pub(crate) fn settled_stage(lens: &LensState, without_representation: LensStage) -> LensStage {
     if lens.representation.is_some() {
         LensStage::Completed
     } else {

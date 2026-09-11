@@ -21,6 +21,15 @@ const MAX_MESSAGE_BLOCKS: usize = 512;
 const MAX_MESSAGE_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MESSAGE_IMAGE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
+/// Message-entry totals measured against the per-turn message budget. Named so the three
+/// counts cannot be bound in the wrong order at a call site.
+#[derive(Debug, Default)]
+struct MessageTotals {
+    blocks: usize,
+    text_bytes: usize,
+    image_bytes: usize,
+}
+
 /// One prompt turn owns the ordered message segments and tool-result snapshots.
 /// Tool updates replace their content at the first notification's position.
 #[derive(Debug, Default)]
@@ -133,11 +142,12 @@ impl AgentOutputCandidate {
                 if matches!(&block, LensOutputBlock::Markdown { text, .. } if text.is_empty()) {
                     return Ok(false);
                 }
-                let (message_blocks, text_bytes, image_bytes) = self.message_totals();
+                let totals = self.message_totals();
                 let added = std::slice::from_ref(&block);
-                if message_blocks >= MAX_MESSAGE_BLOCKS
-                    || text_bytes + message_text_bytes(added) > MAX_MESSAGE_TEXT_BYTES
-                    || image_bytes + encoded_image_bytes(added) > MAX_MESSAGE_IMAGE_ENCODED_BYTES
+                if totals.blocks >= MAX_MESSAGE_BLOCKS
+                    || totals.text_bytes + message_text_bytes(added) > MAX_MESSAGE_TEXT_BYTES
+                    || totals.image_bytes + encoded_image_bytes(added)
+                        > MAX_MESSAGE_IMAGE_ENCODED_BYTES
                 {
                     return Err(Error::invalid_params()
                         .data("Agent message output exceeded the per-turn limit"));
@@ -319,20 +329,18 @@ impl AgentOutputCandidate {
         })
     }
 
-    /// Block count, text bytes and encoded image bytes already held by message entries.
-    fn message_totals(&self) -> (usize, usize, usize) {
+    /// What message entries already hold, against the per-turn message budget.
+    fn message_totals(&self) -> MessageTotals {
         self.entries
             .iter()
             .filter_map(|entry| match entry {
                 OutputEntry::Message(blocks) => Some(blocks.as_slice()),
                 OutputEntry::Tool(_) => None,
             })
-            .fold((0, 0, 0), |(count, text, images), blocks| {
-                (
-                    count + blocks.len(),
-                    text + message_text_bytes(blocks),
-                    images + encoded_image_bytes(blocks),
-                )
+            .fold(MessageTotals::default(), |totals, blocks| MessageTotals {
+                blocks: totals.blocks + blocks.len(),
+                text_bytes: totals.text_bytes + message_text_bytes(blocks),
+                image_bytes: totals.image_bytes + encoded_image_bytes(blocks),
             })
     }
 
