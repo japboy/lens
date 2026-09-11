@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import { keyed } from "lit/directives/keyed.js";
 import { prepareHtmlPreview } from "../html-output";
+import { preferredScrollBehavior } from "../styles/component-styles";
 import type {
   PresentedOutputImage,
   PresentedOutputHtml,
@@ -500,9 +501,7 @@ export class LensOutputMedia extends LitElement {
     const rail = this.querySelector<HTMLElement>(".output-media-rail");
     rail?.scrollTo({
       left: this.selectedIndex * rail.clientWidth,
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? "instant"
-        : "smooth",
+      behavior: preferredScrollBehavior(),
     });
   }
 

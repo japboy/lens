@@ -140,6 +140,23 @@ fn invalid(message: &str) -> Error {
     Error::invalid_params().data(message)
 }
 
+/// The config id a saved mode choice is keyed by when the Agent advertises `modes`
+/// without a mode config option, so there is no advertised id to store it under.
+///
+/// Named because the settings UI, the defaults validator and the session change validator
+/// must all agree on it, and a bare string in four places could not say so.
+pub const MODE_CONFIG_SENTINEL: &str = "mode";
+
+/// The effective config id for the mode selector, falling back to the sentinel.
+pub fn mode_config_id(options: Option<&[SessionConfigOption]>) -> Result<String, Error> {
+    Ok(options
+        .map(mode_option)
+        .transpose()?
+        .flatten()
+        .map(|option| option.id.to_string())
+        .unwrap_or_else(|| MODE_CONFIG_SENTINEL.into()))
+}
+
 pub fn mode_option(options: &[SessionConfigOption]) -> Result<Option<&SessionConfigOption>, Error> {
     let mut modes = options
         .iter()

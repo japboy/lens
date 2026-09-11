@@ -210,14 +210,7 @@ impl TargetSelectionWindowGeometry {
         item_count: usize,
         work_areas: &[(LogicalPosition<f64>, LogicalSize<f64>)],
     ) -> Option<Self> {
-        if item_count == 0
-            || !anchor.x.is_finite()
-            || !anchor.y.is_finite()
-            || !anchor.width.is_finite()
-            || !anchor.height.is_finite()
-            || anchor.width <= 0.0
-            || anchor.height <= 0.0
-        {
+        if item_count == 0 || !anchor.is_finite_positive() {
             return None;
         }
 
@@ -225,13 +218,7 @@ impl TargetSelectionWindowGeometry {
             .iter()
             .enumerate()
             .filter_map(|(index, (position, size))| {
-                if !position.x.is_finite()
-                    || !position.y.is_finite()
-                    || !size.width.is_finite()
-                    || !size.height.is_finite()
-                    || size.width <= 0.0
-                    || size.height <= 0.0
-                {
+                if !work_area_bounds(*position, *size).is_finite_positive() {
                     return None;
                 }
                 let left = anchor.x.max(position.x);
@@ -264,15 +251,20 @@ impl TargetSelectionWindowGeometry {
     }
 }
 
+/// Tauri reports a work area as a separate position and size; `Bounds` is the shape the
+/// shared geometry precondition is written against.
+fn work_area_bounds(position: LogicalPosition<f64>, size: LogicalSize<f64>) -> Bounds {
+    Bounds {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    }
+}
+
 impl LensWindowGeometry {
     fn from_target(frame: Bounds) -> Option<Self> {
-        if !frame.x.is_finite()
-            || !frame.y.is_finite()
-            || !frame.width.is_finite()
-            || !frame.height.is_finite()
-            || frame.width <= 0.0
-            || frame.height <= 0.0
-        {
+        if !frame.is_finite_positive() {
             return None;
         }
 
@@ -287,13 +279,7 @@ impl LensWindowGeometry {
     }
 
     fn from_primary_screen(position: LogicalPosition<f64>, size: LogicalSize<f64>) -> Option<Self> {
-        if !position.x.is_finite()
-            || !position.y.is_finite()
-            || !size.width.is_finite()
-            || !size.height.is_finite()
-            || size.width <= 0.0
-            || size.height <= 0.0
-        {
+        if !work_area_bounds(position, size).is_finite_positive() {
             return None;
         }
 

@@ -1,5 +1,6 @@
 import DOMPurify, { type Config } from "dompurify";
 import { Marked } from "marked";
+import { allowedUrl, WEB_AND_MAIL_SCHEMES } from "./external-url";
 
 const markdownParser = new Marked({
   async: false,
@@ -213,12 +214,5 @@ export function sanitizeMermaidSvg(svg: string): DocumentFragment {
 }
 
 export function externalMarkdownUrl(href: string): string | undefined {
-  try {
-    const url = new URL(href);
-    return url.protocol === "https:" || url.protocol === "http:" || url.protocol === "mailto:"
-      ? url.href
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  return allowedUrl(href, WEB_AND_MAIL_SCHEMES);
 }

@@ -1,4 +1,4 @@
-use crate::model::AppConfig;
+use crate::model::{hex_digest, AppConfig};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -55,14 +55,27 @@ impl ConfigStore {
         self.try_load().expect("load valid test settings")
     }
 
+    /// Moves a settings file that `try_load` refused aside, preserving its bytes at a
+    /// discoverable path, so startup can continue from defaults instead of aborting
+    /// before any window, tray or dialog exists. `try_load` itself stays strict.
+    pub(crate) fn quarantine_unreadable(&self) -> io::Result<Option<PathBuf>> {
+        match fs::metadata(&self.path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let quarantined = self
+            .path
+            .with_file_name(format!("settings.unreadable.{}.json", uuid::Uuid::new_v4()));
+        fs::rename(&self.path, &quarantined)?;
+        Ok(Some(quarantined))
+    }
+
     fn backup_legacy(&self, bytes: &[u8]) -> io::Result<()> {
         if !AppConfig::settings_require_prompt_migration(bytes).map_err(io::Error::other)? {
             return Ok(());
         }
-        let digest = Sha256::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let digest = hex_digest(&Sha256::digest(bytes));
         let backup = self
             .path
             .with_file_name(format!("settings.before-prompt-presets-v2.{digest}.json"));
@@ -157,10 +170,7 @@ mod tests {
     fn backup_path(store: &ConfigStore, bytes: &[u8]) -> PathBuf {
         store.path.with_file_name(format!(
             "settings.before-prompt-presets-v2.{}.json",
-            Sha256::digest(bytes)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            hex_digest(&Sha256::digest(bytes))
         ))
     }
 

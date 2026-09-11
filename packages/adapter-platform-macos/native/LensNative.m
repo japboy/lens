@@ -248,6 +248,9 @@ typedef struct {
     LensNativeObservationRegistration
         _registrations[LensMaximumObservationRegistrations];
     NSUInteger _registrationCount;
+    /// Incremented on every release so an AX resolution that was already in flight cannot
+    /// install its result into a source that has since been revoked.
+    NSUInteger _releaseGeneration;
 }
 @property(nonatomic, copy) NSString *operationID;
 @property(nonatomic, assign) uint32_t windowID;
@@ -324,7 +327,12 @@ static BOOL LensStorePickerWindow(NSString *operationID, SCWindow *window) {
     LensNativeWindowSource *existing = LensWindowSourceRegistry[key];
     if (existing != nil) {
         // Never replace a retained reviewed target merely because a later object reused its ID.
-        return existing.screenWindow == window;
+        // Picking the same window again is not a conflict, though: ScreenCaptureKit does not
+        // document SCWindow interning, so a re-pick arrives as a different object. Keep the
+        // retained source and report success so the caller's duplicate handling can explain
+        // it, and reserve the conflict only for a different process reusing the window ID.
+        return existing.screenWindow == window
+            || existing.pid == window.owningApplication.processID;
     }
     LensWindowSourceRegistry[key] = [[LensNativeWindowSource alloc]
         initWithOperationID:operationID
@@ -342,6 +350,7 @@ static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinato
 - (BOOL)presentWithOperationID:(NSString *_Nullable)operationID
                        callback:(LensPickerCallback)callback
                         context:(void *)context;
+- (void)deliver:(NSDictionary *)payload;
 @end
 
 @implementation LensContentPickerCoordinator
@@ -511,6 +520,25 @@ static bool LensPresentWindowPicker(
     return presented;
 }
 
+void lens_abandon_window_picker(void) {
+    dispatch_block_t abandon = ^{
+        LensContentPickerCoordinator *coordinator = LensActiveContentPickerCoordinator;
+        if (coordinator == nil) {
+            return;
+        }
+        // `deliver:` is the single teardown path: it invokes the pending callback exactly
+        // once, deactivates the shared picker, removes the observer and clears the global
+        // gate. Without this entry point a picker that never notifies any observer leaves
+        // that gate set for the life of the process, and every later pick is refused.
+        [coordinator deliver:@{ @"status": @"cancelled" }];
+    };
+    if ([NSThread isMainThread]) {
+        abandon();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), abandon);
+    }
+}
+
 bool lens_present_window_picker(LensPickerCallback callback, void *context) {
     return LensPresentWindowPicker(nil, callback, context);
 }
@@ -619,8 +647,14 @@ static SCWindow *_Nullable LensShareableWindowByID(
 
     dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
     if (dispatch_semaphore_wait(completion, timeout) != 0) {
-        diagnostic = @"ScreenCaptureKit window lookup timed out after 15 seconds.";
-        selectedWindow = nil;
+        // The handler signals last, so on timeout it may still be running and still own
+        // both __block slots. ARC assignment to a shared __block variable is not atomic,
+        // so writing them from here races the handler's own stores and can over-release
+        // what it wrote. Report the timeout without touching them.
+        if (diagnosticOut != NULL) {
+            *diagnosticOut = @"ScreenCaptureKit window lookup timed out after 15 seconds.";
+        }
+        return nil;
     }
     if (diagnosticOut != NULL) {
         *diagnosticOut = diagnostic;
@@ -631,6 +665,7 @@ static SCWindow *_Nullable LensShareableWindowByID(
 static char *LensCaptureWindowRegionsJSON(
     SCWindow *_Nullable selectedWindow,
     CGRect currentWindowFrame,
+    BOOL geometryIsCurrent,
     const char *requestsJSON,
     uint32_t maxLongEdge,
     uint32_t maxPixels,
@@ -828,12 +863,21 @@ static char *LensCaptureWindowRegionsJSON(
                     @"data": [png base64EncodedStringWithOptions:0]
                 }];
             }
-            result = @{
-                @"window_bounds": LensFrameDictionary(windowFrame),
+            // Only a promoted AXWindow owns current point geometry. Without one, the frame
+            // came from the retained SCWindow's picker-time metadata, so it must not be
+            // published as the authoritative observed frame — the extraction path refuses
+            // the same substitution rather than reporting stale geometry as current facts.
+            NSMutableDictionary *batch = [@{
                 @"captures": captures,
                 @"omissions": omissions,
-                @"diagnostics": @[]
-            };
+                @"diagnostics": geometryIsCurrent ? @[] : @[
+                    @"Capture used picker-time geometry because no promoted AXWindow was available; it was not published as the current window frame."
+                ]
+            } mutableCopy];
+            if (geometryIsCurrent) {
+                batch[@"window_bounds"] = LensFrameDictionary(windowFrame);
+            }
+            result = batch;
             dispatch_semaphore_signal(completion);
         }];
 
@@ -862,6 +906,8 @@ char *lens_capture_window_regions_json(
         return LensCaptureWindowRegionsJSON(
             selectedWindow,
             selectedWindow == nil ? CGRectNull : selectedWindow.frame,
+            // Diagnostic one-shot path: SCWindow metadata is not promoted AXWindow geometry.
+            NO,
             requestsJSON,
             maxLongEdge,
             maxPixels,
@@ -889,6 +935,12 @@ char *lens_capture_registered_window_regions_json(
             ? nil
             : LensWindowSourceForIdentity(operationID, windowID);
         CGRect currentWindowFrame = source == nil ? CGRectNull : source.screenWindow.frame;
+        // Promote first, exactly as the extraction path does: the retained SCWindow can
+        // keep picker-time geometry after a resize, so capturing before promotion would
+        // silently use a stale frame for both the crop and the published window bounds.
+        NSMutableArray<NSString *> *promotion = [NSMutableArray array];
+        [source ensureResolvedWindowWithDiagnostics:promotion];
+        BOOL geometryIsCurrent = NO;
         AXUIElementRef resolvedWindow = [source copyResolvedWindow];
         if (resolvedWindow != NULL) {
             if (!LensAXFrame(resolvedWindow, &currentWindowFrame)) {
@@ -898,10 +950,12 @@ char *lens_capture_registered_window_regions_json(
                 ));
             }
             CFRelease(resolvedWindow);
+            geometryIsCurrent = YES;
         }
         return LensCaptureWindowRegionsJSON(
             source.screenWindow,
             currentWindowFrame,
+            geometryIsCurrent,
             requestsJSON,
             maxLongEdge,
             maxPixels,
@@ -1368,60 +1422,93 @@ static void LensNativeAXObserverCallback(
 }
 
 - (BOOL)ensureResolvedWindowWithDiagnostics:(NSMutableArray<NSString *> *)diagnostics {
+    SCWindow *screenWindow = nil;
+    pid_t pid = 0;
+    NSString *pickerTitle = nil;
+    CGRect pickerFrame = CGRectZero;
+    NSUInteger generation = 0;
     @synchronized(self) {
         if (_windowElement != NULL && _applicationElement != NULL) {
             return YES;
         }
-        if (self.screenWindow == nil || self.pid <= 0) {
-            [diagnostics addObject:@"The exact picker-retained SCWindow is unavailable."];
-            return NO;
-        }
-        if (!AXIsProcessTrusted()) {
-            [diagnostics addObject:@"Accessibility permission is not granted to Lens."];
-            return NO;
-        }
+        screenWindow = self.screenWindow;
+        pid = self.pid;
+        pickerTitle = self.pickerTitle;
+        pickerFrame = self.pickerFrame;
+        generation = _releaseGeneration;
+    }
+    if (screenWindow == nil || pid <= 0) {
+        [diagnostics addObject:@"The exact picker-retained SCWindow is unavailable."];
+        return NO;
+    }
+    if (!AXIsProcessTrusted()) {
+        [diagnostics addObject:@"Accessibility permission is not granted to Lens."];
+        return NO;
+    }
 
-        AXUIElementRef application = AXUIElementCreateApplication(self.pid);
-        if (application == NULL) {
-            [diagnostics addObject:@"Unable to create the retained target's application AXUIElement."];
-            return NO;
-        }
-        // AXUIElement.h defines this as the finite messaging boundary for the supplied object.
-        AXError timeoutError = AXUIElementSetMessagingTimeout(
-            application,
-            LensAccessibilityMessagingTimeoutSeconds
-        );
-        if (timeoutError != kAXErrorSuccess) {
-            [diagnostics addObject:[NSString stringWithFormat:
-                @"Unable to establish the Accessibility messaging timeout (%@ (%d)).",
-                LensAXErrorName(timeoutError),
-                timeoutError
-            ]];
-            CFRelease(application);
-            return NO;
-        }
+    AXUIElementRef application = AXUIElementCreateApplication(pid);
+    if (application == NULL) {
+        [diagnostics addObject:@"Unable to create the retained target's application AXUIElement."];
+        return NO;
+    }
+    // AXUIElement.h defines this as the finite messaging boundary for the supplied object.
+    AXError timeoutError = AXUIElementSetMessagingTimeout(
+        application,
+        LensAccessibilityMessagingTimeoutSeconds
+    );
+    if (timeoutError != kAXErrorSuccess) {
+        [diagnostics addObject:[NSString stringWithFormat:
+            @"Unable to establish the Accessibility messaging timeout (%@ (%d)).",
+            LensAXErrorName(timeoutError),
+            timeoutError
+        ]];
+        CFRelease(application);
+        return NO;
+    }
 
-        NSString *resolvedTitle = @"";
-        CGRect resolvedFrame = CGRectZero;
-        double resolutionScore = -1.0;
-        AXUIElementRef window = LensCopyResolvedAXWindowForApplication(
-            application,
-            self.pickerTitle,
-            self.pickerFrame,
-            &resolvedTitle,
-            &resolvedFrame,
-            &resolutionScore,
-            diagnostics
-        );
-        if (window == NULL) {
+    NSString *resolvedTitle = @"";
+    CGRect resolvedFrame = CGRectZero;
+    double resolutionScore = -1.0;
+    // Resolution issues cross-process AX reads for every candidate window, and each is
+    // bounded only by the global default: AXUIElementSetMessagingTimeout applies to the
+    // supplied object alone (AXUIElement.h). Holding this monitor across them would block
+    // `stopObservation`, which the main run loop enters synchronously, freezing AppKit for
+    // as long as the target application takes to answer.
+    AXUIElementRef window = LensCopyResolvedAXWindowForApplication(
+        application,
+        pickerTitle,
+        pickerFrame,
+        &resolvedTitle,
+        &resolvedFrame,
+        &resolutionScore,
+        diagnostics
+    );
+    if (window == NULL) {
+        CFRelease(application);
+        return NO;
+    }
+    @synchronized(self) {
+        // Releasing the target while this resolution ran revokes it. Installing the result
+        // now would resurrect a source that `lens_release_registered_window` has already
+        // removed from the registry, letting extraction keep traversing it after Stop.
+        if (_releaseGeneration != generation) {
             CFRelease(application);
+            CFRelease(window);
+            [diagnostics addObject:@"The retained target was released while its AXWindow was being resolved."];
             return NO;
+        }
+        // A concurrent caller may have promoted while this resolution ran. Keep the first
+        // promotion so observers already registered against it stay valid.
+        if (_windowElement != NULL && _applicationElement != NULL) {
+            CFRelease(application);
+            CFRelease(window);
+            return YES;
         }
         _applicationElement = application;
         _windowElement = window;
         self.initialResolutionScore = resolutionScore;
-        return YES;
     }
+    return YES;
 }
 
 - (AXUIElementRef _Nullable)copyResolvedWindow {
@@ -1624,6 +1711,7 @@ static void LensNativeAXObserverCallback(
     NSAssert([NSThread isMainThread], @"Selected-source release is main-thread confined");
     [self stopObservation];
     @synchronized(self) {
+        _releaseGeneration += 1;
         if (_windowElement != NULL) {
             CFRelease(_windowElement);
             _windowElement = NULL;

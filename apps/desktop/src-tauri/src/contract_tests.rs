@@ -79,6 +79,8 @@ fn contract_snapshot() -> Value {
         "migrated_config": config,
         "snapshot": AppSnapshot::new(config.clone()),
         "agent_output": output.blocks(),
+        // Pinned so the settings UI's copy of the sentinel cannot drift from the Rust one.
+        "mode_config_sentinel": usecase::session_controls::MODE_CONFIG_SENTINEL,
     })
 }
 

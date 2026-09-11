@@ -19,6 +19,7 @@ use rmcp::{
 use std::{
     io,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
@@ -31,6 +32,10 @@ pub const MAX_HTML_BYTES: usize = 512 * 1024;
 /// Six-byte JSON escapes plus bounded MCP protocol overhead.
 pub const MAX_FRAME_BYTES: usize = MAX_HTML_BYTES * 6 + 16 * 1024;
 pub type ServerError = Box<dyn std::error::Error + Send + Sync>;
+/// A single `accept` failure can be transient — a client that aborts the handshake, a
+/// momentary descriptor shortage — and must not retire the endpoint for the whole session.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedHtml {
@@ -103,12 +108,42 @@ impl HttpPublisher {
                 ));
         // Own every accepted connection task: aborting this task drops JoinSet,
         // aborting even idle/partial HTTP connections rather than draining forever.
+        let retired = state.clone();
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
+            let mut consecutive_failures = 0u32;
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
-                        let Ok((stream, _)) = accepted else { break; };
+                        let (stream, _) = match accepted {
+                            Ok(accepted) => {
+                                consecutive_failures = 0;
+                                accepted
+                            }
+                            // Retire only once failures persist, which means the listener
+                            // itself is gone rather than a single connection failing.
+                            Err(error) => {
+                                consecutive_failures += 1;
+                                if consecutive_failures > MAX_CONSECUTIVE_ACCEPT_FAILURES {
+                                    eprintln!(
+                                        "Lens output MCP listener stopped accepting connections: {error}"
+                                    );
+                                    // Record the terminal state the publisher already has a
+                                    // variant for, so callers learn about it through the same
+                                    // state machine as every other refusal.
+                                    if let Ok(mut state) = retired.lock() {
+                                        *state = PublicationState::Closed;
+                                    }
+                                    break;
+                                }
+                                // Awaiting the delay inside this branch parks the whole
+                                // `select!`, so drain anything that already finished first
+                                // rather than leaving it in the set for the retry window.
+                                while connections.try_join_next().is_some() {}
+                                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                                continue;
+                            }
+                        };
                         let service = TowerToHyperService::new(router.clone());
                         connections.spawn(async move {
                             let _ = hyper::server::conn::http1::Builder::new()
@@ -141,6 +176,12 @@ impl HttpPublisher {
             .state
             .lock()
             .map_err(|_| io::Error::other("publication state unavailable"))?;
+        // A retired listener is reported here rather than left for `finish` to return the
+        // same `None` as an Agent that simply never published, which would leave the host
+        // unable to tell a dead endpoint from an unused one.
+        if matches!(*state, PublicationState::Closed) {
+            return Err(io::Error::other("publication endpoint is no longer accepting").into());
+        }
         if turn_id.is_nil() || !matches!(*state, PublicationState::Idle) {
             return Err(io::Error::other("publisher is not idle or turn ID is invalid").into());
         }

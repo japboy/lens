@@ -171,6 +171,29 @@ pub fn validate_context_state(operation_id: Uuid, lens: &LensState) -> Result<()
     Ok(())
 }
 
+/// Whether the retained representation was produced from the lens's current projection and
+/// prompt execution revision. Every freshness decision starts here, so the comparison is
+/// declared once instead of being restated wherever freshness is recomputed.
+pub fn representation_is_current(lens: &LensState) -> bool {
+    lens.representation
+        .as_ref()
+        .zip(lens.projection.as_ref())
+        .is_some_and(|(representation, projection)| {
+            &representation.projection == projection
+                && representation.prompt_execution_revision == lens.prompt_execution_revision
+        })
+}
+
+/// Freshness to publish while a context refresh or an Agent turn is in flight: an
+/// unavailable source cannot be reported as merely being checked.
+pub fn freshness_while_checking(health: LensSourceHealth) -> LensFreshness {
+    if health == LensSourceHealth::Unavailable {
+        LensFreshness::Unverified
+    } else {
+        LensFreshness::Checking
+    }
+}
+
 pub fn reconcile_lens_after_context_refresh(
     lens: &mut LensState,
     context_revision: u64,
@@ -203,15 +226,7 @@ pub fn reconcile_lens_after_context_refresh(
             live.error = None;
         }
         LensContextRefreshOutcome::Unchanged => {
-            let representation_is_current = lens
-                .representation
-                .as_ref()
-                .zip(lens.projection.as_ref())
-                .is_some_and(|(representation, projection)| {
-                    &representation.projection == projection
-                        && representation.prompt_execution_revision
-                            == lens.prompt_execution_revision
-                });
+            let representation_is_current = representation_is_current(lens);
             if representation_is_current {
                 lens.representation
                     .as_mut()

@@ -14,8 +14,11 @@ use port_platform::{
 use serde::Deserialize;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::num::NonZeroU64;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
+
+const PICKER_REPLY_TIMEOUT: Duration = Duration::from_secs(300);
 
 type PickerCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
 type WindowObservationCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
@@ -28,6 +31,7 @@ unsafe extern "C" {
         callback: PickerCallback,
         context: *mut c_void,
     ) -> bool;
+    fn lens_abandon_window_picker();
     fn lens_extract_window_json(
         pid: i32,
         selected_title: *const c_char,
@@ -225,9 +229,22 @@ async fn present_window_picker_impl(
         return Err(PlatformError::PickerBusy);
     }
 
-    let json = receiver
-        .await
-        .map_err(|_| PlatformError::PickerCallbackDropped)?;
+    // The presentation gate is process-wide and only the terminal observer callback clears
+    // it, so a picker that never notifies any observer would leave this await pending for
+    // ever and refuse every later pick until the app restarts. The bound is generous
+    // because a person is choosing a window behind it.
+    let json = match tokio::time::timeout(PICKER_REPLY_TIMEOUT, receiver).await {
+        Ok(reply) => reply.map_err(|_| PlatformError::PickerCallbackDropped)?,
+        Err(_) => {
+            // SAFETY: Takes no arguments. It drives the pending callback to completion on
+            // the main thread, which reclaims the callback context exactly once, and clears
+            // the presentation gate.
+            unsafe { lens_abandon_window_picker() };
+            return Err(PlatformError::Operation(
+                "the window picker did not report a selection".into(),
+            ));
+        }
+    };
     serde_json::from_str(&json)
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }

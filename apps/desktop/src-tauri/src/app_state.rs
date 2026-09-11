@@ -15,8 +15,8 @@ use std::sync::{
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, Notify};
 pub use usecase::state::{
-    advance_revision, next_revision, AgentRunKey, LensContextRefreshCommit,
-    LensContextRefreshOutcome,
+    advance_revision, freshness_while_checking, next_revision, representation_is_current,
+    AgentRunKey, LensContextRefreshCommit, LensContextRefreshOutcome,
 };
 use usecase::state::{
     agent_run_has_authority, coalesce_agent_turn, prepare_context_refresh, validate_context_state,
@@ -460,10 +460,29 @@ pub struct LensPromptMaterial {
 }
 
 impl AppState {
-    pub fn load(platform: crate::platform::Services) -> Result<Self, String> {
+    /// Startup must always reach a running shell: settings that cannot be decoded are
+    /// moved aside and replaced with defaults rather than aborting before any window,
+    /// tray or dialog exists to report the failure.
+    pub fn load_or_recover(platform: crate::platform::Services) -> Self {
         let store = ConfigStore::new();
-        let config = store.try_load()?;
-        Ok(Self::with_config(platform, store, config))
+        match store.try_load() {
+            Ok(config) => Self::with_config(platform, store, config),
+            Err(error) => {
+                match store.quarantine_unreadable() {
+                    Ok(Some(quarantined)) => eprintln!(
+                        "Lens settings could not be loaded ({error}). The file was preserved at {} and defaults were restored.",
+                        quarantined.display()
+                    ),
+                    Ok(None) => eprintln!(
+                        "Lens settings could not be loaded ({error}). Defaults were restored."
+                    ),
+                    Err(quarantine) => eprintln!(
+                        "Lens settings could not be loaded ({error}) and could not be moved aside ({quarantine}). Defaults were used for this run only."
+                    ),
+                }
+                Self::with_config(platform, ConfigStore::new(), crate::store::default_config())
+            }
+        }
     }
 
     pub(crate) fn with_config(

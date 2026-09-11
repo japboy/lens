@@ -1645,7 +1645,6 @@ export class LensOverlayView extends LitElement {
     const lens = model?.lens;
     const context = lens?.context;
     const targets = lens?.target_set?.targets ?? [];
-    const sourceJson = lens ? lensSourceJson(lens) : "";
     const activeAgent = lens?.agent;
     const authenticationMethods = lens ? supportedAuthMethods(lens) : [];
     const targetLabels = targets.map(({ facts }) =>
@@ -1809,7 +1808,7 @@ export class LensOverlayView extends LitElement {
                 </section>`
               : nothing
           }
-          ${this.renderActivePanel(lens, displayLens, sourceJson)}
+          ${this.renderActivePanel(lens, displayLens)}
         </main>
 
         <div id="lens-progress-notification" class="lens-progress-region">
@@ -1903,7 +1902,6 @@ export class LensOverlayView extends LitElement {
   private renderActivePanel(
     lens: OverlayViewModel["lens"] | undefined,
     displayLens: LensState | undefined,
-    sourceJson: string,
   ) {
     const activeTab = this.activeTab;
     if (!lens || !displayLens)
@@ -1929,7 +1927,10 @@ export class LensOverlayView extends LitElement {
             .htmlContent=${this.htmlContent}
           ></lens-agent-output>
         </section>`;
-      case "source":
+      case "source": {
+        // `lens.input` holds the whole AX projection and this view re-renders on every ACP
+        // notification, so the pretty-print stays inside the only tab that shows it.
+        const source = lensSourceJson(lens);
         return html`<section
           id="source-panel"
           class="lens-panel"
@@ -1938,7 +1939,7 @@ export class LensOverlayView extends LitElement {
           tabindex="0"
         >
           ${
-            sourceJson
+            source
               ? html`<div class="lens-content source-view">
                   <lens-media-gallery .lens=${lens}></lens-media-gallery>
                   <section class="source-json" aria-labelledby="source-json-heading">
@@ -1946,7 +1947,7 @@ export class LensOverlayView extends LitElement {
                     <pre
                       class="source-content"
                       aria-label="Normalized Lens source JSON"
-                    ><code>${sourceJson}</code></pre>
+                    ><code>${source}</code></pre>
                   </section>
                 </div>`
               : html`<div class="lens-content">
@@ -1954,6 +1955,7 @@ export class LensOverlayView extends LitElement {
                 </div>`
           }
         </section>`;
+      }
       case "diagnostics":
         return html`<section
           id="diagnostics-panel"

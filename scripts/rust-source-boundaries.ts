@@ -107,6 +107,15 @@ const PORTABLE_FORBIDDEN = new Set([
   "Instant",
   "new_v4",
   "now_v7",
+  // Iteration order is randomised per process, so a portable crate that serialized or
+  // displayed one of these would produce a different projection digest on every run. The
+  // ordered collections are already used throughout; this keeps that from regressing
+  // silently into a flaky digest rather than a failed check.
+  "HashMap",
+  "HashSet",
+  "hash_map",
+  "hash_set",
+  "RandomState",
   "exists",
   "try_exists",
   "is_file",

@@ -34,11 +34,18 @@ pub async fn confirm_targets(
     }
     let windows = selection
         .items
-        .into_iter()
-        .map(|item| item.window)
+        .iter()
+        .map(|item| item.window.clone())
         .collect();
     let targets = LensTargetSet::try_new(operation, windows).map_err(|error| error.to_string())?;
     host.dismiss_preview().await?;
+    // Dismissal awaits a native window animation while the picker webview is still live, so
+    // the reviewed set can change underneath this call. `replace_state` only compares the
+    // operation id, so without re-reading here a removal completed during the animation is
+    // silently discarded — and a cancellation that kept the same id would be overwritten.
+    if host.selection(operation)? != selection {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
     let extracting = LensState {
         operation_id: Some(operation),
         stage: LensStage::Extracting,
@@ -90,6 +97,7 @@ mod tests {
         Picking,
         EmptySelection,
         DismissFailure,
+        SelectionChangedDuringDismiss,
         SupersededDuringDismiss,
         SupersededDuringExtraction,
         ExtractionFailure,
@@ -101,6 +109,7 @@ mod tests {
     struct Script {
         state: LensState,
         effects: Vec<Effect>,
+        dismissed: bool,
     }
 
     struct Host {
@@ -119,6 +128,7 @@ mod tests {
                         ..LensState::default()
                     },
                     effects: Vec::new(),
+                    dismissed: false,
                 }),
             }
         }
@@ -139,6 +149,10 @@ mod tests {
     impl ConfirmationHost for Host {
         fn selection(&self, _: Uuid) -> Result<LensTargetSelection, String> {
             self.record(Effect::Selection);
+            // Removing the reviewed window while the dismissal animation runs keeps the
+            // operation id, so only re-reading the selection can detect it.
+            let removed = self.scenario == Scenario::SelectionChangedDuringDismiss
+                && self.script.lock().unwrap().dismissed;
             let window: SelectedWindow = serde_json::from_value(serde_json::json!({
                 "window_id":7,"bundle_id":"example.browser","pid":42,
                 "title":"Document","application_name":"Browser",
@@ -154,7 +168,7 @@ mod tests {
                 },
                 anchor: Some(window.facts.frame),
                 maximum_targets: domain::lens::MAX_LENS_TARGETS,
-                items: if self.scenario == Scenario::EmptySelection {
+                items: if self.scenario == Scenario::EmptySelection || removed {
                     Vec::new()
                 } else {
                     vec![LensTargetSelectionItem {
@@ -171,6 +185,7 @@ mod tests {
         async fn dismiss_preview(&self) -> Result<(), String> {
             self.record(Effect::Dismiss);
             tokio::task::yield_now().await;
+            self.script.lock().unwrap().dismissed = true;
             if self.scenario == Scenario::SupersededDuringDismiss {
                 self.supersede();
             }
@@ -271,6 +286,7 @@ mod tests {
                 vec![
                     Selection,
                     Dismiss,
+                    Selection,
                     BeginExtraction,
                     Extract,
                     Observe,
@@ -293,26 +309,32 @@ mod tests {
                 Some("dismiss failed"),
             ),
             (
+                SelectionChangedDuringDismiss,
+                vec![Selection, Dismiss, Selection],
+                LensStage::Selecting,
+                Some(OPERATION_SUPERSEDED),
+            ),
+            (
                 SupersededDuringDismiss,
-                vec![Selection, Dismiss, BeginExtraction],
+                vec![Selection, Dismiss, Selection, BeginExtraction],
                 LensStage::Selecting,
                 Some(OPERATION_SUPERSEDED),
             ),
             (
                 SupersededDuringExtraction,
-                vec![Selection, Dismiss, BeginExtraction, Extract],
+                vec![Selection, Dismiss, Selection, BeginExtraction, Extract],
                 LensStage::Selecting,
                 Some(OPERATION_SUPERSEDED),
             ),
             (
                 ExtractionFailure,
-                vec![Selection, Dismiss, BeginExtraction, Extract],
+                vec![Selection, Dismiss, Selection, BeginExtraction, Extract],
                 LensStage::Failed,
                 Some("extraction failed"),
             ),
             (
                 UnusableExtraction,
-                vec![Selection, Dismiss, BeginExtraction, Extract],
+                vec![Selection, Dismiss, Selection, BeginExtraction, Extract],
                 LensStage::Failed,
                 None,
             ),
@@ -321,6 +343,7 @@ mod tests {
                 vec![
                     Selection,
                     Dismiss,
+                    Selection,
                     BeginExtraction,
                     Extract,
                     Observe,
@@ -336,6 +359,7 @@ mod tests {
                 vec![
                     Selection,
                     Dismiss,
+                    Selection,
                     BeginExtraction,
                     Extract,
                     Observe,

@@ -13,7 +13,9 @@ import { markdownLink } from "@generative-dom/plugin-markdown-link";
 import { markdownList } from "@generative-dom/plugin-markdown-list";
 import { markdownQuote } from "@generative-dom/plugin-markdown-quote";
 import { markdownTable } from "@generative-dom/plugin-markdown-table";
+import { dispatchComponentEvent } from "./components/events";
 import { renderMarkdown } from "./markdown";
+import { prefersReducedMotion } from "./styles/component-styles";
 import { renderMermaidCodeBlocks, type MermaidTheme } from "./mermaid";
 
 export type MarkdownRenderPhase = "streaming" | "settled";
@@ -132,7 +134,7 @@ export class StreamingMarkdownElement extends HTMLElement {
     const streamCursor = cursor({
       character: "▍",
       className: "streaming-cursor",
-      animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      animated: !prefersReducedMotion(),
     });
     this.streamCursor = streamCursor;
     this.renderer = new GenerativeDom({
@@ -198,25 +200,17 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   private reportRenderError(error: GenerativeDomError): void {
-    this.dispatchEvent(
-      new CustomEvent("markdown-render-error", {
-        bubbles: true,
-        composed: true,
-        detail: `${error.phase}:${error.plugin}: ${error.error.message}`,
-      }),
+    dispatchComponentEvent(
+      this,
+      "markdown-render-error",
+      `${error.phase}:${error.plugin}: ${error.error.message}`,
     );
   }
 
   private reportMermaidErrors(errors: Error[]): void {
     const firstError = errors[0]?.message ?? "Unknown Mermaid rendering error";
     const remaining = errors.length > 1 ? ` (${errors.length - 1} more)` : "";
-    this.dispatchEvent(
-      new CustomEvent("markdown-render-error", {
-        bubbles: true,
-        composed: true,
-        detail: `mermaid: ${firstError}${remaining}`,
-      }),
-    );
+    dispatchComponentEvent(this, "markdown-render-error", `mermaid: ${firstError}${remaining}`);
   }
 
   private handleColorSchemeChange = (): void => {

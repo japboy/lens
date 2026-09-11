@@ -4,6 +4,7 @@ import type { HtmlOutputContent } from "../application/html-output-controller";
 import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
 import { externalMarkdownUrl } from "../markdown";
+import { preferredScrollBehavior } from "../styles/component-styles";
 import "../streaming-markdown";
 import type { StreamingMarkdownState } from "../streaming-markdown";
 import type { LensOutputBlock, LensState } from "../types";
@@ -109,7 +110,7 @@ export class LensAgentOutput extends LitElement {
         narrative.getBoundingClientRect().top -
         output.getBoundingClientRect().top +
         output.scrollTop,
-      behavior: this.scrollBehavior(),
+      behavior: preferredScrollBehavior(),
     });
     this.querySelector<HTMLButtonElement>(".output-media-return")?.focus({ preventScroll: true });
   };
@@ -117,16 +118,12 @@ export class LensAgentOutput extends LitElement {
   private showMedia = (): void => {
     this.querySelector<HTMLElement>(".lens-output")?.scrollTo({
       top: 0,
-      behavior: this.scrollBehavior(),
+      behavior: preferredScrollBehavior(),
     });
     this.querySelector<HTMLButtonElement>(".output-media-details-toggle")?.focus({
       preventScroll: true,
     });
   };
-
-  private scrollBehavior(): ScrollBehavior {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth";
-  }
 
   private renderBlock(
     block: LensOutputBlock,

@@ -5,10 +5,11 @@ use crate::{
     },
     agent_runtime::{self, ResolvedAgentRuntime},
     app_state::{
-        begin_agent_run, emit_app_snapshot, next_revision, publish_agent_selection,
-        update_agent_selection, update_lens_state, update_lens_state_for_projection,
-        update_lens_state_for_run, AgentRunHandle, AgentRunKey, AgentSessionIdentity,
-        AgentSessionMailbox, AgentSessionTurn, AgentSessionTurnCompletion, AppState,
+        begin_agent_run, emit_app_snapshot, freshness_while_checking, next_revision,
+        publish_agent_selection, representation_is_current, update_agent_selection,
+        update_lens_state, update_lens_state_for_projection, update_lens_state_for_run,
+        AgentRunHandle, AgentRunKey, AgentSessionIdentity, AgentSessionMailbox, AgentSessionTurn,
+        AgentSessionTurnCompletion, AppState,
     },
     live_sync::{LensAgentProjection, ProjectionRef},
     model::{
@@ -51,6 +52,7 @@ use uuid::Uuid;
 
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
+const AGENT_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct AgentTransformInput {
@@ -688,7 +690,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
         .builder()
         .name("lens-agent-selection")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
-            let initialize = initialize(&connection).await?;
+            let initialize = initialize_within_timeout(&connection).await?;
             let auth_methods = initialize
                 .auth_methods
                 .iter()
@@ -1118,6 +1120,15 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
     {
         eprintln!("Unable to finish the Agent session actor: {error}");
     }
+    // Releasing the last runtime lease prunes superseded installs synchronously, which
+    // recursively deletes hundreds of megabytes while holding the selector and lease
+    // mutexes. Drop it on a blocking thread so a runtime worker never carries that, and
+    // never blocks the other tasks that acquire those mutexes.
+    if let Some(descriptor) = descriptor {
+        drop(tauri::async_runtime::spawn_blocking(move || {
+            drop(descriptor)
+        }));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1215,7 +1226,16 @@ async fn run_persistent_session<R: tauri::Runtime>(
             if *shutdown.borrow() {
                 return Err(Error::request_cancelled());
             }
-            app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
+            // Confirming promotes the candidate and then prunes superseded installs
+            // synchronously, which recursively deletes hundreds of megabytes while holding
+            // the selector and lease mutexes. Keep that off the runtime worker driving
+            // session startup, where it would also stall every task taking those mutexes.
+            let host = Arc::clone(&app.state::<AgentServices<R>>().0);
+            let confirmed = descriptor.runtime();
+            tauri::async_runtime::spawn_blocking(move || host.confirm_ready(&confirmed))
+                .await
+                .map_err(|error| state_error(error.to_string()))?
+                .map_err(state_error)?;
             *startup = SessionStartup::Ready;
             confirm_agent_selection_after_session(&app, identity.config.agent)
                 .map_err(state_error)?;
@@ -1444,11 +1464,7 @@ fn prepare_agent_turn<R: tauri::Runtime>(
                         .map(|representation| representation.representation_id),
                 });
                 if let Some(live) = lens.live.as_mut() {
-                    live.freshness = if live.health == LensSourceHealth::Unavailable {
-                        LensFreshness::Unverified
-                    } else {
-                        LensFreshness::Checking
-                    };
+                    live.freshness = freshness_while_checking(live.health);
                     live.error = None;
                 }
             }
@@ -1680,6 +1696,18 @@ fn current_lens<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<LensState, Stri
     app.state::<AppState>().lens()
 }
 
+/// The stage to settle on once active work ends. A retained representation stays
+/// displayable, so it outranks whatever the caller would otherwise report; passing the
+/// fallback in keeps the settle points from drifting apart, and makes the one that
+/// settles on `Cancelled` rather than `Ready` visible as a deliberate difference.
+pub(crate) fn settled_stage(lens: &LensState, without_representation: LensStage) -> LensStage {
+    if lens.representation.is_some() {
+        LensStage::Completed
+    } else {
+        without_representation
+    }
+}
+
 fn retained_representation_freshness(lens: &LensState) -> LensFreshness {
     if lens.live.as_ref().is_some_and(|live| {
         live.lifecycle != LensMonitoringLifecycle::Watching
@@ -1687,15 +1715,12 @@ fn retained_representation_freshness(lens: &LensState) -> LensFreshness {
     }) {
         return LensFreshness::Unverified;
     }
-    match (&lens.representation, &lens.projection) {
-        (Some(representation), Some(projection))
-            if &representation.projection == projection
-                && representation.prompt_execution_revision == lens.prompt_execution_revision =>
-        {
-            LensFreshness::Current
-        }
-        (Some(_), _) => LensFreshness::Stale,
-        (None, _) => LensFreshness::None,
+    if representation_is_current(lens) {
+        LensFreshness::Current
+    } else if lens.representation.is_some() {
+        LensFreshness::Stale
+    } else {
+        LensFreshness::None
     }
 }
 
@@ -1737,11 +1762,7 @@ fn finish_agent_run_error<R: tauri::Runtime>(
                 .as_ref()
                 .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
         {
-            if lens.representation.is_some() {
-                LensStage::Completed
-            } else {
-                LensStage::Ready
-            }
+            settled_stage(lens, LensStage::Ready)
         } else {
             stage
         };
@@ -1808,11 +1829,7 @@ fn finish_prompt_response(
             .as_ref()
             .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
         {
-            if lens.representation.is_some() {
-                LensStage::Completed
-            } else {
-                LensStage::Ready
-            }
+            settled_stage(lens, LensStage::Ready)
         } else {
             LensStage::Cancelled
         };
@@ -1826,11 +1843,7 @@ fn finish_prompt_response(
         .as_ref()
         .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
     {
-        lens.stage = if lens.representation.is_some() {
-            LensStage::Completed
-        } else {
-            LensStage::Cancelled
-        };
+        lens.stage = settled_stage(lens, LensStage::Cancelled);
         lens.error = None;
         finish_retained_representation(lens, None, None);
         return;
@@ -1845,11 +1858,7 @@ fn finish_prompt_response(
     }
 
     if !candidate_projection_advances_publication_frontier(lens, &target_projection) {
-        lens.stage = if lens.representation.is_some() {
-            LensStage::Completed
-        } else {
-            LensStage::Ready
-        };
+        lens.stage = settled_stage(lens, LensStage::Ready);
         lens.error = None;
         finish_retained_representation(lens, None, None);
         return;
@@ -2066,7 +2075,7 @@ async fn run_authentication<R: tauri::Runtime>(
         .builder()
         .name("lens-auth")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
-            let response = initialize(&connection).await?;
+            let response = initialize_within_timeout(&connection).await?;
             let Some(method) = response
                 .auth_methods
                 .iter()
@@ -2102,6 +2111,24 @@ async fn run_authentication<R: tauri::Runtime>(
             Ok(AuthenticationAction::Completed)
         })
         .await
+}
+
+/// Every `initialize` handshake needs a time boundary. The selection and authentication
+/// probes publish `Checking` before connecting and only leave it once the handshake
+/// returns, so an adapter that stays alive without answering would pin that stage
+/// permanently: the tray menu, target selection and Settings all disable themselves for
+/// it, `cancel_agent` drives an unrelated channel, and the adapter's `ChildGuard` is
+/// never dropped because the future never completes.
+async fn initialize_within_timeout(
+    connection: &ConnectionTo<Agent>,
+) -> Result<agent_client_protocol::schema::v1::InitializeResponse, Error> {
+    match tokio::time::timeout(AGENT_INITIALIZE_TIMEOUT, initialize(connection)).await {
+        Ok(response) => response,
+        Err(_) => Err(Error::internal_error().data(format!(
+            "The Agent did not respond to initialize within {} seconds",
+            AGENT_INITIALIZE_TIMEOUT.as_secs()
+        ))),
+    }
 }
 
 async fn initialize(

@@ -332,6 +332,11 @@ export interface AgentAuthMethod {
   supported: boolean;
 }
 
+/// Mirrors `usecase::session_controls::MODE_CONFIG_SENTINEL`: the config id a saved mode
+/// choice is keyed by when the Agent advertises `modes` without a mode config option.
+/// `mode-sentinel.test.ts` pins this against the Rust constant.
+export const MODE_CONFIG_SENTINEL = "mode";
+
 export interface AgentSelectionState {
   config_options?: SessionConfigOption[];
   modes?: SessionMode[];
@@ -350,7 +355,8 @@ export interface AgentRuntimeState {
   agent?: AgentKind;
   version?: string;
   downloaded_bytes: number;
-  total_bytes?: number;
+  /// Rust sends `Option<u64>` without `skip_serializing_if`, so an absent total is `null`.
+  total_bytes?: number | null;
   message?: string;
   error?: string;
 }

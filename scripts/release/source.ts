@@ -1,13 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { git, headCommit, isCleanCheckout } from "../git.ts";
 import { VERSION_FILES, tagVersion, versionState } from "./version.ts";
 
-export function git(root: string, ...args: string[]): string {
-  return execFileSync("git", args, {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  }).trimEnd();
-}
+export { git };
 export function commitSha(value: string): string {
   if (!/^[a-f0-9]{40}$/u.test(value)) throw new Error("Explicit full source commit required");
   return value;
@@ -27,10 +22,7 @@ export function requireMain(root: string, sha: string): void {
   });
 }
 export function cleanSource(root: string, sha: string): void {
-  if (
-    git(root, "rev-parse", "HEAD") !== commitSha(sha) ||
-    git(root, "status", "--porcelain", "--untracked-files=all")
-  )
+  if (headCommit(root) !== commitSha(sha) || !isCleanCheckout(root))
     throw new Error("Expected a clean checkout of the exact release source");
 }
 export type TagAnnotation = { schema: 1; version: string; commit: string; pullRequest: number };

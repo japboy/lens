@@ -2,9 +2,9 @@ use crate::{
     agent,
     app_state::{
         clear_lens_operation, commit_initial_lens_context, commit_lens_context_refresh,
-        emit_app_snapshot, next_revision, publish_lens_state, update_lens_state,
-        update_lens_state_for_context, AgentRunKey, AppState, LensContextRefreshCommit,
-        LensContextRefreshOutcome,
+        emit_app_snapshot, freshness_while_checking, next_revision, publish_lens_state,
+        update_lens_state, update_lens_state_for_context, AgentRunKey, AppState,
+        LensContextRefreshCommit, LensContextRefreshOutcome,
     },
     confirm_targets::{confirm_targets, ConfirmationHost, OPERATION_SUPERSEDED},
     lens::{
@@ -277,7 +277,6 @@ fn update_config<R: tauri::Runtime>(
     update: impl FnOnce(&mut AppConfig),
 ) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
-    let _ = state.agent_control.cancel_active()?;
     let snapshot = {
         let mut snapshot = state
             .runtime
@@ -285,10 +284,22 @@ fn update_config<R: tauri::Runtime>(
             .map_err(|_| "application state lock is poisoned".to_string())?;
         let mut next = snapshot.config.clone();
         update(&mut next);
+        if next == snapshot.config {
+            return Ok(snapshot.config.clone());
+        }
+        let cancel = !snapshot.config.same_execution_config(&next);
         let revision = next_revision(&snapshot)?;
+        // Validation and persistence must succeed before any currently running work is cancelled.
         state.store.save(&next).map_err(|error| error.to_string())?;
         snapshot.config = next;
         snapshot.revision = revision;
+        // Cancel while the commit lock is still held, as the prompt-preset path does.
+        // Releasing first publishes the new configuration before the old work is stopped,
+        // and `begin_agent_run` entering that gap would register a run against the new
+        // configuration only for this cancellation to discard it.
+        if cancel {
+            let _ = state.agent_control.cancel_active()?;
+        }
         snapshot.clone()
     };
     let config = snapshot.config.clone();
@@ -720,11 +731,7 @@ fn mark_context_refresh_started(lens: &mut LensState) {
         return;
     }
     if let Some(live) = lens.live.as_mut() {
-        live.freshness = if live.health == LensSourceHealth::Unavailable {
-            LensFreshness::Unverified
-        } else {
-            LensFreshness::Checking
-        };
+        live.freshness = freshness_while_checking(live.health);
         live.last_outcome = None;
         live.error = None;
     }
@@ -1521,16 +1528,9 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
     {
         return Err("Agent selection changed".into());
     }
-    let mode_id = expected
-        .agent_selection
-        .config_options
-        .as_deref()
-        .map(crate::session_controls::mode_option)
-        .transpose()
-        .map_err(|_| "Ambiguous Agent modes")?
-        .flatten()
-        .map(|o| o.id.to_string())
-        .unwrap_or_else(|| "mode".into());
+    let mode_id =
+        crate::session_controls::mode_config_id(expected.agent_selection.config_options.as_deref())
+            .map_err(|_| "Ambiguous Agent modes")?;
     let elevated = defaults.choices.iter().any(|c| {
         c.config_id == mode_id && Some(&c.value) != expected.agent_selection.policy_default.as_ref()
     });
