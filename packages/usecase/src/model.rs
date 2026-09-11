@@ -269,11 +269,16 @@ fn present_prompt_presets<'de, D: serde::Deserializer<'de>>(
         value["presets"] =
             serde_json::to_value(&defaults.presets).map_err(serde::de::Error::custom)?;
         value["selected_id"] = serde_json::Value::String(defaults.selected_id.clone());
-        serde_json::from_value::<PromptPresetCatalog>(value)
+        // Return the validated catalog rather than `defaults`. It carries the persisted
+        // revision counters, which `PromptPresetCatalog::apply` uses as optimistic-
+        // concurrency tokens and `same_execution_config` compares. Discarding them reset
+        // both to 1, so the next save wrote a revision below one already on disk and the
+        // counters stopped being monotonic across restarts.
+        return serde_json::from_value::<PromptPresetCatalog>(value)
             .map_err(serde::de::Error::custom)?
             .normalize()
-            .map_err(serde::de::Error::custom)?;
-        return Ok(Some(defaults));
+            .map(Some)
+            .map_err(serde::de::Error::custom);
     }
     if current_catalog_needs_selection(&value) {
         value["selected_id"] = value["presets"][0]["id"].clone();

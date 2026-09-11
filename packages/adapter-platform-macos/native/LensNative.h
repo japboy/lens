@@ -37,6 +37,10 @@ bool lens_transition_window_frame(
 /* Legacy one-shot picker. It serializes metadata and owns no selected source. */
 bool lens_present_window_picker(LensPickerCallback callback, void *context);
 
+/// Abandons an active picker, releasing the process-wide presentation gate. Delivers a
+/// cancelled reply through the pending callback so its context is freed exactly once.
+void lens_abandon_window_picker(void);
+
 /*
  * Operation-scoped picker. A successful callback stores the exact picker-returned
  * SCWindow under (operationID, windowID) until an explicit window/operation release.

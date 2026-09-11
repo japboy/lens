@@ -36,7 +36,10 @@ export class LensAgentSettings extends LitElement {
         : [];
     const selected = selectedAgent(this.selection);
     const selectedLabel = selected === "claude" ? "Claude" : "Codex";
-    const total = this.runtime.total_bytes;
+    // An unknown total arrives as `null`, so normalise before the indeterminate check:
+    // `=== undefined` would never match and lit would render `max=""`, which HTML treats
+    // as max=1 — a determinate bar pinned by however many bytes have arrived.
+    const total = this.runtime.total_bytes ?? undefined;
 
     return html`
       <fieldset ?disabled=${controlsDisabled}>

@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager};
 use tokio::{io::AsyncWriteExt, process::Command};
 use uuid::Uuid;
 
+const CODE_SIGNATURE_TIMEOUT: Duration = Duration::from_secs(30);
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const REGISTRY_SCHEMA_VERSION: &str = "1.0.0";
 const NODE_VERSION: &str = env!("LENS_NODE_VERSION");
@@ -1676,13 +1677,21 @@ async fn verify_code_signature(
     let requirement = format!(
         "=anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\" and identifier \"{signing_identifier}\""
     );
-    let output = Command::new("/usr/bin/codesign")
+    // `codesign --verify` evaluates the certificate chain through `trustd`, which can stall.
+    // Without a boundary a stall holds the runtime-install lock for the whole process, so
+    // every later resolve blocks and startup restore pins the selection on `Checking`.
+    // `kill_on_drop` matters because this future is cancellable: the session actor's
+    // `select!` prefers shutdown, and tokio leaves an orphaned child running otherwise.
+    let future = Command::new("/usr/bin/codesign")
         .args(["--verify", "--strict", "--test-requirement"])
         .arg(requirement)
         .arg(path)
         .stdin(Stdio::null())
-        .output()
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(CODE_SIGNATURE_TIMEOUT, future)
         .await
+        .map_err(|_| format!("{label} code signature verification timed out"))?
         .map_err(|error| format!("unable to verify {label} code signature: {error}"))?;
     if !output.status.success() {
         return Err(format!(

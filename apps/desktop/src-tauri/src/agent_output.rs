@@ -129,7 +129,7 @@ impl AgentOutputCandidate {
         match update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 let mut block = lens_output_block(chunk);
-                enforce_html_limit(&mut block, self.retained_html_count(None));
+                enforce_html_limit(&mut block, || self.retained_html_count(None));
                 if matches!(&block, LensOutputBlock::Markdown { text, .. } if text.is_empty()) {
                     return Ok(false);
                 }
@@ -189,7 +189,7 @@ impl AgentOutputCandidate {
                 .filter_map(|content| match content {
                     ToolCallContent::Content(content) if is_tool_media(&content.content) => {
                         let mut block = lens_output_block(ContentChunk::new(content.content));
-                        enforce_html_limit(&mut block, html_count);
+                        enforce_html_limit(&mut block, || html_count);
                         if let (
                             Some(index),
                             LensOutputBlock::Html {
@@ -492,9 +492,12 @@ fn is_tool_media(content: &ContentBlock) -> bool {
     }
 }
 
-fn enforce_html_limit(block: &mut LensOutputBlock, retained: usize) {
-    if retained > 0 {
-        if let LensOutputBlock::Html { message_id, .. } = block {
+/// The retained count is supplied lazily because counting walks every entry and every one
+/// of its blocks, while only an HTML block can exceed the per-turn limit. Message chunks
+/// are overwhelmingly text and arrive once per ACP notification.
+fn enforce_html_limit(block: &mut LensOutputBlock, retained: impl FnOnce() -> usize) {
+    if let LensOutputBlock::Html { message_id, .. } = block {
+        if retained() > 0 {
             *block = LensOutputBlock::Unsupported {
                 message_id: message_id.clone(),
                 content_type: "html (one resource per turn limit exceeded)".into(),

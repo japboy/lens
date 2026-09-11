@@ -324,7 +324,12 @@ static BOOL LensStorePickerWindow(NSString *operationID, SCWindow *window) {
     LensNativeWindowSource *existing = LensWindowSourceRegistry[key];
     if (existing != nil) {
         // Never replace a retained reviewed target merely because a later object reused its ID.
-        return existing.screenWindow == window;
+        // Picking the same window again is not a conflict, though: ScreenCaptureKit does not
+        // document SCWindow interning, so a re-pick arrives as a different object. Keep the
+        // retained source and report success so the caller's duplicate handling can explain
+        // it, and reserve the conflict only for a different process reusing the window ID.
+        return existing.screenWindow == window
+            || existing.pid == window.owningApplication.processID;
     }
     LensWindowSourceRegistry[key] = [[LensNativeWindowSource alloc]
         initWithOperationID:operationID
@@ -342,6 +347,7 @@ static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinato
 - (BOOL)presentWithOperationID:(NSString *_Nullable)operationID
                        callback:(LensPickerCallback)callback
                         context:(void *)context;
+- (void)deliver:(NSDictionary *)payload;
 @end
 
 @implementation LensContentPickerCoordinator
@@ -511,6 +517,25 @@ static bool LensPresentWindowPicker(
     return presented;
 }
 
+void lens_abandon_window_picker(void) {
+    dispatch_block_t abandon = ^{
+        LensContentPickerCoordinator *coordinator = LensActiveContentPickerCoordinator;
+        if (coordinator == nil) {
+            return;
+        }
+        // `deliver:` is the single teardown path: it invokes the pending callback exactly
+        // once, deactivates the shared picker, removes the observer and clears the global
+        // gate. Without this entry point a picker that never notifies any observer leaves
+        // that gate set for the life of the process, and every later pick is refused.
+        [coordinator deliver:@{ @"status": @"cancelled" }];
+    };
+    if ([NSThread isMainThread]) {
+        abandon();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), abandon);
+    }
+}
+
 bool lens_present_window_picker(LensPickerCallback callback, void *context) {
     return LensPresentWindowPicker(nil, callback, context);
 }
@@ -619,8 +644,14 @@ static SCWindow *_Nullable LensShareableWindowByID(
 
     dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
     if (dispatch_semaphore_wait(completion, timeout) != 0) {
-        diagnostic = @"ScreenCaptureKit window lookup timed out after 15 seconds.";
-        selectedWindow = nil;
+        // The handler signals last, so on timeout it may still be running and still own
+        // both __block slots. ARC assignment to a shared __block variable is not atomic,
+        // so writing them from here races the handler's own stores and can over-release
+        // what it wrote. Report the timeout without touching them.
+        if (diagnosticOut != NULL) {
+            *diagnosticOut = @"ScreenCaptureKit window lookup timed out after 15 seconds.";
+        }
+        return nil;
     }
     if (diagnosticOut != NULL) {
         *diagnosticOut = diagnostic;

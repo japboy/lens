@@ -350,7 +350,8 @@ export interface AgentRuntimeState {
   agent?: AgentKind;
   version?: string;
   downloaded_bytes: number;
-  total_bytes?: number;
+  /// Rust sends `Option<u64>` without `skip_serializing_if`, so an absent total is `null`.
+  total_bytes?: number | null;
   message?: string;
   error?: string;
 }
