@@ -22,7 +22,7 @@ dependencies = [
 name = "adapter-platform-macos"
 version = "0.3.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cc",
  "port-platform",
  "serde",
@@ -1011,7 +1011,7 @@ dependencies = [
  "adapter-output-mcp",
  "adapter-platform-macos",
  "agent-client-protocol",
- "base64 0.22.1",
+ "base64 0.23.1",
  "dirs",
  "flate2",
  "port-platform",
@@ -1146,7 +1146,7 @@ dependencies = [
 name = "domain"
 version = "0.3.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -5271,7 +5271,7 @@ name = "usecase"
 version = "0.3.0"
 dependencies = [
  "agent-client-protocol-schema",
- "base64 0.22.1",
+ "base64 0.23.1",
  "domain",
  "port-platform",
  "serde",
