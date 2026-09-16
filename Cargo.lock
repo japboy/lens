@@ -1012,6 +1012,7 @@ dependencies = [
  "adapter-platform-macos",
  "agent-client-protocol",
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "flate2",
  "port-platform",

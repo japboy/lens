@@ -23,6 +23,9 @@ mod output_mcp;
 pub use native::run;
 mod platform;
 mod session_controls;
+mod session_document;
+mod session_history;
+mod session_view;
 #[cfg(test)]
 mod shell_tests;
 mod store;
@@ -67,6 +70,8 @@ fn command_handler<R: tauri::Runtime>(
         about::get_about_documents,
         about::show_about,
         commands::get_app_snapshot,
+        session_view::get_session_view,
+        session_view::close_session_view,
         commands::get_html_output,
         commands::set_agent,
         commands::set_working_directory,

@@ -1,3 +1,4 @@
+import { isHistoryView, type SessionView } from "../application/session-document";
 import { initialOverlayState } from "../rendering/initial-state";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
@@ -34,6 +35,7 @@ const LENS_TABS = [
   { id: "interpretation", label: "Interpretation" },
   { id: "source", label: "Source" },
   { id: "diagnostics", label: "Diagnostics" },
+  { id: "conversation", label: "Conversation" },
 ] as const;
 
 type LensTab = (typeof LENS_TABS)[number]["id"];
@@ -110,6 +112,17 @@ export class LensOverlayView extends LitElement {
 
       .overlay-shell[data-media-cue="true"] {
         --progress-bottom-clearance: var(--output-media-cue-size);
+      }
+
+      .history-shell {
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+      }
+      .history-content {
+        overflow: auto;
+        flex: 1;
+        padding: 0 14px 14px;
       }
 
       .overlay-header {
@@ -1592,6 +1605,7 @@ export class LensOverlayView extends LitElement {
     ...sharedIconStyles,
   ];
 
+  @property({ attribute: false }) sessionView: SessionView | undefined;
   @property({ type: Boolean }) active = initialOverlayState().active;
   @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
@@ -1641,6 +1655,7 @@ export class LensOverlayView extends LitElement {
   }
 
   protected render() {
+    if (isHistoryView(this.sessionView)) return this.renderHistory();
     const model = this.model;
     const lens = model?.lens;
     const context = lens?.context;
@@ -1784,6 +1799,7 @@ export class LensOverlayView extends LitElement {
           <div data-region-error="output"></div>
           <div data-region-error="session"></div>
           <div data-region-error="source"></div>
+          <div data-region-error="conversation"></div>
           ${model?.message ? html`<p class="error" role="alert">${model?.message}</p>` : nothing}
           ${lens?.error ? html`<p class="error" role="alert">${lens?.error}</p>` : nothing}
           ${
@@ -1900,12 +1916,55 @@ export class LensOverlayView extends LitElement {
     `;
   }
 
+  private renderHistory() {
+    const view = this.sessionView!;
+    return html`<section class="history-shell">
+      <header class="overlay-header" data-tauri-drag-region="deep">
+        <strong>${view.title || "Session"}</strong>
+        <button
+          type="button"
+          class="close-button"
+          aria-label="Close session"
+          data-tauri-drag-region="false"
+          ?disabled=${!this.active}
+          @click=${() => this.emit({ type: "close" })}
+        >
+          ×
+        </button>
+      </header>
+      <main class="history-content" aria-busy=${view.phase === "loading" ? "true" : "false"}>
+        <div data-region-error="conversation"></div>
+        ${view.phase === "loading" ? html`<p role="status">Loading session…</p>` : nothing}
+        ${view.error ? html`<p role="alert">${view.error}</p>` : nothing}
+        ${view.phase === "ready" ? html`<lens-session-document .document=${view.document} .identity=${`${view.agent}:${view.session_id}`}></lens-session-document>` : nothing}
+      </main>
+    </section>`;
+  }
+
   private renderActivePanel(
     lens: OverlayViewModel["lens"] | undefined,
     displayLens: LensState | undefined,
     sourceJson: string,
   ) {
     const activeTab = this.activeTab;
+    if (activeTab === "conversation")
+      return html`<section
+        id="conversation-panel"
+        class="lens-panel"
+        role="tabpanel"
+        aria-labelledby="conversation-tab"
+        tabindex="0"
+      >
+        ${
+          this.sessionView?.phase === "live" && this.sessionView.error
+            ? html`<p class="error" role="alert">${this.sessionView.error}</p>`
+            : nothing
+        }
+        <lens-session-document
+          .document=${this.sessionView?.phase === "live" ? this.sessionView.document : undefined}
+          .identity=${`${this.sessionView?.agent}:${this.sessionView?.session_id}`}
+        ></lens-session-document>
+      </section>`;
     if (!lens || !displayLens)
       return html`<section
         id="${activeTab}-panel"

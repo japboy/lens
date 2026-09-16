@@ -53,6 +53,7 @@ export const MEMBERS: readonly Member[] = [
         "adapter-output-mcp",
         "agent-client-protocol",
         "base64",
+        "chrono",
         "dirs",
         "flate2",
         "reqwest",

@@ -96,6 +96,8 @@ fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
 }
 
 struct TrayMenuItems<R: tauri::Runtime> {
+    history: Submenu<R>,
+    history_presentation: Mutex<String>,
     select_target: MenuItem<R>,
     agent_claude: CheckMenuItem<R>,
     agent_codex: CheckMenuItem<R>,
@@ -369,6 +371,7 @@ pub(crate) struct TrayMenuPresentation {
     target_selection_active: bool,
     live_lens_active: bool,
     agent_selection_enabled: bool,
+    agent_verification_required: bool,
     claude_checked: bool,
     codex_checked: bool,
     working_directory_text: String,
@@ -385,7 +388,12 @@ pub(crate) struct NativeTrayOutput;
 
 impl TrayMenuPresentation {
     fn derive(agent_selection: &AgentSelectionState, config: &AppConfig, lens: &LensState) -> Self {
-        let selected = agent_selection.selected_agent();
+        let selected =
+            if agent_selection.stage == crate::model::AgentSelectionStage::HistorySelected {
+                agent_selection.candidate
+            } else {
+                agent_selection.selected_agent()
+            };
         let target_selection_active = lens.stage == LensStage::Selecting;
         let live_lens_active = lens.live.is_some();
         Self {
@@ -397,10 +405,13 @@ impl TrayMenuPresentation {
             agent_selection_enabled: matches!(
                 agent_selection.stage,
                 crate::model::AgentSelectionStage::Unselected
+                    | crate::model::AgentSelectionStage::HistorySelected
                     | crate::model::AgentSelectionStage::AuthenticationRequired
                     | crate::model::AgentSelectionStage::Selected
                     | crate::model::AgentSelectionStage::Failed
             ),
+            agent_verification_required: agent_selection.stage
+                == crate::model::AgentSelectionStage::HistorySelected,
             claude_checked: selected == Some(AgentKind::Claude),
             codex_checked: selected == Some(AgentKind::Codex),
             working_directory_text: menu_safe_path(&config.working_directory.to_string_lossy()),
@@ -438,6 +449,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
     let about = MenuItem::with_id(app, "about", "About", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let prompt_presets = Submenu::with_id(app, "prompt_presets", "Prompt Presets", true)?;
+    let history = Submenu::with_id(app, "session_history", "Recent Sessions", true)?;
     let separator_one = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
     let separator_three = PredefinedMenuItem::separator(app)?;
@@ -446,6 +458,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         app,
         &[
             &select,
+            &history,
             &separator_one,
             &agent_label,
             &use_claude,
@@ -481,6 +494,30 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "refresh_session_history" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = crate::session_view::refresh(app).await {
+                        eprintln!("Unable to refresh history: {error}");
+                    }
+                });
+            }
+            id if id.starts_with("session_history:") => {
+                let mut parts = id.split(':').skip(1);
+                if let (Some(generation), Some(index)) = (
+                    parts.next().and_then(|value| Uuid::parse_str(value).ok()),
+                    parts.next().and_then(|value| value.parse::<usize>().ok()),
+                ) {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            crate::session_view::open(app.clone(), generation, index).await
+                        {
+                            eprintln!("Unable to open history: {error}");
+                        }
+                    });
+                }
+            }
             "select_target" => select_lens_target_from_tray(app),
             "agent_claude" => select_agent_from_menu(app, AgentKind::Claude),
             "agent_codex" => select_agent_from_menu(app, AgentKind::Codex),
@@ -518,6 +555,8 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         })
         .build(app)?;
     app.manage(TrayMenuItems {
+        history,
+        history_presentation: Mutex::new(String::new()),
         select_target: select,
         agent_claude: use_claude,
         agent_codex: use_codex,
@@ -526,6 +565,12 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         prompt_presentation: Mutex::new(Vec::new()),
     });
     sync_tray_menu(app.handle()).map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
+    let history_app = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::session_view::refresh(history_app).await {
+            eprintln!("Unable to refresh history: {error}");
+        }
+    });
     Ok(())
 }
 
@@ -541,6 +586,7 @@ pub fn sync_tray_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Strin
 
 impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     fn apply(&self, app: &AppHandle<R>, presentation: TrayMenuPresentation) -> Result<(), String> {
+        sync_history_menu(app)?;
         sync_prompt_preset_menu(app)?;
         let items = app.state::<TrayMenuItems<R>>();
         items
@@ -562,6 +608,26 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
         items
             .agent_codex
             .set_checked(presentation.codex_checked)
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_claude
+            .set_text(
+                if presentation.agent_verification_required && presentation.claude_checked {
+                    "Claude — Verify to Start"
+                } else {
+                    "Claude"
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_codex
+            .set_text(
+                if presentation.agent_verification_required && presentation.codex_checked {
+                    "Codex — Verify to Start"
+                } else {
+                    "Codex"
+                },
+            )
             .map_err(|error| error.to_string())?;
         items
             .working_directory
@@ -590,6 +656,135 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
         tray.set_tooltip(Some(tooltip))
             .map_err(|error| error.to_string())
     }
+}
+
+pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    // Mock shells need no native menu. Real menu mutation stays on its owning thread.
+    if app.try_state::<TrayMenuItems<R>>().is_none() {
+        return Ok(());
+    }
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = (|| -> Result<(), String> {
+            let app = &handle;
+            let catalog = app
+                .state::<crate::app_state::AppState>()
+                .session_view
+                .catalog()?;
+            let enabled = crate::session_view::history_enabled(app)?;
+            let key = format!("{}:{}:{enabled}", catalog.generation, catalog.loading);
+            let items = app.state::<TrayMenuItems<R>>();
+            let mut shown = items
+                .history_presentation
+                .lock()
+                .map_err(|_| "History menu lock is poisoned")?;
+            if *shown == key {
+                return Ok(());
+            }
+            let menu = &items.history;
+            while !menu.items().map_err(|error| error.to_string())?.is_empty() {
+                menu.remove_at(0).map_err(|error| error.to_string())?;
+            }
+            for (index, entry) in catalog.entries.iter().enumerate() {
+                let date = entry
+                    .updated_at
+                    .as_deref()
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|date| date.format("%m/%d %H:%M %:z").to_string())
+                    .unwrap_or_default();
+                let title: String = entry.title.chars().take(72).collect();
+                let label = menu_safe_path(&format!(
+                    "{date} · {} · {title}",
+                    crate::session_view::agent_label(entry.agent)
+                ));
+                menu.append(
+                    &MenuItem::with_id(
+                        app,
+                        format!("session_history:{}:{index}", catalog.generation),
+                        label,
+                        enabled && entry.can_load,
+                        None::<&str>,
+                    )
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            if catalog.entries.is_empty() {
+                menu.append(
+                    &MenuItem::with_id(
+                        app,
+                        "history_empty",
+                        if catalog.loading {
+                            "Loading sessions…"
+                        } else {
+                            "No recent sessions"
+                        },
+                        false,
+                        None::<&str>,
+                    )
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            for (index, notice) in catalog.notices.iter().enumerate() {
+                let notice: String = notice.chars().take(120).collect();
+                menu.append(
+                    &MenuItem::with_id(
+                        app,
+                        format!("history_notice:{index}"),
+                        menu_safe_path(&notice),
+                        false,
+                        None::<&str>,
+                    )
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            menu.append(&PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            menu.append(
+                &MenuItem::with_id(
+                    app,
+                    "refresh_session_history",
+                    if catalog.loading {
+                        "Refreshing…"
+                    } else {
+                        "Refresh Sessions"
+                    },
+                    !catalog.loading,
+                    None::<&str>,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            *shown = key;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Unable to synchronize history menu: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn show_history_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(LENS_WINDOW_LABEL) {
+        window.show()?;
+        return window.set_focus();
+    }
+    let link_app = app.clone();
+    WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
+        .on_new_window(move |url, _| crate::html_preview::open_link(&link_app, &url))
+        .title("Lens")
+        .inner_size(720.0, 640.0)
+        .min_inner_size(360.0, 320.0)
+        .center()
+        .decorations(false)
+        .transparent(true)
+        .shadow(true)
+        .resizable(true)
+        .build()?;
+    Ok(())
 }
 
 fn sync_prompt_preset_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -1298,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn tray_presentation_has_one_check_only_for_an_authenticated_agent() {
+    fn tray_presentation_separates_chosen_agent_from_execution_readiness() {
         let config = AppConfig {
             agent: AgentKind::Codex,
             working_directory: PathBuf::from("/Users/example/Work"),
@@ -1319,6 +1514,7 @@ mod tests {
                 target_selection_active: false,
                 live_lens_active: false,
                 agent_selection_enabled: true,
+                agent_verification_required: false,
                 claude_checked: false,
                 codex_checked: true,
                 working_directory_text: "/Users/example/Work".into(),
@@ -1353,6 +1549,19 @@ mod tests {
                 )
             );
         }
+
+        let history_selected = AgentSelectionState {
+            stage: AgentSelectionStage::HistorySelected,
+            candidate: Some(AgentKind::Claude),
+            ..AgentSelectionState::default()
+        };
+        let history =
+            TrayMenuPresentation::derive(&history_selected, &config, &LensState::default());
+        assert!(history.claude_checked);
+        assert!(!history.codex_checked);
+        assert!(history.agent_selection_enabled);
+        assert!(history.agent_verification_required);
+        assert!(!history.select_target_enabled);
 
         let selecting = LensState {
             stage: LensStage::Selecting,

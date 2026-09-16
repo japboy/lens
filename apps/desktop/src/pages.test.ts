@@ -190,6 +190,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         notice: "Original project by Yu Inao",
       };
     if (command === "get_app_snapshot") return snapshot;
+    if (command === "get_session_view") return { revision: 0, phase: "idle" };
     if (command === "accessibility_permission") return true;
     return undefined;
   }),
@@ -617,7 +618,7 @@ describe("Lens rich Agent output", () => {
     );
   });
 
-  it("pairs Interpretation, Source, and Diagnostics with their keyboard-selected panels", async () => {
+  it("pairs content tabs with their keyboard-selected panels", async () => {
     const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
@@ -634,12 +635,14 @@ describe("Lens rich Agent output", () => {
       "Interpretation",
       "Source",
       "Diagnostics",
+      "Conversation",
     ]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(tabs.map((tab) => tab.id)).toEqual([
       "interpretation-tab",
       "source-tab",
       "diagnostics-tab",
+      "conversation-tab",
     ]);
 
     const expectSelectedPanel = (selectedIndex: number) => {
@@ -673,24 +676,23 @@ describe("Lens rich Agent output", () => {
 
     tabs[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await overlayView?.updateComplete;
-    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
-    expectSelectedPanel(0);
-    expect(overlayRoot?.activeElement).toBe(tabs[0]);
+    expectSelectedPanel(3);
+    expect(overlayRoot?.activeElement).toBe(tabs[3]);
+    expect(overlayRoot?.querySelector("lens-session-document")).not.toBeNull();
 
+    tabs[3]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await overlayView?.updateComplete;
+    expectSelectedPanel(0);
     tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     await overlayView?.updateComplete;
-    expect(tabs[2]?.getAttribute("aria-selected")).toBe("true");
-    expectSelectedPanel(2);
-
-    tabs[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    expectSelectedPanel(3);
+    tabs[3]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
     await overlayView?.updateComplete;
     expectSelectedPanel(0);
-    expect(overlayRoot?.activeElement).toBe(tabs[0]);
-
     tabs[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     await overlayView?.updateComplete;
-    expectSelectedPanel(2);
-    expect(overlayRoot?.activeElement).toBe(tabs[2]);
+    expectSelectedPanel(3);
+    expect(overlayRoot?.activeElement).toBe(tabs[3]);
   });
 
   it("presents ACP images in the Hero while preserving narrative block order", async () => {

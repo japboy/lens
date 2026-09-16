@@ -6,6 +6,7 @@ export type AgentSelectionStage =
   | "authenticating"
   | "signing_out"
   | "selected"
+  | "history_selected"
   | "failed";
 export type AgentRuntimeStage =
   | "not_installed"

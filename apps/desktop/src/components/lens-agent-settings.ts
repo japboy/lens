@@ -88,6 +88,18 @@ export class LensAgentSettings extends LitElement {
           : nothing
       }
       ${
+        this.selection.stage === "history_selected" && this.selection.candidate
+          ? html`<div class="agent-actions">
+              <button
+                ?disabled=${controlsDisabled}
+                @click=${() => this.emit({ type: "select", agent: this.selection!.candidate! })}
+              >
+                Verify connection
+              </button>
+            </div>`
+          : nothing
+      }
+      ${
         selected
           ? html`<div class="agent-actions" aria-label="${selectedLabel} authentication management">
               <button
@@ -112,7 +124,7 @@ export class LensAgentSettings extends LitElement {
           type="radio"
           name="agent"
           value=${value}
-          .checked=${this.selection ? selectedAgent(this.selection) === value : false}
+          .checked=${this.selection?.stage === "history_selected" ? this.selection.candidate === value : this.selection ? selectedAgent(this.selection) === value : false}
           @change=${() => this.emit({ type: "select", agent: value })}
         />
         <span>${label}</span>

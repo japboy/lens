@@ -251,6 +251,25 @@ fn transport<R: tauri::Runtime>(
     app.state::<AgentServices<R>>().0.connect(descriptor)
 }
 
+/// History uses only an existing installation and never selects or upgrades an Agent.
+/// Keep the descriptor alive alongside the transport to retain its installation lease.
+pub(crate) async fn history_transport<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+) -> Result<
+    (
+        AgentDescriptor,
+        agent_client_protocol::DynConnectTo<agent_client_protocol::Client>,
+    ),
+    String,
+> {
+    let descriptor = AgentDescriptor::resolve_installed(app, kind)
+        .await?
+        .ok_or_else(|| "Agent runtime is not installed".to_string())?;
+    let connection = transport(app, &descriptor);
+    Ok((descriptor, connection))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ClaudeAuthenticationStatus {
@@ -346,30 +365,39 @@ pub async fn select_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     candidate: AgentKind,
 ) -> Result<AgentSelectionState, String> {
-    let current = current_agent_selection(&app)?;
-    if current.stage == AgentSelectionStage::SigningOut {
-        return Err("wait for the current Agent logout to complete".into());
-    }
-    if current.selected_agent() == Some(candidate) {
-        crate::ui::sync_tray_menu(&app)?;
-        return Ok(current);
-    }
-    let _ = app.state::<AppState>().agent_control.cancel_active()?;
-
     let operation_id = Uuid::new_v4();
-    publish_agent_selection(
-        &app,
-        AgentSelectionState {
-            operation_id: Some(operation_id),
-            stage: AgentSelectionStage::Checking,
-            candidate: Some(candidate),
-            message: Some(format!(
-                "Checking {} authentication…",
-                agent_display_name(candidate)
-            )),
-            ..AgentSelectionState::default()
-        },
-    )?;
+    {
+        let state = app.state::<AppState>();
+        let _history_admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission is unavailable")?;
+        app.state::<AppState>().session_view.ensure_not_loading()?;
+        let current = current_agent_selection(&app)?;
+        if current.stage == AgentSelectionStage::SigningOut {
+            return Err("wait for the current Agent logout to complete".into());
+        }
+        if current.selected_agent() == Some(candidate) {
+            crate::ui::sync_tray_menu(&app)?;
+            return Ok(current);
+        }
+        let _ = app.state::<AppState>().agent_control.cancel_active()?;
+
+        publish_agent_selection(
+            &app,
+            AgentSelectionState {
+                operation_id: Some(operation_id),
+                stage: AgentSelectionStage::Checking,
+                candidate: Some(candidate),
+                message: Some(format!(
+                    "Checking {} authentication…",
+                    agent_display_name(candidate)
+                )),
+                ..AgentSelectionState::default()
+            },
+        )?;
+    }
 
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
@@ -469,29 +497,39 @@ pub async fn authenticate_selection<R: tauri::Runtime>(
     app: AppHandle<R>,
     method_id: String,
 ) -> Result<AgentSelectionState, String> {
-    let snapshot = current_agent_selection(&app)?;
-    if snapshot.stage != AgentSelectionStage::AuthenticationRequired {
-        return Err("the Agent selection is not awaiting authentication".into());
-    }
-    let candidate = snapshot
-        .candidate
-        .ok_or_else(|| "the Agent selection has no candidate".to_string())?;
     let operation_id = Uuid::new_v4();
-    publish_agent_selection(
-        &app,
-        AgentSelectionState {
-            operation_id: Some(operation_id),
-            stage: AgentSelectionStage::Authenticating,
-            candidate: Some(candidate),
-            auth_methods: snapshot.auth_methods,
-            message: Some(format!(
-                "Starting {} authentication…",
-                agent_display_name(candidate)
-            )),
-            error: None,
-            ..AgentSelectionState::default()
-        },
-    )?;
+    let candidate = {
+        let state = app.state::<AppState>();
+        let _history_admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission is unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let snapshot = current_agent_selection(&app)?;
+        if snapshot.stage != AgentSelectionStage::AuthenticationRequired {
+            return Err("the Agent selection is not awaiting authentication".into());
+        }
+        let candidate = snapshot
+            .candidate
+            .ok_or_else(|| "the Agent selection has no candidate".to_string())?;
+        publish_agent_selection(
+            &app,
+            AgentSelectionState {
+                operation_id: Some(operation_id),
+                stage: AgentSelectionStage::Authenticating,
+                candidate: Some(candidate),
+                auth_methods: snapshot.auth_methods,
+                message: Some(format!(
+                    "Starting {} authentication…",
+                    agent_display_name(candidate)
+                )),
+                error: None,
+                ..AgentSelectionState::default()
+            },
+        )?;
+        candidate
+    };
 
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
@@ -551,31 +589,41 @@ async fn logout_selection<R: tauri::Runtime>(
     app: AppHandle<R>,
     purpose: LogoutPurpose,
 ) -> Result<AgentSelectionState, String> {
-    let snapshot = current_agent_selection(&app)?;
-    if snapshot.stage != AgentSelectionStage::Selected {
-        return Err("only an authenticated selected Agent can be signed out".into());
-    }
-    let candidate = snapshot
-        .selected_agent()
-        .ok_or_else(|| "the authenticated Agent selection has no candidate".to_string())?;
-    let _ = app.state::<AppState>().agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
-    let action = match purpose {
-        LogoutPurpose::SignOut => "Signing out of",
-        LogoutPurpose::Reauthenticate => "Preparing to reauthenticate",
+    let candidate = {
+        let state = app.state::<AppState>();
+        let _history_admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission is unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let snapshot = current_agent_selection(&app)?;
+        if snapshot.stage != AgentSelectionStage::Selected {
+            return Err("only an authenticated selected Agent can be signed out".into());
+        }
+        let candidate = snapshot
+            .selected_agent()
+            .ok_or_else(|| "the authenticated Agent selection has no candidate".to_string())?;
+        let _ = app.state::<AppState>().agent_control.cancel_active()?;
+        let action = match purpose {
+            LogoutPurpose::SignOut => "Signing out of",
+            LogoutPurpose::Reauthenticate => "Preparing to reauthenticate",
+        };
+        publish_agent_selection(
+            &app,
+            AgentSelectionState {
+                operation_id: Some(operation_id),
+                stage: AgentSelectionStage::SigningOut,
+                candidate: Some(candidate),
+                auth_methods: snapshot.auth_methods,
+                message: Some(format!("{action} {}…", agent_display_name(candidate))),
+                error: None,
+                ..AgentSelectionState::default()
+            },
+        )?;
+        candidate
     };
-    publish_agent_selection(
-        &app,
-        AgentSelectionState {
-            operation_id: Some(operation_id),
-            stage: AgentSelectionStage::SigningOut,
-            candidate: Some(candidate),
-            auth_methods: snapshot.auth_methods,
-            message: Some(format!("{action} {}…", agent_display_name(candidate))),
-            error: None,
-            ..AgentSelectionState::default()
-        },
-    )?;
 
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
@@ -1187,6 +1235,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 }
             };
             let session_id = session.session_id().clone();
+            crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
             if let Err(error) = session_controls::require_safe_mode(
                 session.config_options(), session.modes(), descriptor.safe_mode_id,
             ) {
@@ -1959,6 +2008,8 @@ async fn run_session_turn<R: tauri::Runtime>(
         prompt_capabilities.embedded_context,
     ));
     let session_id = session.session_id().clone();
+    crate::session_view::append_prompt(app, &session_id.to_string(), &prompt)
+        .map_err(state_error)?;
     let session_connection = session.connection().clone();
     let prompt_response = session_connection
         .send_request_to(Agent, PromptRequest::new(session_id.clone(), prompt))
@@ -2175,6 +2226,12 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
             use agent_client_protocol::schema::v1::SessionUpdate;
+            crate::session_view::record_live(
+                app,
+                &notification.session_id.to_string(),
+                notification.update.clone(),
+            )
+            .map_err(state_error)?;
             controls.record_tool(&notification.update)?;
             match &notification.update {
                 SessionUpdate::ConfigOptionUpdate(update) => {

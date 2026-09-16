@@ -43,6 +43,7 @@ export const AGENT_SELECTION_LABEL: Record<AgentSelectionStage, string> = {
   authenticating: "Authenticating Agent…",
   signing_out: "Signing out of Agent…",
   selected: "Agent authenticated and selected",
+  history_selected: "Agent selected for history. Verify connection before starting a session.",
   failed: "Agent selection failed",
 };
 

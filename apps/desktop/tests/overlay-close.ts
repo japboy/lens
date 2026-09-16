@@ -7,6 +7,9 @@ import { installGeneratedPage } from "../src/rendering/generated-page.test-helpe
 import { startPage } from "../src/entries/start-page";
 
 const port = vi.hoisted(() => ({
+  subscribeToSessionView: vi.fn<WebviewPort["subscribeToSessionView"]>(),
+  getSessionView: vi.fn<WebviewPort["getSessionView"]>(),
+  closeSessionView: vi.fn<WebviewPort["closeSessionView"]>(),
   subscribeToAppSnapshot: vi.fn<WebviewPort["subscribeToAppSnapshot"]>(),
   getAppSnapshot: vi.fn<WebviewPort["getAppSnapshot"]>(),
   closeCurrentWindow: vi.fn<WebviewPort["closeCurrentWindow"]>(),
@@ -56,6 +59,9 @@ const snapshot: AppSnapshot = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  port.subscribeToSessionView.mockResolvedValue(() => undefined);
+  port.getSessionView.mockResolvedValue({ revision: 0, phase: "idle" });
+  port.closeSessionView.mockResolvedValue(undefined);
   window.history.replaceState({}, "", "/overlay.html?platform=macos");
   port.subscribeToAppSnapshot.mockResolvedValue(() => undefined);
   port.getAppSnapshot.mockResolvedValue(snapshot);
@@ -144,4 +150,35 @@ describe("overlay window dismissal", () => {
     completeStop();
     await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledTimes(1));
   });
+});
+
+it("closes history without stopping the live operation and rejects monitoring intents", async () => {
+  port.getSessionView.mockResolvedValue({
+    revision: 1,
+    phase: "ready",
+    session_id: "saved",
+    document: { entries: [] },
+  });
+  port.getAppSnapshot.mockResolvedValue({
+    ...snapshot,
+    lens: { ...snapshot.lens, operation_id: "live-operation" },
+  });
+  installGeneratedPage("overlay");
+  await startPage("overlay", () => import("../src/pages/overlay-page"));
+  const view = document.querySelector<LensOverlayView>("lens-overlay-view")!;
+  await vi.waitFor(() =>
+    expect(view.shadowRoot!.querySelector('[aria-label="Close session"]')).not.toBeNull(),
+  );
+  view.dispatchEvent(
+    new CustomEvent("lens-overlay-intent", {
+      detail: { type: "pause" },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  expect(port.pauseLens).not.toHaveBeenCalled();
+  view.shadowRoot!.querySelector<HTMLButtonElement>('[aria-label="Close session"]')!.click();
+  await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
+  expect(port.closeSessionView).toHaveBeenCalledOnce();
+  expect(port.stopLens).not.toHaveBeenCalled();
 });

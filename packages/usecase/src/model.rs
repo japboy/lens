@@ -91,6 +91,8 @@ pub enum AgentSelectionStage {
     AuthenticationRequired,
     Authenticating,
     SigningOut,
+    /// Provider chosen by history; live authentication/readiness has not been verified.
+    HistorySelected,
     Selected,
     Failed,
 }
@@ -652,6 +654,7 @@ mod tests {
             AgentSelectionStage::AuthenticationRequired,
             AgentSelectionStage::Authenticating,
             AgentSelectionStage::SigningOut,
+            AgentSelectionStage::HistorySelected,
             AgentSelectionStage::Failed,
         ] {
             let state = AgentSelectionState {
