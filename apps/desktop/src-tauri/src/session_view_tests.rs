@@ -418,8 +418,9 @@ async fn successful_replay_commits_provider_and_ready_document_only_after_respon
     assert_eq!(state.store.load().agent, AgentKind::Codex);
     assert_eq!(
         state.agent_selection().unwrap().stage,
-        AgentSelectionStage::Selected
+        AgentSelectionStage::HistorySelected
     );
+    assert!(!state.agent_selection().unwrap().can_select_lens_target());
     assert_eq!(state.lens().unwrap(), original_lens);
     assert!(!active_session(&state.lens().unwrap()));
     let view = state.session_view.view().unwrap();
