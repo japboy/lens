@@ -23,6 +23,7 @@ import {
   viewHostStyles,
 } from "../styles/component-styles";
 import { sharedIconStyles } from "../styles/icon-styles";
+import { mathStyles } from "../styles/math-styles";
 import {
   lensLiveStatus,
   lensOutputPresentation,
@@ -1222,11 +1223,13 @@ export class LensOverlayView extends LitElement {
         overflow-wrap: anywhere;
       }
 
-      .markdown-body > :first-child {
+      .markdown-body > :first-child,
+      .streaming-markdown-committed > :first-child {
         margin-top: 0;
       }
 
-      .markdown-body > :last-child {
+      .markdown-body > :last-child,
+      .streaming-markdown-committed > :last-child {
         margin-bottom: 0;
       }
 
@@ -1619,6 +1622,7 @@ export class LensOverlayView extends LitElement {
     accessibilityStyles,
     reducedMotionStyles,
     ...sharedIconStyles,
+    ...mathStyles,
   ];
 
   @property({ attribute: false }) sessionView: SessionView | undefined;

@@ -14,6 +14,7 @@ mod live_runtime;
 pub use usecase::live_sync;
 #[cfg(test)]
 mod confirmation_tests;
+mod math_asset_protocol;
 mod media_protocol;
 mod model;
 #[cfg(target_os = "macos")]
@@ -99,6 +100,7 @@ fn configure_shell<R: tauri::Runtime>(
         .manage(agents)
         .manage(ui::LensWindowPresentationState::default())
         .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
+        .register_uri_scheme_protocol(math_asset_protocol::SCHEME, math_asset_protocol::handle)
         .invoke_handler(command_handler())
 }
 

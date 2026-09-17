@@ -2,11 +2,13 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { BUILD_PATHS } from "./tooling/build-paths.ts";
 import { PAGE_ENTRIES } from "./src/page-entries.js";
+import { htmlMathAssetsPlugin } from "./tooling/html-math-assets.ts";
 
 const applicationRoot = fileURLToPath(new URL(".", import.meta.url));
 const clientRoot = fileURLToPath(new URL("./src/", import.meta.url));
 
 export default defineConfig({
+  plugins: [await htmlMathAssetsPlugin(applicationRoot)],
   root: clientRoot,
   clearScreen: false,
   test: {
