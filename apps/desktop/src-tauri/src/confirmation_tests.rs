@@ -268,6 +268,13 @@ impl Observation for Observer {
 }
 
 impl platform::WindowPresentation<MockRuntime> for Fixture {
+    fn format_short_datetime(
+        &self,
+        unix_seconds: f64,
+    ) -> Result<String, port_platform::PlatformError> {
+        Ok(format!("test timestamp {unix_seconds}"))
+    }
+
     fn settings_background(
         &self,
         _: &tauri::AppHandle<MockRuntime>,

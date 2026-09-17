@@ -15,6 +15,9 @@ typedef void (*LensWindowObservationCallback)(const char *json, void *context);
 bool lens_accessibility_is_trusted(void);
 bool lens_accessibility_request_trust(void);
 
+/* Localized short date/time; release the returned string with lens_free_string. */
+char *lens_format_short_datetime(double unix_seconds);
+
 /* Resolve the current application appearance to four sRGB bytes on the main thread. */
 bool lens_window_background_rgba(uint8_t *rgba);
 

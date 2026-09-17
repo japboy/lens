@@ -25,6 +25,10 @@ fn on_main_thread<R: tauri::Runtime, T: Send + 'static>(
 }
 
 impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresentation {
+    fn format_short_datetime(&self, unix_seconds: f64) -> Result<String, PlatformError> {
+        presentation::format_short_datetime(unix_seconds)
+    }
+
     fn settings_background(
         &self,
         app: &tauri::AppHandle<R>,

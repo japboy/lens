@@ -25,6 +25,19 @@ static void LensPerformOnMainThread(dispatch_block_t block) {
     dispatch_async(dispatch_get_main_queue(), block);
 }
 
+char *lens_format_short_datetime(double unix_seconds) {
+    @autoreleasepool {
+        if (!isfinite(unix_seconds)) return NULL;
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        formatter.locale = NSLocale.autoupdatingCurrentLocale;
+        formatter.timeZone = NSTimeZone.localTimeZone;
+        formatter.dateStyle = NSDateFormatterShortStyle;
+        formatter.timeStyle = NSDateFormatterShortStyle;
+        NSString *value = [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:unix_seconds]];
+        return value ? strdup(value.UTF8String) : NULL;
+    }
+}
+
 bool lens_window_background_rgba(uint8_t *rgba) {
     if (![NSThread isMainThread] || rgba == NULL || NSApp == nil) {
         return false;

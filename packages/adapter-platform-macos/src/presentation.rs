@@ -3,6 +3,28 @@ use port_platform::PlatformError;
 use std::ffi::c_void;
 use tokio::sync::oneshot;
 
+/// Format an instant using the current macOS short date and time preferences.
+pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError> {
+    unsafe extern "C" {
+        fn lens_format_short_datetime(unix_seconds: f64) -> *mut std::ffi::c_char;
+        fn lens_free_string(value: *mut std::ffi::c_char);
+    }
+    // SAFETY: The bridge accepts a scalar and returns an owned NUL-terminated UTF-8 string.
+    let raw = unsafe { lens_format_short_datetime(unix_seconds) };
+    if raw.is_null() {
+        return Err(PlatformError::Operation(
+            "unable to format session timestamp".into(),
+        ));
+    }
+    // SAFETY: The non-null allocation remains valid until released below.
+    let value = unsafe { std::ffi::CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: Release exactly once using the bridge allocator's matching deallocator.
+    unsafe { lens_free_string(raw) };
+    Ok(value)
+}
+
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 
 unsafe extern "C" {

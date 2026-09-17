@@ -697,10 +697,12 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     .as_deref()
                     .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                     .map(|date| {
-                        date.with_timezone(&chrono::Local)
-                            .format("%m/%d %H:%M %:z")
-                            .to_string()
+                        app.state::<crate::platform::Presentation<R>>()
+                            .0
+                            .format_short_datetime(date.timestamp() as f64)
                     })
+                    .transpose()
+                    .map_err(|error| error.to_string())?
                     .unwrap_or_default();
                 let title: String = entry.title.chars().take(72).collect();
                 let label = menu_safe_path(&format!(
