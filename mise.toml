@@ -3,7 +3,7 @@ node = "24.20.0"
 pnpm = "12.3.4"
 rust = { version = "1.98.0", components = ["rustfmt", "clippy"] }
 "aqua:EmbarkStudios/cargo-deny" = "0.20.2"
-hk = "1.56.1"
+hk = "2.0.0"
 
 [settings]
 lockfile = true
