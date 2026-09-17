@@ -18,6 +18,7 @@ import { build } from "vite";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
 import { sourceInputs, sourceDigest } from "./source.ts";
 import { verifyGeneration } from "./verify.ts";
+import { htmlMathAssetsPlugin } from "../html-math-assets.ts";
 
 const execute = promisify(execFile);
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -58,6 +59,7 @@ export async function generate(output: string, development = false): Promise<str
     await build({
       configFile: false,
       root: app,
+      plugins: [await htmlMathAssetsPlugin(app)],
       logLevel: "warn",
       build: {
         ssr: "tooling/prerender/render-entry.ts",
@@ -90,6 +92,7 @@ export async function generate(output: string, development = false): Promise<str
     await build({
       configFile: false,
       root: clientRoot,
+      plugins: [await htmlMathAssetsPlugin(app)],
       base,
       logLevel: "warn",
       build: {

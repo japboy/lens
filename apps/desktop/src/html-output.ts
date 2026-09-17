@@ -1,4 +1,5 @@
-import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
+import { parse, type DefaultTreeAdapterMap } from "parse5";
+import { renderHtmlMath } from "./html-math";
 
 export const MAX_HTML_BYTES = 512 * 1024;
 
@@ -124,11 +125,15 @@ export function prepareHtmlPreview(content: string): PreparedHtmlPreview {
   )!;
   for (const node of trustedHead.childNodes) node.parentNode = head;
   head.childNodes.unshift(...trustedHead.childNodes);
+  const math = renderHtmlMath(document);
   return {
-    document: serialize(document, { scriptingEnabled: false }),
+    document: math.document,
     notices: [
       "JavaScript, external resources, embedded documents, and form submission are disabled.",
       "HTTP and HTTPS links open in your default browser.",
+      ...(math.status === "output-limit"
+        ? ["Math rendering exceeded the preview output budget; original expressions are shown."]
+        : []),
     ],
   };
 }

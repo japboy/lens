@@ -13,7 +13,8 @@ import { markdownLink } from "@generative-dom/plugin-markdown-link";
 import { markdownList } from "@generative-dom/plugin-markdown-list";
 import { markdownQuote } from "@generative-dom/plugin-markdown-quote";
 import { markdownTable } from "@generative-dom/plugin-markdown-table";
-import { renderMarkdown } from "./markdown";
+import { renderMarkdownFragment } from "./markdown";
+import { StreamingMarkdownBuffer } from "./streaming-markdown-buffer";
 import { renderMermaidCodeBlocks, type MermaidTheme } from "./mermaid";
 
 export type MarkdownRenderPhase = "streaming" | "settled";
@@ -45,6 +46,8 @@ export class StreamingMarkdownElement extends HTMLElement {
   private pendingState: StreamingMarkdownState = EMPTY_STATE;
   private appliedState?: StreamingMarkdownState;
   private renderer?: GenerativeDom;
+  private streamBuffer?: StreamingMarkdownBuffer;
+  private streamContainer?: HTMLElement;
   private streamCursor?: CursorPlugin;
   private autoScroller?: AutoScroller;
   private colorScheme?: MediaQueryList;
@@ -121,7 +124,7 @@ export class StreamingMarkdownElement extends HTMLElement {
     const baseLength =
       appendOnly && this.appliedState?.phase === "streaming" ? appliedText.length : 0;
     const delta = next.markdown.slice(baseLength);
-    if (delta) this.renderer?.push(delta);
+    if (delta) this.streamBuffer?.push(delta);
     this.streamCursor?.show();
     this.appliedState = { ...next };
     this.setAttribute("aria-busy", "true");
@@ -135,8 +138,13 @@ export class StreamingMarkdownElement extends HTMLElement {
       animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     });
     this.streamCursor = streamCursor;
+    const streamContainer = document.createElement("div");
+    streamContainer.className = "streaming-markdown-committed";
+    streamContainer.style.display = "contents";
+    this.streamContainer = streamContainer;
+    this.append(streamContainer);
     this.renderer = new GenerativeDom({
-      container: this,
+      container: streamContainer,
       debounceMs: 16,
       maxLiveTokens: 256,
       plugins: [
@@ -152,6 +160,9 @@ export class StreamingMarkdownElement extends HTMLElement {
       ],
       onError: (error) => this.reportRenderError(error),
     });
+    this.streamBuffer = new StreamingMarkdownBuffer(this, (source) => {
+      this.renderer?.push(source);
+    });
     streamCursor.attach(this);
   }
 
@@ -159,7 +170,7 @@ export class StreamingMarkdownElement extends HTMLElement {
     const revision = ++this.mermaidRevision;
     if (this.renderer) this.renderer.end();
     this.disposeRenderer();
-    this.innerHTML = renderMarkdown(markdown);
+    this.replaceChildren(renderMarkdownFragment(markdown));
 
     const hasMermaid = this.querySelector("pre > code.language-mermaid") !== null;
     if (!hasMermaid) {
@@ -191,10 +202,14 @@ export class StreamingMarkdownElement extends HTMLElement {
   }
 
   private disposeRenderer(): void {
+    this.streamBuffer?.destroy();
+    this.streamBuffer = undefined;
     this.streamCursor?.hide();
     this.streamCursor = undefined;
     this.renderer?.destroy();
     this.renderer = undefined;
+    this.streamContainer?.remove();
+    this.streamContainer = undefined;
   }
 
   private reportRenderError(error: GenerativeDomError): void {

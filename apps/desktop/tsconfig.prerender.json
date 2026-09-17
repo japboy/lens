@@ -4,6 +4,6 @@
     "types": ["node", "vite/client"],
     "tsBuildInfoFile": "./.build/cache/typescript/prerender.tsbuildinfo"
   },
-  "include": ["tooling/prerender/render-entry.ts"],
+  "include": ["tooling/prerender/render-entry.ts", "src/**/*.d.ts"],
   "exclude": []
 }

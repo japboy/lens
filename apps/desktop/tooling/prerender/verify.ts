@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, posix } from "node:path";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
+import { readHtmlMathManifest } from "../html-math-assets.ts";
 
 export function generationFiles(directory: string): Record<string, string> {
   const result: Record<string, string> = Object.create(null);
@@ -39,6 +40,12 @@ export function verifyGeneration(directory: string, expectedGeneration?: string)
     names.some((file) => files[file] !== metadata.files[file])
   )
     throw new Error("Generated artifact file set or digest does not match");
+
+  const math = readHtmlMathManifest(directory);
+  const mathFiles = new Set(math.files.map((file) => file.path));
+  if (names.some((file) => file.startsWith("assets/html-math/") && !mathFiles.has(file))) {
+    throw new Error("Unexpected public math asset outside the manifest");
+  }
 
   function requireAsset(url: string, from: string): void {
     if (/^(?:data:|https?:|#)/.test(url)) return;

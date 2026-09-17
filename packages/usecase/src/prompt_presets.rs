@@ -305,7 +305,7 @@ pub fn bundled_presets() -> Vec<PromptPreset> {
     ].into_iter().map(|(id, name, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
         template: AgentPromptTemplate::with_explanation_strategy(instruction),
-        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 6 }),
+        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 7 }),
     }).collect();
     presets.push(PromptPreset {
         id: "evocative".into(),
@@ -314,7 +314,7 @@ pub fn bundled_presets() -> Vec<PromptPreset> {
         template: AgentPromptTemplate::evocative(),
         bundled_source: Some(BundledPromptPresetSource {
             id: "evocative".into(),
-            version: 6,
+            version: 7,
         }),
     });
     presets
@@ -342,7 +342,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .version
-            == 6));
+            == 7));
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
         assert_eq!(catalog.selected_id, "conceptual");
         assert!(catalog

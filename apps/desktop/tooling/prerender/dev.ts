@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { BUILD_PATHS } from "../build-paths.ts";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
+import {
+  readHtmlMathManifest,
+  htmlMathResponseHeaders,
+  type HtmlMathAssets,
+} from "../html-math-assets.ts";
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const repo = resolve(app, "../..");
@@ -13,7 +18,7 @@ const generations = resolve(app, BUILD_PATHS.development);
 await mkdir(generations, { recursive: true });
 const directory = await mkdtemp(resolve(generations, "run-"));
 const clients = new Set<ServerResponse>();
-let current: { id: string; path: string } | undefined;
+let current: { id: string; path: string; math: HtmlMathAssets } | undefined;
 let previous: typeof current;
 let building = false;
 let pending = false;
@@ -64,9 +69,14 @@ async function rebuild(): Promise<void> {
         } else {
           await rename(output, destination);
         }
+        const math = readHtmlMathManifest(destination);
         const obsolete = previous;
         previous = current;
-        current = { id: metadata.generation, path: destination };
+        current = {
+          id: metadata.generation,
+          path: destination,
+          math,
+        };
         for (const response of clients) response.write(`data: ${current.id}\n\n`);
         if (obsolete && obsolete.path !== current.path)
           await rm(obsolete.path, { recursive: true, force: true });
@@ -157,9 +167,14 @@ const server = createServer(async (request, response) => {
       return;
     }
     const bytes = await readFile(file);
+    const mathHeaders =
+      request.method === "GET" || request.method === "HEAD"
+        ? htmlMathResponseHeaders(selected.math, match[2]!, bytes)
+        : {};
     response.writeHead(200, {
       "Content-Type": types[extname(file)] ?? "application/octet-stream",
       "Cache-Control": "public, max-age=31536000, immutable",
+      ...mathHeaders,
     });
     response.end(bytes);
   } catch (error) {

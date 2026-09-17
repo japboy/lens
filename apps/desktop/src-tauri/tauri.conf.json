@@ -13,7 +13,10 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: lens:; font-src 'self' data:; media-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: lens:; font-src 'self' data: lens-math://assets http://lens-math.assets https://lens-math.assets; media-src 'self' data:; style-src 'self' 'unsafe-inline' lens-math://assets http://lens-math.assets https://lens-math.assets",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {
