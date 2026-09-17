@@ -10,7 +10,7 @@ import {
   readHtmlMathManifest,
   htmlMathResponseHeaders,
   type HtmlMathAssets,
-} from "../html-math-assets.ts";
+} from "../html-math-manifest.ts";
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const repo = resolve(app, "../..");

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, posix } from "node:path";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
-import { readHtmlMathManifest } from "../html-math-assets.ts";
+import { readHtmlMathManifest } from "../html-math-manifest.ts";
 
 export function generationFiles(directory: string): Record<string, string> {
   const result: Record<string, string> = Object.create(null);

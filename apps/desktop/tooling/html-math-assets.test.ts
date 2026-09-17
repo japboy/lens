@@ -3,12 +3,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  createHtmlMathAssets,
   readHtmlMathManifest,
   htmlMathResponseHeaders,
   HTML_MATH_MANIFEST,
   HTML_MATH_RESOURCE_LIMIT,
-} from "./html-math-assets.ts";
+} from "./html-math-manifest.ts";
+import { createHtmlMathAssets } from "./html-math-assets.ts";
 
 const desktop = resolve(".");
 const temporary: string[] = [];
