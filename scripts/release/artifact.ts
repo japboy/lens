@@ -36,7 +36,6 @@ export const CONFIGURATION_FILES = [
   "mise.lock",
   "pnpm-lock.yaml",
   "Cargo.lock",
-  "scripts/workspace-variants.json",
   "apps/desktop/src-tauri/tauri.conf.json",
   "apps/desktop/src-tauri/tauri.macos.conf.json",
   "apps/desktop/src-tauri/tauri.release.conf.json",

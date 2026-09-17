@@ -14,7 +14,6 @@ on:
       - Cargo.lock
       - mise.lock
       - mise.toml
-      - scripts/workspace-variants.json
       - package.json
       - rust-toolchain
       - rust-toolchain.toml

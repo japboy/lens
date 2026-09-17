@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertGraphMatches, graphArguments, graphDigest, parseFeatureGraph } from "./features.ts";
+import { graphArguments, graphDigest, parseFeatureGraph } from "./features.ts";
 import { BUILD_VARIANTS } from "../../scripts/workspace-policy.ts";
 
 describe("target-specific transitive feature resolution", () => {
@@ -15,10 +15,9 @@ describe("target-specific transitive feature resolution", () => {
     expect(graph.nodes.filter((node) => node.name === "shared")).toHaveLength(2);
     expect(graph.edges).toHaveLength(3);
     expect(graph.nodes[graph.roots[0]!]!.source).toBe("path:consumer");
-    expect(() => assertGraphMatches(graph, structuredClone(graph))).not.toThrow();
+    expect(graphDigest(graph)).toBe(graphDigest(structuredClone(graph)));
     const changed = structuredClone(graph);
     changed.nodes[0]!.features.push("native");
-    expect(() => assertGraphMatches(graph, changed)).toThrow("Dependency/feature graph changed");
     expect(graphDigest(graph)).not.toBe(graphDigest(changed));
   });
 
@@ -115,7 +114,7 @@ describe("target-specific transitive feature resolution", () => {
       expect(common.nodes.find((node) => node.name === "shared")!.features).toEqual([]);
       expect(native.nodes.find((node) => node.name === "shared")!.features).toContain("native");
       expect(tests.nodes.find((node) => node.name === "shared")!.features).toContain("native");
-      expect(() => assertGraphMatches(common, tests)).toThrow("Dependency/feature graph changed");
+      expect(graphDigest(common)).not.toBe(graphDigest(tests));
       expect(
         run(["check", "--locked", "--offline", "-p", "shared", "--features", "native", "--lib"])
           .status,

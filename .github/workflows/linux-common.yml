@@ -68,7 +68,7 @@ jobs:
         with:
           prefix-key: lens-v3-rust
           shared-key: common-x86_64-unknown-linux-gnu
-          key: ${{ hashFiles('mise.lock', 'scripts/workspace-variants.json') }}
+          key: ${{ hashFiles('mise.lock') }}
           workspaces: . -> target
           cache-targets: true
           cache-bin: false

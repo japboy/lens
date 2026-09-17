@@ -82,7 +82,7 @@ describe("actual workflow admission", () => {
         "save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}",
       );
       expect(workflow).toContain("cache-workspace-crates: false");
-      expect(workflow).toContain("hashFiles('mise.lock', 'scripts/workspace-variants.json')");
+      expect(workflow).toContain("hashFiles('mise.lock')");
     }
     expect(quality.match(/save_cache: false/gu)).toHaveLength(2);
     expect(linux).toContain("shared-key: common-x86_64-unknown-linux-gnu");

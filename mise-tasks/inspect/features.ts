@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-//MISE description = "Report target-specific normal/test dependency feature graphs without granting CI admission"
+//MISE description = "Report target-specific dependency features and validate structural invariants"
 //MISE dir = "{{config_root}}"
 
 import { execFileSync } from "node:child_process";
@@ -9,8 +9,6 @@ import { fileURLToPath } from "node:url";
 import { BUILD_VARIANTS } from "../../scripts/workspace-policy.ts";
 import type { BuildVariant } from "../../scripts/workspace-policy.ts";
 import { repositoryPath } from "../check/boundaries.ts";
-import { readVersion } from "../../scripts/release/version.ts";
-import { admissionGraph } from "../../scripts/release/graph.ts";
 
 export type FeatureNode = { name: string; version: string; source: string; features: string[] };
 export type FeatureGraph = { nodes: FeatureNode[]; edges: [number, number][]; roots: number[] };
@@ -71,11 +69,6 @@ export function graphDigest(graph: FeatureGraph): string {
   return createHash("sha256").update(JSON.stringify(graph)).digest("hex");
 }
 
-export function assertGraphMatches(expected: FeatureGraph, actual: FeatureGraph): void {
-  if (graphDigest(expected) !== graphDigest(actual))
-    throw new Error("Dependency/feature graph changed; native variant review required");
-}
-
 export function graphArguments(variant: BuildVariant): string[] {
   return [
     "tree",
@@ -104,7 +97,6 @@ export function inspectFeatureGraphs(
   const host = /^host: (.+)$/mu.exec(rustc)?.[1];
   if (!host || !["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"].includes(host))
     throw new Error("Unreviewed graph-analysis host");
-  const { version: applicationVersion } = readVersion(root);
   const variants = selection.map((variant) => {
     const args = graphArguments(variant);
     const output = execFileSync("cargo", args, {
@@ -133,18 +125,16 @@ export function inspectFeatureGraphs(
       args,
       profile: variant.profile,
       digest: graphDigest(graph),
-      admissionDigest: graphDigest(admissionGraph(graph, applicationVersion)),
       graph,
     };
   });
   // This is reviewable resolution evidence, not compiler-unit or CI-skip attestation.
-  // Profile-specific normal compilation, both host snapshots and admission remain required.
-  return { version: 2, host, rustc, applicationVersion, variants };
+  // Profile-specific normal compilation, verification on both declared hosts remain required.
+  return { version: 3, host, rustc, variants };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  if (process.argv.length !== 2)
-    throw new Error("No implicit graph update or admission mode is provided");
+  if (process.argv.length !== 2) throw new Error("Feature inspection accepts no arguments");
   const report = inspectFeatureGraphs(fileURLToPath(new URL("../../", import.meta.url)));
   process.stdout.write(
     `${JSON.stringify({ ...report, variants: report.variants.map(({ graph, ...variant }) => ({ ...variant, nodes: graph.nodes.length, edges: graph.edges.length })) }, null, 2)}\n`,
