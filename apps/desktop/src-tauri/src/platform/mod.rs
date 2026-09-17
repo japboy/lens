@@ -23,6 +23,13 @@ pub struct Services {
 /// Tauri-owned presentation effects, separate from portable source capabilities.
 pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
     fn format_short_datetime(&self, unix_seconds: f64) -> Result<String, PlatformError>;
+    fn history_tooltips(
+        &self,
+        app: &tauri::AppHandle<R>,
+        root: &tauri::menu::Menu<R>,
+        history: &tauri::menu::Submenu<R>,
+        tooltips: Vec<String>,
+    ) -> Result<(), PlatformError>;
     fn settings_background(
         &self,
         app: &tauri::AppHandle<R>,

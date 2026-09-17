@@ -96,6 +96,7 @@ fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
 }
 
 struct TrayMenuItems<R: tauri::Runtime> {
+    root: Menu<R>,
     history: Submenu<R>,
     history_presentation: Mutex<String>,
     select_target: MenuItem<R>,
@@ -560,6 +561,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         })
         .build(app)?;
     app.manage(TrayMenuItems {
+        root: menu,
         history,
         history_presentation: Mutex::new(String::new()),
         select_target: select,
@@ -696,6 +698,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
             while !menu.items().map_err(|error| error.to_string())?.is_empty() {
                 menu.remove_at(0).map_err(|error| error.to_string())?;
             }
+            let mut tooltips = Vec::with_capacity(catalog.entries.len());
             for (index, entry) in catalog.entries.iter().enumerate() {
                 let date = entry
                     .updated_at
@@ -710,10 +713,13 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     .map_err(|error| error.to_string())?
                     .unwrap_or_default();
                 let title: String = entry.title.chars().take(72).collect();
-                let label = menu_safe_path(&format!(
-                    "{date} · {} · {title}",
-                    crate::session_view::agent_label(entry.agent)
-                ));
+                let label = menu_safe_path(&title);
+                let agent = crate::session_view::agent_label(entry.agent);
+                tooltips.push(if date.is_empty() {
+                    agent.to_string()
+                } else {
+                    format!("{date}\n{agent}")
+                });
                 menu.append(
                     &MenuItem::with_id(
                         app,
@@ -774,6 +780,10 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+            app.state::<crate::platform::Presentation<R>>()
+                .0
+                .history_tooltips(app, &items.root, menu, tooltips)
+                .map_err(|error| error.to_string())?;
             *shown = key;
             Ok(())
         })();

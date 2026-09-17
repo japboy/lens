@@ -78,6 +78,16 @@ pub(crate) fn state() -> AppState {
 
 pub(crate) struct UnusedPresentation;
 impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
+    fn history_tooltips(
+        &self,
+        _app: &tauri::AppHandle<R>,
+        _root: &tauri::menu::Menu<R>,
+        _history: &tauri::menu::Submenu<R>,
+        _tooltips: Vec<String>,
+    ) -> Result<(), platform::PlatformError> {
+        Ok(())
+    }
+
     fn format_short_datetime(
         &self,
         unix_seconds: f64,

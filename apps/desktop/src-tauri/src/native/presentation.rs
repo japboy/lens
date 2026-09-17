@@ -29,6 +29,59 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         presentation::format_short_datetime(unix_seconds)
     }
 
+    fn history_tooltips(
+        &self,
+        app: &tauri::AppHandle<R>,
+        root: &tauri::menu::Menu<R>,
+        history: &tauri::menu::Submenu<R>,
+        tooltips: Vec<String>,
+    ) -> Result<(), PlatformError> {
+        let error = |error: tauri::Error| PlatformError::Operation(error.to_string());
+        let root_items = root.items().map_err(error)?;
+        let index = root_items
+            .iter()
+            .position(|item| item.id() == history.id())
+            .ok_or_else(|| PlatformError::Operation("history submenu is not attached".into()))?;
+        let title = history.text().map_err(error)?;
+        let items = history.items().map_err(error)?;
+        if tooltips.len() > items.len() {
+            return Err(PlatformError::Operation(
+                "history tooltip count exceeds menu items".into(),
+            ));
+        }
+        let mut expected = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let text = match item {
+                tauri::menu::MenuItemKind::MenuItem(item) => item.text().map_err(error)?,
+                tauri::menu::MenuItemKind::Predefined(item) => item.text().map_err(error)?,
+                _ => {
+                    return Err(PlatformError::Operation(
+                        "unexpected history menu item kind".into(),
+                    ))
+                }
+            };
+            expected.push((text, tooltips.get(index).cloned()));
+        }
+        app.tray_by_id("lens")
+            .ok_or_else(|| PlatformError::Operation("Lens tray icon is unavailable".into()))?
+            .with_inner_tray_icon(move |tray| {
+                let item = tray.ns_status_item().ok_or_else(|| {
+                    PlatformError::Operation("native status item is unavailable".into())
+                })?;
+                // SAFETY: Tauri runs this closure on AppKit's main thread. The retained
+                // status item remains alive throughout this synchronous borrowed call.
+                unsafe {
+                    presentation::set_menu_tooltips(
+                        &*item as *const _ as *mut std::ffi::c_void,
+                        index,
+                        &title,
+                        &expected,
+                    )
+                }
+            })
+            .map_err(error)?
+    }
+
     fn settings_background(
         &self,
         app: &tauri::AppHandle<R>,

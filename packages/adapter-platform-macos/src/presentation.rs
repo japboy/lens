@@ -25,6 +25,48 @@ pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError>
     Ok(value)
 }
 
+/// Apply tooltips to the attached status menu after validating its complete submenu shape.
+/// Duplicate titles are allowed: the shell supplies the submenu index from Tauri IDs,
+/// and each tooltip remains associated with its positional item.
+///
+/// # Safety
+/// Call on the AppKit main thread with a live NSStatusItem borrowed for this call.
+pub unsafe fn set_menu_tooltips(
+    status_item: *mut c_void,
+    submenu_index: usize,
+    submenu_title: &str,
+    items: &[(String, Option<String>)],
+) -> Result<(), PlatformError> {
+    unsafe extern "C" {
+        fn lens_set_menu_tooltips(
+            status_item: *mut c_void,
+            submenu_index: usize,
+            submenu_title: *const std::ffi::c_char,
+            items_json: *const std::ffi::c_char,
+        ) -> bool;
+    }
+    let invalid = |error| PlatformError::Operation(format!("invalid menu tooltip text: {error}"));
+    let title = std::ffi::CString::new(submenu_title).map_err(invalid)?;
+    let values: Vec<_> = items
+        .iter()
+        .map(|(title, tooltip)| serde_json::json!({ "title": title, "tooltip": tooltip }))
+        .collect();
+    let json = std::ffi::CString::new(
+        serde_json::to_string(&values)
+            .map_err(|error| PlatformError::Operation(error.to_string()))?,
+    )
+    .map_err(invalid)?;
+    // SAFETY: Strings live through the synchronous call; caller guarantees handle/thread affinity.
+    if unsafe { lens_set_menu_tooltips(status_item, submenu_index, title.as_ptr(), json.as_ptr()) }
+    {
+        Ok(())
+    } else {
+        Err(PlatformError::Operation(
+            "native history menu does not match tooltip metadata".into(),
+        ))
+    }
+}
+
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 
 unsafe extern "C" {

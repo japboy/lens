@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,10 @@ extern "C" {
 typedef void (*LensPickerCallback)(const char *json, void *context);
 typedef void (*LensWindowTransitionCallback)(bool completed, void *context);
 typedef void (*LensWindowObservationCallback)(const char *json, void *context);
+
+/* Main-thread borrowed NSStatusItem. Validates all titles/count before setting any tooltip. */
+bool lens_set_menu_tooltips(void *statusItemPointer, size_t submenuIndex,
+                            const char *submenuTitle, const char *itemsJSON);
 
 bool lens_accessibility_is_trusted(void);
 bool lens_accessibility_request_trust(void);

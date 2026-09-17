@@ -35,7 +35,7 @@ serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 tar = "0.4"
-tauri = { version = "2.11.5", default-features = false, features = [
+tauri = { version = "~2.11.5", default-features = false, features = [
   "image-png",
   "macos-private-api",
   "tray-icon",
@@ -54,8 +54,8 @@ uuid.workspace = true
 [dev-dependencies]
 toml = "=1.1.4"
 pretty_assertions = "1"
-tauri = { version = "2.11.5", default-features = false, features = ["test"] }
+tauri = { version = "~2.11.5", default-features = false, features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 adapter-platform-macos.workspace = true
-tauri = { version = "2.11.5", features = ["macos-private-api"] }
+tauri = { version = "~2.11.5", features = ["macos-private-api"] }
