@@ -325,24 +325,29 @@ fn lens_window_geometry<R: tauri::Runtime>(
                 "selected window has invalid bounds",
             ))
         }),
-        [_, _, ..] => {
-            let monitor = app.primary_monitor()?.ok_or_else(|| {
-                tauri::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "primary monitor is unavailable",
-                ))
-            })?;
-            let scale_factor = monitor.scale_factor();
-            let position = monitor.position().to_logical::<f64>(scale_factor);
-            let size = monitor.size().to_logical::<f64>(scale_factor);
-            LensWindowGeometry::from_primary_screen(position, size).ok_or_else(|| {
-                tauri::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "primary monitor has invalid bounds",
-                ))
-            })
-        }
+        [_, _, ..] => primary_screen_overlay_geometry(app),
     }
+}
+
+/// Shared placement for overlays without a single source-window anchor.
+fn primary_screen_overlay_geometry<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<LensWindowGeometry> {
+    let monitor = app.primary_monitor()?.ok_or_else(|| {
+        tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "primary monitor is unavailable",
+        ))
+    })?;
+    let scale_factor = monitor.scale_factor();
+    let position = monitor.position().to_logical::<f64>(scale_factor);
+    let size = monitor.size().to_logical::<f64>(scale_factor);
+    LensWindowGeometry::from_primary_screen(position, size).ok_or_else(|| {
+        tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "primary monitor has invalid bounds",
+        ))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -784,9 +789,10 @@ pub(crate) fn show_history_window<R: tauri::Runtime>(app: &AppHandle<R>) -> taur
         window.show()?;
         return window.set_focus();
     }
+    let geometry = primary_screen_overlay_geometry(app)?;
     overlay_window_builder(app)
-        .inner_size(720.0, 640.0)
-        .center()
+        .inner_size(geometry.width, geometry.height)
+        .position(geometry.x, geometry.y)
         .build()?;
     Ok(())
 }
