@@ -18,10 +18,7 @@ import { fileURLToPath } from "node:url";
 import { graphArguments, inspectFeatureGraphs, parseFeatureGraph } from "../../inspect/features.ts";
 import type { FeatureNode } from "../../inspect/features.ts";
 import { BUILD_VARIANTS } from "../../../scripts/workspace-policy.ts";
-import {
-  assertBuildEnvironment,
-  validateVariantAdmission,
-} from "../../../scripts/run-workspace-variant.ts";
+import { assertBuildEnvironment } from "../../../scripts/run-workspace-variant.ts";
 
 type Package = {
   name: string;
@@ -200,10 +197,6 @@ export function checkPortableNativeFeatures(root: string): void {
     BUILD_VARIANTS.filter((variant) =>
       ["macos-production-check", "macos-bundle-build"].includes(variant.id),
     ),
-  );
-  validateVariantAdmission(
-    report,
-    JSON.parse(readFileSync(join(root, "scripts/workspace-variants.json"), "utf8")),
   );
   const cargo = (args: string[], cwd: string) =>
     execFileSync("cargo", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });

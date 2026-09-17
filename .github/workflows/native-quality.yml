@@ -76,7 +76,7 @@ jobs:
         with:
           prefix-key: lens-v3-rust
           shared-key: native-aarch64-apple-darwin
-          key: ${{ hashFiles('mise.lock', 'scripts/workspace-variants.json') }}
+          key: ${{ hashFiles('mise.lock') }}
           workspaces: . -> target
           cache-targets: true
           cache-bin: false

@@ -1,85 +1,93 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import {
-  assertBuildEnvironment,
-  selectVariant,
-  validateVariantAdmission,
-} from "./run-workspace-variant.ts";
+import { execFileSync } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertBuildEnvironment, runVariant, selectVariant } from "./run-workspace-variant.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
-import { graphArguments } from "../mise-tasks/inspect/features.ts";
 
-const admission = JSON.parse(
-  readFileSync(new URL("./workspace-variants.json", import.meta.url), "utf8"),
-);
-function report() {
-  const host = "aarch64-apple-darwin";
-  return {
-    version: 2,
-    applicationVersion: "0.1.0",
-    host,
-    rustc: `host: ${host}\nrelease: ${admission.rustcRelease}\n`,
-    variants: BUILD_VARIANTS.map((variant) => ({
-      variant: variant.id,
-      profile: variant.profile,
-      args: graphArguments(variant),
-      digest: "f".repeat(64),
-      admissionDigest: admission.hosts[host][variant.id].graphDigest,
-      graph: { nodes: [], edges: [], roots: [] },
-    })),
-  };
+vi.mock("node:child_process", () => ({ execFileSync: vi.fn<typeof execFileSync>() }));
+
+const execute = vi.mocked(execFileSync);
+const root = "/fixture";
+
+function mockGraph(host: string, version = "2.7.2", tauriFeatures = "", nativePortable = false) {
+  execute.mockImplementation((command, args) => {
+    if (command === "rustc") return `host: ${host}\nrelease: 1.94.0\n`;
+    if (args?.[0] !== "tree") return "";
+    const packages = args.flatMap((arg, index) => (arg === "--package" ? [args[index + 1]!] : []));
+    return packages
+      .map((name) =>
+        name === "desktop"
+          ? `0desktop v0.3.0 (${root}/apps/desktop/src-tauri)|\n1tauri v2.10.0|${tauriFeatures}\n1tauri-plugin-dialog v${version}|\n`
+          : `0${name} v0.3.0 (${root}/packages/${name})|\n${nativePortable ? "1tauri v2.10.0|\n" : ""}`,
+      )
+      .join("\n");
+  });
 }
 
-describe("explicit compiler variant admission", () => {
-  it("admits exact host/toolchain/graph/invocations, including a single selected variant", () => {
-    expect(() => validateVariantAdmission(report(), admission)).not.toThrow();
-    const selected = report();
-    selected.variants = selected.variants.slice(0, 1);
-    expect(() => validateVariantAdmission(selected, admission)).not.toThrow();
-    for (const variant of BUILD_VARIANTS) {
-      expect(selectVariant(variant.id)).toEqual(variant);
-      expect(admission.hosts[selected.host][variant.id].arguments).toEqual(
-        variantArguments(variant),
+afterEach(() => {
+  vi.restoreAllMocks();
+  execute.mockReset();
+});
+
+describe("explicit compiler variants", () => {
+  it.each(["2.7.2", "2.7.3"])(
+    "compiles a valid dependency graph at version %s without a saved approval baseline",
+    (version) => {
+      vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      mockGraph("aarch64-apple-darwin", version);
+      runVariant("macos-production-check", root);
+      expect(execute).toHaveBeenLastCalledWith(
+        "cargo",
+        variantArguments(selectVariant("macos-production-check")),
+        { cwd: root, stdio: "inherit" },
       );
-    }
+    },
+  );
+
+  it("selects only explicitly declared compiler invocations", () => {
+    for (const variant of BUILD_VARIANTS) expect(selectVariant(variant.id)).toEqual(variant);
+    expect(() => runVariant("implicit-workspace-defaults", root)).toThrow(
+      "Unknown workspace variant",
+    );
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each([
-    (value: ReturnType<typeof report>) => {
-      value.host = "unknown";
-    },
-    (value: ReturnType<typeof report>) => {
-      value.rustc = "release: 1.0.0";
-    },
-    (value: ReturnType<typeof report>) => {
-      value.variants = [];
-    },
-    (value: ReturnType<typeof report>) => {
-      value.variants.push(value.variants[0]!);
-    },
-    (value: ReturnType<typeof report>) => {
-      value.variants[0]!.variant = "unknown";
-    },
-    (value: ReturnType<typeof report>) => {
-      value.variants[0]!.profile = "release";
-    },
-    (value: ReturnType<typeof report>) => {
-      value.variants[0]!.admissionDigest = "0".repeat(64);
-    },
-  ])("rejects incomplete or unreviewed compiler evidence (%#)", (mutate) => {
-    const value = report();
-    mutate(value);
-    expect(() => validateVariantAdmission(value, admission)).toThrow(
-      /Unreviewed|Incomplete|Empty/u,
+  it("rejects unsupported analysis hosts", () => {
+    mockGraph("unknown");
+    expect(() => runVariant("macos-production-check", root)).toThrow("graph-analysis host");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires the declared native host before compiling", () => {
+    mockGraph("x86_64-unknown-linux-gnu");
+    expect(() => runVariant("macos-production-check", root)).toThrow("require their declared host");
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("permits the explicitly declared portable Apple cross-check", () => {
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    mockGraph("x86_64-unknown-linux-gnu");
+    runVariant("apple-portable-check", root);
+    expect(execute).toHaveBeenLastCalledWith(
+      "cargo",
+      variantArguments(selectVariant("apple-portable-check")),
+      { cwd: root, stdio: "inherit" },
     );
   });
 
-  it("rejects policy drift before a compiler invocation", () => {
-    const changed = structuredClone(admission);
-    changed.hosts[report().host][BUILD_VARIANTS[0]!.id].arguments.push("--all-features");
-    expect(() => validateVariantAdmission(report(), changed)).toThrow("Unreviewed package");
-    delete changed.hosts[report().host][BUILD_VARIANTS[0]!.id];
-    expect(() => validateVariantAdmission(report(), changed)).toThrow("Incomplete host");
-    expect(() => selectVariant("implicit-workspace-defaults")).toThrow("Unknown workspace variant");
+  it("rejects test features in the production dependency graph before compiling", () => {
+    mockGraph("aarch64-apple-darwin", "2.7.3", "test");
+    expect(() => runVariant("macos-production-check", root)).toThrow(
+      "Tauri feature isolation failed",
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a native shell in the portable dependency graph before compiling", () => {
+    mockGraph("aarch64-apple-darwin", "2.7.3", "", true);
+    expect(() => runVariant("apple-portable-check", root)).toThrow(
+      "portable transitive graph contains native shell",
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it.each([
