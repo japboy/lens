@@ -43,6 +43,7 @@ export const AGENT_SELECTION_LABEL: Record<AgentSelectionStage, string> = {
   authenticating: "Authenticating Agent…",
   signing_out: "Signing out of Agent…",
   selected: "Agent authenticated and selected",
+  history_selected: "Agent selected for history. Verify connection before starting a session.",
   failed: "Agent selection failed",
 };
 
@@ -119,6 +120,8 @@ export function lensOutputBlocks(lens: LensState): LensOutputBlock[] {
 export type LensOutputMode = "empty" | "initial-stream" | "settled";
 
 export interface LensOutputPresentation {
+  /** Replay-owned artifact scope; does not imply a live publication. */
+  readonly artifactIdentity?: string;
   readonly published?: { operationId: string; representationId: string };
   readonly blocks: LensOutputBlock[];
   readonly identity?: string;

@@ -23,6 +23,9 @@ mod output_mcp;
 pub use native::run;
 mod platform;
 mod session_controls;
+mod session_document;
+mod session_history;
+mod session_view;
 #[cfg(test)]
 mod shell_tests;
 mod store;
@@ -34,6 +37,46 @@ mod ui;
 use base64::prelude::*;
 use tauri::Manager;
 use usecase::{lens, prompt_template};
+
+/// Opt-in debug automation follows the same scoped catalog and admission as tray selection.
+#[cfg(debug_assertions)]
+async fn validate_history_session<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    session_id: &str,
+) -> Result<(), String> {
+    if session_id.trim().is_empty() {
+        return Err("LENS_VALIDATE_HISTORY_SESSION must name an exact ACP session ID".into());
+    }
+    let catalog = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        session_view::refresh(app.clone()).await?;
+        loop {
+            // Restore may already own refresh; refresh() then returns without joining it.
+            let catalog = app.state::<app_state::AppState>().session_view.catalog()?;
+            if !catalog.loading {
+                return Ok::<_, String>(catalog);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| "Timed out waiting for session history catalog".to_string())??;
+    let mut matches = catalog
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.session_id == session_id);
+    let index = matches
+        .next()
+        .map(|(index, _)| index)
+        .ok_or_else(|| format!(
+            "Requested session is absent from the current Working Directory's recent catalog; notices: {}",
+            catalog.notices.join("; ")
+        ))?;
+    if matches.next().is_some() {
+        return Err("Requested session ID is ambiguous across Agents".into());
+    }
+    session_view::open(app, catalog.generation, index).await
+}
 
 /// Generate product assets, capabilities and embedded metadata once for every runtime.
 fn product_context<R: tauri::Runtime>() -> tauri::Context<R> {
@@ -67,6 +110,9 @@ fn command_handler<R: tauri::Runtime>(
         about::get_about_documents,
         about::show_about,
         commands::get_app_snapshot,
+        session_view::get_session_view,
+        session_view::wire::get_session_block,
+        session_view::close_session_view,
         commands::get_html_output,
         commands::set_agent,
         commands::set_working_directory,
@@ -175,9 +221,16 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                     .unwrap_or(model::AgentKind::Claude);
                 tauri::async_runtime::spawn(async move {
                     if let Err(error) =
-                        agent::restore_agent_selection(handle, preferred_agent).await
+                        agent::restore_agent_selection(handle.clone(), preferred_agent).await
                     {
                         eprintln!("Unable to restore Agent selection: {error}");
+                    }
+                    #[cfg(debug_assertions)]
+                    if let Ok(session_id) = std::env::var("LENS_VALIDATE_HISTORY_SESSION") {
+                        match validate_history_session(handle, &session_id).await {
+                            Ok(()) => println!("LENS_HISTORY_VALIDATION=opened session={session_id}"),
+                            Err(error) => eprintln!("LENS_HISTORY_VALIDATION=failed {error}"),
+                        }
                     }
                 });
             }

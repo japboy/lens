@@ -1,3 +1,11 @@
+import { historyPresentation } from "../application/history-presentation";
+import {
+  isHistoryView,
+  type SessionView,
+  type DeferredDocumentBlock,
+  type DocumentBlock,
+} from "../application/session-document";
+import { cache } from "lit/directives/cache.js";
 import { initialOverlayState } from "../rendering/initial-state";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
@@ -32,6 +40,7 @@ import {
 
 const LENS_TABS = [
   { id: "interpretation", label: "Interpretation" },
+  { id: "conversation", label: "Conversation" },
   { id: "source", label: "Source" },
   { id: "diagnostics", label: "Diagnostics" },
 ] as const;
@@ -49,6 +58,17 @@ interface OverlayNotification {
   readonly detail: string;
   readonly busy: boolean;
   readonly prominent: boolean;
+}
+
+function historyNotification(view: SessionView | undefined): OverlayNotification | undefined {
+  return view?.phase === "loading"
+    ? {
+        title: "Loading session…",
+        detail: view.title || "Retrieving session history.",
+        busy: true,
+        prominent: true,
+      }
+    : undefined;
 }
 
 function overlayNotification(lens: LensState): OverlayNotification | undefined {
@@ -888,6 +908,15 @@ export class LensOverlayView extends LitElement {
         color: CanvasText;
       }
 
+      /* The outer slide keeps its flex footprint while this child is fullscreen. */
+      .output-media-html-content {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        background: Canvas;
+        color: CanvasText;
+      }
+
       .output-html-frame {
         display: block;
         border: 0;
@@ -900,14 +929,14 @@ export class LensOverlayView extends LitElement {
         display: none;
       }
 
-      .output-media-html-slide:fullscreen {
+      .output-media-html-content:fullscreen {
         display: flex;
         flex-direction: column;
         width: 100%;
         height: 100%;
       }
 
-      .output-media-html-slide:fullscreen > .output-html-expanded-header {
+      .output-media-html-content:fullscreen > .output-html-expanded-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -916,7 +945,7 @@ export class LensOverlayView extends LitElement {
         flex: 0 0 auto;
       }
 
-      .output-media-html-slide:fullscreen > .output-html-frame {
+      .output-media-html-content:fullscreen > .output-html-frame {
         flex: 1 1 auto;
       }
 
@@ -1592,6 +1621,10 @@ export class LensOverlayView extends LitElement {
     ...sharedIconStyles,
   ];
 
+  @property({ attribute: false }) sessionView: SessionView | undefined;
+  @property({ attribute: false }) loadSessionBlock:
+    | ((block: DeferredDocumentBlock) => Promise<DocumentBlock>)
+    | undefined;
   @property({ type: Boolean }) active = initialOverlayState().active;
   @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
@@ -1615,25 +1648,48 @@ export class LensOverlayView extends LitElement {
   private notificationVisibility: "open" | "closed" = initialOverlayState().notificationVisibility;
 
   protected willUpdate(changed: PropertyValues<this>): void {
-    if (!changed.has("model")) return;
-    const previous = changed.get("model");
-    if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
-      this.activeTab = "interpretation";
+    if (changed.has("sessionView") && isHistoryView(this.sessionView)) {
+      const previous = changed.get("sessionView") as SessionView | undefined;
+      if (
+        !isHistoryView(previous) ||
+        previous?.session_id !== this.sessionView?.session_id ||
+        previous?.agent !== this.sessionView?.agent
+      )
+        this.activeTab = "interpretation";
     }
-    if (this.model) this.synchronizeRepresentation(this.model.lens);
-    const notification = this.model
-      ? overlayNotification(this.lensWithDisplayedRepresentation(this.model.lens))
-      : undefined;
-    const identity = notification
+    if (changed.has("model")) {
+      const previous = changed.get("model");
+      if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
+        this.activeTab = "interpretation";
+      }
+      if (this.model) this.synchronizeRepresentation(this.model.lens);
+    }
+    if (!changed.has("model") && !changed.has("sessionView")) return;
+    const history = isHistoryView(this.sessionView);
+    const notification = history
+      ? historyNotification(this.sessionView)
+      : this.model
+        ? overlayNotification(this.lensWithDisplayedRepresentation(this.model.lens))
+        : undefined;
+    const identity = history
       ? JSON.stringify([
-          this.model?.lens.operation_id,
-          notification.title,
-          this.model?.lens.agent?.run_id,
-          this.model?.lens.stage === "transforming" ? undefined : notification.detail,
-          notification.busy,
-          notification.prominent,
+          "history",
+          this.sessionView?.agent,
+          this.sessionView?.session_id,
+          this.sessionView?.generation,
+          this.sessionView?.phase,
         ])
-      : undefined;
+      : notification
+        ? JSON.stringify([
+            "live",
+            this.model?.lens.operation_id,
+            notification.title,
+            this.model?.lens.agent?.run_id,
+            this.model?.lens.stage === "transforming" ? undefined : notification.detail,
+            notification.busy,
+            notification.prominent,
+          ])
+        : undefined;
     if (identity !== this.notificationIdentity) {
       this.notificationIdentity = identity;
       this.notificationVisibility = notification?.prominent ? "open" : "closed";
@@ -1641,6 +1697,7 @@ export class LensOverlayView extends LitElement {
   }
 
   protected render() {
+    if (isHistoryView(this.sessionView)) return this.renderHistory();
     const model = this.model;
     const lens = model?.lens;
     const context = lens?.context;
@@ -1696,12 +1753,8 @@ export class LensOverlayView extends LitElement {
         data-media-cue=${hasMediaCue ? "true" : "false"}
         @lens-agent-output-intent=${this.forwardOutputIntent}
       >
-        <header class="overlay-header" data-tauri-drag-region="deep">
-          <div class="overlay-brand">
-            <img class="overlay-app-icon" src=${appIconUrl} alt="" />
-            <h1 class="overlay-title visually-hidden">Lens</h1>
-          </div>
-          <div class="overlay-header-actions">
+        ${this.renderHeader(
+          html`
             ${
               canCancel
                 ? html`<button
@@ -1749,19 +1802,9 @@ export class LensOverlayView extends LitElement {
                     </button>`
                   : nothing
             }
-            <button
-              type="button"
-              class="close-button"
-              ?disabled=${!this.active}
-              data-tauri-drag-region="false"
-              aria-label=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
-              title=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
-              @click=${() => this.emit({ type: "close" })}
-            >
-              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-            </button>
-          </div>
-        </header>
+          `,
+          lens?.operation_id ? "Stop Lens and close" : "Close Lens",
+        )}
 
         <section class="overlay-source-summary" aria-label="Selected source context">
           <span class="overlay-source-icon" aria-hidden="true">
@@ -1784,6 +1827,7 @@ export class LensOverlayView extends LitElement {
           <div data-region-error="output"></div>
           <div data-region-error="session"></div>
           <div data-region-error="source"></div>
+          <div data-region-error="conversation"></div>
           ${model?.message ? html`<p class="error" role="alert">${model?.message}</p>` : nothing}
           ${lens?.error ? html`<p class="error" role="alert">${lens?.error}</p>` : nothing}
           ${
@@ -1809,77 +1853,15 @@ export class LensOverlayView extends LitElement {
                 </section>`
               : nothing
           }
-          ${this.renderActivePanel(lens, displayLens, sourceJson)}
+          ${cache(this.renderActivePanel(lens, displayLens, sourceJson))}
         </main>
 
-        <div id="lens-progress-notification" class="lens-progress-region">
-          ${
-            announcedStatus
-              ? html`<div
-                  class=${showStatusSnackbar ? "lens-progress-snackbar" : "visually-hidden"}
-                  data-interactive=${interactive}
-                >
-                  <div
-                    class="lens-status-announcement"
-                    role="status"
-                    aria-live="polite"
-                    aria-atomic="true"
-                  >
-                    <i
-                      class=${
-                        announcedStatus.busy
-                          ? "fa-solid fa-spinner fa-spin"
-                          : "fa-solid fa-circle-info lens-status-icon"
-                      }
-                      aria-hidden="true"
-                    ></i>
-                    <span class="lens-progress-copy">
-                      <strong>${announcedStatus.title}</strong>
-                      ${interactive ? nothing : html`<span aria-hidden=${lens?.stage === "transforming" ? "true" : "false"}>${announcedStatus.detail}</span>`}
-                    </span>
-                  </div>
-                  ${
-                    showStatusSnackbar && !interactive
-                      ? html`<button
-                          type="button"
-                          class="close-button lens-progress-dismiss"
-                          aria-label="Dismiss notification"
-                          title="Dismiss notification"
-                          @click=${this.dismissNotification}
-                        >
-                          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                        </button>`
-                      : nothing
-                  }
-                  ${
-                    interactive
-                      ? html`<lens-session-controls
-                          presentation="interaction"
-                          .controls=${lens?.session_controls}
-                          .submission=${model?.interactionSubmission}
-                        ></lens-session-controls>`
-                      : nothing
-                  }
-                </div>`
-              : nothing
-          }
-        </div>
+        ${this.renderNotification(announcedStatus, showStatusSnackbar, interactive, lens?.stage === "transforming")}
 
         <footer class="overlay-footer">
           ${
             announcedStatus && !interactive
-              ? html`<button
-                  type="button"
-                  class="overlay-footer-status overlay-status-toggle"
-                  aria-controls="lens-progress-notification"
-                  aria-expanded=${showStatusSnackbar ? "true" : "false"}
-                  aria-label="${showStatusSnackbar ? "Hide" : "Show"} status details: ${announcedStatus.title}"
-                  title=${showStatusSnackbar ? "Hide status details" : "Show status details"}
-                  @click=${this.toggleNotification}
-                >
-                  <span class="overlay-stage-indicator" aria-hidden="true"></span>
-                  <span class="overlay-stage">${announcedStatus.title}</span>
-                </button>`
+              ? this.renderNotificationToggle(announcedStatus, showStatusSnackbar)
               : html`<div
                   class="overlay-footer-status"
                   title=${persistentStatus?.detail ?? (lens ? STAGE_LABEL[lens.stage] : nothing)}
@@ -1900,12 +1882,191 @@ export class LensOverlayView extends LitElement {
     `;
   }
 
+  private renderNotification(
+    announcedStatus: OverlayNotification | undefined,
+    showStatusSnackbar: boolean,
+    interactive = false,
+    suppressDetailAnnouncement = false,
+  ) {
+    return html` <div id="lens-progress-notification" class="lens-progress-region">
+      ${
+        announcedStatus
+          ? html`<div
+              class=${showStatusSnackbar ? "lens-progress-snackbar" : "visually-hidden"}
+              data-interactive=${interactive}
+            >
+              <div
+                class="lens-status-announcement"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <i
+                  class=${
+                    announcedStatus.busy
+                      ? "fa-solid fa-spinner fa-spin"
+                      : "fa-solid fa-circle-info lens-status-icon"
+                  }
+                  aria-hidden="true"
+                ></i>
+                <span class="lens-progress-copy">
+                  <strong>${announcedStatus.title}</strong>
+                  ${interactive ? nothing : html`<span aria-hidden=${suppressDetailAnnouncement ? "true" : "false"}>${announcedStatus.detail}</span>`}
+                </span>
+              </div>
+              ${
+                showStatusSnackbar && !interactive
+                  ? html`<button
+                      type="button"
+                      class="close-button lens-progress-dismiss"
+                      aria-label="Dismiss notification"
+                      title="Dismiss notification"
+                      @click=${this.dismissNotification}
+                    >
+                      <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>`
+                  : nothing
+              }
+              ${
+                interactive
+                  ? html`<lens-session-controls
+                      presentation="interaction"
+                      .controls=${this.model?.lens.session_controls}
+                      .submission=${this.model?.interactionSubmission}
+                    ></lens-session-controls>`
+                  : nothing
+              }
+            </div>`
+          : nothing
+      }
+    </div>`;
+  }
+
+  private renderNotificationToggle(
+    announcedStatus: OverlayNotification,
+    showStatusSnackbar: boolean,
+  ) {
+    return html`<button
+      type="button"
+      class="overlay-footer-status overlay-status-toggle"
+      aria-controls="lens-progress-notification"
+      aria-expanded=${showStatusSnackbar ? "true" : "false"}
+      aria-label="${showStatusSnackbar ? "Hide" : "Show"} status details: ${announcedStatus.title}"
+      title=${showStatusSnackbar ? "Hide status details" : "Show status details"}
+      @click=${this.toggleNotification}
+    >
+      <span class="overlay-stage-indicator" aria-hidden="true"></span>
+      <span class="overlay-stage">${announcedStatus.title}</span>
+    </button>`;
+  }
+
+  private renderHeader(actions: unknown = nothing, closeLabel = "Close Lens") {
+    return html`<header class="overlay-header" data-tauri-drag-region="deep">
+      <div class="overlay-brand">
+        <img class="overlay-app-icon" src=${appIconUrl} alt="" />
+        <h1 class="overlay-title visually-hidden">Lens</h1>
+      </div>
+      <div class="overlay-header-actions">
+        ${actions}<button
+          type="button"
+          class="close-button"
+          ?disabled=${!this.active}
+          data-tauri-drag-region="false"
+          aria-label=${closeLabel}
+          title=${closeLabel}
+          @click=${() => this.emit({ type: "close" })}
+        >
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>`;
+  }
+
+  private renderHistory() {
+    const view = this.sessionView!;
+    const identity = `${view.agent}:${view.session_id}${view.generation ? `:${view.generation}` : ""}`;
+    const output = historyPresentation(view.document, identity);
+    const activeTab = this.activeTab === "conversation" ? "conversation" : "interpretation";
+    const notification = historyNotification(view);
+    const showNotification = Boolean(notification && this.notificationVisibility === "open");
+    return html`<div
+      class="overlay-shell"
+      data-progress=${showNotification ? "true" : "false"}
+      @lens-agent-output-intent=${this.forwardOutputIntent}
+    >
+      ${this.renderHeader()}
+      <nav class="lens-tabs" aria-label="Lens content">
+        <div role="tablist" aria-orientation="horizontal">
+          ${this.renderTab("interpretation", "Interpretation")}${this.renderTab("conversation", "Conversation")}
+        </div>
+      </nav>
+      <main class="overlay-main" aria-busy=${view.phase === "loading" ? "true" : "false"}>
+        <div data-region-error="conversation"></div>
+        <div data-region-error="output"></div>
+        ${view.error ? html`<p class="error" role="alert">${view.error}</p>` : nothing}
+        <section
+          class="lens-panel"
+          id="${activeTab}-panel"
+          role="tabpanel"
+          aria-labelledby="${activeTab}-tab"
+          tabindex="0"
+        >
+          ${cache(
+            view.phase === "ready"
+              ? activeTab === "conversation"
+                ? html`<div class="lens-content">
+                    <lens-session-document
+                      .document=${view.conversation ?? view.document}
+                      .identity=${identity}
+                      .loadBlock=${this.loadSessionBlock}
+                    ></lens-session-document>
+                  </div>`
+                : html`<lens-agent-output
+                    .presentation=${output.presentation}
+                    .htmlContent=${output.htmlContent}
+                  ></lens-agent-output>`
+              : nothing,
+          )}
+        </section>
+      </main>
+      ${this.renderNotification(notification, showNotification)}
+      <footer class="overlay-footer">
+        ${
+          notification
+            ? this.renderNotificationToggle(notification, showNotification)
+            : html`<div class="overlay-footer-status">
+                <span class="overlay-stage">${view.title || "Session"}</span>
+              </div>`
+        }
+      </footer>
+    </div>`;
+  }
+
   private renderActivePanel(
     lens: OverlayViewModel["lens"] | undefined,
     displayLens: LensState | undefined,
     sourceJson: string,
   ) {
     const activeTab = this.activeTab;
+    if (activeTab === "conversation")
+      return html`<section
+        id="conversation-panel"
+        class="lens-panel"
+        role="tabpanel"
+        aria-labelledby="conversation-tab"
+        tabindex="0"
+      >
+        ${
+          this.sessionView?.phase === "live" && this.sessionView.error
+            ? html`<p class="error" role="alert">${this.sessionView.error}</p>`
+            : nothing
+        }
+        <lens-session-document
+          .document=${this.sessionView?.phase === "live" ? (this.sessionView.conversation ?? this.sessionView.document) : undefined}
+          .identity=${`${this.sessionView?.agent}:${this.sessionView?.session_id}:${this.sessionView?.generation ?? "legacy"}`}
+          .loadBlock=${this.loadSessionBlock}
+        ></lens-session-document>
+      </section>`;
     if (!lens || !displayLens)
       return html`<section
         id="${activeTab}-panel"
@@ -1996,23 +2157,26 @@ export class LensOverlayView extends LitElement {
   }
 
   private handleTabKeyDown = (event: KeyboardEvent): void => {
-    const activeIndex = LENS_TABS.findIndex(({ id }) => id === this.activeTab);
+    const tabs = isHistoryView(this.sessionView)
+      ? LENS_TABS.filter(({ id }) => id === "interpretation" || id === "conversation")
+      : LENS_TABS;
+    const activeIndex = tabs.findIndex(({ id }) => id === this.activeTab);
     const nextIndex = (() => {
       switch (event.key) {
         case "ArrowLeft":
-          return (activeIndex - 1 + LENS_TABS.length) % LENS_TABS.length;
+          return (activeIndex - 1 + tabs.length) % tabs.length;
         case "ArrowRight":
-          return (activeIndex + 1) % LENS_TABS.length;
+          return (activeIndex + 1) % tabs.length;
         case "Home":
           return 0;
         case "End":
-          return LENS_TABS.length - 1;
+          return tabs.length - 1;
         default:
           return undefined;
       }
     })();
     if (nextIndex === undefined) return;
-    const nextTab = LENS_TABS[nextIndex]?.id;
+    const nextTab = tabs[nextIndex]?.id;
     if (!nextTab) return;
     event.preventDefault();
     this.activateTab(nextTab);

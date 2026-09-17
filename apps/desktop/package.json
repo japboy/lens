@@ -24,6 +24,7 @@
     "@generative-dom/plugin-markdown-quote": "0.4.0",
     "@generative-dom/plugin-markdown-table": "0.4.0",
     "@lit-labs/ssr-client": "1.1.8",
+    "@lit-labs/virtualizer": "2.1.1",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.2",
     "@tauri-apps/plugin-opener": "2.5.4",

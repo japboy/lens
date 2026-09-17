@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Lens media parity qualification</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        font: 13px system-ui;
+        background: #eee;
+      }
+      header {
+        height: 42px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 0 12px;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        height: calc(100% - 42px);
+        gap: 8px;
+      }
+      section {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 6px;
+      }
+      lens-overlay-view {
+        display: block;
+        flex: 1;
+        min-height: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <label
+        >Media
+        <select id="case">
+          <option>single</option>
+          <option>multiple</option>
+          <option>mixed</option>
+          <option>none</option>
+        </select></label
+      ><span>Production overlays: normal / ACP history</span>
+    </header>
+    <main>
+      <section>
+        <h2>Normal</h2>
+        <lens-overlay-view id="normal"></lens-overlay-view>
+      </section>
+      <section>
+        <h2>History</h2>
+        <lens-overlay-view id="history"></lens-overlay-view>
+      </section>
+    </main>
+    <script type="module" src="./media-qualification.ts"></script>
+  </body>
+</html>

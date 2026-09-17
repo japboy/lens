@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { SessionView } from "../application/session-document";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../application/view-models";
 import type {
@@ -863,6 +864,70 @@ describe("component property and event contracts", () => {
 });
 
 describe("progress notification visibility", () => {
+  it("uses shared history notifications with dismissal scoped to the loading lifecycle", async () => {
+    const element = (await mount({
+      stage: "connecting",
+      prompt_execution_revision: 1,
+      output_blocks: [],
+    })) as Awaited<ReturnType<typeof mount>> & { sessionView: SessionView };
+    const root = element.shadowRoot!;
+    const loading: SessionView = {
+      revision: 1,
+      generation: "first",
+      phase: "loading",
+      agent: "codex",
+      session_id: "history",
+      title: "Earlier session",
+    };
+    element.sessionView = loading;
+    await element.updateComplete;
+    expect(root.querySelector(".overlay-main")?.getAttribute("aria-busy")).toBe("true");
+    expect(root.querySelector(".overlay-main")?.textContent).not.toContain("Loading session");
+    expect(root.querySelector(".lens-progress-snackbar")?.textContent).toContain("Loading session");
+    expect(root.querySelectorAll('[role="status"]')).toHaveLength(1);
+    const received = vi.fn<EventListener>();
+    element.addEventListener(OVERLAY_INTENT_EVENT, received);
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    expect(root.querySelector(".overlay-status-toggle")?.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    element.sessionView = { ...loading, revision: 2 };
+    element.model = { ...element.model, lens: { ...element.model.lens } };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    root.querySelector<HTMLButtonElement>(".overlay-status-toggle")!.click();
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
+    expect(received).not.toHaveBeenCalled();
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    element.sessionView = { ...loading, generation: "second", revision: 3 };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
+    element.sessionView = {
+      ...loading,
+      generation: "second",
+      revision: 4,
+      phase: "ready",
+      document: { entries: [] },
+    };
+    await element.updateComplete;
+    expect(root.querySelector(".overlay-main")?.getAttribute("aria-busy")).toBe("false");
+    expect(root.querySelector(".lens-progress-snackbar")).toBeNull();
+    expect(root.querySelector(".overlay-status-toggle")).toBeNull();
+    expect(root.querySelector(".overlay-footer-status")?.textContent).toContain("Earlier session");
+    element.sessionView = { ...loading, revision: 5 };
+    await element.updateComplete;
+    root.querySelector<HTMLButtonElement>(".lens-progress-dismiss")!.click();
+    await element.updateComplete;
+    element.sessionView = { revision: 6, phase: "live" };
+    await element.updateComplete;
+    expect(root.querySelector(".lens-progress-snackbar")).not.toBeNull();
+    expect(root.querySelector(".lens-progress-snackbar")?.textContent).not.toContain(
+      "Loading session",
+    );
+  });
   async function mount(lens: LensState) {
     const element = document.createElement("lens-overlay-view") as HTMLElement & {
       model: OverlayViewModel;

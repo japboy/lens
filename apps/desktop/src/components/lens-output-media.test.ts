@@ -174,12 +174,12 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-html-frame")).toBe(renderer);
   });
 
-  it("fullscreens the existing HTML slide and does not trap Tab on the close control", async () => {
+  it("fullscreens the existing HTML content inside its stable slide and does not trap Tab on the close control", async () => {
     const element = await mount([htmlMedia]);
     const renderer = await loadHtml(element);
     element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
     await element.updateComplete;
-    const slide = element.querySelector<HTMLElement>(".output-media-html-slide")!;
+    const slide = element.querySelector<HTMLElement>(".output-media-html-content")!;
     expect(requestFullscreen.mock.contexts[0]).toBe(slide);
     setFullscreen(slide);
     resolveRequest();
@@ -200,6 +200,63 @@ describe("Interpretation media interactions", () => {
     await element.updateComplete;
     expect(exitFullscreen).toHaveBeenCalledOnce();
     expect(element.querySelector(".output-html-frame")).toBe(renderer);
+  });
+
+  it("keeps the final HTML flex slot and iframe when its inner content enters fullscreen", async () => {
+    const element = await mount([...images, htmlMedia]);
+    const renderer = await loadHtml(element);
+    const rail = element.querySelector<HTMLElement>(".output-media-rail")!;
+    Object.defineProperty(rail, "clientWidth", { configurable: true, value: 400 });
+    for (let i = 0; i < 3; i++) {
+      element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+      await element.updateComplete;
+    }
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      frames.delete(id);
+    });
+    const flushFrame = async () => {
+      const queued = [...frames.values()];
+      frames.clear();
+      queued.forEach((callback) => callback(0));
+      await element.updateComplete;
+    };
+    rail.scrollLeft = 1200;
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    const slide = element.querySelector<HTMLElement>(".output-media-html-content")!;
+    setFullscreen(slide);
+    resolveRequest();
+    await element.updateComplete;
+    // Only the inner content leaves normal layout; the rail's four flex slots remain.
+    expect(slide.parentElement?.classList.contains("output-media-html-slide")).toBe(true);
+    expect(slide.parentElement?.parentElement).toBe(rail);
+    expect(rail.querySelectorAll(":scope > .output-media-slide")).toHaveLength(4);
+    expect(requestFullscreen.mock.contexts[0]).toBe(slide);
+    expect(slide.contains(renderer)).toBe(true);
+    rail.dispatchEvent(new Event("scroll"));
+    setFullscreen(null);
+    await element.updateComplete;
+    await Promise.resolve();
+    rail.dispatchEvent(new Event("scroll"));
+    await flushFrame();
+    await flushFrame();
+    expect(rail.scrollLeft).toBe(1200);
+    expect(element.querySelector(".output-media-html-slide")?.getAttribute("aria-hidden")).toBe(
+      "false",
+    );
+    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+    // Real rail scrolling remains functional after exiting.
+    rail.scrollLeft = 800;
+    rail.dispatchEvent(new Event("scroll"));
+    await flushFrame();
+    expect(element.querySelector(".output-media-html-slide")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
   });
 
   it("dismisses HTML details through a temporary backdrop without replacing the frame", async () => {

@@ -269,13 +269,44 @@ pub fn update_working_directory<R: tauri::Runtime>(
     if !directory.is_absolute() || !directory.is_dir() {
         return Err("working directory must be an existing absolute directory".into());
     }
-    update_config(app, |config| config.working_directory = directory)
+    let state = app.state::<AppState>();
+    let admission = state
+        .session_view
+        .admission
+        .lock()
+        .map_err(|_| "Session view state is unavailable".to_string())?;
+    if state.config()?.working_directory == directory {
+        return state.config();
+    }
+    let was_history = matches!(
+        state.session_view.phase()?,
+        crate::session_view::ViewPhase::Loading
+            | crate::session_view::ViewPhase::Ready
+            | crate::session_view::ViewPhase::Failed
+    );
+    let snapshot = update_config(app, |config| config.working_directory = directory)?;
+    let config = snapshot.config.clone();
+    crate::session_view::invalidate_working_directory(app)?;
+    if was_history {
+        if let Some(window) = app.get_webview_window(crate::ui::LENS_WINDOW_LABEL) {
+            window.close().map_err(|error| error.to_string())?;
+        }
+    }
+    drop(admission);
+    emit_app_snapshot(app, snapshot, true)?;
+    let history_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::session_view::refresh(history_app).await {
+            eprintln!("Unable to refresh session history: {error}");
+        }
+    });
+    Ok(config)
 }
 
 fn update_config<R: tauri::Runtime>(
     app: &AppHandle<R>,
     update: impl FnOnce(&mut AppConfig),
-) -> Result<AppConfig, String> {
+) -> Result<AppSnapshot, String> {
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     let snapshot = {
@@ -291,9 +322,7 @@ fn update_config<R: tauri::Runtime>(
         snapshot.revision = revision;
         snapshot.clone()
     };
-    let config = snapshot.config.clone();
-    emit_app_snapshot(app, snapshot, true)?;
-    Ok(config)
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -917,33 +946,46 @@ fn store_target_selection_payload<R: tauri::Runtime>(
 #[tauri::command]
 pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
-    let agent_selection = state.agent_selection()?;
-    if !agent_selection.can_select_lens_target() {
-        return Err("select and authenticate an AI Agent before selecting a Lens Target".into());
-    }
-    if state.lens()?.live.is_some() {
-        return Err("stop the active Lens before selecting another target set".into());
-    }
-    let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
-    state.lens_media.begin(operation_id)?;
-    let initial_selection = LensTargetSelection {
-        selection_id: operation_id,
-        stage: LensTargetSelectionStage::Picking,
-        maximum_targets: MAX_LENS_TARGETS,
-        anchor: None,
-        items: Vec::new(),
-        notice: None,
-    };
-    publish_lens_state(
-        &app,
-        LensState {
-            operation_id: Some(operation_id),
-            stage: LensStage::Selecting,
-            selection: Some(initial_selection),
-            ..LensState::default()
-        },
-    )?;
+    {
+        let _history_admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission is unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let agent_selection = state.agent_selection()?;
+        if !agent_selection.can_select_lens_target() {
+            return Err(
+                "select and authenticate an AI Agent before selecting a Lens Target".into(),
+            );
+        }
+        if state.lens()?.live.is_some() {
+            return Err("stop the active Lens before selecting another target set".into());
+        }
+        let _ = state.agent_control.cancel_active()?;
+        state.lens_media.begin(operation_id)?;
+        state.session_view.clear()?;
+        let initial_selection = LensTargetSelection {
+            selection_id: operation_id,
+            stage: LensTargetSelectionStage::Picking,
+            maximum_targets: MAX_LENS_TARGETS,
+            anchor: None,
+            items: Vec::new(),
+            notice: None,
+        };
+        publish_lens_state(
+            &app,
+            LensState {
+                operation_id: Some(operation_id),
+                stage: LensStage::Selecting,
+                selection: Some(initial_selection),
+                ..LensState::default()
+            },
+        )?;
+
+        crate::session_view::emit(&app)?;
+    }
 
     let window = match select_single_window(&app, operation_id).await {
         Ok(Some(window)) => window,
@@ -1204,6 +1246,12 @@ pub fn stop_lens<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<LensState, String> {
+    let state = app.state::<AppState>();
+    let _history_admission = state
+        .session_view
+        .admission
+        .lock()
+        .map_err(|_| "Session admission is unavailable")?;
     let current = app.state::<AppState>().lens()?;
     if current.operation_id != Some(operation_id) {
         return Err("Lens operation was superseded".into());
@@ -1229,6 +1277,14 @@ pub fn stop_lens<R: tauri::Runtime>(
     if !clear_lens_operation(&app, operation_id)? {
         return Err("Lens operation was superseded before it stopped".into());
     }
+    app.state::<AppState>().session_view.clear()?;
+    crate::session_view::emit(&app)?;
+    let history_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::session_view::refresh(history_app).await {
+            eprintln!("Unable to refresh session history: {error}");
+        }
+    });
     app.state::<AppState>().lens()
 }
 

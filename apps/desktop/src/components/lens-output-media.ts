@@ -410,36 +410,38 @@ export class LensOutputMedia extends LitElement {
       ?inert=${index !== this.selectedIndex}
       @keydown=${this.handleExpandedKeyDown}
     >
-      <header class="output-html-expanded-header">
-        <span>Media ${index + 1} of ${this.media.length}</span>
-        <button
-          type="button"
-          class="output-media-tool output-html-expanded-close"
-          aria-label="Close expanded HTML"
-          title="Close expanded media"
-          ?disabled=${this.fullscreen.status === "exiting"}
-          @click=${this.closeExpanded}
-        >
-          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-        </button>
-      </header>
-      ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
-      ${
-        prepared?.status === "ready"
-          ? keyed(
-              prepared,
-              html`<iframe
-                class="output-html-frame"
-                title="HTML content"
-                sandbox="allow-popups"
-                referrerpolicy="no-referrer"
-                .srcdoc=${prepared.preview.document}
-                @load=${(event: Event) => this.handleHtmlLoad(prepared, event)}
-              ></iframe>`,
-            )
-          : nothing
-      }
-      ${message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
+      <div class="output-media-html-content">
+        <header class="output-html-expanded-header">
+          <span>Media ${index + 1} of ${this.media.length}</span>
+          <button
+            type="button"
+            class="output-media-tool output-html-expanded-close"
+            aria-label="Close expanded HTML"
+            title="Close expanded media"
+            ?disabled=${this.fullscreen.status === "exiting"}
+            @click=${this.closeExpanded}
+          >
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </header>
+        ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
+        ${
+          prepared?.status === "ready"
+            ? keyed(
+                prepared,
+                html`<iframe
+                  class="output-html-frame"
+                  title="HTML content"
+                  sandbox="allow-popups"
+                  referrerpolicy="no-referrer"
+                  .srcdoc=${prepared.preview.document}
+                  @load=${(event: Event) => this.handleHtmlLoad(prepared, event)}
+                ></iframe>`,
+              )
+            : nothing
+        }
+        ${message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
+      </div>
     </section>`;
   }
 
@@ -512,6 +514,9 @@ export class LensOutputMedia extends LitElement {
   }
 
   private handleScroll = (): void => {
+    // Ignore fullscreen layout events at receipt, before a queued RAF can run
+    // after fullscreenchange has returned the state to idle.
+    if (this.fullscreen.status !== "idle") return;
     if (this.scrollFrame !== undefined) cancelAnimationFrame(this.scrollFrame);
     this.scrollFrame = requestAnimationFrame(() => {
       if (this.fullscreen.status !== "idle") return;
@@ -577,6 +582,7 @@ export class LensOutputMedia extends LitElement {
 
   private finishFullscreen(session: FullscreenSession): void {
     if (this.fullscreen.status === "idle" || this.fullscreen.session !== session) return;
+    if (this.scrollFrame !== undefined) cancelAnimationFrame(this.scrollFrame);
     this.fullscreen = { status: "idle" };
     if (this.isConnected) {
       void this.updateComplete.then(() => {
@@ -594,7 +600,7 @@ export class LensOutputMedia extends LitElement {
     const media = this.media[this.selectedIndex];
     const element =
       media?.kind === "html"
-        ? this.querySelector<HTMLElement>(".output-media-html-slide")
+        ? this.querySelector<HTMLElement>(".output-media-html-content")
         : this.querySelector<HTMLElement>(".output-media-expanded");
     if (
       !element ||

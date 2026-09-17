@@ -3,6 +3,70 @@ use port_platform::PlatformError;
 use std::ffi::c_void;
 use tokio::sync::oneshot;
 
+/// Format an instant using the current macOS short date and time preferences.
+pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError> {
+    unsafe extern "C" {
+        fn lens_format_short_datetime(unix_seconds: f64) -> *mut std::ffi::c_char;
+        fn lens_free_string(value: *mut std::ffi::c_char);
+    }
+    // SAFETY: The bridge accepts a scalar and returns an owned NUL-terminated UTF-8 string.
+    let raw = unsafe { lens_format_short_datetime(unix_seconds) };
+    if raw.is_null() {
+        return Err(PlatformError::Operation(
+            "unable to format session timestamp".into(),
+        ));
+    }
+    // SAFETY: The non-null allocation remains valid until released below.
+    let value = unsafe { std::ffi::CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: Release exactly once using the bridge allocator's matching deallocator.
+    unsafe { lens_free_string(raw) };
+    Ok(value)
+}
+
+/// Apply tooltips to the attached status menu after validating its complete submenu shape.
+/// Duplicate titles are allowed: the shell supplies the submenu index from Tauri IDs,
+/// and each tooltip remains associated with its positional item.
+///
+/// # Safety
+/// Call on the AppKit main thread with a live NSStatusItem borrowed for this call.
+pub unsafe fn set_menu_tooltips(
+    status_item: *mut c_void,
+    submenu_index: usize,
+    submenu_title: &str,
+    items: &[(String, Option<String>)],
+) -> Result<(), PlatformError> {
+    unsafe extern "C" {
+        fn lens_set_menu_tooltips(
+            status_item: *mut c_void,
+            submenu_index: usize,
+            submenu_title: *const std::ffi::c_char,
+            items_json: *const std::ffi::c_char,
+        ) -> bool;
+    }
+    let invalid = |error| PlatformError::Operation(format!("invalid menu tooltip text: {error}"));
+    let title = std::ffi::CString::new(submenu_title).map_err(invalid)?;
+    let values: Vec<_> = items
+        .iter()
+        .map(|(title, tooltip)| serde_json::json!({ "title": title, "tooltip": tooltip }))
+        .collect();
+    let json = std::ffi::CString::new(
+        serde_json::to_string(&values)
+            .map_err(|error| PlatformError::Operation(error.to_string()))?,
+    )
+    .map_err(invalid)?;
+    // SAFETY: Strings live through the synchronous call; caller guarantees handle/thread affinity.
+    if unsafe { lens_set_menu_tooltips(status_item, submenu_index, title.as_ptr(), json.as_ptr()) }
+    {
+        Ok(())
+    } else {
+        Err(PlatformError::Operation(
+            "native history menu does not match tooltip metadata".into(),
+        ))
+    }
+}
+
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 
 unsafe extern "C" {

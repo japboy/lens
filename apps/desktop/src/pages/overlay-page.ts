@@ -1,3 +1,5 @@
+import { SessionViewController } from "../application/session-view-controller";
+import { isHistoryView } from "../application/session-document";
 import { snapshotStatus } from "../rendering/snapshot-status";
 import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
@@ -16,6 +18,7 @@ import type { InteractionSubmission } from "../application/view-models";
 @customElement("lens-overlay-page")
 export class OverlayPage extends ReactiveElement {
   private readonly port = tauriWebviewPort;
+  private readonly sessionView = new SessionViewController(this, this.port);
   private readonly snapshots = new AppSnapshotController(this, this.port);
   private readonly commands = new CommandController(this);
   private readonly htmlOutput = new HtmlOutputController(this, this.port);
@@ -30,8 +33,13 @@ export class OverlayPage extends ReactiveElement {
     },
     [
       {
+        name: "conversation",
+        ready: () => Boolean(this.sessionView.view),
+        load: () => import("../components/lens-session-document"),
+      },
+      {
         name: "output",
-        ready: () => Boolean(this.snapshots.snapshot),
+        ready: () => Boolean(this.snapshots.snapshot || this.sessionView.view),
         load: () => import("../components/lens-agent-output"),
       },
       {
@@ -79,7 +87,11 @@ export class OverlayPage extends ReactiveElement {
     if (this.attachment.stage !== "active") return;
     const view = this.view;
     const snapshot = this.snapshots.snapshot;
-    this.htmlOutput.synchronize(snapshot?.lens);
+    view.sessionView = this.sessionView.view;
+    view.loadSessionBlock = this.sessionView.loadBlock;
+    this.htmlOutput.synchronize(
+      !this.sessionView.view || isHistoryView(this.sessionView.view) ? undefined : snapshot?.lens,
+    );
     view.htmlContent = this.htmlOutput.content;
     view.dataset.platform = this.platform;
     view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
@@ -103,6 +115,15 @@ export class OverlayPage extends ReactiveElement {
     const identity: CommandIdentity = { scope: "overlay", type: intent.type };
     const lens = this.snapshots.snapshot?.lens;
     if (intent.type === "close") {
+      const session = this.sessionView.view;
+      const authoritativeHistory = Boolean(session?.generation) && isHistoryView(session);
+      if (authoritativeHistory || !lens?.operation_id) {
+        await this.commands.run(identity, async () => {
+          await this.port.closeSessionView();
+          await this.port.closeCurrentWindow();
+        });
+        return;
+      }
       const operationId = lens?.operation_id;
       await this.commands.run(identity, async () => {
         if (operationId) await this.port.stopLens(operationId);
@@ -110,7 +131,18 @@ export class OverlayPage extends ReactiveElement {
       });
       return;
     }
-    if (!this.snapshots.snapshot) return;
+    if (
+      (!this.sessionView.view || isHistoryView(this.sessionView.view)) &&
+      intent.type !== "open-external-url" &&
+      intent.type !== "report-error"
+    )
+      return;
+    if (
+      !this.snapshots.snapshot &&
+      intent.type !== "open-external-url" &&
+      intent.type !== "report-error"
+    )
+      return;
     switch (intent.type) {
       case "set-session-option": {
         if (!lens?.operation_id) return;

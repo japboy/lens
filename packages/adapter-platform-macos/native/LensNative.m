@@ -25,6 +25,50 @@ static void LensPerformOnMainThread(dispatch_block_t block) {
     dispatch_async(dispatch_get_main_queue(), block);
 }
 
+bool lens_set_menu_tooltips(void *statusItemPointer, size_t submenuIndex,
+                            const char *submenuTitle, const char *itemsJSON) {
+    if (![NSThread isMainThread] || !statusItemPointer || !submenuTitle || !itemsJSON) return false;
+    NSStatusItem *statusItem = (__bridge NSStatusItem *)statusItemPointer;
+    NSMenu *root = statusItem.menu;
+    if (!root || submenuIndex >= (size_t)root.numberOfItems) return false;
+    NSMenuItem *parent = [root itemAtIndex:(NSInteger)submenuIndex];
+    NSString *expectedTitle = [NSString stringWithUTF8String:submenuTitle];
+    if (!expectedTitle || ![parent.title isEqualToString:expectedTitle] || !parent.submenu) return false;
+    NSData *data = [[NSString stringWithUTF8String:itemsJSON] dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return false;
+    id values = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    NSMenu *menu = parent.submenu;
+    if (![values isKindOfClass:NSArray.class] || [values count] != (NSUInteger)menu.numberOfItems) return false;
+    // Check the whole attached menu before any mutation; duplicate titles retain ordinal identity.
+    for (NSUInteger index = 0; index < [values count]; index++) {
+        id value = values[index];
+        if (![value isKindOfClass:NSDictionary.class]) return false;
+        id title = value[@"title"];
+        id tooltip = value[@"tooltip"];
+        if (![title isKindOfClass:NSString.class] ||
+            ![[menu itemAtIndex:(NSInteger)index].title isEqualToString:title] ||
+            (tooltip != NSNull.null && ![tooltip isKindOfClass:NSString.class])) return false;
+    }
+    for (NSUInteger index = 0; index < [values count]; index++) {
+        id tooltip = values[index][@"tooltip"];
+        [menu itemAtIndex:(NSInteger)index].toolTip = tooltip == NSNull.null ? nil : tooltip;
+    }
+    return true;
+}
+
+char *lens_format_short_datetime(double unix_seconds) {
+    @autoreleasepool {
+        if (!isfinite(unix_seconds)) return NULL;
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        formatter.locale = NSLocale.autoupdatingCurrentLocale;
+        formatter.timeZone = NSTimeZone.localTimeZone;
+        formatter.dateStyle = NSDateFormatterShortStyle;
+        formatter.timeStyle = NSDateFormatterShortStyle;
+        NSString *value = [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:unix_seconds]];
+        return value ? strdup(value.UTF8String) : NULL;
+    }
+}
+
 bool lens_window_background_rgba(uint8_t *rgba) {
     if (![NSThread isMainThread] || rgba == NULL || NSApp == nil) {
         return false;

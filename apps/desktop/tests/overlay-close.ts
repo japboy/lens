@@ -7,6 +7,9 @@ import { installGeneratedPage } from "../src/rendering/generated-page.test-helpe
 import { startPage } from "../src/entries/start-page";
 
 const port = vi.hoisted(() => ({
+  subscribeToSessionView: vi.fn<WebviewPort["subscribeToSessionView"]>(),
+  getSessionView: vi.fn<WebviewPort["getSessionView"]>(),
+  closeSessionView: vi.fn<WebviewPort["closeSessionView"]>(),
   subscribeToAppSnapshot: vi.fn<WebviewPort["subscribeToAppSnapshot"]>(),
   getAppSnapshot: vi.fn<WebviewPort["getAppSnapshot"]>(),
   closeCurrentWindow: vi.fn<WebviewPort["closeCurrentWindow"]>(),
@@ -56,6 +59,9 @@ const snapshot: AppSnapshot = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  port.subscribeToSessionView.mockResolvedValue(() => undefined);
+  port.getSessionView.mockResolvedValue({ revision: 0, phase: "idle" });
+  port.closeSessionView.mockResolvedValue(undefined);
   window.history.replaceState({}, "", "/overlay.html?platform=macos");
   port.subscribeToAppSnapshot.mockResolvedValue(() => undefined);
   port.getAppSnapshot.mockResolvedValue(snapshot);
@@ -110,6 +116,41 @@ describe("overlay window dismissal", () => {
     expect(port.stopLens).not.toHaveBeenCalled();
   });
 
+  it.each(["subscription-delayed", "snapshot-delayed", "subscription-failed", "snapshot-failed"])(
+    "stops the live operation before closing when session %s",
+    async (state) => {
+      const pending = new Promise<never>(() => {});
+      if (state === "subscription-delayed") port.subscribeToSessionView.mockReturnValue(pending);
+      if (state === "snapshot-delayed") port.getSessionView.mockReturnValue(pending);
+      if (state === "subscription-failed")
+        port.subscribeToSessionView.mockRejectedValue(new Error("Subscription unavailable"));
+      if (state === "snapshot-failed")
+        port.getSessionView.mockRejectedValue(new Error("Session unavailable"));
+      port.getAppSnapshot.mockResolvedValue({
+        ...snapshot,
+        lens: { ...snapshot.lens, operation_id: "live-operation" },
+      });
+      port.closeSessionView.mockRejectedValue(new Error("Active session cannot close as history"));
+      let finish!: () => void;
+      port.stopLens.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const { view } = await attach();
+      await vi.waitFor(() => expect(view.model?.lens.operation_id).toBe("live-operation"));
+      await vi.waitFor(() =>
+        expect(view.sessionView?.phase).toBe(state.endsWith("failed") ? "failed" : undefined),
+      );
+      view.shadowRoot!.querySelector<HTMLButtonElement>(".close-button")!.click();
+      expect(port.stopLens).toHaveBeenCalledExactlyOnceWith("live-operation");
+      expect(port.closeSessionView).not.toHaveBeenCalled();
+      expect(port.closeCurrentWindow).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
+    },
+  );
+
   it("closes a known idle snapshot without stopping an operation", async () => {
     const { view, button } = await attach();
     await vi.waitFor(() => expect(view.model).toBeDefined());
@@ -144,4 +185,36 @@ describe("overlay window dismissal", () => {
     completeStop();
     await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledTimes(1));
   });
+});
+
+it("closes history without stopping the live operation and rejects monitoring intents", async () => {
+  port.getSessionView.mockResolvedValue({
+    revision: 1,
+    phase: "ready",
+    session_id: "saved",
+    generation: "history-generation",
+    document: { entries: [] },
+  });
+  port.getAppSnapshot.mockResolvedValue({
+    ...snapshot,
+    lens: { ...snapshot.lens, operation_id: "live-operation" },
+  });
+  installGeneratedPage("overlay");
+  await startPage("overlay", () => import("../src/pages/overlay-page"));
+  const view = document.querySelector<LensOverlayView>("lens-overlay-view")!;
+  await vi.waitFor(() =>
+    expect(view.shadowRoot!.querySelector('[aria-label="Close Lens"]')).not.toBeNull(),
+  );
+  view.dispatchEvent(
+    new CustomEvent("lens-overlay-intent", {
+      detail: { type: "pause" },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  expect(port.pauseLens).not.toHaveBeenCalled();
+  view.shadowRoot!.querySelector<HTMLButtonElement>('[aria-label="Close Lens"]')!.click();
+  await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
+  expect(port.closeSessionView).toHaveBeenCalledOnce();
+  expect(port.stopLens).not.toHaveBeenCalled();
 });

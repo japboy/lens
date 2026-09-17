@@ -438,6 +438,7 @@ impl LensMediaStore {
 }
 
 pub struct AppState {
+    pub(crate) session_view: crate::session_view::SessionViewStore,
     pub platform: crate::platform::Services,
     pub session_controls: Mutex<Option<Arc<crate::session_controls::SessionControls>>>,
     pub(crate) runtime: RwLock<AppSnapshot>,
@@ -472,6 +473,7 @@ impl AppState {
         config: AppConfig,
     ) -> Self {
         Self {
+            session_view: crate::session_view::SessionViewStore::default(),
             platform,
             runtime: RwLock::new(AppSnapshot::new(config)),
             session_controls: Mutex::new(None),

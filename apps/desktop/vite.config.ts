@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     root: applicationRoot,
     include: ["src/**/*.test.ts", "tooling/**/*.test.ts", "tests/*.ts"],
+    setupFiles: ["./tooling/browser-observers.ts"],
     globalSetup: ["./tooling/prerender/test-setup.ts"],
   },
   build: {
