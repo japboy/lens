@@ -772,19 +772,33 @@ pub(crate) fn show_history_window<R: tauri::Runtime>(app: &AppHandle<R>) -> taur
         window.show()?;
         return window.set_focus();
     }
+    overlay_window_builder(app)
+        .inner_size(720.0, 640.0)
+        .center()
+        .build()?;
+    Ok(())
+}
+
+/// Live and restored sessions share one native surface; only placement differs.
+fn overlay_window_builder<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> WebviewWindowBuilder<'_, R, AppHandle<R>> {
     let link_app = app.clone();
     WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
         .on_new_window(move |url, _| crate::html_preview::open_link(&link_app, &url))
         .title("Lens")
-        .inner_size(720.0, 640.0)
         .min_inner_size(360.0, 320.0)
-        .center()
         .decorations(false)
+        .always_on_top(false)
         .transparent(true)
         .shadow(true)
         .resizable(true)
-        .build()?;
-    Ok(())
+        .effects(WindowEffectsConfig {
+            effects: vec![LENS_WINDOW_EFFECT],
+            state: Some(WindowEffectState::Active),
+            radius: Some(LENS_WINDOW_CORNER_RADIUS),
+            color: None,
+        })
 }
 
 fn sync_prompt_preset_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -1097,23 +1111,9 @@ pub fn show_lens_window<R: tauri::Runtime>(
         }
         (None, LensWindowPlacementDecision::Apply) => {
             let geometry = lens_window_geometry(app, target_set)?;
-            let link_app = app.clone();
-            WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
-                .on_new_window(move |url, _| crate::html_preview::open_link(&link_app, &url))
-                .title("Lens")
+            overlay_window_builder(app)
                 .inner_size(geometry.width, geometry.height)
                 .position(geometry.x, geometry.y)
-                .decorations(false)
-                .always_on_top(false)
-                .transparent(true)
-                .shadow(true)
-                .resizable(true)
-                .effects(WindowEffectsConfig {
-                    effects: vec![LENS_WINDOW_EFFECT],
-                    state: Some(WindowEffectState::Active),
-                    radius: Some(LENS_WINDOW_CORNER_RADIUS),
-                    color: None,
-                })
                 .build()?;
             placement.record_applied(target_set.selection_id);
             Ok(())

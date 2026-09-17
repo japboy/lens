@@ -1,3 +1,4 @@
+import { historyPresentation } from "../application/history-presentation";
 import { isHistoryView, type SessionView } from "../application/session-document";
 import { initialOverlayState } from "../rendering/initial-state";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
@@ -112,17 +113,6 @@ export class LensOverlayView extends LitElement {
 
       .overlay-shell[data-media-cue="true"] {
         --progress-bottom-clearance: var(--output-media-cue-size);
-      }
-
-      .history-shell {
-        height: 100dvh;
-        display: flex;
-        flex-direction: column;
-      }
-      .history-content {
-        overflow: auto;
-        flex: 1;
-        padding: 0 14px 14px;
       }
 
       .overlay-header {
@@ -1629,6 +1619,15 @@ export class LensOverlayView extends LitElement {
   private notificationVisibility: "open" | "closed" = initialOverlayState().notificationVisibility;
 
   protected willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has("sessionView") && isHistoryView(this.sessionView)) {
+      const previous = changed.get("sessionView") as SessionView | undefined;
+      if (
+        !isHistoryView(previous) ||
+        previous?.session_id !== this.sessionView?.session_id ||
+        previous?.agent !== this.sessionView?.agent
+      )
+        this.activeTab = "interpretation";
+    }
     if (!changed.has("model")) return;
     const previous = changed.get("model");
     if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
@@ -1711,12 +1710,8 @@ export class LensOverlayView extends LitElement {
         data-media-cue=${hasMediaCue ? "true" : "false"}
         @lens-agent-output-intent=${this.forwardOutputIntent}
       >
-        <header class="overlay-header" data-tauri-drag-region="deep">
-          <div class="overlay-brand">
-            <img class="overlay-app-icon" src=${appIconUrl} alt="" />
-            <h1 class="overlay-title visually-hidden">Lens</h1>
-          </div>
-          <div class="overlay-header-actions">
+        ${this.renderHeader(
+          html`
             ${
               canCancel
                 ? html`<button
@@ -1764,19 +1759,9 @@ export class LensOverlayView extends LitElement {
                     </button>`
                   : nothing
             }
-            <button
-              type="button"
-              class="close-button"
-              ?disabled=${!this.active}
-              data-tauri-drag-region="false"
-              aria-label=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
-              title=${lens?.operation_id ? "Stop Lens and close" : "Close Lens"}
-              @click=${() => this.emit({ type: "close" })}
-            >
-              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-            </button>
-          </div>
-        </header>
+          `,
+          lens?.operation_id ? "Stop Lens and close" : "Close Lens",
+        )}
 
         <section class="overlay-source-summary" aria-label="Selected source context">
           <span class="overlay-source-icon" aria-hidden="true">
@@ -1916,29 +1901,75 @@ export class LensOverlayView extends LitElement {
     `;
   }
 
-  private renderHistory() {
-    const view = this.sessionView!;
-    return html`<section class="history-shell">
-      <header class="overlay-header" data-tauri-drag-region="deep">
-        <strong>${view.title || "Session"}</strong>
-        <button
+  private renderHeader(actions: unknown = nothing, closeLabel = "Close Lens") {
+    return html`<header class="overlay-header" data-tauri-drag-region="deep">
+      <div class="overlay-brand">
+        <img class="overlay-app-icon" src=${appIconUrl} alt="" />
+        <h1 class="overlay-title visually-hidden">Lens</h1>
+      </div>
+      <div class="overlay-header-actions">
+        ${actions}<button
           type="button"
           class="close-button"
-          aria-label="Close session"
-          data-tauri-drag-region="false"
           ?disabled=${!this.active}
+          data-tauri-drag-region="false"
+          aria-label=${closeLabel}
+          title=${closeLabel}
           @click=${() => this.emit({ type: "close" })}
         >
-          ×
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
         </button>
-      </header>
-      <main class="history-content" aria-busy=${view.phase === "loading" ? "true" : "false"}>
+      </div>
+    </header>`;
+  }
+
+  private renderHistory() {
+    const view = this.sessionView!;
+    const identity = `${view.agent}:${view.session_id}`;
+    const output = historyPresentation(view.document, identity);
+    const activeTab = this.activeTab === "conversation" ? "conversation" : "interpretation";
+    return html`<div class="overlay-shell" @lens-agent-output-intent=${this.forwardOutputIntent}>
+      ${this.renderHeader()}
+      <nav class="lens-tabs" aria-label="Lens content">
+        <div role="tablist" aria-orientation="horizontal">
+          ${this.renderTab("interpretation", "Interpretation")}${this.renderTab("conversation", "Conversation")}
+        </div>
+      </nav>
+      <main class="overlay-main" aria-busy=${view.phase === "loading" ? "true" : "false"}>
         <div data-region-error="conversation"></div>
-        ${view.phase === "loading" ? html`<p role="status">Loading session…</p>` : nothing}
-        ${view.error ? html`<p role="alert">${view.error}</p>` : nothing}
-        ${view.phase === "ready" ? html`<lens-session-document .document=${view.document} .identity=${`${view.agent}:${view.session_id}`}></lens-session-document>` : nothing}
+        <div data-region-error="output"></div>
+        ${view.phase === "loading" ? html`<p class="notice" role="status">Loading session…</p>` : nothing}
+        ${view.error ? html`<p class="error" role="alert">${view.error}</p>` : nothing}
+        <section
+          class="lens-panel"
+          id="${activeTab}-panel"
+          role="tabpanel"
+          aria-labelledby="${activeTab}-tab"
+          tabindex="0"
+        >
+          ${
+            view.phase === "ready"
+              ? activeTab === "conversation"
+                ? html`<div class="lens-content">
+                    <lens-session-document
+                      .document=${view.document}
+                      .identity=${identity}
+                    ></lens-session-document>
+                  </div>`
+                : html`<lens-agent-output
+                    .presentation=${output.presentation}
+                    .htmlContent=${output.htmlContent}
+                  ></lens-agent-output>`
+              : nothing
+          }
+        </section>
       </main>
-    </section>`;
+      <footer class="overlay-footer">
+        <div class="overlay-footer-status">
+          <span class="overlay-stage">${view.title || "Session"}</span>
+        </div>
+      </footer>
+    </div>`;
   }
 
   private renderActivePanel(
@@ -2055,23 +2086,26 @@ export class LensOverlayView extends LitElement {
   }
 
   private handleTabKeyDown = (event: KeyboardEvent): void => {
-    const activeIndex = LENS_TABS.findIndex(({ id }) => id === this.activeTab);
+    const tabs = isHistoryView(this.sessionView)
+      ? LENS_TABS.filter(({ id }) => id === "interpretation" || id === "conversation")
+      : LENS_TABS;
+    const activeIndex = tabs.findIndex(({ id }) => id === this.activeTab);
     const nextIndex = (() => {
       switch (event.key) {
         case "ArrowLeft":
-          return (activeIndex - 1 + LENS_TABS.length) % LENS_TABS.length;
+          return (activeIndex - 1 + tabs.length) % tabs.length;
         case "ArrowRight":
-          return (activeIndex + 1) % LENS_TABS.length;
+          return (activeIndex + 1) % tabs.length;
         case "Home":
           return 0;
         case "End":
-          return LENS_TABS.length - 1;
+          return tabs.length - 1;
         default:
           return undefined;
       }
     })();
     if (nextIndex === undefined) return;
-    const nextTab = LENS_TABS[nextIndex]?.id;
+    const nextTab = tabs[nextIndex]?.id;
     if (!nextTab) return;
     event.preventDefault();
     this.activateTab(nextTab);

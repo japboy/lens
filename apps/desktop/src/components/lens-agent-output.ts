@@ -7,7 +7,12 @@ import { externalMarkdownUrl } from "../markdown";
 import "../streaming-markdown";
 import type { StreamingMarkdownState } from "../streaming-markdown";
 import type { LensOutputBlock, LensState } from "../types";
-import { imageDataUrl, lensOutputPresentation, type LensOutputMode } from "../view-model";
+import {
+  imageDataUrl,
+  lensOutputPresentation,
+  type LensOutputMode,
+  type LensOutputPresentation,
+} from "../view-model";
 import {
   AGENT_OUTPUT_INTENT_EVENT,
   dispatchComponentEvent,
@@ -18,6 +23,7 @@ import {
 export class LensAgentOutput extends LitElement {
   @property({ attribute: false })
   lens: LensState = { stage: "idle", prompt_execution_revision: 1, output_blocks: [] };
+  @property({ attribute: false }) presentation: LensOutputPresentation | undefined;
   @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
   protected createRenderRoot(): HTMLElement {
@@ -27,14 +33,22 @@ export class LensAgentOutput extends LitElement {
   private revealFirstMedia = false;
 
   protected willUpdate(changed: PropertyValues<this>): void {
-    if (!changed.has("lens")) return;
-    const previous = changed.get("lens");
-    const hasMedia = composeOutputMedia(lensOutputPresentation(this.lens)).media.length > 0;
-    const hadMedia = previous
-      ? composeOutputMedia(lensOutputPresentation(previous)).media.length > 0
-      : false;
+    if (!changed.has("lens") && !changed.has("presentation")) return;
+    const previousLens = changed.has("lens") ? changed.get("lens") : this.lens;
+    const previousPresentation = changed.has("presentation")
+      ? changed.get("presentation")
+      : this.presentation;
+    const previousOutput =
+      previousPresentation ?? (previousLens ? lensOutputPresentation(previousLens) : undefined);
+    const output = this.presentation ?? lensOutputPresentation(this.lens);
+    const hasMedia = composeOutputMedia(output).media.length > 0;
+    const hadMedia = previousOutput ? composeOutputMedia(previousOutput).media.length > 0 : false;
     this.revealFirstMedia =
-      hasMedia && (!hadMedia || previous?.operation_id !== this.lens.operation_id);
+      hasMedia &&
+      (!hadMedia ||
+        (this.presentation
+          ? previousOutput?.identity !== output.identity
+          : previousLens?.operation_id !== this.lens.operation_id));
   }
 
   protected updated(): void {
@@ -45,7 +59,7 @@ export class LensAgentOutput extends LitElement {
   }
 
   protected render() {
-    const output = lensOutputPresentation(this.lens);
+    const output = this.presentation ?? lensOutputPresentation(this.lens);
     const { media, narrative } = composeOutputMedia(output);
     if (output.blocks.length) {
       return html`<div
@@ -97,7 +111,9 @@ export class LensAgentOutput extends LitElement {
         }
       </div>`;
     }
-    return this.renderEmpty();
+    return this.presentation
+      ? html`<p class="empty-state">No answer is available in this session.</p>`
+      : this.renderEmpty();
   }
 
   private showExplanation = (): void => {

@@ -120,6 +120,8 @@ export function lensOutputBlocks(lens: LensState): LensOutputBlock[] {
 export type LensOutputMode = "empty" | "initial-stream" | "settled";
 
 export interface LensOutputPresentation {
+  /** Replay-owned artifact scope; does not imply a live publication. */
+  readonly artifactIdentity?: string;
   readonly published?: { operationId: string; representationId: string };
   readonly blocks: LensOutputBlock[];
   readonly identity?: string;

@@ -167,7 +167,7 @@ it("closes history without stopping the live operation and rejects monitoring in
   await startPage("overlay", () => import("../src/pages/overlay-page"));
   const view = document.querySelector<LensOverlayView>("lens-overlay-view")!;
   await vi.waitFor(() =>
-    expect(view.shadowRoot!.querySelector('[aria-label="Close session"]')).not.toBeNull(),
+    expect(view.shadowRoot!.querySelector('[aria-label="Close Lens"]')).not.toBeNull(),
   );
   view.dispatchEvent(
     new CustomEvent("lens-overlay-intent", {
@@ -177,7 +177,7 @@ it("closes history without stopping the live operation and rejects monitoring in
     }),
   );
   expect(port.pauseLens).not.toHaveBeenCalled();
-  view.shadowRoot!.querySelector<HTMLButtonElement>('[aria-label="Close session"]')!.click();
+  view.shadowRoot!.querySelector<HTMLButtonElement>('[aria-label="Close Lens"]')!.click();
   await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
   expect(port.closeSessionView).toHaveBeenCalledOnce();
   expect(port.stopLens).not.toHaveBeenCalled();

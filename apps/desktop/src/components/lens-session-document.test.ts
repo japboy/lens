@@ -27,7 +27,8 @@ const documentModel: SessionDocument = {
     },
   ],
 };
-beforeAll(() => {
+beforeAll(async () => {
+  await import("./lens-agent-output");
   window.matchMedia ??= () =>
     ({
       matches: false,
@@ -66,9 +67,18 @@ describe("canonical session renderer", () => {
     };
     document.body.append(view);
     await view.updateComplete;
-    expect(view.shadowRoot!.querySelector("lens-session-document")).not.toBeNull();
+    const output =
+      view.shadowRoot!.querySelector<import("./lens-agent-output").LensAgentOutput>(
+        "lens-agent-output",
+      )!;
+    await output.updateComplete;
+    expect(output.presentation?.artifactIdentity).toBe("codex:saved");
+    expect(output.querySelector("lens-output-media")).not.toBeNull();
+    expect(view.shadowRoot!.querySelector(".overlay-shell .overlay-brand")).not.toBeNull();
+    expect(view.shadowRoot!.querySelector(".overlay-footer")).not.toBeNull();
+    expect(view.shadowRoot!.querySelector("#source-tab")).toBeNull();
     expect(view.shadowRoot!.querySelector("lens-session-controls")).toBeNull();
-    expect(view.shadowRoot!.querySelector('[aria-label="Close session"]')).not.toBeNull();
+    expect(view.shadowRoot!.querySelector('[aria-label="Close Lens"]')).not.toBeNull();
     expect(view.shadowRoot!.textContent).not.toContain("Resume");
   });
   it("uses the same canonical document renderer for live Conversation and restored content", async () => {
@@ -87,7 +97,8 @@ describe("canonical session renderer", () => {
     document.body.append(live, history);
     await Promise.all([live.updateComplete, history.updateComplete]);
     live.shadowRoot!.querySelector<HTMLButtonElement>("#conversation-tab")!.click();
-    await live.updateComplete;
+    history.shadowRoot!.querySelector<HTMLButtonElement>("#conversation-tab")!.click();
+    await Promise.all([live.updateComplete, history.updateComplete]);
     const liveDocument =
       live.shadowRoot!.querySelector<LensSessionDocument>("lens-session-document")!;
     const historyDocument =
@@ -117,4 +128,49 @@ describe("canonical session renderer", () => {
     expect(rendered.document).toBe(documentModel);
     expect(rendered.shadowRoot!.querySelectorAll("article")).toHaveLength(3);
   });
+});
+
+it("history keyboard navigation only visits the two available tabs", async () => {
+  const view = new LensOverlayView();
+  view.active = true;
+  view.sessionView = {
+    revision: 1,
+    phase: "ready",
+    agent: "codex",
+    session_id: "saved",
+    document: documentModel,
+  };
+  document.body.append(view);
+  await view.updateComplete;
+  for (const [key, expected] of [
+    ["ArrowRight", "conversation"],
+    ["ArrowRight", "interpretation"],
+    ["End", "conversation"],
+    ["Home", "interpretation"],
+    ["ArrowLeft", "conversation"],
+  ]) {
+    view
+      .shadowRoot!.querySelector<HTMLButtonElement>('[aria-selected="true"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    await view.updateComplete;
+    expect(view.shadowRoot!.querySelector('[aria-selected="true"]')?.id).toBe(`${expected}-tab`);
+    expect(view.shadowRoot!.querySelector(`#${expected}-panel`)).not.toBeNull();
+  }
+});
+
+it("restored presentation identity changes reveal the first media", async () => {
+  const { LensAgentOutput } = await import("./lens-agent-output");
+  const view = new LensAgentOutput();
+  view.presentation = {
+    identity: "first",
+    artifactIdentity: "first",
+    mode: "settled",
+    blocks: [{ type: "image", mime_type: "image/png", data: "aA==" }],
+  };
+  document.body.append(view);
+  await view.updateComplete;
+  view.querySelector<HTMLElement>(".lens-output")!.scrollTop = 250;
+  view.presentation = { ...view.presentation, identity: "second", artifactIdentity: "second" };
+  await view.updateComplete;
+  expect(view.querySelector<HTMLElement>(".lens-output")!.scrollTop).toBe(0);
 });

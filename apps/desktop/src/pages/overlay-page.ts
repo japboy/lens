@@ -39,7 +39,7 @@ export class OverlayPage extends ReactiveElement {
       },
       {
         name: "output",
-        ready: () => Boolean(this.snapshots.snapshot),
+        ready: () => Boolean(this.snapshots.snapshot || this.sessionView.view),
         load: () => import("../components/lens-agent-output"),
       },
       {

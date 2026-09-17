@@ -47,10 +47,10 @@ export function composeOutputMedia(output: LensOutputPresentation): OutputMediaC
         mimeType: block.mime_type.toLowerCase(),
       });
     } else if (block.type === "html") {
-      if (output.mode === "settled" && output.published) {
+      if (output.mode === "settled" && (output.published || output.artifactIdentity)) {
         media.push({
           kind: "html",
-          id: `${output.published.operationId}:${output.published.representationId}:html:${block.resource_id}`,
+          id: `${output.artifactIdentity ?? `${output.published!.operationId}:${output.published!.representationId}`}:html:${block.resource_id}`,
           resourceId: block.resource_id,
           mimeType: block.mime_type,
           uri: block.uri,
