@@ -1257,7 +1257,7 @@ fn verify_preset_switch(scenario: PresetSwitch) {
     let harness = setup(Scenario::SwitchDuringPrompt);
     let change = match scenario {
         PresetSwitch::DifferentContent => PromptPresetMutation::Select {
-            id: "conceptual-learner".into(),
+            id: "practical".into(),
         },
         PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => {
             let initial = harness.app.state::<AppState>().config().unwrap();
@@ -1391,7 +1391,7 @@ fn verify_preset_switch(scenario: PresetSwitch) {
     assert!(serde_json::to_string(prompts[1])
         .unwrap()
         .contains(match scenario {
-            PresetSwitch::DifferentContent => "Lead with the central idea",
-            PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => "Lead with an infographic",
+            PresetSwitch::DifferentContent => "Lead with a concrete worked example",
+            PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => "Lead with the central idea",
         }));
 }

@@ -1235,7 +1235,7 @@ mod tests {
         changed.prompt_presets = changed
             .prompt_presets
             .apply(usecase::prompt_presets::PromptPresetMutation::Select {
-                id: "conceptual-learner".into(),
+                id: "practical".into(),
             })
             .unwrap();
         changed.sync_prompt_template().unwrap();

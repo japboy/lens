@@ -36,18 +36,20 @@ You will need:
 
 Automatic updates are spaced at least three minutes apart.
 
-To tailor the result, open **Settings → Agent → Prompt Presets**, choose a preset, and click **Use This Preset**. Lens initially uses **Visual Learner** and includes four editable presets:
+To tailor the result, open **Settings → Agent → Prompt Presets**, choose a preset, and click **Use This Preset**. Lens initially uses **Conceptual** and includes four editable presets:
 
-- **Visual Learner** leads with an infographic and follows with supporting explanation.
-- **Conceptual Learner** explains the central idea and how concepts relate.
-- **Practical Learner** starts with a worked example and actionable steps.
-- **Analytical Learner** explains relationships through quantities, equations, tables, or graphs when useful.
+- **Conceptual** explains the central idea and how concepts relate.
+- **Practical** starts with a worked example and actionable steps.
+- **Analytical** explains relationships through quantities, equations, tables, or graphs when useful.
+- **Evocative** translates the source into wordless generated imagery that evokes emotion and association. It requires an Agent with image-generation capability.
 
-You can rename and edit any preset, then click **Save Preset**. Use **Duplicate** to create another preset or **Delete…** to remove one; the last preset cannot be deleted. **Reset All Presets…** replaces the entire collection, including your additions and edits, with the four initial presets. Saved changes and the active selection persist across restarts.
+Conceptual, Practical, and Analytical describe explanation approaches. They combine words and useful visuals with consistent terminology, nearby explanations, and clear relationships while avoiding unnecessary decoration or repetition. Evocative prioritizes emotional resonance over explanatory precision, using one image or a meaningful sequence without labels or explanatory text. Its imagery may express any emotion suggested by the source, without a preference for positive feelings. Saved presets retain their names and instructions after app updates. Legacy preset IDs are migrated automatically while preserving the selected content; if an ID is already taken, the legacy preset is retained as a separate custom copy.
+
+You can rename and edit any preset, then click **Save Preset**. Use **Duplicate** to create another preset or **Delete…** to remove one; the last preset cannot be deleted. **Reset All Presets…** replaces the entire collection, including your additions and edits, with the bundled presets. Saved changes and the active selection persist across restarts.
 
 For quick switching, right-click the menu bar icon and choose **Prompt Presets**. Switching presets regenerates the Interpretation for the current sources. Set **Working Directory** in **Settings → Agent → Connection** if you want the Agent to use instructions and memory from a particular project.
 
-Your Agent may present results as HTML or generated images in **Interpretation**, depending on its available capabilities and your preset instructions. You can request an HTML presentation in any preset. These previews support static content only; scripts and external assets do not load. Links open in your default browser.
+For the three explanation presets, your Agent may present results as HTML or generated images in **Interpretation**, choosing the format according to the explanation, your preset instructions, and its actual capabilities without preferring either format by default. The bundled prompts explicitly consider available image-generation capabilities when choosing the format. If image generation is unavailable, it uses HTML. The bundled prompts instruct the Agent to design HTML for both light and dark modes, adapting colors while keeping text and diagrams readable. You can request an HTML presentation in an explanation preset. Evocative uses actual image generation and reports when that capability is unavailable instead of substituting HTML or diagrams. These previews support static content only; scripts and external assets do not load. Links open in your default browser.
 
 ## Content access
 

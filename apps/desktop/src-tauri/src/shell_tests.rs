@@ -276,7 +276,7 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
     )
     .unwrap();
     let catalog = &created["prompt_presets"];
-    assert_eq!(catalog["selected_id"], "visual-learner");
+    assert_eq!(catalog["selected_id"], "conceptual");
     let preset = catalog["presets"].as_array().unwrap().last().unwrap();
     let id = preset["id"].as_str().unwrap();
     let updated = invoke(
@@ -323,25 +323,25 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
         &settings,
         "update_prompt_presets",
         json!({"change": {
-            "type":"update", "id":"visual-learner", "expected_revision":1,
+            "type":"update", "id":"conceptual", "expected_revision":1,
             "name":"My visual notes", "template":bundled_template
         }}),
     )
     .unwrap();
     let saved = app.state::<AppState>().store.load();
-    let visual = saved
+    let conceptual = saved
         .prompt_presets
         .presets
         .iter()
-        .find(|p| p.id == "visual-learner")
+        .find(|p| p.id == "conceptual")
         .unwrap();
-    assert_eq!(visual.name, "My visual notes");
-    assert_eq!(visual.template, bundled_template);
+    assert_eq!(conceptual.name, "My visual notes");
+    assert_eq!(conceptual.template, bundled_template);
     let deleted = invoke(
         &settings,
         "update_prompt_presets",
         json!({"change": {
-            "type":"delete", "id":"visual-learner", "expected_revision":visual.revision
+            "type":"delete", "id":"conceptual", "expected_revision":conceptual.revision
         }}),
     )
     .unwrap();
@@ -352,7 +352,7 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
         .prompt_presets
         .presets
         .iter()
-        .any(|p| p.id == "visual-learner"));
+        .any(|p| p.id == "conceptual"));
     assert!(invoke(
         &settings,
         "update_prompt_presets",
@@ -374,18 +374,18 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
         serde_json::to_value(&saved.prompt_presets).unwrap(),
         restored["prompt_presets"]
     );
-    assert_eq!(saved.prompt_presets.selected_id, "visual-learner");
-    assert_eq!(saved.prompt_presets.selected().name, "Visual Learner");
+    assert_eq!(saved.prompt_presets.selected_id, "conceptual");
+    assert_eq!(saved.prompt_presets.selected().name, "Conceptual");
     assert_eq!(saved.prompt_presets.presets.len(), 4);
-    let restored_visual = saved
+    let restored_conceptual = saved
         .prompt_presets
         .presets
         .iter()
-        .find(|p| p.id == "visual-learner")
+        .find(|p| p.id == "conceptual")
         .unwrap();
-    assert_eq!(restored_visual.name, "Visual Learner");
+    assert_eq!(restored_conceptual.name, "Conceptual");
     assert_eq!(
-        restored_visual.template,
+        restored_conceptual.template,
         original.prompt_presets.presets[0].template
     );
 }

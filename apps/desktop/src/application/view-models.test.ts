@@ -22,11 +22,11 @@ const SNAPSHOT: AppSnapshot = {
       schema_version: 2,
       execution_revision: 1,
       revision: 1,
-      selected_id: "visual-learner",
+      selected_id: "conceptual",
       presets: [
         {
-          id: "visual-learner",
-          name: "Visual Learner",
+          id: "conceptual",
+          name: "Conceptual",
 
           revision: 1,
           template: {

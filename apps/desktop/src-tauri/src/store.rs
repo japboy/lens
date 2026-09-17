@@ -170,7 +170,12 @@ mod tests {
         empty["presets"] = serde_json::json!([]);
         let mut missing = empty.clone();
         missing.as_object_mut().unwrap().remove("presets");
+        let mut old_ids = serde_json::to_value(default_config().prompt_presets).unwrap();
+        old_ids["presets"][0]["id"] = "conceptual-learner".into();
+        old_ids["presets"][0]["bundled_source"]["id"] = "conceptual-learner".into();
+        old_ids["selected_id"] = "conceptual-learner".into();
         for catalog in [
+            Some(old_ids),
             Some(empty),
             Some(missing),
             None,
