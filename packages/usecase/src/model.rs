@@ -569,23 +569,30 @@ mod tests {
 
     #[test]
     fn older_bundle_contents_are_preserved_until_an_explicit_reset() {
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             let mut config = AppConfig::new(PathBuf::from("/host"));
-            let mut retired = config.prompt_presets.presets[0].clone();
-            retired.id = "visual-learner".into();
-            retired.bundled_source.as_mut().unwrap().id = retired.id.clone();
-            config.prompt_presets.selected_id = retired.id.clone();
-            config.prompt_presets.presets.insert(0, retired);
+            if version < 4 {
+                let mut retired = config.prompt_presets.presets[0].clone();
+                retired.id = "visual-learner".into();
+                retired.bundled_source.as_mut().unwrap().id = retired.id.clone();
+                config.prompt_presets.selected_id = retired.id.clone();
+                config.prompt_presets.presets.insert(0, retired);
+            }
             if version == 1 {
                 config.prompt_presets.presets.truncate(3);
             }
-            for (preset, name) in config.prompt_presets.presets.iter_mut().zip([
-                "Visual Learner",
-                "Conceptual Learner",
-                "Practical Learner",
-                "Analytical Learner",
-            ]) {
-                preset.name = if version == 3 {
+            let names: &[&str] = if version == 4 {
+                &["Conceptual", "Practical", "Analytical"]
+            } else {
+                &[
+                    "Visual Learner",
+                    "Conceptual Learner",
+                    "Practical Learner",
+                    "Analytical Learner",
+                ]
+            };
+            for (preset, &name) in config.prompt_presets.presets.iter_mut().zip(names) {
+                preset.name = if version >= 3 {
                     if name == "Visual Learner" {
                         "Infographic".into()
                     } else {

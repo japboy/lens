@@ -48,7 +48,7 @@ You can rename and edit any preset, then click **Save Preset**. Use **Duplicate*
 
 For quick switching, right-click the menu bar icon and choose **Prompt Presets**. Switching presets regenerates the Interpretation for the current sources. Set **Working Directory** in **Settings → Agent → Connection** if you want the Agent to use instructions and memory from a particular project.
 
-Your Agent may present results as HTML or generated images in **Interpretation**, choosing the format according to the explanation, your preset instructions, and its actual capabilities without preferring either format by default. If image generation is unavailable, it uses HTML. The bundled prompts instruct the Agent to design HTML for both light and dark modes, adapting colors while keeping text and diagrams readable. You can request an HTML presentation in any preset. These previews support static content only; scripts and external assets do not load. Links open in your default browser.
+Your Agent may present results as HTML or generated images in **Interpretation**, choosing the format according to the explanation, your preset instructions, and its actual capabilities without preferring either format by default. The bundled prompts explicitly consider available image-generation capabilities when choosing the format. If image generation is unavailable, it uses HTML. The bundled prompts instruct the Agent to design HTML for both light and dark modes, adapting colors while keeping text and diagrams readable. You can request an HTML presentation in any preset. These previews support static content only; scripts and external assets do not load. Links open in your default browser.
 
 ## Content access
 

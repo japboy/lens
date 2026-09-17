@@ -264,7 +264,7 @@ pub fn bundled_presets() -> Vec<PromptPreset> {
     ].into_iter().map(|(id, name, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
         template: AgentPromptTemplate::with_explanation_strategy(instruction),
-        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 4 }),
+        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 5 }),
     }).collect()
 }
 
@@ -290,7 +290,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .version
-            == 4));
+            == 5));
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
         assert_eq!(catalog.selected_id, "conceptual-learner");
         assert!(catalog
