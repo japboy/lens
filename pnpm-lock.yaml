@@ -113,8 +113,8 @@ importers:
   .:
     devDependencies:
       '@types/node':
-        specifier: 24.13.3
-        version: 24.13.3
+        specifier: 24.13.4
+        version: 24.13.4
       oxfmt:
         specifier: 0.64.0
         version: 0.64.0
@@ -129,7 +129,7 @@ importers:
         version: link:packages/typescript-config
       vitest:
         specifier: 5.0.0
-        version: 5.0.0(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(yaml@2.9.0))
+        version: 5.0.0(@types/node@24.13.4)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.4)(yaml@2.9.0))
       yaml:
         specifier: 2.9.0
         version: 2.9.0
@@ -205,13 +205,13 @@ importers:
     devDependencies:
       '@lit-labs/ssr':
         specifier: 4.1.0
-        version: 4.1.0(@types/node@24.13.3)
+        version: 4.1.0(@types/node@24.13.4)
       '@tauri-apps/cli':
         specifier: 2.11.4
         version: 2.11.4
       '@types/node':
-        specifier: 24.13.3
-        version: 24.13.3
+        specifier: 24.13.4
+        version: 24.13.4
       jsdom:
         specifier: 30.0.1
         version: 30.0.1
@@ -223,10 +223,10 @@ importers:
         version: link:../../packages/typescript-config
       vite:
         specifier: 8.2.2
-        version: 8.2.2(@types/node@24.13.3)(yaml@2.9.0)
+        version: 8.2.2(@types/node@24.13.4)(yaml@2.9.0)
       vitest:
         specifier: 5.0.0
-        version: 5.0.0(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(yaml@2.9.0))
+        version: 5.0.0(@types/node@24.13.4)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.4)(yaml@2.9.0))
 
   packages/typescript-config: {}
 
@@ -921,8 +921,8 @@ packages:
   '@types/geojson@7946.0.16':
     resolution: {integrity: sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg==}
 
-  '@types/node@24.13.3':
-    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+  '@types/node@24.13.4':
+    resolution: {integrity: sha512-YJ7EqCstVTzIr0fMr7qul/977en+pQHrfmuKIo6Zr9i75Be21dr3MovcfvGtyvi2HAUrRerWps5sMO9I7WaxDw==}
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
@@ -1921,7 +1921,7 @@ snapshots:
 
   '@lit-labs/ssr-dom-shim@1.6.0': {}
 
-  '@lit-labs/ssr@4.1.0(@types/node@24.13.3)':
+  '@lit-labs/ssr@4.1.0(@types/node@24.13.4)':
     dependencies:
       '@lit-labs/ssr-client': 1.1.8
       '@lit-labs/ssr-dom-shim': 1.6.0
@@ -1934,7 +1934,7 @@ snapshots:
       node-fetch: 3.3.2
       parse5: 7.3.0
     optionalDependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.13.4
 
   '@lit-labs/virtualizer@2.1.1':
     dependencies:
@@ -2301,7 +2301,7 @@ snapshots:
 
   '@types/geojson@7946.0.16': {}
 
-  '@types/node@24.13.3':
+  '@types/node@24.13.4':
     dependencies:
       undici-types: 7.18.2
 
@@ -2372,14 +2372,14 @@ snapshots:
       d3-selection: 3.0.0
       d3-transition: 3.0.1(d3-selection@3.0.0)
 
-  '@vitest/mocker@5.0.0(vite@8.2.2(@types/node@24.13.3)(yaml@2.9.0))':
+  '@vitest/mocker@5.0.0(vite@8.2.2(@types/node@24.13.4)(yaml@2.9.0))':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@vitest/spy': 5.0.0
       estree-walker: 3.0.3
       magic-string: 1.2.3
     optionalDependencies:
-      vite: 8.2.2(@types/node@24.13.3)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@24.13.4)(yaml@2.9.0)
 
   '@vitest/spy@5.0.0': {}
 
@@ -3027,7 +3027,7 @@ snapshots:
 
   uuid@14.0.2: {}
 
-  vite@8.2.2(@types/node@24.13.3)(yaml@2.9.0):
+  vite@8.2.2(@types/node@24.13.4)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
@@ -3035,14 +3035,14 @@ snapshots:
       rolldown: 1.2.5
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.13.4
       fsevents: 2.3.3
       yaml: 2.9.0
 
-  vitest@5.0.0(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(yaml@2.9.0)):
+  vitest@5.0.0(@types/node@24.13.4)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.4)(yaml@2.9.0)):
     dependencies:
       '@types/chai': 5.2.3
-      '@vitest/mocker': 5.0.0(vite@8.2.2(@types/node@24.13.3)(yaml@2.9.0))
+      '@vitest/mocker': 5.0.0(vite@8.2.2(@types/node@24.13.4)(yaml@2.9.0))
       chai: 6.2.2
       es-module-lexer: 2.3.2
       expect-type: 1.4.0
@@ -3053,10 +3053,10 @@ snapshots:
       tinybench: 6.1.4
       tinyexec: 1.3.0
       tinyglobby: 0.2.17
-      vite: 8.2.2(@types/node@24.13.3)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@24.13.4)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.13.4
       jsdom: 30.0.1
     transitivePeerDependencies:
       - msw
