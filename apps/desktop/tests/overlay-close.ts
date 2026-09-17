@@ -116,6 +116,41 @@ describe("overlay window dismissal", () => {
     expect(port.stopLens).not.toHaveBeenCalled();
   });
 
+  it.each(["subscription-delayed", "snapshot-delayed", "subscription-failed", "snapshot-failed"])(
+    "stops the live operation before closing when session %s",
+    async (state) => {
+      const pending = new Promise<never>(() => {});
+      if (state === "subscription-delayed") port.subscribeToSessionView.mockReturnValue(pending);
+      if (state === "snapshot-delayed") port.getSessionView.mockReturnValue(pending);
+      if (state === "subscription-failed")
+        port.subscribeToSessionView.mockRejectedValue(new Error("Subscription unavailable"));
+      if (state === "snapshot-failed")
+        port.getSessionView.mockRejectedValue(new Error("Session unavailable"));
+      port.getAppSnapshot.mockResolvedValue({
+        ...snapshot,
+        lens: { ...snapshot.lens, operation_id: "live-operation" },
+      });
+      port.closeSessionView.mockRejectedValue(new Error("Active session cannot close as history"));
+      let finish!: () => void;
+      port.stopLens.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const { view } = await attach();
+      await vi.waitFor(() => expect(view.model?.lens.operation_id).toBe("live-operation"));
+      await vi.waitFor(() =>
+        expect(view.sessionView?.phase).toBe(state.endsWith("failed") ? "failed" : undefined),
+      );
+      view.shadowRoot!.querySelector<HTMLButtonElement>(".close-button")!.click();
+      expect(port.stopLens).toHaveBeenCalledExactlyOnceWith("live-operation");
+      expect(port.closeSessionView).not.toHaveBeenCalled();
+      expect(port.closeCurrentWindow).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
+    },
+  );
+
   it("closes a known idle snapshot without stopping an operation", async () => {
     const { view, button } = await attach();
     await vi.waitFor(() => expect(view.model).toBeDefined());
@@ -157,6 +192,7 @@ it("closes history without stopping the live operation and rejects monitoring in
     revision: 1,
     phase: "ready",
     session_id: "saved",
+    generation: "history-generation",
     document: { entries: [] },
   });
   port.getAppSnapshot.mockResolvedValue({

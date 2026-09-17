@@ -115,7 +115,9 @@ export class OverlayPage extends ReactiveElement {
     const identity: CommandIdentity = { scope: "overlay", type: intent.type };
     const lens = this.snapshots.snapshot?.lens;
     if (intent.type === "close") {
-      if (!this.sessionView.view || isHistoryView(this.sessionView.view)) {
+      const session = this.sessionView.view;
+      const authoritativeHistory = Boolean(session?.generation) && isHistoryView(session);
+      if (authoritativeHistory || !lens?.operation_id) {
         await this.commands.run(identity, async () => {
           await this.port.closeSessionView();
           await this.port.closeCurrentWindow();
