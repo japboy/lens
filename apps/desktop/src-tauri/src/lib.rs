@@ -86,7 +86,6 @@ fn product_context<R: tauri::Runtime>() -> tauri::Context<R> {
 
 fn configure_shell<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
-    state: app_state::AppState,
     presentation: platform::Presentation<R>,
     tray: ui::TrayPresentation<R>,
     agents: agent::AgentServices<R>,
@@ -94,7 +93,6 @@ fn configure_shell<R: tauri::Runtime>(
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(state)
         .manage(presentation)
         .manage(tray)
         .manage(agents)
@@ -182,12 +180,15 @@ pub fn run_with_runtime<R: tauri::Runtime>(
     });
     configure_shell(
         builder,
-        app_state::AppState::load(services).expect("Unable to load or migrate Lens settings"),
         presentation,
         ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
         agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost)),
     )
         .setup(move |app| {
+            let store = store::ConfigStore::new(app)?;
+            let state = app_state::AppState::load(services, store)
+                .map_err(std::io::Error::other)?;
+            app.manage(state);
             #[cfg(target_os = "macos")]
             native::configure_activation(app, validate_a11y);
             ui::install_menu_bar(app)?;

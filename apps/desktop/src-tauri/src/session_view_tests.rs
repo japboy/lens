@@ -6,8 +6,7 @@ use tauri::test::MockRuntime;
 
 fn app(state: AppState) -> tauri::App<MockRuntime> {
     crate::configure_shell(
-        tauri::test::mock_builder(),
-        state,
+        tauri::test::mock_builder().manage(state),
         platform::Presentation(Arc::new(test_support::UnusedPresentation)),
         crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
         crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
@@ -378,8 +377,7 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
         ..Default::default()
     };
     let app = crate::configure_shell(
-        tauri::test::mock_builder(),
-        state,
+        tauri::test::mock_builder().manage(state),
         platform::Presentation(Arc::new(test_support::UnusedPresentation)),
         crate::ui::TrayPresentation(Arc::new(ReplayTray)),
         crate::agent::AgentServices(host),

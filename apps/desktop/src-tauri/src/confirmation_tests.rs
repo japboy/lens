@@ -670,8 +670,7 @@ fn setup(scenario: Scenario) -> Harness {
         };
     }
     let app = crate::configure_shell(
-        tauri::test::mock_builder(),
-        state,
+        tauri::test::mock_builder().manage(state),
         platform::Presentation(fixture.clone()),
         ui::TrayPresentation(fixture.clone()),
         agent::AgentServices(Arc::new(AgentFixture(fixture.clone()))),
