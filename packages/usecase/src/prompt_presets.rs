@@ -122,6 +122,7 @@ impl PromptPresetCatalog {
             if let Some(source) = &preset.bundled_source {
                 if source.id != preset.id
                     || source.version == 0
+                    // Retired bundled IDs remain valid in saved, user-editable catalogs.
                     || ![
                         "visual-learner",
                         "conceptual-learner",
@@ -257,14 +258,13 @@ fn increment(revision: u32) -> Result<u32, String> {
 
 pub fn bundled_presets() -> Vec<PromptPreset> {
     [
-        ("visual-learner", "Visual Learner", "Lead with an infographic that makes the important ideas, their relationships, and the context needed to understand them clear. Integrate relevant source information and verified supplementary context. Use visual hierarchy, spatial grouping, comparisons, and connections to explain the information. Choose the composition, level of detail, and number of visuals according to what communicates the information most effectively. Keep text readable and avoid unnecessary fragmentation or decorative bulk. Create the infographic as HTML or images using the shared output rules, then provide supplementary explanation and supporting detail in the text that follows."),
-        ("conceptual-learner", "Conceptual Learner", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use an HTML concept map, comparison panel, or annotated illustration when it makes the structure easier to understand; choose an image when illustration is more suitable. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
-        ("practical-learner", "Practical Learner", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use an HTML walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow; use an image when spatial or physical details are better illustrated. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
-        ("analytical-learner", "Analytical Learner", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a static HTML visualization or an image when it clarifies the model or comparison."),
+        ("conceptual-learner", "Conceptual", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use a concept map, comparison panel, or annotated illustration when it makes the structure easier to understand. Choose its format using the shared output rules. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
+        ("practical-learner", "Practical", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use a walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow. Choose its format using the shared output rules. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
+        ("analytical-learner", "Analytical", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a visualization when it clarifies the model or comparison. Choose its format using the shared output rules."),
     ].into_iter().map(|(id, name, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
         template: AgentPromptTemplate::with_explanation_strategy(instruction),
-        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 2 }),
+        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 4 }),
     }).collect()
 }
 
@@ -274,12 +274,25 @@ mod tests {
     use domain::prompt_template::BUILT_IN_RESPONSE_INSTRUCTION;
 
     #[test]
-    fn defaults_are_four_ordered_seeds_and_first_is_selected() {
+    fn defaults_are_three_ordered_seeds_and_first_is_selected() {
         let catalog = PromptPresetCatalog::default().normalize().unwrap();
         assert_eq!(catalog.schema_version, 2);
-        assert_eq!(catalog.presets.len(), 4);
+        assert_eq!(
+            catalog
+                .presets
+                .iter()
+                .map(|preset| preset.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Conceptual", "Practical", "Analytical"]
+        );
+        assert!(catalog.presets.iter().all(|preset| preset
+            .bundled_source
+            .as_ref()
+            .unwrap()
+            .version
+            == 4));
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
-        assert_eq!(catalog.selected_id, "visual-learner");
+        assert_eq!(catalog.selected_id, "conceptual-learner");
         assert!(catalog
             .presets
             .iter()
@@ -292,12 +305,12 @@ mod tests {
     #[test]
     fn reset_replaces_every_record_selects_first_and_rejects_stale_editors() {
         let original = PromptPresetCatalog::default();
-        let visual = original.selected().clone();
-        let mut template = visual.template.clone();
+        let initial_preset = original.selected().clone();
+        let mut template = initial_preset.template.clone();
         template.common.push_str("\nMy customization");
         let edited = original
             .apply(PromptPresetMutation::Update {
-                id: visual.id.clone(),
+                id: initial_preset.id.clone(),
                 expected_revision: 1,
                 name: "Edited".into(),
                 template,
@@ -307,7 +320,7 @@ mod tests {
             .apply_with_creation_id(
                 PromptPresetMutation::Create {
                     name: "Added".into(),
-                    template: visual.template.clone(),
+                    template: initial_preset.template.clone(),
                 },
                 Some(Uuid::from_u128(123)),
             )
@@ -322,7 +335,7 @@ mod tests {
                 expected_catalog_revision: selected.revision,
             })
             .unwrap();
-        assert_eq!(reset.presets.len(), 4);
+        assert_eq!(reset.presets.len(), 3);
         assert_eq!(reset.selected_id, reset.presets[0].id);
         assert!(reset.revision > selected.revision);
         assert!(reset.execution_revision > selected.execution_revision);
@@ -334,10 +347,10 @@ mod tests {
         }
         assert!(reset
             .apply(PromptPresetMutation::Update {
-                id: visual.id,
+                id: initial_preset.id,
                 expected_revision: edited.selected().revision,
                 name: "Stale".into(),
-                template: visual.template
+                template: initial_preset.template
             })
             .is_err());
         assert!(reset
@@ -368,7 +381,7 @@ mod tests {
         assert_eq!(renamed.execution_revision, catalog.execution_revision);
         let b = renamed
             .apply(PromptPresetMutation::Select {
-                id: "conceptual-learner".into(),
+                id: "practical-learner".into(),
             })
             .unwrap();
         let a = b
@@ -471,7 +484,7 @@ mod tests {
                 expected_revision: 1,
             })
             .unwrap();
-        assert_eq!(deleted.clone().normalize().unwrap().presets.len(), 3);
+        assert_eq!(deleted.clone().normalize().unwrap().presets.len(), 2);
         assert_eq!(deleted.selected_id, catalog.presets[1].id);
         let inactive_deleted = catalog
             .apply(PromptPresetMutation::Delete {

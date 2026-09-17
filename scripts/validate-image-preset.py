@@ -66,7 +66,7 @@ parser.add_argument("--node", type=Path, required=True)
 parser.add_argument("--adapter-entry", type=Path, required=True)
 parser.add_argument("--prompts", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
-parser.add_argument("--preset", default="visual-learner")
+parser.add_argument("--preset", default="conceptual-learner")
 args = parser.parse_args()
 for path in (args.node, args.adapter_entry, args.prompts):
     if not path.is_absolute() or not path.is_file():

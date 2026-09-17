@@ -16,18 +16,18 @@ function collection(): PromptPresetCollection {
     schema_version: 2,
     revision: 1,
     execution_revision: 1,
-    selected_id: "visual-learner",
+    selected_id: "conceptual-learner",
     presets: [
       {
-        id: "visual-learner",
-        name: "Visual Learner",
+        id: "conceptual-learner",
+        name: "Conceptual",
 
         revision: 1,
         template: { ...template },
       },
       {
         id: "practical-learner",
-        name: "Practical Learner",
+        name: "Practical",
 
         revision: 2,
         template: { ...template, common: "Examples. {turn_instruction}" },
@@ -93,14 +93,14 @@ describe("prompt preset editing", () => {
   });
   it("saves bundled preset metadata and prompt together without creating a Custom preset", async () => {
     const { element, intents } = await mount();
-    await edit(element, "#prompt-preset-name", "My Visual Style");
+    await edit(element, "#prompt-preset-name", "My Conceptual Style");
     await edit(element, "#prompt-editor", "My instruction. {turn_instruction}");
     button(element, "Save Preset").click();
     expect(intents.at(-1)).toMatchObject({
       change: {
         type: "update",
-        id: "visual-learner",
-        name: "My Visual Style",
+        id: "conceptual-learner",
+        name: "My Conceptual Style",
         template: { common: "My instruction. {turn_instruction}" },
       },
     });
@@ -121,10 +121,10 @@ describe("prompt preset editing", () => {
     element.acceptResetPresets({ ...collection(), revision: 2 });
     await element.updateComplete;
     expect(element.querySelector<HTMLInputElement>("#prompt-preset-name")!.value).toBe(
-      "Visual Learner",
+      "Conceptual",
     );
     expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe(
-      "visual-learner",
+      "conceptual-learner",
     );
     expect(element.textContent).not.toContain("Custom draft");
   });
@@ -167,16 +167,16 @@ describe("prompt preset editing", () => {
       "My draft. {turn_instruction}",
     );
     expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe(
-      "visual-learner",
+      "conceptual-learner",
     );
     await browse(element, "practical-learner");
-    await browse(element, "visual-learner");
+    await browse(element, "conceptual-learner");
     button(element, "Save Preset").click();
     expect(intents.at(-1)).toMatchObject({
       type: "presets",
       change: {
         type: "update",
-        id: "visual-learner",
+        id: "conceptual-learner",
         expected_revision: 1,
         template: { common: "My draft. {turn_instruction}" },
       },
@@ -218,7 +218,7 @@ describe("prompt preset editing", () => {
     expect(intents.at(-1)).toMatchObject({
       change: {
         type: "delete",
-        id: "visual-learner",
+        id: "conceptual-learner",
         expected_revision: 1,
       },
     });
@@ -228,7 +228,7 @@ describe("prompt preset editing", () => {
     });
     button(element, "Duplicate").click();
     expect(intents.at(-1)).toMatchObject({
-      change: { type: "create", name: "Visual Learner Copy", template },
+      change: { type: "create", name: "Conceptual Copy", template },
     });
   });
   it("keeps deleted dirty content recoverable as a new preset", async () => {
@@ -254,8 +254,8 @@ describe("prompt preset editing", () => {
     element.openCreatedPreset(next, "new-id");
     await element.updateComplete;
     expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe("new-id");
-    expect(element.promptPresets?.selected_id).toBe("visual-learner");
-    await browse(element, "visual-learner");
+    expect(element.promptPresets?.selected_id).toBe("conceptual-learner");
+    await browse(element, "conceptual-learner");
     expect(element.querySelector<HTMLInputElement>("#prompt-preset-name")!.value).toBe(
       "Keep this draft",
     );
@@ -269,7 +269,7 @@ describe("prompt preset editing", () => {
     element.promptPresets = next;
     await element.updateComplete;
     await browse(element, "practical-learner");
-    await browse(element, "visual-learner");
+    await browse(element, "conceptual-learner");
     expect(element.querySelector<HTMLTextAreaElement>("#prompt-editor")!.value).toBe(
       "Retained. {turn_instruction}",
     );

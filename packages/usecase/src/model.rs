@@ -569,34 +569,61 @@ mod tests {
 
     #[test]
     fn older_bundle_contents_are_preserved_until_an_explicit_reset() {
-        let mut config = AppConfig::new(PathBuf::from("/host"));
-        config.prompt_presets.presets.truncate(3);
-        for preset in &mut config.prompt_presets.presets {
-            preset.bundled_source.as_mut().unwrap().version = 1;
-            preset
-                .template
-                .common
-                .push_str("\nPreviously saved instructions.");
-        }
-        config.sync_prompt_template().unwrap();
-        let bytes = serde_json::to_vec(&config).unwrap();
-        assert!(!AppConfig::settings_require_prompt_migration(&bytes).unwrap());
-        let loaded = AppConfig::decode_settings(&bytes, PathBuf::from("/other")).unwrap();
-        assert_eq!(loaded, config);
-        let reset = loaded
-            .prompt_presets
-            .apply(crate::prompt_presets::PromptPresetMutation::ResetAll {
-                expected_catalog_revision: loaded.prompt_presets.revision,
-            })
-            .unwrap();
-        assert_eq!(reset.presets.len(), 4);
-        for (actual, seed) in reset
-            .presets
-            .iter()
-            .zip(crate::prompt_presets::bundled_presets())
-        {
-            assert_eq!(actual.template, seed.template);
-            assert_eq!(actual.bundled_source, seed.bundled_source);
+        for version in [1, 2, 3] {
+            let mut config = AppConfig::new(PathBuf::from("/host"));
+            let mut retired = config.prompt_presets.presets[0].clone();
+            retired.id = "visual-learner".into();
+            retired.bundled_source.as_mut().unwrap().id = retired.id.clone();
+            config.prompt_presets.selected_id = retired.id.clone();
+            config.prompt_presets.presets.insert(0, retired);
+            if version == 1 {
+                config.prompt_presets.presets.truncate(3);
+            }
+            for (preset, name) in config.prompt_presets.presets.iter_mut().zip([
+                "Visual Learner",
+                "Conceptual Learner",
+                "Practical Learner",
+                "Analytical Learner",
+            ]) {
+                preset.name = if version == 3 {
+                    if name == "Visual Learner" {
+                        "Infographic".into()
+                    } else {
+                        name.trim_end_matches(" Learner").into()
+                    }
+                } else {
+                    name.into()
+                };
+                preset.bundled_source.as_mut().unwrap().version = version;
+                preset.template.common =
+                    "{turn_instruction}\nPreviously saved instructions.".into();
+            }
+            config.sync_prompt_template().unwrap();
+            let bytes = serde_json::to_vec(&config).unwrap();
+            assert!(!AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+            let loaded = AppConfig::decode_settings(&bytes, PathBuf::from("/other")).unwrap();
+            assert_eq!(loaded, config);
+            let reset = loaded
+                .prompt_presets
+                .apply(crate::prompt_presets::PromptPresetMutation::ResetAll {
+                    expected_catalog_revision: loaded.prompt_presets.revision,
+                })
+                .unwrap();
+            assert_eq!(reset.presets.len(), 3);
+            assert_eq!(reset.selected_id, "conceptual-learner");
+            assert!(!reset
+                .presets
+                .iter()
+                .any(|preset| preset.id == "visual-learner"));
+            for (actual, seed) in reset
+                .presets
+                .iter()
+                .zip(crate::prompt_presets::bundled_presets())
+            {
+                assert_eq!(actual.name, seed.name);
+                assert_eq!(actual.template, seed.template);
+                assert_eq!(actual.bundled_source, seed.bundled_source);
+            }
         }
     }
 
