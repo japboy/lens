@@ -11,8 +11,7 @@ use uuid::Uuid;
 
 fn app(state: AppState) -> tauri::App<MockRuntime> {
     crate::configure_shell(
-        tauri::test::mock_builder(),
-        state,
+        tauri::test::mock_builder().manage(state),
         platform::Presentation(Arc::new(test_support::UnusedPresentation)),
         crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
         crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
@@ -256,8 +255,7 @@ impl<R: tauri::Runtime> crate::ui::TrayOutput<R> for PresetTestTray {
 #[test]
 fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
     let app = crate::configure_shell(
-        tauri::test::mock_builder(),
-        test_support::state(),
+        tauri::test::mock_builder().manage(test_support::state()),
         platform::Presentation(Arc::new(test_support::UnusedPresentation)),
         crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
         crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),

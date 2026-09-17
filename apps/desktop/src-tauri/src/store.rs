@@ -16,11 +16,9 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
-    pub fn new() -> Self {
-        let base = dirs::config_dir()
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(|| PathBuf::from("."));
-        Self::at_path(base.join("Lens").join("settings.json"))
+    pub fn new<R: tauri::Runtime>(app: &impl tauri::Manager<R>) -> Result<Self, tauri::Error> {
+        let directory = app.path().app_config_dir()?;
+        Ok(Self::at_path(directory.join("settings.json")))
     }
 
     pub(crate) fn at_path(path: PathBuf) -> Self {
@@ -147,6 +145,23 @@ impl ConfigStore {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn settings_path_uses_app_identifier_instead_of_product_name() {
+        for identifier in ["com.github.japboy.lens", "com.example.another-lens"] {
+            let mut context = crate::product_context();
+            context.config_mut().identifier = identifier.into();
+            let app = tauri::test::mock_builder().build(context).unwrap();
+            let store = ConfigStore::new(&app).unwrap();
+            assert_eq!(
+                store.path,
+                dirs::config_dir()
+                    .unwrap()
+                    .join(identifier)
+                    .join("settings.json")
+            );
+        }
+    }
 
     fn store() -> (PathBuf, ConfigStore) {
         let root = std::env::temp_dir().join(format!("lens-config-store-{}", Uuid::new_v4()));
