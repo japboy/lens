@@ -290,7 +290,7 @@ mod tests {
                 id: "message:0".into(),
                 role: MessageRole::Assistant,
                 blocks: vec![DocumentBlock::Markdown {
-                    text: "日本語🙂tail".into(),
+                    text: "\u{65e5}\u{672c}\u{8a9e}🙂tail".into(),
                 }],
             },
             DocumentEntry::Tool {
@@ -341,7 +341,7 @@ mod tests {
         assert!(wire.get("document").is_none());
         let serialized = wire.to_string();
         for private in [
-            "日本語",
+            "\u{65e5}\u{672c}\u{8a9e}",
             "replacement body",
             "private-image-data",
             "private HTML",
@@ -350,7 +350,7 @@ mod tests {
         }
         assert_eq!(
             wire["conversation"]["entries"][0]["blocks"][0]["byte_length"],
-            "日本語🙂tail".len()
+            "\u{65e5}\u{672c}\u{8a9e}🙂tail".len()
         );
         assert_eq!(
             wire["conversation"]["entries"][0]["blocks"][0]["revision"],
@@ -379,9 +379,12 @@ mod tests {
     #[test]
     fn message_suffix_uses_utf8_bytes_and_invalid_offsets_return_full_body() {
         let view = fixture();
-        let full = "日本語🙂tail";
+        let full = "\u{65e5}\u{672c}\u{8a9e}🙂tail";
         for (requested, actual) in [
-            ("日本語".len(), "日本語".len()),
+            (
+                "\u{65e5}\u{672c}\u{8a9e}".len(),
+                "\u{65e5}\u{672c}\u{8a9e}".len(),
+            ),
             (full.len(), full.len()),
             (1, 0),
             (usize::MAX, 0),

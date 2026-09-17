@@ -162,19 +162,22 @@ it("requests append suffixes using UTF-8 byte offsets and retains identical chun
       generation: "first",
       revision: 1,
       offset: 0,
-      block: { type: "markdown", text: "猫" },
+      block: { type: "markdown", text: "\u732b" },
     })
     .mockResolvedValueOnce({
       generation: "first",
       revision: 2,
       offset: 3,
-      block: { type: "markdown", text: "猫" },
+      block: { type: "markdown", text: "\u732b" },
     });
   h.controller.hostConnected();
   await vi.waitFor(() => expect(h.controller.view).toBeDefined());
-  expect(await h.controller.loadBlock(ref(1, 3))).toEqual({ type: "markdown", text: "猫" });
+  expect(await h.controller.loadBlock(ref(1, 3))).toEqual({ type: "markdown", text: "\u732b" });
   h.send(viewWith(2, ref(2, 6)));
-  expect(await h.controller.loadBlock(ref(2, 6))).toEqual({ type: "markdown", text: "猫猫" });
+  expect(await h.controller.loadBlock(ref(2, 6))).toEqual({
+    type: "markdown",
+    text: "\u732b\u732b",
+  });
   expect(h.port.getSessionBlock.mock.calls[1]![0].offset).toBe(3);
 });
 

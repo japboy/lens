@@ -797,7 +797,7 @@ mod tests {
     fn incremental_accounting_matches_wire_after_mixed_updates_and_deserialization() {
         let mut doc = SessionDocument::default();
         for update in [
-            assistant("quote\" newline\n 日本語"),
+            assistant("quote\" newline\n \u{65e5}\u{672c}\u{8a9e}"),
             assistant("\t\u{0} repeated"),
             SessionUpdate::ToolCall(
                 ToolCall::new("tool", "title\"")

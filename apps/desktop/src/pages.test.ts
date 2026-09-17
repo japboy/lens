@@ -633,16 +633,16 @@ describe("Lens rich Agent output", () => {
 
     expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
       "Interpretation",
+      "Conversation",
       "Source",
       "Diagnostics",
-      "Conversation",
     ]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(tabs.map((tab) => tab.id)).toEqual([
       "interpretation-tab",
+      "conversation-tab",
       "source-tab",
       "diagnostics-tab",
-      "conversation-tab",
     ]);
 
     const expectSelectedPanel = (selectedIndex: number) => {
@@ -662,23 +662,23 @@ describe("Lens rich Agent output", () => {
 
     tabs[1]?.click();
     await overlayView?.updateComplete;
-    expect(overlayRoot?.querySelector("#source-panel")).not.toBeNull();
-    expect(overlayRoot?.querySelector("#diagnostics-panel")).toBeNull();
+    expect(overlayRoot?.querySelector("lens-session-document")).not.toBeNull();
     expectSelectedPanel(1);
 
-    tabs[2]?.click();
+    tabs[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await overlayView?.updateComplete;
+    expect(overlayRoot?.querySelector("#source-panel")).not.toBeNull();
+    expect(overlayRoot?.querySelector("#diagnostics-panel")).toBeNull();
+    expectSelectedPanel(2);
+    expect(overlayRoot?.activeElement).toBe(tabs[2]);
+
+    tabs[3]?.click();
     await overlayView?.updateComplete;
     expect(overlayRoot?.querySelector("#diagnostics-panel .empty-state")?.textContent).toContain(
       "No extraction diagnostics are available.",
     );
     expect(overlayRoot?.querySelector("#source-panel")).toBeNull();
-    expectSelectedPanel(2);
-
-    tabs[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    await overlayView?.updateComplete;
     expectSelectedPanel(3);
-    expect(overlayRoot?.activeElement).toBe(tabs[3]);
-    expect(overlayRoot?.querySelector("lens-session-document")).not.toBeNull();
 
     tabs[3]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await overlayView?.updateComplete;
