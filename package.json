@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@types/node": "24.13.3",
+    "@types/node": "24.13.4",
     "oxfmt": "0.64.0",
     "oxlint": "1.79.0",
     "typescript": "7.0.2",
