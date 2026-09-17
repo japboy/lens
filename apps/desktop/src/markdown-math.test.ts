@@ -146,4 +146,42 @@ $$
     expect(host.textContent).toContain(String.raw`\(hidden\)`);
     expect(host.textContent).toContain(String.raw`\(alsoHidden\)`);
   });
+  it.each(["\\(x\\)", "- \\(x\\)", "$$x$$", "**\\(x\\)**"])(
+    "keeps block HTML ownership across blank lines and nested Markdown: %s",
+    (inside) => {
+      const host = render(`<div>\n\n${inside}\n\n</div>\n\n\\(outside\\)`);
+      expect(host.querySelector(":scope > div .katex")).toBeNull();
+      expect(host.querySelectorAll(".katex")).toHaveLength(1);
+      expect(host.querySelector(".katex annotation")?.textContent).toBe("outside");
+      expect(host.querySelector("div")?.textContent).toContain(
+        inside.replaceAll("**", "").replace("- ", ""),
+      );
+    },
+  );
+
+  it("tracks all tags in a block while ignoring comment and attribute lookalikes", () => {
+    const host = render(String.raw`<div title="</div> > <aside>"><section><!-- </section></div> -->
+
+\(inside\)
+
+</section></div>
+
+Text <!-- <div> --> \(outside\)`);
+    expect(host.querySelector(":scope > div .katex")).toBeNull();
+    expect(host.querySelectorAll(".katex")).toHaveLength(1);
+    expect(host.querySelector(".katex annotation")?.textContent).toBe("outside");
+  });
+
+  it("does not treat tag-like script text as HTML boundaries", () => {
+    const host = render(String.raw`<div><script>const fake = "</div>";</script>
+
+\(inside\)
+
+</div>
+
+\(outside\)`);
+    expect(host.querySelector(":scope > div .katex")).toBeNull();
+    expect(host.querySelectorAll(".katex")).toHaveLength(1);
+    expect(host.querySelector("script")).toBeNull();
+  });
 });

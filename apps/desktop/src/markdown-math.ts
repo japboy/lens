@@ -1,4 +1,5 @@
 import katex from "katex";
+import { Tokenizer, TokenizerMode } from "parse5";
 import { Lexer, type Marked, type Token, type TokensList } from "marked";
 
 export interface MathSpan {
@@ -129,38 +130,59 @@ const VOID_TAGS = new Set([
   "wbr",
 ]);
 
-/** Inline raw HTML owns its contents; math never interprets those contents. */
-export function excludeHtmlMath(tokens: TokensList | Token[], inheritedDepth = 0): void {
+/** A document-scoped source context, independent of Markdown paragraph boundaries.
+ * This conservatively tracks explicit HTML tags, not browser tree-builder repairs. */
+export function excludeHtmlMath(tokens: TokensList | Token[]): void {
   const openTags: string[] = [];
-  for (const token of tokens) {
-    if (token.type === "html") {
-      // Each inline HTML token is one tag, comment, or declaration. Inspect only
-      // its leading tag name: tag-looking text in comments/attributes is inert.
-      const tag = token.block ? null : /^<(\/?)([a-z][\w:-]*)\b/iu.exec(token.raw);
-      if (tag && !VOID_TAGS.has(tag[2].toLowerCase())) {
-        const name = tag[2].toLowerCase();
-        if (tag[1]) {
-          const index = openTags.lastIndexOf(name);
-          if (index >= 0) openTags.splice(index);
-        } else {
-          // HTML ignores a self-closing slash on nonvoid elements.
-          openTags.push(name);
-        }
+  const ignore = () => {};
+  const tokenizer = new Tokenizer(
+    {},
+    {
+      onStartTag(token) {
+        const name = token.tagName;
+        if (VOID_TAGS.has(name)) return;
+        // HTML ignores the self-closing slash on nonvoid elements.
+        openTags.push(name);
+        if (name === "script") tokenizer.state = TokenizerMode.SCRIPT_DATA;
+        else if (["style", "xmp", "iframe", "noembed", "noframes"].includes(name))
+          tokenizer.state = TokenizerMode.RAWTEXT;
+        else if (name === "title" || name === "textarea") tokenizer.state = TokenizerMode.RCDATA;
+        else if (name === "plaintext") tokenizer.state = TokenizerMode.PLAINTEXT;
+      },
+      onEndTag(token) {
+        const index = openTags.lastIndexOf(token.tagName);
+        if (index >= 0) openTags.splice(index);
+      },
+      onComment: ignore,
+      onDoctype: ignore,
+      onEof: ignore,
+      onCharacter: ignore,
+      onNullCharacter: ignore,
+      onWhitespaceCharacter: ignore,
+    },
+  );
+  function visit(children: TokensList | Token[]): void {
+    for (const token of children) {
+      if (token.type === "html") {
+        // Both block and inline HTML feed the same tokenizer. HTML comments,
+        // quoted attribute values and raw-text bodies cannot forge tag events.
+        tokenizer.write(token.raw, false);
+      } else if (
+        (token.type === "lensMath" || token.type === "lensMathBlock") &&
+        openTags.length > 0
+      ) {
+        token.literal = true;
       }
-    } else if (
-      (token.type === "lensMath" || token.type === "lensMathBlock") &&
-      inheritedDepth + openTags.length > 0
-    ) {
-      token.literal = true;
-    }
-    if ("tokens" in token && Array.isArray(token.tokens))
-      excludeHtmlMath(token.tokens, inheritedDepth + openTags.length);
-    if (token.type === "list") for (const item of token.items) excludeHtmlMath(item.tokens);
-    if (token.type === "table") {
-      for (const cell of token.header) excludeHtmlMath(cell.tokens);
-      for (const row of token.rows) for (const cell of row) excludeHtmlMath(cell.tokens);
+      if ("tokens" in token && Array.isArray(token.tokens)) visit(token.tokens);
+      if (token.type === "list") for (const item of token.items) visit(item.tokens);
+      if (token.type === "table") {
+        for (const cell of token.header) visit(cell.tokens);
+        for (const row of token.rows) for (const cell of row) visit(cell.tokens);
+      }
     }
   }
+  visit(tokens);
+  tokenizer.write("", true);
 }
 
 export function mathElement(math: MathSpan, permitted: boolean): HTMLElement {
