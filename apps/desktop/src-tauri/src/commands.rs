@@ -269,13 +269,44 @@ pub fn update_working_directory<R: tauri::Runtime>(
     if !directory.is_absolute() || !directory.is_dir() {
         return Err("working directory must be an existing absolute directory".into());
     }
-    update_config(app, |config| config.working_directory = directory)
+    let state = app.state::<AppState>();
+    let admission = state
+        .session_view
+        .admission
+        .lock()
+        .map_err(|_| "Session view state is unavailable".to_string())?;
+    if state.config()?.working_directory == directory {
+        return state.config();
+    }
+    let was_history = matches!(
+        state.session_view.view()?.phase,
+        crate::session_view::ViewPhase::Loading
+            | crate::session_view::ViewPhase::Ready
+            | crate::session_view::ViewPhase::Failed
+    );
+    let snapshot = update_config(app, |config| config.working_directory = directory)?;
+    let config = snapshot.config.clone();
+    crate::session_view::invalidate_working_directory(app)?;
+    if was_history {
+        if let Some(window) = app.get_webview_window(crate::ui::LENS_WINDOW_LABEL) {
+            window.close().map_err(|error| error.to_string())?;
+        }
+    }
+    drop(admission);
+    emit_app_snapshot(app, snapshot, true)?;
+    let history_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::session_view::refresh(history_app).await {
+            eprintln!("Unable to refresh session history: {error}");
+        }
+    });
+    Ok(config)
 }
 
 fn update_config<R: tauri::Runtime>(
     app: &AppHandle<R>,
     update: impl FnOnce(&mut AppConfig),
-) -> Result<AppConfig, String> {
+) -> Result<AppSnapshot, String> {
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     let snapshot = {
@@ -291,9 +322,7 @@ fn update_config<R: tauri::Runtime>(
         snapshot.revision = revision;
         snapshot.clone()
     };
-    let config = snapshot.config.clone();
-    emit_app_snapshot(app, snapshot, true)?;
-    Ok(config)
+    Ok(snapshot)
 }
 
 #[tauri::command]

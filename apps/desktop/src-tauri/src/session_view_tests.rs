@@ -70,6 +70,7 @@ async fn stale_catalog_and_unloadable_entries_never_resolve_an_agent() {
         .contains("changed"));
     let generation = Uuid::new_v4();
     *app.state::<AppState>().session_view.catalog.lock().unwrap() = HistoryCatalog {
+        cwd: PathBuf::from("/fixture"),
         generation,
         entries: vec![HistoryEntry {
             agent: AgentKind::Codex,
@@ -173,13 +174,16 @@ fn compound_identity_top_ten_offsets_and_partial_unknown_are_explicit() {
     let mut partial = listing(AgentKind::Claude, claude_entries);
     partial.complete = false;
     partial.error = Some("page failed".into());
-    let catalog = merge_listings(vec![
-        (AgentKind::Claude, Ok(partial)),
-        (
-            AgentKind::Codex,
-            Ok(listing(AgentKind::Codex, codex_entries)),
-        ),
-    ]);
+    let catalog = merge_listings(
+        Path::new("/fixture"),
+        vec![
+            (AgentKind::Claude, Ok(partial)),
+            (
+                AgentKind::Codex,
+                Ok(listing(AgentKind::Codex, codex_entries)),
+            ),
+        ],
+    );
     assert_eq!(catalog.entries.len(), RECENT_SESSION_COUNT);
     assert_eq!(catalog.entries[0].agent, AgentKind::Claude);
     assert_eq!(catalog.entries[1].agent, AgentKind::Codex);
@@ -358,8 +362,10 @@ impl crate::ui::TrayOutput<MockRuntime> for ReplayTray {
 fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
     let state = test_support::state();
     state.runtime.write().unwrap().config.agent = AgentKind::Claude;
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/fixture");
     let generation = Uuid::new_v4();
     *state.session_view.catalog.lock().unwrap() = HistoryCatalog {
+        cwd: PathBuf::from("/fixture"),
         generation,
         entries: vec![HistoryEntry {
             agent: AgentKind::Codex,
@@ -504,4 +510,107 @@ fn cross_provider_history_choice_does_not_claim_live_readiness() {
     assert!(!next.can_select_lens_target());
     assert_eq!(next.config_options, None);
     assert_eq!(next.policy_default, None);
+}
+
+#[test]
+fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
+    let mut entries = vec![];
+    for index in 0..20 {
+        let mut foreign = entry(&format!("foreign-{index}"), Some("2026-09-18T00:00:00Z"));
+        foreign.cwd = if index % 2 == 0 {
+            "/other"
+        } else {
+            "/fixture/child"
+        }
+        .into();
+        entries.push(foreign);
+    }
+    entries.push(entry("current", Some("2026-09-17T00:00:00Z")));
+    let catalog = merge_listings(
+        Path::new("/fixture"),
+        vec![
+            (AgentKind::Codex, Ok(listing(AgentKind::Codex, entries))),
+            (
+                AgentKind::Claude,
+                Ok(listing(
+                    AgentKind::Claude,
+                    vec![entry("current", Some("2026-09-16T00:00:00Z"))],
+                )),
+            ),
+        ],
+    );
+    assert_eq!(catalog.entries.len(), 2);
+    assert!(catalog.entries.iter().all(|e| e.cwd == "/fixture"));
+}
+
+#[tokio::test]
+async fn different_directory_catalog_is_rejected_before_transport() {
+    let (app, generation) = replay_app(replay_host());
+    app.state::<AppState>()
+        .runtime
+        .write()
+        .unwrap()
+        .config
+        .working_directory = PathBuf::from("/other");
+    assert!(open(app.handle().clone(), generation, 0)
+        .await
+        .unwrap_err()
+        .contains("Working Directory changed"));
+    assert_eq!(
+        app.state::<AppState>().session_view.view().unwrap().phase,
+        ViewPhase::Idle
+    );
+}
+
+#[tokio::test]
+async fn changing_directory_invalidates_late_replay_without_switching_agent() {
+    let host = replay_host();
+    let (app, catalog) = replay_app(host.clone());
+    let opening = open(app.handle().clone(), catalog, 0);
+    let change = async {
+        host.entered.notified().await;
+        {
+            let state = app.state::<AppState>();
+            let _guard = state.session_view.admission.lock().unwrap();
+            state.runtime.write().unwrap().config.working_directory = PathBuf::from("/other");
+            invalidate_working_directory(app.handle()).unwrap();
+        }
+        host.release.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(opening, change)
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+    let state = app.state::<AppState>();
+    assert_eq!(state.config().unwrap().agent, AgentKind::Claude);
+    assert_eq!(
+        state.config().unwrap().working_directory,
+        PathBuf::from("/other")
+    );
+    assert_eq!(state.session_view.view().unwrap().phase, ViewPhase::Idle);
+    assert!(state.session_view.catalog().unwrap().entries.is_empty());
+    assert_ne!(state.session_view.catalog().unwrap().generation, catalog);
+}
+
+#[test]
+fn directory_change_rejects_late_catalog_even_after_returning_to_original_directory() {
+    let (app, _) = replay_app(replay_host());
+    let state = app.state::<AppState>();
+    let old = state.session_view.catalog().unwrap();
+    {
+        let _guard = state.session_view.admission.lock().unwrap();
+        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/other");
+        invalidate_working_directory(app.handle()).unwrap();
+    }
+    commit_catalog(app.handle(), old.clone()).unwrap();
+    assert!(state.session_view.catalog().unwrap().entries.is_empty());
+    {
+        let _guard = state.session_view.admission.lock().unwrap();
+        state.runtime.write().unwrap().config.working_directory = old.cwd.clone();
+        invalidate_working_directory(app.handle()).unwrap();
+    }
+    commit_catalog(app.handle(), old).unwrap();
+    assert!(state.session_view.catalog().unwrap().entries.is_empty());
 }

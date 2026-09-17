@@ -667,12 +667,18 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
     app.run_on_main_thread(move || {
         let result = (|| -> Result<(), String> {
             let app = &handle;
-            let catalog = app
-                .state::<crate::app_state::AppState>()
-                .session_view
-                .catalog()?;
-            let enabled = crate::session_view::history_enabled(app)?;
-            let key = format!("{}:{}:{enabled}", catalog.generation, catalog.loading);
+            let state = app.state::<crate::app_state::AppState>();
+            let mut catalog = state.session_view.catalog()?;
+            let directory_matches = catalog.cwd == state.config()?.working_directory;
+            if !directory_matches {
+                catalog.entries.clear();
+                catalog.notices.clear();
+            }
+            let enabled = directory_matches && crate::session_view::history_enabled(app)?;
+            let key = format!(
+                "{}:{}:{enabled}:{directory_matches}",
+                catalog.generation, catalog.loading
+            );
             let items = app.state::<TrayMenuItems<R>>();
             let mut shown = items
                 .history_presentation

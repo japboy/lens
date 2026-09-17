@@ -97,10 +97,11 @@ async fn deny_client_requests(
 pub async fn list_provider<R: tauri::Runtime>(
     app: &AppHandle<R>,
     agent: AgentKind,
+    cwd: &std::path::Path,
 ) -> Result<ProviderHistoryListing, String> {
     // Keep the installed runtime lease alive until its private transport exits.
     let (_descriptor, transport) = crate::agent::history_transport(app, agent).await?;
-    list_transport(transport, agent)
+    list_transport(transport, agent, cwd.to_path_buf())
         .await
         .map_err(|e| e.to_string())
 }
@@ -108,6 +109,7 @@ pub async fn list_provider<R: tauri::Runtime>(
 async fn list_transport(
     transport: DynConnectTo<Client>,
     agent: AgentKind,
+    cwd: PathBuf,
 ) -> Result<ProviderHistoryListing, Error> {
     // Explicitly reject every client-effect request, including extension methods.
     Client
@@ -142,7 +144,9 @@ async fn list_transport(
                     let response = tokio::time::timeout(
                         remaining.min(REQUEST_TIMEOUT),
                         connection
-                            .send_request(ListSessionsRequest::new().cursor(cursor))
+                            .send_request(
+                                ListSessionsRequest::new().cwd(cwd.clone()).cursor(cursor),
+                            )
                             .block_task(),
                     )
                     .await;
@@ -159,6 +163,9 @@ async fn list_transport(
                     };
                     let mut exceeded_limit = false;
                     for session in page.sessions {
+                        if session.cwd != cwd {
+                            continue;
+                        }
                         if !ids.insert(session.session_id.to_string()) {
                             continue;
                         }
@@ -414,8 +421,11 @@ mod tests {
                 async |request: ListSessionsRequest,
                        responder: Responder<ListSessionsResponse>,
                        _cx: ConnectionTo<Client>| {
-                    assert!(request.cwd.is_none());
-                    let mut sessions = vec![SessionInfo::new("first", "/synthetic")];
+                    assert_eq!(request.cwd, Some(PathBuf::from("/synthetic")));
+                    let mut sessions = vec![
+                        SessionInfo::new("foreign", "/other"),
+                        SessionInfo::new("first", "/synthetic"),
+                    ];
                     if request.cursor.is_some() {
                         sessions.push(SessionInfo::new("second", "/synthetic"));
                     }
@@ -425,9 +435,13 @@ mod tests {
                 },
                 agent_client_protocol::on_receive_request!(),
             );
-        let listing = list_transport(DynConnectTo::new(agent), AgentKind::Codex)
-            .await
-            .unwrap();
+        let listing = list_transport(
+            DynConnectTo::new(agent),
+            AgentKind::Codex,
+            PathBuf::from("/synthetic"),
+        )
+        .await
+        .unwrap();
         assert_eq!(listing.entries.len(), 2);
         assert!(!listing.complete);
         assert!(listing.error.unwrap().contains("repeated"));
@@ -521,9 +535,13 @@ mod tests {
             },
             agent_client_protocol::on_receive_request!(),
         );
-        let listing = list_transport(DynConnectTo::new(agent), AgentKind::Codex)
-            .await
-            .unwrap();
+        let listing = list_transport(
+            DynConnectTo::new(agent),
+            AgentKind::Codex,
+            PathBuf::from("/synthetic"),
+        )
+        .await
+        .unwrap();
         assert!(listing.entries.is_empty());
         assert!(!listing.complete);
         assert!(!listing.can_load);

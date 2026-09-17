@@ -7,7 +7,10 @@ use crate::{
 };
 use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate};
 use serde::Serialize;
-use std::sync::Mutex;
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
 
@@ -51,6 +54,7 @@ pub(crate) struct HistoryEntry {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HistoryCatalog {
+    pub cwd: PathBuf,
     pub generation: Uuid,
     pub loading: bool,
     pub entries: Vec<HistoryEntry>,
@@ -248,9 +252,11 @@ fn timestamp(value: &Option<String>) -> Option<i64> {
 }
 
 fn merge_listings(
+    cwd: &Path,
     listings: Vec<(AgentKind, Result<ProviderHistoryListing, String>)>,
 ) -> HistoryCatalog {
     let mut catalog = HistoryCatalog {
+        cwd: cwd.to_path_buf(),
         generation: Uuid::new_v4(),
         ..Default::default()
     };
@@ -269,6 +275,9 @@ fn merge_listings(
                         .push(format!("{}: partial history", agent_label(agent)));
                 }
                 for entry in listing.entries {
+                    if Path::new(&entry.cwd) != cwd {
+                        continue;
+                    }
                     if !seen.insert((agent_label(agent), entry.session_id.clone())) {
                         continue;
                     }
@@ -313,16 +322,48 @@ fn merge_listings(
     catalog
 }
 
+/// Caller holds admission while changing configuration and invalidating its history scope.
+pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let cwd = state.config()?.working_directory;
+    *state.session_view.catalog.lock().map_err(lock_error)? = HistoryCatalog {
+        cwd,
+        generation: Uuid::new_v4(),
+        ..Default::default()
+    };
+    let mut view = state.session_view.inner.lock().map_err(lock_error)?;
+    if matches!(
+        view.phase,
+        ViewPhase::Loading | ViewPhase::Ready | ViewPhase::Failed
+    ) {
+        *view = SessionView {
+            revision: view.revision + 1,
+            ..Default::default()
+        };
+    }
+    drop(view);
+    emit(app)?;
+    crate::ui::sync_history_menu(app)
+}
+
 pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let generation = {
+    let (generation, cwd) = {
         let state = app.state::<AppState>();
+        let _guard = state.session_view.admission.lock().map_err(lock_error)?;
+        let cwd = state.config()?.working_directory;
         let mut catalog = state.session_view.catalog.lock().map_err(lock_error)?;
-        if catalog.loading {
+        if catalog.loading && catalog.cwd == cwd {
             return Ok(());
+        }
+        if catalog.cwd != cwd {
+            *catalog = HistoryCatalog {
+                cwd: cwd.clone(),
+                ..Default::default()
+            };
         }
         catalog.loading = true;
         catalog.generation = Uuid::new_v4();
-        catalog.generation
+        (catalog.generation, cwd)
     };
     if let Err(error) = crate::ui::sync_history_menu(&app) {
         let state = app.state::<AppState>();
@@ -333,19 +374,27 @@ pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         return Err(error);
     }
     let (claude, codex) = tokio::join!(
-        session_history::list_provider(&app, AgentKind::Claude),
-        session_history::list_provider(&app, AgentKind::Codex)
+        session_history::list_provider(&app, AgentKind::Claude, &cwd),
+        session_history::list_provider(&app, AgentKind::Codex, &cwd)
     );
-    let mut merged = merge_listings(vec![(AgentKind::Claude, claude), (AgentKind::Codex, codex)]);
+    let mut merged = merge_listings(
+        &cwd,
+        vec![(AgentKind::Claude, claude), (AgentKind::Codex, codex)],
+    );
     merged.generation = generation;
-    {
-        let state = app.state::<AppState>();
-        let mut catalog = state.session_view.catalog.lock().map_err(lock_error)?;
-        if catalog.generation == generation {
-            *catalog = merged;
-        }
-    }
+    commit_catalog(&app, merged)?;
     crate::ui::sync_history_menu(&app)
+}
+
+fn commit_catalog<R: Runtime>(app: &AppHandle<R>, merged: HistoryCatalog) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _guard = state.session_view.admission.lock().map_err(lock_error)?;
+    let current_cwd = state.config()?.working_directory;
+    let mut catalog = state.session_view.catalog.lock().map_err(lock_error)?;
+    if catalog.generation == merged.generation && current_cwd == merged.cwd {
+        *catalog = merged;
+    }
+    Ok(())
 }
 
 pub(crate) async fn open<R: Runtime>(
@@ -372,6 +421,11 @@ pub(crate) async fn open<R: Runtime>(
             return Err("This Agent cannot load session history".into());
         }
         let config = state.config()?;
+        if catalog.cwd != config.working_directory
+            || Path::new(&entry.cwd) != config.working_directory
+        {
+            return Err("Working Directory changed; refresh session history".into());
+        }
         let generation = Uuid::new_v4();
         let mut view = state.session_view.inner.lock().map_err(lock_error)?;
         *view = SessionView {
