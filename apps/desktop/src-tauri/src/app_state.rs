@@ -965,7 +965,7 @@ mod tests {
         let (changed, _) = crate::commands::commit_prompt_presets(
             app.handle(),
             PromptPresetMutation::Select {
-                id: "practical-learner".into(),
+                id: "practical".into(),
             },
         )
         .unwrap();
@@ -978,7 +978,7 @@ mod tests {
         let (same, restart) = crate::commands::commit_prompt_presets(
             app.handle(),
             PromptPresetMutation::Select {
-                id: "practical-learner".into(),
+                id: "practical".into(),
             },
         )
         .unwrap();
@@ -1000,7 +1000,7 @@ mod tests {
         assert!(crate::commands::commit_prompt_presets(
             app.handle(),
             PromptPresetMutation::Select {
-                id: "practical-learner".into(),
+                id: "practical".into(),
             }
         )
         .is_err());

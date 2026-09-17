@@ -24,10 +24,10 @@ const snapshot: AppSnapshot = {
       schema_version: 2,
       execution_revision: 1,
       revision: 1,
-      selected_id: "conceptual-learner",
+      selected_id: "conceptual",
       presets: [
         {
-          id: "conceptual-learner",
+          id: "conceptual",
           name: "Conceptual",
 
           revision: 1,
@@ -1040,7 +1040,7 @@ describe("Lens Settings", () => {
       expect(invoke).toHaveBeenCalledWith("update_prompt_presets", {
         change: {
           type: "update",
-          id: "conceptual-learner",
+          id: "conceptual",
           expected_revision: 1,
           name: "Conceptual",
           template: {

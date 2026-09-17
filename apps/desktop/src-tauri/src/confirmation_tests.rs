@@ -1257,7 +1257,7 @@ fn verify_preset_switch(scenario: PresetSwitch) {
     let harness = setup(Scenario::SwitchDuringPrompt);
     let change = match scenario {
         PresetSwitch::DifferentContent => PromptPresetMutation::Select {
-            id: "practical-learner".into(),
+            id: "practical".into(),
         },
         PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => {
             let initial = harness.app.state::<AppState>().config().unwrap();

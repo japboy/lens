@@ -212,7 +212,8 @@ impl AppConfig {
         Ok(value.get("prompt_presets").is_none()
             || value["prompt_presets"]["schema_version"] == 1
             || current_catalog_has_no_records(&value["prompt_presets"])
-            || current_catalog_needs_selection(&value["prompt_presets"]))
+            || current_catalog_needs_selection(&value["prompt_presets"])
+            || catalog_has_legacy_ids(&value["prompt_presets"]))
     }
 
     /// Persisted settings may omit fields. Their host-dependent default is explicit.
@@ -235,6 +236,17 @@ struct AppConfigWire {
     working_directory: Option<PathBuf>,
     #[serde(deserialize_with = "present_prompt_presets")]
     prompt_presets: Option<PromptPresetCatalog>,
+}
+
+fn catalog_has_legacy_ids(value: &serde_json::Value) -> bool {
+    value["schema_version"] == 2
+        && value["presets"].as_array().is_some_and(|presets| {
+            presets.iter().any(|p| {
+                crate::prompt_presets::LEGACY_PRESET_IDS
+                    .iter()
+                    .any(|(old, _)| p["id"].as_str() == Some(*old))
+            })
+        })
 }
 
 fn current_catalog_has_no_records(value: &serde_json::Value) -> bool {
@@ -286,7 +298,7 @@ fn present_prompt_presets<'de, D: serde::Deserializer<'de>>(
     {
         Some(1) => Ok(Some(PromptPresetCatalog::default())),
         Some(2) => serde_json::from_value::<PromptPresetCatalog>(value)
-            .map(Some)
+            .map(|catalog| Some(catalog.migrate_legacy_ids()))
             .map_err(serde::de::Error::custom),
         _ => Err(serde::de::Error::custom(
             "unsupported prompt preset catalog schema",
@@ -568,6 +580,70 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ids_migrate_without_changing_content_and_are_idempotent() {
+        for selected in ["conceptual", "practical", "analytical"] {
+            let expected = AppConfig::new(PathBuf::from("/host"));
+            let mut expected = expected;
+            expected.prompt_presets.selected_id = selected.into();
+            expected.prompt_presets.presets[0].name = "My edited preset".into();
+            expected.prompt_presets.presets[0]
+                .template
+                .common
+                .push_str("\nKeep my instructions.");
+            expected.sync_prompt_template().unwrap();
+            let mut old = serde_json::to_value(&expected).unwrap();
+            for (legacy, current) in crate::prompt_presets::LEGACY_PRESET_IDS {
+                for preset in old["prompt_presets"]["presets"].as_array_mut().unwrap() {
+                    if preset["id"] == current {
+                        preset["id"] = legacy.into();
+                        preset["bundled_source"]["id"] = legacy.into();
+                    }
+                }
+                if old["prompt_presets"]["selected_id"] == current {
+                    old["prompt_presets"]["selected_id"] = legacy.into();
+                }
+            }
+            let bytes = serde_json::to_vec(&old).unwrap();
+            assert!(AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+            let actual = AppConfig::decode_settings(&bytes, PathBuf::from("/other")).unwrap();
+            assert_eq!(actual, expected);
+            let saved = serde_json::to_vec(&actual).unwrap();
+            assert!(!AppConfig::settings_require_prompt_migration(&saved).unwrap());
+            assert_eq!(
+                AppConfig::decode_settings(&saved, PathBuf::from("/other")).unwrap(),
+                actual
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_id_collision_preserves_both_records_and_selected_content() {
+        let mut value = serde_json::to_value(AppConfig::new(PathBuf::from("/host"))).unwrap();
+        let mut legacy = value["prompt_presets"]["presets"][0].clone();
+        legacy["id"] = "conceptual-learner".into();
+        legacy["bundled_source"]["id"] = "conceptual-learner".into();
+        legacy["name"] = "Legacy customization".into();
+        value["prompt_presets"]["presets"]
+            .as_array_mut()
+            .unwrap()
+            .push(legacy);
+        value["prompt_presets"]["selected_id"] = "conceptual-learner".into();
+        let config = AppConfig::decode_settings(
+            &serde_json::to_vec(&value).unwrap(),
+            PathBuf::from("/host"),
+        )
+        .unwrap();
+        assert_eq!(config.prompt_presets.presets.len(), 5);
+        assert_eq!(config.prompt_presets.selected_id, "conceptual-migrated-1");
+        assert_eq!(
+            config.prompt_presets.selected().name,
+            "Legacy customization"
+        );
+        assert_eq!(config.prompt_presets.selected().bundled_source, None);
+        assert_eq!(config.prompt_presets.presets[0].id, "conceptual");
+    }
+
+    #[test]
     fn older_bundle_contents_are_preserved_until_an_explicit_reset() {
         for version in [1, 2, 3, 4, 5] {
             let mut config = AppConfig::new(PathBuf::from("/host"));
@@ -621,7 +697,7 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(reset.presets.len(), 4);
-            assert_eq!(reset.selected_id, "conceptual-learner");
+            assert_eq!(reset.selected_id, "conceptual");
             assert!(!reset
                 .presets
                 .iter()

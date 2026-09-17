@@ -6,6 +6,11 @@ use uuid::Uuid;
 
 pub const PROMPT_PRESET_CATALOG_SCHEMA_VERSION: u32 = 2;
 pub const MAX_PROMPT_PRESETS: usize = 64;
+pub(crate) const LEGACY_PRESET_IDS: [(&str, &str); 3] = [
+    ("conceptual-learner", "conceptual"),
+    ("practical-learner", "practical"),
+    ("analytical-learner", "analytical"),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +78,41 @@ impl Default for PromptPresetCatalog {
 }
 
 impl PromptPresetCatalog {
+    /// Upgrade legacy identities only at persisted-input admission, preserving all content.
+    pub fn migrate_legacy_ids(mut self) -> Self {
+        for (old, new) in LEGACY_PRESET_IDS {
+            let Some(index) = self.presets.iter().position(|p| p.id == old) else {
+                continue;
+            };
+            let mut id = new.to_owned();
+            let collision = self.presets.iter().any(|p| p.id == id);
+            if collision {
+                // Preserve the existing canonical record and retain the legacy record as a copy.
+                let mut suffix = 1;
+                loop {
+                    id = format!("{new}-migrated-{suffix}");
+                    if !self.presets.iter().any(|p| p.id == id) {
+                        break;
+                    }
+                    suffix += 1;
+                }
+            }
+            if self.selected_id == old {
+                self.selected_id = id.clone();
+            }
+            let preset = &mut self.presets[index];
+            preset.id = id;
+            if collision {
+                preset.bundled_source = None;
+            } else if let Some(source) = &mut preset.bundled_source {
+                if source.id == old {
+                    source.id = new.into();
+                }
+            }
+        }
+        self
+    }
+
     pub fn selected(&self) -> &PromptPreset {
         self.presets
             .iter()
@@ -125,9 +165,9 @@ impl PromptPresetCatalog {
                     // Retired bundled IDs remain valid in saved, user-editable catalogs.
                     || ![
                         "visual-learner",
-                        "conceptual-learner",
-                        "practical-learner",
-                        "analytical-learner",
+                        "conceptual",
+                        "practical",
+                        "analytical",
                         "evocative",
                     ]
                     .contains(&source.id.as_str())
@@ -259,9 +299,9 @@ fn increment(revision: u32) -> Result<u32, String> {
 
 pub fn bundled_presets() -> Vec<PromptPreset> {
     let mut presets: Vec<_> = [
-        ("conceptual-learner", "Conceptual", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use a concept map, comparison panel, or annotated illustration when it makes the structure easier to understand. Choose its format using the shared output rules. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
-        ("practical-learner", "Practical", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use a walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow. Choose its format using the shared output rules. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
-        ("analytical-learner", "Analytical", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a visualization when it clarifies the model or comparison. Choose its format using the shared output rules."),
+        ("conceptual", "Conceptual", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use a concept map, comparison panel, or annotated illustration when it makes the structure easier to understand. Choose its format using the shared output rules. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
+        ("practical", "Practical", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use a walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow. Choose its format using the shared output rules. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
+        ("analytical", "Analytical", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a visualization when it clarifies the model or comparison. Choose its format using the shared output rules."),
     ].into_iter().map(|(id, name, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
         template: AgentPromptTemplate::with_explanation_strategy(instruction),
@@ -304,7 +344,7 @@ mod tests {
             .version
             == 6));
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
-        assert_eq!(catalog.selected_id, "conceptual-learner");
+        assert_eq!(catalog.selected_id, "conceptual");
         assert!(catalog
             .presets
             .iter()
@@ -394,7 +434,7 @@ mod tests {
         assert_eq!(renamed.execution_revision, catalog.execution_revision);
         let b = renamed
             .apply(PromptPresetMutation::Select {
-                id: "practical-learner".into(),
+                id: "practical".into(),
             })
             .unwrap();
         let a = b

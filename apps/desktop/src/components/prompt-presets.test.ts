@@ -16,17 +16,17 @@ function collection(): PromptPresetCollection {
     schema_version: 2,
     revision: 1,
     execution_revision: 1,
-    selected_id: "conceptual-learner",
+    selected_id: "conceptual",
     presets: [
       {
-        id: "conceptual-learner",
+        id: "conceptual",
         name: "Conceptual",
 
         revision: 1,
         template: { ...template },
       },
       {
-        id: "practical-learner",
+        id: "practical",
         name: "Practical",
 
         revision: 2,
@@ -99,7 +99,7 @@ describe("prompt preset editing", () => {
     expect(intents.at(-1)).toMatchObject({
       change: {
         type: "update",
-        id: "conceptual-learner",
+        id: "conceptual",
         name: "My Conceptual Style",
         template: { common: "My instruction. {turn_instruction}" },
       },
@@ -124,7 +124,7 @@ describe("prompt preset editing", () => {
       "Conceptual",
     );
     expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe(
-      "conceptual-learner",
+      "conceptual",
     );
     expect(element.textContent).not.toContain("Custom draft");
   });
@@ -161,22 +161,22 @@ describe("prompt preset editing", () => {
   it("keeps dirty drafts pinned to their preset across tray selection and editor navigation", async () => {
     const { element, intents } = await mount();
     await edit(element, "#prompt-editor", "My draft. {turn_instruction}");
-    element.promptPresets = { ...collection(), revision: 2, selected_id: "practical-learner" };
+    element.promptPresets = { ...collection(), revision: 2, selected_id: "practical" };
     await element.updateComplete;
     expect(element.querySelector<HTMLTextAreaElement>("#prompt-editor")!.value).toBe(
       "My draft. {turn_instruction}",
     );
     expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe(
-      "conceptual-learner",
+      "conceptual",
     );
-    await browse(element, "practical-learner");
-    await browse(element, "conceptual-learner");
+    await browse(element, "practical");
+    await browse(element, "conceptual");
     button(element, "Save Preset").click();
     expect(intents.at(-1)).toMatchObject({
       type: "presets",
       change: {
         type: "update",
-        id: "conceptual-learner",
+        id: "conceptual",
         expected_revision: 1,
         template: { common: "My draft. {turn_instruction}" },
       },
@@ -184,13 +184,11 @@ describe("prompt preset editing", () => {
   });
   it("browsing does not select and Use selects saved content independently of the draft", async () => {
     const { element, intents } = await mount();
-    await browse(element, "practical-learner");
+    await browse(element, "practical");
     expect(intents).toEqual([]);
     await edit(element, "#prompt-preset-name", "Unsaved name");
     button(element, "Use This Preset").click();
-    expect(intents).toEqual([
-      { type: "presets", change: { type: "select", id: "practical-learner" } },
-    ]);
+    expect(intents).toEqual([{ type: "presets", change: { type: "select", id: "practical" } }]);
   });
   it("preserves conflicts and sends original revision instead of silently overwriting", async () => {
     const { element, intents } = await mount();
@@ -218,7 +216,7 @@ describe("prompt preset editing", () => {
     expect(intents.at(-1)).toMatchObject({
       change: {
         type: "delete",
-        id: "conceptual-learner",
+        id: "conceptual",
         expected_revision: 1,
       },
     });
@@ -236,7 +234,7 @@ describe("prompt preset editing", () => {
     await edit(element, "#prompt-editor", "Keep me. {turn_instruction}");
     const next = collection();
     next.presets = next.presets.slice(1);
-    next.selected_id = "practical-learner";
+    next.selected_id = "practical";
     element.promptPresets = next;
     await element.updateComplete;
     expect(button(element, "Save Preset").disabled).toBe(true);
@@ -254,8 +252,8 @@ describe("prompt preset editing", () => {
     element.openCreatedPreset(next, "new-id");
     await element.updateComplete;
     expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe("new-id");
-    expect(element.promptPresets?.selected_id).toBe("conceptual-learner");
-    await browse(element, "conceptual-learner");
+    expect(element.promptPresets?.selected_id).toBe("conceptual");
+    await browse(element, "conceptual");
     expect(element.querySelector<HTMLInputElement>("#prompt-preset-name")!.value).toBe(
       "Keep this draft",
     );
@@ -265,11 +263,11 @@ describe("prompt preset editing", () => {
     await edit(element, "#prompt-editor", "Retained. {turn_instruction}");
     const next = collection();
     next.presets = next.presets.slice(1);
-    next.selected_id = "practical-learner";
+    next.selected_id = "practical";
     element.promptPresets = next;
     await element.updateComplete;
-    await browse(element, "practical-learner");
-    await browse(element, "conceptual-learner");
+    await browse(element, "practical");
+    await browse(element, "conceptual");
     expect(element.querySelector<HTMLTextAreaElement>("#prompt-editor")!.value).toBe(
       "Retained. {turn_instruction}",
     );
