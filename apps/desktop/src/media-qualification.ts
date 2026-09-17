@@ -20,6 +20,14 @@ function show(choice: MediaCase) {
     message: "",
   };
   normal.htmlContent = fixture.htmlContent;
+  normal.sessionView = {
+    revision,
+    phase: "live",
+    agent: "codex",
+    session_id: `live-fixture-${choice}`,
+    generation: `live-qualification-${revision}`,
+    document: fixture.document,
+  };
   history.sessionView = {
     revision,
     phase: "ready",

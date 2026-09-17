@@ -9,7 +9,6 @@ const clientRoot = fileURLToPath(new URL("./src/", import.meta.url));
 export default defineConfig({
   root: clientRoot,
   clearScreen: false,
-  worker: { format: "es" },
   test: {
     root: applicationRoot,
     include: ["src/**/*.test.ts", "tooling/**/*.test.ts", "tests/*.ts"],

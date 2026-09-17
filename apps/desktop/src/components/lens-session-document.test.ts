@@ -43,7 +43,7 @@ beforeAll(async () => {
 });
 afterEach(() => document.body.replaceChildren());
 describe("canonical session renderer", () => {
-  it("keeps ordered messages and tool output and applies the existing HTML sandbox policy", async () => {
+  it("keeps ordered messages and displays HTML literally without loading embedded resources", async () => {
     expect(conversationRows(documentModel).map((row) => row.id)).toEqual([
       "u:header",
       "u:0",
@@ -60,12 +60,31 @@ describe("canonical session renderer", () => {
     await block.updateComplete;
     await new Promise((resolve) => setTimeout(resolve, 20));
     await block.updateComplete;
-    const frame = block.shadowRoot!.querySelector("iframe")!;
-    expect(frame.getAttribute("sandbox")).toBe("allow-popups");
-    expect(frame.srcdoc).toContain("Saved");
-    expect(frame.srcdoc).not.toContain("<script>");
-    expect(frame.srcdoc).toContain("img-src data:");
-    expect(frame.srcdoc).toContain("connect-src 'none'");
+    const text =
+      block.shadowRoot!.querySelector<import("./lens-conversation-text").LensConversationText>(
+        "lens-conversation-text",
+      )!;
+    await text.updateComplete;
+    expect(text.shadowRoot!.querySelector(".text")!.textContent).toBe(
+      documentModel.entries[1]!.blocks[0]!.type === "html"
+        ? documentModel.entries[1]!.blocks[0]!.text
+        : "",
+    );
+    expect(block.shadowRoot!.querySelector("iframe, img, a, script")).toBeNull();
+    expect(text.shadowRoot!.querySelector("iframe, img, a, script")).toBeNull();
+  });
+  it("shows image metadata without exposing or decoding its payload", async () => {
+    const block = new LensConversationBlock();
+    block.block = { type: "image", mime_type: "image/png", data: "private-base64-payload" };
+    block.contentKey = "image-metadata";
+    block.cache = new ConversationRenderCache();
+    document.body.append(block);
+    await block.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await block.updateComplete;
+    expect(block.shadowRoot!.textContent).toContain("Image: image/png");
+    expect(block.shadowRoot!.textContent).not.toContain("private-base64-payload");
+    expect(block.shadowRoot!.querySelector("img, iframe, canvas")).toBeNull();
   });
   it("builds rows for a large manifest without requesting any body", () => {
     const model: SessionDocument = {

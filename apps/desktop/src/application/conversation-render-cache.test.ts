@@ -12,7 +12,23 @@ const deferred: DeferredBlock = {
   revision: 1,
   byte_length: 100,
 };
-describe("visible conversation preparation", () => {
+describe("visible conversation body cache", () => {
+  it("returns HTML source unchanged without creating a worker or prepared preview", async () => {
+    const worker = vi.fn<() => never>(() => {
+      throw new Error("Unexpected worker");
+    });
+    vi.stubGlobal("Worker", worker);
+    try {
+      const cache = new ConversationRenderCache();
+      const body = { type: "html" as const, text: '<script>throw "inert"</script><h1>Source</h1>' };
+      const value = await cache.resolve("html", body);
+      expect(value).toEqual({ block: body });
+      expect(value.block).toBe(body);
+      expect(worker).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("deduplicates visible requests and evicts within its byte budget", async () => {
     const cache = new ConversationRenderCache(100);
     const loader = vi.fn<BlockLoader>(async () => ({

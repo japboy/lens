@@ -9,10 +9,7 @@ import {
   type BlockLoader,
   type PreparedConversationBlock,
 } from "../application/conversation-render-cache";
-import { imageDataUrl } from "../view-model";
-import { externalMarkdownUrl } from "../markdown";
-import { dispatchComponentEvent, OVERLAY_INTENT_EVENT } from "./events";
-import "./lens-conversation-markdown";
+import "./lens-conversation-text";
 
 export interface ConversationRow {
   id: string;
@@ -275,16 +272,6 @@ export class LensConversationBlock extends LitElement {
       display: block;
       overflow-wrap: anywhere;
     }
-    img {
-      max-width: 100%;
-      height: auto;
-    }
-    iframe {
-      width: 100%;
-      min-height: 360px;
-      border: 0;
-      background: white;
-    }
     .loading {
       min-height: 24px;
       opacity: 0.6;
@@ -322,37 +309,14 @@ export class LensConversationBlock extends LitElement {
     if (!block) return html`<div class="loading" role="status">Loading content…</div>`;
     switch (block.type) {
       case "markdown":
-        return html`<lens-conversation-markdown
-          .markdown=${block.text}
-          @click=${this.openLink}
-        ></lens-conversation-markdown>`;
-      case "image": {
-        const source = imageDataUrl(block);
-        return source
-          ? html`<img src=${source} alt="Session image" />`
-          : html`<p>Unsupported image type: ${block.mime_type}</p>`;
-      }
       case "html":
-        return html`<iframe
-            title="Session HTML output"
-            sandbox="allow-popups"
-            referrerpolicy="no-referrer"
-            .srcdoc=${this.prepared?.html?.document ?? ""}
-          ></iframe
-          >${this.prepared?.html?.notices.map((notice) => html`<p role="note">${notice}</p>`)}`;
+        return html`<lens-conversation-text .text=${block.text}></lens-conversation-text>`;
+      case "image":
+        return html`<p role="note">Image: ${block.mime_type} (preview omitted)</p>`;
       case "unsupported":
         return html`<p role="note">Unsupported content: ${block.content_type}</p>`;
       case "deferred":
         return nothing;
     }
   }
-  private openLink = (event: MouseEvent): void => {
-    const link = event
-      .composedPath()
-      .find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement);
-    if (!link) return;
-    event.preventDefault();
-    const url = externalMarkdownUrl(link.getAttribute("href") ?? "");
-    if (url) dispatchComponentEvent(this, OVERLAY_INTENT_EVENT, { type: "open-external-url", url });
-  };
 }

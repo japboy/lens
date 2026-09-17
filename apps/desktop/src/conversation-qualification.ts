@@ -48,7 +48,15 @@ for (const [id, index] of [
 document
   .querySelector("#tab")!
   .addEventListener("click", () => (view.isConnected ? view.remove() : mount.append(view)));
+document.querySelector("#reset")!.addEventListener("click", () => {
+  maxFrameGap = 0;
+  frames = 0;
+  last = performance.now();
+});
 document.querySelector("#huge")!.addEventListener("click", () => {
+  maxFrameGap = 0;
+  frames = 0;
+  last = performance.now();
   view.identity = "qualification-huge";
   const block: DocumentBlock = {
     type: "markdown",
