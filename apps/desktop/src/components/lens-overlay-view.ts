@@ -897,6 +897,15 @@ export class LensOverlayView extends LitElement {
         color: CanvasText;
       }
 
+      /* The outer slide keeps its flex footprint while this child is fullscreen. */
+      .output-media-html-content {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        background: Canvas;
+        color: CanvasText;
+      }
+
       .output-html-frame {
         display: block;
         border: 0;
@@ -909,14 +918,14 @@ export class LensOverlayView extends LitElement {
         display: none;
       }
 
-      .output-media-html-slide:fullscreen {
+      .output-media-html-content:fullscreen {
         display: flex;
         flex-direction: column;
         width: 100%;
         height: 100%;
       }
 
-      .output-media-html-slide:fullscreen > .output-html-expanded-header {
+      .output-media-html-content:fullscreen > .output-html-expanded-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -925,7 +934,7 @@ export class LensOverlayView extends LitElement {
         flex: 0 0 auto;
       }
 
-      .output-media-html-slide:fullscreen > .output-html-frame {
+      .output-media-html-content:fullscreen > .output-html-frame {
         flex: 1 1 auto;
       }
 
