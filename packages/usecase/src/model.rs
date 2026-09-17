@@ -569,8 +569,12 @@ mod tests {
 
     #[test]
     fn older_bundle_contents_are_preserved_until_an_explicit_reset() {
-        for version in [1, 2, 3, 4] {
+        for version in [1, 2, 3, 4, 5] {
             let mut config = AppConfig::new(PathBuf::from("/host"));
+            config
+                .prompt_presets
+                .presets
+                .retain(|preset| preset.id != "evocative");
             if version < 4 {
                 let mut retired = config.prompt_presets.presets[0].clone();
                 retired.id = "visual-learner".into();
@@ -581,7 +585,7 @@ mod tests {
             if version == 1 {
                 config.prompt_presets.presets.truncate(3);
             }
-            let names: &[&str] = if version == 4 {
+            let names: &[&str] = if version >= 4 {
                 &["Conceptual", "Practical", "Analytical"]
             } else {
                 &[
@@ -616,7 +620,7 @@ mod tests {
                     expected_catalog_revision: loaded.prompt_presets.revision,
                 })
                 .unwrap();
-            assert_eq!(reset.presets.len(), 3);
+            assert_eq!(reset.presets.len(), 4);
             assert_eq!(reset.selected_id, "conceptual-learner");
             assert!(!reset
                 .presets

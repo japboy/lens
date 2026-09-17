@@ -128,6 +128,7 @@ impl PromptPresetCatalog {
                         "conceptual-learner",
                         "practical-learner",
                         "analytical-learner",
+                        "evocative",
                     ]
                     .contains(&source.id.as_str())
                 {
@@ -257,15 +258,26 @@ fn increment(revision: u32) -> Result<u32, String> {
 }
 
 pub fn bundled_presets() -> Vec<PromptPreset> {
-    [
+    let mut presets: Vec<_> = [
         ("conceptual-learner", "Conceptual", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use a concept map, comparison panel, or annotated illustration when it makes the structure easier to understand. Choose its format using the shared output rules. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
         ("practical-learner", "Practical", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use a walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow. Choose its format using the shared output rules. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
         ("analytical-learner", "Analytical", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a visualization when it clarifies the model or comparison. Choose its format using the shared output rules."),
     ].into_iter().map(|(id, name, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
         template: AgentPromptTemplate::with_explanation_strategy(instruction),
-        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 5 }),
-    }).collect()
+        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 6 }),
+    }).collect();
+    presets.push(PromptPreset {
+        id: "evocative".into(),
+        name: "Evocative".into(),
+        revision: 1,
+        template: AgentPromptTemplate::evocative(),
+        bundled_source: Some(BundledPromptPresetSource {
+            id: "evocative".into(),
+            version: 6,
+        }),
+    });
+    presets
 }
 
 #[cfg(test)]
@@ -274,7 +286,7 @@ mod tests {
     use domain::prompt_template::BUILT_IN_RESPONSE_INSTRUCTION;
 
     #[test]
-    fn defaults_are_three_ordered_seeds_and_first_is_selected() {
+    fn defaults_are_four_ordered_seeds_and_first_is_selected() {
         let catalog = PromptPresetCatalog::default().normalize().unwrap();
         assert_eq!(catalog.schema_version, 2);
         assert_eq!(
@@ -283,19 +295,20 @@ mod tests {
                 .iter()
                 .map(|preset| preset.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Conceptual", "Practical", "Analytical"]
+            ["Conceptual", "Practical", "Analytical", "Evocative"]
         );
         assert!(catalog.presets.iter().all(|preset| preset
             .bundled_source
             .as_ref()
             .unwrap()
             .version
-            == 5));
+            == 6));
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
         assert_eq!(catalog.selected_id, "conceptual-learner");
         assert!(catalog
             .presets
             .iter()
+            .filter(|p| p.id != "evocative")
             .all(|p| p.template.common.contains(BUILT_IN_RESPONSE_INSTRUCTION)));
         assert!(!serde_json::to_string(&catalog)
             .unwrap()
@@ -335,7 +348,7 @@ mod tests {
                 expected_catalog_revision: selected.revision,
             })
             .unwrap();
-        assert_eq!(reset.presets.len(), 3);
+        assert_eq!(reset.presets.len(), 4);
         assert_eq!(reset.selected_id, reset.presets[0].id);
         assert!(reset.revision > selected.revision);
         assert!(reset.execution_revision > selected.execution_revision);
@@ -484,7 +497,10 @@ mod tests {
                 expected_revision: 1,
             })
             .unwrap();
-        assert_eq!(deleted.clone().normalize().unwrap().presets.len(), 2);
+        assert_eq!(
+            deleted.clone().normalize().unwrap().presets.len(),
+            catalog.presets.len() - 1
+        );
         assert_eq!(deleted.selected_id, catalog.presets[1].id);
         let inactive_deleted = catalog
             .apply(PromptPresetMutation::Delete {
