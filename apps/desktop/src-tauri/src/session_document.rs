@@ -58,6 +58,7 @@ pub struct SessionDocument {
 struct ToolEvidence {
     input: Option<Value>,
     output: Option<Value>,
+    explicit_content: bool,
 }
 
 impl SessionDocument {
@@ -85,12 +86,16 @@ impl SessionDocument {
                 chunk.content,
             ),
             SessionUpdate::ToolCall(call) => {
-                let fields = ToolCallUpdateFields::new()
+                let mut fields = ToolCallUpdateFields::new()
                     .title(call.title)
                     .status(call.status)
-                    .content(call.content)
                     .raw_input(call.raw_input)
                     .raw_output(call.raw_output);
+                // Initial calls default to an empty content vector; unlike sparse updates,
+                // that default does not explicitly clear a raw MCP result projection.
+                if !call.content.is_empty() {
+                    fields = fields.content(call.content);
+                }
                 next.tool(call.tool_call_id.to_string(), fields);
             }
             SessionUpdate::ToolCallUpdate(update) => {
@@ -197,6 +202,7 @@ impl SessionDocument {
                 *status = value;
             }
             if let Some(content) = fields.content {
+                evidence.explicit_content = true;
                 *blocks = content
                     .into_iter()
                     .map(|item| match item {
@@ -207,6 +213,32 @@ impl SessionDocument {
                     })
                     .collect();
             }
+            // Codex supplies MCP results in rawOutput instead of ACP tool content.
+            // Explicit content (including an update clearing it) remains authoritative.
+            // Retained raw output is projected on completion even if it arrived earlier.
+            if !evidence.explicit_content {
+                blocks.clear();
+            }
+            if !evidence.explicit_content && *status == ToolCallStatus::Completed {
+                if let Some(items) = evidence
+                    .output
+                    .as_ref()
+                    .and_then(successful_tool_result)
+                    .and_then(|result| result.get("content"))
+                    .and_then(Value::as_array)
+                {
+                    *blocks = items
+                        .iter()
+                        .map(|item| {
+                            serde_json::from_value::<ContentBlock>(item.clone())
+                                .map(convert)
+                                .unwrap_or_else(|_| DocumentBlock::Unsupported {
+                                    content_type: "tool result content".into(),
+                                })
+                        })
+                        .collect();
+                }
+            }
             *accepted_html = if *status == ToolCallStatus::Completed {
                 accepted_publication(evidence, blocks)
             } else {
@@ -214,6 +246,20 @@ impl SessionDocument {
             };
         }
     }
+}
+
+/// Unwrap the adapter's MCP result envelope without treating errors as success.
+fn successful_tool_result(output: &Value) -> Option<&Value> {
+    if output.get("isError") == Some(&Value::Bool(true))
+        || output.get("error").is_some_and(|error| !error.is_null())
+    {
+        return None;
+    }
+    let result = output.get("result").unwrap_or(output);
+    if !result.is_object() || result.get("isError") == Some(&Value::Bool(true)) {
+        return None;
+    }
+    Some(result)
 }
 
 fn receipt(value: &Value) -> bool {
@@ -238,14 +284,13 @@ fn accepted_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Op
     {
         return None;
     }
-    if evidence
-        .output
-        .as_ref()
-        .is_some_and(|output| output.get("isError") == Some(&Value::Bool(true)))
-    {
-        return None;
-    }
-    let accepted = evidence.output.as_ref().is_some_and(|output| {
+    // A Codex MCP envelope carries both a result and an independent error.
+    // Neither a receipt nor a rendered text block can override a failed result.
+    let output = match evidence.output.as_ref() {
+        Some(output) => Some(successful_tool_result(output)?),
+        None => None,
+    };
+    let accepted = output.is_some_and(|output| {
         receipt(output) || output.get("content").and_then(Value::as_array).is_some_and(|items| items.iter().any(|item| item.get("text").and_then(Value::as_str).and_then(|text| serde_json::from_str::<Value>(text).ok()).is_some_and(|v| receipt(&v))))
     }) || blocks.iter().any(|block| matches!(block, DocumentBlock::Markdown { text } if serde_json::from_str::<Value>(text).is_ok_and(|value| receipt(&value))));
     accepted.then(|| html.to_owned())
@@ -375,6 +420,7 @@ mod tests {
             ToolEvidence {
                 input: Some(serde_json::json!({"secret_diagnostic":"excluded"})),
                 output: None,
+                ..Default::default()
             },
         );
         let wire = serde_json::to_string(&doc).unwrap();
@@ -399,6 +445,7 @@ mod tests {
             output: Some(
                 serde_json::json!({"accepted":true,"publication_id":"e9e57747-88ed-47b7-a301-47f6c13e4503"}),
             ),
+            ..Default::default()
         };
         assert_eq!(
             accepted_publication(&evidence, &[]).as_deref(),
@@ -413,6 +460,134 @@ mod tests {
                 &[]
             ),
             None
+        );
+    }
+    fn codex_result(content: Value) -> Value {
+        serde_json::json!({"result":{"content":content},"error":null})
+    }
+
+    #[test]
+    fn codex_modern_receipt_unwraps_result_without_weakening_turn_or_error_checks() {
+        let evidence = ToolEvidence {
+            input: Some(
+                serde_json::json!({"server":"lens_output","tool":"publish_html","arguments":{
+                "html":"<h1>Modern</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}}),
+            ),
+            output: Some(codex_result(serde_json::json!([{"type":"text","text":
+                "{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}"}]))),
+            ..Default::default()
+        };
+        assert_eq!(
+            accepted_publication(&evidence, &[]).as_deref(),
+            Some("<h1>Modern</h1>")
+        );
+        for failure in [
+            serde_json::json!({"details":"failed"}),
+            serde_json::json!(false),
+        ] {
+            let mut bad = evidence.clone();
+            bad.output.as_mut().unwrap()["error"] = failure;
+            assert!(accepted_publication(&bad, &[]).is_none());
+        }
+        let mut bad = evidence.clone();
+        bad.output.as_mut().unwrap()["result"]["isError"] = Value::Bool(true);
+        assert!(accepted_publication(&bad, &[]).is_none());
+        let mut no_turn = evidence;
+        no_turn.input.as_mut().unwrap()["arguments"]
+            .as_object_mut()
+            .unwrap()
+            .remove("turn_id");
+        assert!(accepted_publication(&no_turn, &[]).is_none());
+    }
+
+    #[test]
+    fn codex_legacy_embedded_html_is_output_content_not_a_synthetic_receipt() {
+        let html = "<h1>Legacy output</h1>";
+        let output = codex_result(serde_json::json!([{"type":"resource","resource":{
+            "uri":"lens-html://fixture","mimeType":"text/html","text":html}}]));
+        let mut document = SessionDocument::default();
+        document.record_update(SessionUpdate::ToolCall(ToolCall::new("legacy", "mcp.lens_output.publish_html")
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({"server":"lens_output","tool":"publish_html","arguments":{"html":html}}))
+            .raw_output(output.clone()))).unwrap();
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { blocks, accepted_html: None, .. }
+            if blocks == &vec![DocumentBlock::Html { text: html.into() }])
+        );
+        // A later failing result must remove output derived from the old success.
+        let mut failed = output;
+        failed["result"]["isError"] = Value::Bool(true);
+        document
+            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "legacy",
+                ToolCallUpdateFields::new().raw_output(failed),
+            )))
+            .unwrap();
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { blocks, accepted_html: None, .. } if blocks.is_empty())
+        );
+    }
+
+    #[test]
+    fn raw_mcp_results_do_not_replace_explicit_content_and_explicit_empty_clears() {
+        let mut document = SessionDocument::default();
+        let output = codex_result(serde_json::json!([{"type":"text","text":"raw"}]));
+        document
+            .record_update(SessionUpdate::ToolCall(
+                ToolCall::new("tool", "Tool")
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![text("explicit").into()])
+                    .raw_output(output.clone()),
+            ))
+            .unwrap();
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. }
+            if blocks == &vec![DocumentBlock::Markdown { text: "explicit".into() }])
+        );
+        document
+            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new()
+                    .content(vec![])
+                    .raw_output(output.clone()),
+            )))
+            .unwrap();
+        document
+            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .raw_output(output),
+            )))
+            .unwrap();
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. } if blocks.is_empty())
+        );
+    }
+    #[test]
+    fn raw_mcp_result_before_completion_is_projected_on_sparse_completion() {
+        let mut document = SessionDocument::default();
+        document
+            .record_update(SessionUpdate::ToolCall(
+                ToolCall::new("tool", "Tool")
+                    .status(ToolCallStatus::InProgress)
+                    .raw_output(codex_result(
+                        serde_json::json!([{"type":"text","text":"raw"}]),
+                    )),
+            ))
+            .unwrap();
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. } if blocks.is_empty())
+        );
+        document
+            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            )))
+            .unwrap();
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. }
+            if blocks == &vec![DocumentBlock::Markdown { text: "raw".into() }])
         );
     }
 }
