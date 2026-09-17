@@ -52,6 +52,42 @@ pub struct SessionDocument {
     message_key: Option<(MessageRole, Option<String>)>,
     #[serde(skip)]
     tools: std::collections::BTreeMap<String, ToolEvidence>,
+    #[serde(skip)]
+    accounting: Accounting,
+}
+
+/// Derived cache; excluded from both the wire document and semantic equality.
+#[derive(Debug, Clone, Default)]
+struct Accounting {
+    initialized: bool,
+    last_changed_entry: Option<usize>,
+    bytes: usize,
+    blocks: usize,
+    entries: usize,
+    tool_indices: std::collections::HashMap<String, usize>,
+}
+impl PartialEq for Accounting {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+fn wire_size(value: &impl Serialize) -> usize {
+    // All document/evidence values are concrete JSON-compatible types.
+    serde_json::to_vec(value)
+        .expect("document values serialize")
+        .len()
+}
+fn block_count(entry: &DocumentEntry) -> usize {
+    match entry {
+        DocumentEntry::Message { blocks, .. } | DocumentEntry::Tool { blocks, .. } => blocks.len(),
+    }
+}
+fn capacity(bytes: usize, entries: usize, blocks: usize) -> Result<(), String> {
+    if bytes > MAX_BYTES || entries > MAX_ENTRIES || blocks > MAX_BLOCKS {
+        Err("Session document exceeds bounded history capacity".into())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -62,25 +98,54 @@ struct ToolEvidence {
 }
 
 impl SessionDocument {
+    /// Public entry changed by the most recent reducer operation, if any.
+    pub fn last_changed_entry(&self) -> Option<usize> {
+        self.accounting.last_changed_entry
+    }
+
     /// Outgoing prompt messages are recorded once by live ingress, not inferred from output.
     pub fn append_prompt(&mut self, prompt: &[ContentBlock]) -> Result<(), String> {
-        self.transaction(|next| {
-            next.message_key = None;
-            for content in prompt {
-                next.append(MessageRole::User, None, content.clone());
+        self.accounting.last_changed_entry = None;
+        self.ensure_accounting();
+        let mut candidate = Self::default();
+        for content in prompt {
+            candidate.append_unchecked(MessageRole::User, None, content.clone());
+        }
+        if let Some(mut entry) = candidate.entries.pop() {
+            if let DocumentEntry::Message { id, .. } = &mut entry {
+                *id = format!("message:{}", self.entries.len());
             }
-        })
+            let bytes =
+                self.accounting.bytes + wire_size(&entry) + usize::from(!self.entries.is_empty());
+            let blocks = self.accounting.blocks + block_count(&entry);
+            capacity(bytes, self.entries.len() + 1, blocks)?;
+            self.entries.push(entry);
+            self.accounting.last_changed_entry = Some(self.entries.len() - 1);
+            self.accounting.bytes = bytes;
+            self.accounting.blocks = blocks;
+            self.accounting.entries = self.entries.len();
+            self.message_key = Some((MessageRole::User, None));
+        } else {
+            capacity(
+                self.accounting.bytes,
+                self.entries.len(),
+                self.accounting.blocks,
+            )?;
+            self.message_key = None;
+        }
+        Ok(())
     }
 
     /// Replay and live updates share exactly the same content semantics. No effects are run.
     pub fn record_update(&mut self, update: SessionUpdate) -> Result<(), String> {
-        self.transaction(|next| match update {
-            SessionUpdate::UserMessageChunk(chunk) => next.append(
+        self.accounting.last_changed_entry = None;
+        match update {
+            SessionUpdate::UserMessageChunk(chunk) => self.append(
                 MessageRole::User,
                 chunk.message_id.map(|id| id.to_string()),
                 chunk.content,
             ),
-            SessionUpdate::AgentMessageChunk(chunk) => next.append(
+            SessionUpdate::AgentMessageChunk(chunk) => self.append(
                 MessageRole::Assistant,
                 chunk.message_id.map(|id| id.to_string()),
                 chunk.content,
@@ -96,48 +161,170 @@ impl SessionDocument {
                 if !call.content.is_empty() {
                     fields = fields.content(call.content);
                 }
-                next.tool(call.tool_call_id.to_string(), fields);
+                self.tool(call.tool_call_id.to_string(), fields)
             }
             SessionUpdate::ToolCallUpdate(update) => {
-                next.tool(update.tool_call_id.to_string(), update.fields)
+                self.tool(update.tool_call_id.to_string(), update.fields)
             }
             // Thoughts and runtime control updates do not become conversation content.
-            _ => {}
-        })
+            _ => Ok(()),
+        }
     }
 
-    fn transaction(&mut self, apply: impl FnOnce(&mut Self)) -> Result<(), String> {
-        let mut next = self.clone();
-        apply(&mut next);
-        let blocks: usize = next
-            .entries
-            .iter()
-            .map(|entry| match entry {
-                DocumentEntry::Message { blocks, .. } | DocumentEntry::Tool { blocks, .. } => {
-                    blocks.len()
-                }
-            })
-            .sum();
-        let wire = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
-        let evidence = serde_json::to_vec(
-            &next
-                .tools
-                .iter()
-                .map(|(id, e)| (id, &e.input, &e.output))
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|error| error.to_string())?;
-        if next.entries.len() > MAX_ENTRIES
-            || blocks > MAX_BLOCKS
-            || wire.len().saturating_add(evidence.len()) > MAX_BYTES
-        {
-            return Err("Session document exceeds bounded history capacity".into());
+    fn ensure_accounting(&mut self) {
+        if self.accounting.initialized && self.accounting.entries == self.entries.len() {
+            return;
         }
-        *self = next;
+        self.accounting = Accounting {
+            initialized: true,
+            last_changed_entry: None,
+            bytes: wire_size(self)
+                + wire_size(
+                    &self
+                        .tools
+                        .iter()
+                        .map(|(id, e)| (id, &e.input, &e.output))
+                        .collect::<Vec<_>>(),
+                ),
+            blocks: self.entries.iter().map(block_count).sum(),
+            entries: self.entries.len(),
+            tool_indices: self
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| match entry {
+                    DocumentEntry::Tool { id, .. } => {
+                        id.strip_prefix("tool:").map(|id| (id.to_owned(), index))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        };
+    }
+
+    fn append(
+        &mut self,
+        role: MessageRole,
+        message_id: Option<String>,
+        content: ContentBlock,
+    ) -> Result<(), String> {
+        self.ensure_accounting();
+        let key = (role, message_id);
+        let block = convert(content);
+        let same = self.message_key.as_ref() == Some(&key)
+            && matches!(self.entries.last(), Some(DocumentEntry::Message { role: previous, .. }) if *previous == role);
+        if same {
+            let Some(DocumentEntry::Message { blocks, .. }) = self.entries.last_mut() else {
+                unreachable!()
+            };
+            let merge = matches!(
+                (blocks.last(), &block),
+                (
+                    Some(DocumentBlock::Markdown { .. }),
+                    DocumentBlock::Markdown { .. }
+                )
+            );
+            let added_bytes = if merge {
+                let DocumentBlock::Markdown { text } = &block else {
+                    unreachable!()
+                };
+                wire_size(text) - 2
+            } else {
+                wire_size(&block) + usize::from(!blocks.is_empty())
+            };
+            let bytes = self.accounting.bytes + added_bytes;
+            let count = self.accounting.blocks + usize::from(!merge);
+            capacity(bytes, self.accounting.entries, count)?;
+            if merge {
+                let (
+                    Some(DocumentBlock::Markdown { text: previous }),
+                    DocumentBlock::Markdown { text },
+                ) = (blocks.last_mut(), block)
+                else {
+                    unreachable!()
+                };
+                previous.push_str(&text);
+            } else {
+                blocks.push(block);
+            }
+            self.accounting.bytes = bytes;
+            self.accounting.blocks = count;
+            if added_bytes > 0 {
+                self.accounting.last_changed_entry = Some(self.entries.len() - 1);
+            }
+        } else {
+            let entry = DocumentEntry::Message {
+                id: format!("message:{}", self.entries.len()),
+                role,
+                blocks: vec![block],
+            };
+            let bytes =
+                self.accounting.bytes + wire_size(&entry) + usize::from(!self.entries.is_empty());
+            capacity(bytes, self.entries.len() + 1, self.accounting.blocks + 1)?;
+            self.entries.push(entry);
+            self.accounting.last_changed_entry = Some(self.entries.len() - 1);
+            self.accounting.bytes = bytes;
+            self.accounting.blocks += 1;
+            self.accounting.entries = self.entries.len();
+        }
+        self.message_key = Some(key);
         Ok(())
     }
 
-    fn append(&mut self, role: MessageRole, message_id: Option<String>, content: ContentBlock) {
+    fn tool(&mut self, id: String, fields: ToolCallUpdateFields) -> Result<(), String> {
+        self.ensure_accounting();
+        let index = self.accounting.tool_indices.get(&id).copied();
+        let mut candidate = Self::default();
+        if let Some(index) = index {
+            candidate.entries.push(self.entries[index].clone());
+        }
+        if let Some(evidence) = self.tools.get(&id) {
+            candidate.tools.insert(id.clone(), evidence.clone());
+        }
+        candidate.tool_unchecked(id.clone(), fields);
+        let entry = candidate.entries.pop().expect("tool entry");
+        let evidence = candidate.tools.remove(&id).expect("tool evidence");
+        let old_entry_bytes = index.map_or(0, |i| wire_size(&self.entries[i]));
+        let old_blocks = index.map_or(0, |i| block_count(&self.entries[i]));
+        let old_evidence = self.tools.get(&id);
+        let old_evidence_bytes = old_evidence.map_or(0, |e| wire_size(&(&id, &e.input, &e.output)));
+        let bytes = self.accounting.bytes - old_entry_bytes - old_evidence_bytes
+            + wire_size(&entry)
+            + wire_size(&(&id, &evidence.input, &evidence.output))
+            + usize::from(index.is_none() && !self.entries.is_empty())
+            + usize::from(old_evidence.is_none() && !self.tools.is_empty());
+        let blocks = self.accounting.blocks - old_blocks + block_count(&entry);
+        capacity(
+            bytes,
+            self.entries.len() + usize::from(index.is_none()),
+            blocks,
+        )?;
+        if let Some(index) = index {
+            if self.entries[index] != entry {
+                self.accounting.last_changed_entry = Some(index);
+            }
+            self.entries[index] = entry;
+        } else {
+            self.accounting
+                .tool_indices
+                .insert(id.clone(), self.entries.len());
+            self.entries.push(entry);
+            self.accounting.last_changed_entry = Some(self.entries.len() - 1);
+        }
+        self.tools.insert(id, evidence);
+        self.message_key = None;
+        self.accounting.bytes = bytes;
+        self.accounting.blocks = blocks;
+        self.accounting.entries = self.entries.len();
+        Ok(())
+    }
+
+    fn append_unchecked(
+        &mut self,
+        role: MessageRole,
+        message_id: Option<String>,
+        content: ContentBlock,
+    ) {
         let key = (role, message_id);
         if self.message_key.as_ref() != Some(&key)
             || !matches!(self.entries.last(), Some(DocumentEntry::Message { role: previous, .. }) if *previous == role)
@@ -163,7 +350,7 @@ impl SessionDocument {
         }
     }
 
-    fn tool(&mut self, id: String, fields: ToolCallUpdateFields) {
+    fn tool_unchecked(&mut self, id: String, fields: ToolCallUpdateFields) {
         self.message_key = None;
         let entry_id = format!("tool:{id}");
         let index = self
@@ -589,5 +776,126 @@ mod tests {
             matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. }
             if blocks == &vec![DocumentBlock::Markdown { text: "raw".into() }])
         );
+    }
+    fn assert_accounting(document: &SessionDocument) {
+        let actual = wire_size(document)
+            + wire_size(
+                &document
+                    .tools
+                    .iter()
+                    .map(|(id, e)| (id, &e.input, &e.output))
+                    .collect::<Vec<_>>(),
+            );
+        assert_eq!(document.accounting.bytes, actual);
+        assert_eq!(
+            document.accounting.blocks,
+            document.entries.iter().map(block_count).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn incremental_accounting_matches_wire_after_mixed_updates_and_deserialization() {
+        let mut doc = SessionDocument::default();
+        for update in [
+            assistant("quote\" newline\n 日本語"),
+            assistant("\t\u{0} repeated"),
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool", "title\"")
+                    .raw_input(serde_json::json!({"nested":["\n",null,4]})),
+            ),
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![text("answer").into()]),
+            )),
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new().content(vec![]),
+            )),
+            assistant("after tool"),
+        ] {
+            doc.record_update(update).unwrap();
+            assert_accounting(&doc);
+        }
+        doc.append_prompt(&[text("one"), text("two")]).unwrap();
+        assert_accounting(&doc);
+        let mut restored: SessionDocument =
+            serde_json::from_value(serde_json::to_value(&doc).unwrap()).unwrap();
+        restored.record_update(assistant("restored")).unwrap();
+        assert_accounting(&restored);
+        restored
+            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new().title("restored title"),
+            )))
+            .unwrap();
+        assert_accounting(&restored);
+    }
+
+    #[test]
+    fn content_change_summary_excludes_ignored_empty_and_evidence_only_updates() {
+        let mut doc = SessionDocument::default();
+        doc.record_update(assistant("first")).unwrap();
+        assert_eq!(doc.last_changed_entry(), Some(0));
+        doc.record_update(assistant("")).unwrap();
+        assert_eq!(doc.last_changed_entry(), None);
+        doc.record_update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(text(
+            "private",
+        ))))
+        .unwrap();
+        assert_eq!(doc.last_changed_entry(), None);
+        doc.record_update(SessionUpdate::ToolCall(ToolCall::new("tool", "Tool")))
+            .unwrap();
+        assert_eq!(doc.last_changed_entry(), Some(1));
+        doc.record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            "tool",
+            ToolCallUpdateFields::new().raw_input(serde_json::json!({"value":1})),
+        )))
+        .unwrap();
+        assert_eq!(doc.last_changed_entry(), None);
+        assert_accounting(&doc);
+    }
+
+    #[test]
+    fn exact_byte_limit_accepts_boundary_and_rejects_append_atomically() {
+        let mut doc = SessionDocument::default();
+        doc.record_update(assistant("")).unwrap();
+        let available = MAX_BYTES - doc.accounting.bytes;
+        doc.record_update(assistant(&"x".repeat(available)))
+            .unwrap();
+        assert_eq!(doc.accounting.bytes, MAX_BYTES);
+        let before_key = doc.message_key.clone();
+        assert!(doc.record_update(assistant("\n")).is_err());
+        assert_eq!(doc.accounting.bytes, MAX_BYTES);
+        assert_eq!(doc.message_key, before_key);
+        assert_eq!(doc.last_changed_entry(), None);
+        assert!(doc
+            .record_update(SessionUpdate::ToolCall(
+                ToolCall::new("rejected", "Tool").raw_input(serde_json::json!({"input":"value"}))
+            ))
+            .is_err());
+        assert!(doc.tools.is_empty());
+        assert!(doc.accounting.tool_indices.is_empty());
+        assert_eq!(doc.message_key, before_key);
+        assert_eq!(doc.entries.len(), 1);
+        assert_accounting(&doc);
+    }
+
+    #[test]
+    fn append_work_scales_with_incoming_text() {
+        for count in [100, 1000, 3000] {
+            let mut doc = SessionDocument::default();
+            let start = std::time::Instant::now();
+            for _ in 0..count {
+                doc.record_update(assistant(&"x".repeat(256))).unwrap();
+            }
+            eprintln!(
+                "incremental reducer chunks={count} elapsed_ms={:.3}",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+            assert_accounting(&doc);
+            assert_eq!(doc.entries.len(), 1);
+        }
     }
 }
