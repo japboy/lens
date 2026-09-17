@@ -718,7 +718,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 tooltips.push(if date.is_empty() {
                     agent.to_string()
                 } else {
-                    format!("{date}\n{agent}")
+                    format!("{date} · {agent}")
                 });
                 menu.append(
                     &MenuItem::with_id(
