@@ -40,9 +40,9 @@ import {
 
 const LENS_TABS = [
   { id: "interpretation", label: "Interpretation" },
+  { id: "conversation", label: "Conversation" },
   { id: "source", label: "Source" },
   { id: "diagnostics", label: "Diagnostics" },
-  { id: "conversation", label: "Conversation" },
 ] as const;
 
 type LensTab = (typeof LENS_TABS)[number]["id"];
