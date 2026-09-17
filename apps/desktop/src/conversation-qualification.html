@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><title>Conversation virtualization qualification</title>
+  <style>
+    body {
+      font: 14px system-ui;
+      background: #202327;
+      color: #eee;
+      margin: 16px;
+    }
+    #mount {
+      height: 600px;
+      border: 1px solid #888;
+    }
+    button {
+      margin: 6px;
+    }
+    pre {
+      white-space: pre-wrap;
+    }
+  </style>
+  <h1>Conversation virtualization qualification</h1>
+  <p>
+    Development fixture only. 4096 messages, variable-height Markdown and HTML. Metrics use actual
+    mounted elements; they are not simulated layout evidence.
+  </p>
+  <button id="first">First</button
+  ><button id="middle">Middle</button
+  ><button id="last">Last</button
+  ><button id="tab">Toggle tab</button
+  ><button id="huge">Single 1 MiB Markdown block</button>
+  <pre id="metrics"></pre>
+  <div id="mount"></div>
+  <script type="module" src="./conversation-qualification.ts"></script>
+</html>

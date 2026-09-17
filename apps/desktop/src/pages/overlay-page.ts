@@ -88,6 +88,7 @@ export class OverlayPage extends ReactiveElement {
     const view = this.view;
     const snapshot = this.snapshots.snapshot;
     view.sessionView = this.sessionView.view;
+    view.loadSessionBlock = this.sessionView.loadBlock;
     this.htmlOutput.synchronize(
       !this.sessionView.view || isHistoryView(this.sessionView.view) ? undefined : snapshot?.lens,
     );

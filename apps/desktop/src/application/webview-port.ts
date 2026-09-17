@@ -1,4 +1,4 @@
-import type { SessionView } from "./session-document";
+import type { SessionView, DocumentBlock } from "./session-document";
 import { parseSettingsDestination, type SettingsDestination } from "../agent-prompt-template";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -30,6 +30,13 @@ export interface AboutDocuments {
 
 export interface WebviewPort {
   getSessionView(): Promise<SessionView>;
+  getSessionBlock(request: {
+    generation: string;
+    entry_id: string;
+    block_index: number;
+    revision: number;
+    offset: number;
+  }): Promise<{ generation: string; revision: number; offset: number; block: DocumentBlock }>;
   subscribeToSessionView(listener: (view: SessionView) => void): Promise<Unlisten>;
   closeSessionView(): Promise<void>;
   updatePromptPresets(change: PromptPresetChange): Promise<AppConfig>;
@@ -87,6 +94,7 @@ export interface WebviewPort {
 
 export const tauriWebviewPort: WebviewPort = {
   getSessionView: () => invoke<SessionView>("get_session_view"),
+  getSessionBlock: (request) => invoke("get_session_block", { request }),
   subscribeToSessionView: (listener) =>
     listen<SessionView>("session-view-changed", ({ payload }) => listener(payload)),
   closeSessionView: () => invoke<void>("close_session_view"),

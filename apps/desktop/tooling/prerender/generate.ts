@@ -90,6 +90,7 @@ export async function generate(output: string, development = false): Promise<str
     await build({
       configFile: false,
       root: clientRoot,
+      worker: { format: "es" },
       base,
       logLevel: "warn",
       build: {

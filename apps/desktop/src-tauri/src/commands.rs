@@ -279,7 +279,7 @@ pub fn update_working_directory<R: tauri::Runtime>(
         return state.config();
     }
     let was_history = matches!(
-        state.session_view.view()?.phase,
+        state.session_view.phase()?,
         crate::session_view::ViewPhase::Loading
             | crate::session_view::ViewPhase::Ready
             | crate::session_view::ViewPhase::Failed

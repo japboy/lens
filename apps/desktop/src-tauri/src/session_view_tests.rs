@@ -386,6 +386,14 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
     )
     .build(crate::product_context())
     .unwrap();
+    // Replay lifecycle tests do not exercise native monitor placement.
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        crate::ui::LENS_WINDOW_LABEL,
+        tauri::WebviewUrl::App("overlay.html".into()),
+    )
+    .build()
+    .unwrap();
     (app, generation)
 }
 

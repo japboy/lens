@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
@@ -27,6 +28,8 @@ pub(crate) enum ViewPhase {
     Failed,
 }
 
+pub(crate) mod wire;
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct SessionView {
     pub revision: u64,
@@ -40,6 +43,8 @@ pub(crate) struct SessionView {
     generation: Uuid,
     #[serde(skip)]
     operation_id: Option<Uuid>,
+    #[serde(skip)]
+    entry_revisions: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,10 +68,57 @@ pub(crate) struct HistoryCatalog {
 
 #[derive(Default)]
 pub(crate) struct SessionViewStore {
-    /// Lock order: admission -> app runtime -> view. Never held over an await.
+    /// Lock order: admission -> app runtime -> view -> display. Never held over an await.
     pub admission: Mutex<()>,
     inner: Mutex<SessionView>,
     catalog: Mutex<HistoryCatalog>,
+    display: Mutex<DisplayNotifications>,
+}
+
+/// Constant-space display queue. Canonical updates are never queued or discarded here.
+#[derive(Default)]
+struct DisplayNotifications {
+    scheduled: bool,
+    pending: Option<DisplayChange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayChange {
+    generation: Uuid,
+    base_revision: u64,
+    index: Option<usize>,
+}
+
+impl DisplayNotifications {
+    /// Returns true only for the caller that must install a flush task.
+    fn push(&mut self, change: DisplayChange) -> bool {
+        match self.pending.as_mut() {
+            Some(pending) if pending.generation == change.generation => {
+                if pending.index != change.index {
+                    pending.index = None;
+                }
+            }
+            _ => self.pending = Some(change),
+        }
+        if self.scheduled {
+            false
+        } else {
+            self.scheduled = true;
+            true
+        }
+    }
+
+    /// Immediate lifecycle events supersede pending display work, not its timer.
+    fn supersede(&mut self) {
+        self.pending = None;
+    }
+
+    fn take(&mut self, generation: Uuid) -> Option<DisplayChange> {
+        self.scheduled = false;
+        self.pending
+            .take()
+            .filter(|pending| pending.generation == generation)
+    }
 }
 
 fn lock_error<T>(_: T) -> String {
@@ -74,6 +126,10 @@ fn lock_error<T>(_: T) -> String {
 }
 
 impl SessionViewStore {
+    pub fn phase(&self) -> Result<ViewPhase, String> {
+        self.inner.lock().map(|view| view.phase).map_err(lock_error)
+    }
+    #[cfg(test)]
     pub fn view(&self) -> Result<SessionView, String> {
         self.inner
             .lock()
@@ -87,7 +143,7 @@ impl SessionViewStore {
             .map_err(lock_error)
     }
     pub fn ensure_not_loading(&self) -> Result<(), String> {
-        if self.view()?.phase == ViewPhase::Loading {
+        if self.phase()? == ViewPhase::Loading {
             return Err("Wait for the session history to finish loading or close it".into());
         }
         Ok(())
@@ -132,24 +188,37 @@ pub(crate) fn history_enabled<R: Runtime>(app: &AppHandle<R>) -> Result<bool, St
     let snapshot = state.snapshot()?;
     Ok(!active_session(&snapshot.lens)
         && !selection_busy(snapshot.agent_selection.stage)
-        && state.session_view.view()?.phase != ViewPhase::Loading)
+        && state.session_view.phase()? != ViewPhase::Loading)
 }
 
 pub(crate) fn emit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let view = app.state::<AppState>().session_view.view()?;
-    app.emit_to(crate::ui::LENS_WINDOW_LABEL, "session-view-changed", view)
-        .map_err(|error| error.to_string())
+    let state = app.state::<AppState>();
+    // Keep lifecycle publication ordered with mutations and timer flushes.
+    let view = state.session_view.inner.lock().map_err(lock_error)?;
+    let mut display = state.session_view.display.lock().map_err(lock_error)?;
+    display.supersede();
+    app.emit_to(
+        crate::ui::LENS_WINDOW_LABEL,
+        "session-view-changed",
+        view.wire(None),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub(crate) fn get_session_view<R: Runtime>(
     webview: tauri::Webview<R>,
     state: tauri::State<'_, AppState>,
-) -> Result<SessionView, String> {
+) -> Result<wire::WireView, String> {
     if webview.label() != crate::ui::LENS_WINDOW_LABEL {
         return Err("Session content is only available to the Lens overlay".into());
     }
-    state.session_view.view()
+    Ok(state
+        .session_view
+        .inner
+        .lock()
+        .map_err(lock_error)?
+        .wire(None))
 }
 
 #[tauri::command]
@@ -189,6 +258,7 @@ pub(crate) fn start_live<R: Runtime>(
         session_id: Some(session_id),
         document: Some(SessionDocument::default()),
         operation_id: Some(operation_id),
+        generation: Uuid::new_v4(),
         ..Default::default()
     };
     drop(view);
@@ -211,15 +281,66 @@ fn mutate_live<R: Runtime>(
     {
         return Ok(());
     }
-    if let Some(document) = view.document.as_mut() {
-        if let Err(error) = update(document) {
-            view.error = Some(error);
+    let mut failed = false;
+    let changed = if let Some(document) = view.document.as_mut() {
+        match update(document) {
+            Ok(()) => document.last_changed_entry(),
+            Err(error) => {
+                view.error = Some(error);
+                failed = true;
+                None
+            }
         }
+    } else {
+        None
+    };
+    if changed.is_none() && !failed {
+        return Ok(());
     }
+    let base_revision = view.revision;
     view.revision += 1;
+    let revision = view.revision;
+    if let Some(index) = changed {
+        if view.entry_revisions.len() <= index {
+            view.entry_revisions.resize(index + 1, base_revision);
+        }
+        view.entry_revisions[index] = revision;
+    }
+    let schedule = state
+        .session_view
+        .display
+        .lock()
+        .map_err(lock_error)?
+        .push(DisplayChange {
+            generation: view.generation,
+            base_revision,
+            index: changed,
+        });
     drop(view);
     drop(snapshot);
-    emit(app)
+    if schedule {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(16)).await;
+            if let Err(error) = flush_display(&app) {
+                eprintln!("Unable to publish session display update: {error}");
+            }
+        });
+    }
+    Ok(())
+}
+
+fn flush_display<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let view = state.session_view.inner.lock().map_err(lock_error)?;
+    let mut display = state.session_view.display.lock().map_err(lock_error)?;
+    let Some(change) = display.take(view.generation) else {
+        return Ok(());
+    };
+    // Only the final manifest/entry descriptor is built; no history body is cloned.
+    let wire = view.wire(change.index.map(|index| (change.base_revision, index)));
+    app.emit_to(crate::ui::LENS_WINDOW_LABEL, "session-view-changed", wire)
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn append_prompt<R: Runtime>(
@@ -524,6 +645,97 @@ fn fail<R: Runtime>(app: &AppHandle<R>, generation: Uuid, error: String) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn burst_keeps_one_timer_and_first_patch_base() {
+        let generation = Uuid::new_v4();
+        let mut queue = DisplayNotifications::default();
+        for revision in 10..10_000 {
+            assert_eq!(
+                queue.push(DisplayChange {
+                    generation,
+                    base_revision: revision,
+                    index: Some(2)
+                }),
+                revision == 10
+            );
+        }
+        assert_eq!(
+            queue.take(generation),
+            Some(DisplayChange {
+                generation,
+                base_revision: 10,
+                index: Some(2)
+            })
+        );
+        assert!(!queue.scheduled);
+        assert!(queue.pending.is_none());
+    }
+
+    #[test]
+    fn different_entries_and_errors_require_full_manifest() {
+        let generation = Uuid::new_v4();
+        for next in [Some(3), None] {
+            let mut queue = DisplayNotifications::default();
+            queue.push(DisplayChange {
+                generation,
+                base_revision: 1,
+                index: Some(2),
+            });
+            queue.push(DisplayChange {
+                generation,
+                base_revision: 2,
+                index: next,
+            });
+            queue.push(DisplayChange {
+                generation,
+                base_revision: 3,
+                index: Some(2),
+            });
+            assert_eq!(
+                queue.take(generation),
+                Some(DisplayChange {
+                    generation,
+                    base_revision: 1,
+                    index: None
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_supersedes_old_work_without_installing_another_timer() {
+        let old = Uuid::new_v4();
+        let new = Uuid::new_v4();
+        let mut queue = DisplayNotifications::default();
+        assert!(queue.push(DisplayChange {
+            generation: old,
+            base_revision: 1,
+            index: Some(0)
+        }));
+        queue.supersede();
+        assert!(!queue.push(DisplayChange {
+            generation: new,
+            base_revision: 3,
+            index: Some(0)
+        }));
+        assert_eq!(
+            queue.take(new),
+            Some(DisplayChange {
+                generation: new,
+                base_revision: 3,
+                index: Some(0)
+            })
+        );
+        queue.push(DisplayChange {
+            generation: old,
+            base_revision: 1,
+            index: Some(0),
+        });
+        assert_eq!(queue.take(new), None);
+        assert!(!queue.scheduled);
+        assert!(queue.pending.is_none());
+    }
+
     #[test]
     fn completed_monitoring_remains_active_and_history_is_not_live() {
         let lens = LensState {

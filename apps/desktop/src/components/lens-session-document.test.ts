@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { LensSessionDocument } from "./lens-session-document";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  LensSessionDocument,
+  LensConversationBlock,
+  conversationRows,
+} from "./lens-session-document";
+import { ConversationRenderCache } from "../application/conversation-render-cache";
 import { LensOverlayView } from "./lens-overlay-view";
 import type { SessionDocument } from "../application/session-document";
 
@@ -39,22 +44,163 @@ beforeAll(async () => {
 afterEach(() => document.body.replaceChildren());
 describe("canonical session renderer", () => {
   it("keeps ordered messages and tool output and applies the existing HTML sandbox policy", async () => {
-    const view = new LensSessionDocument();
-    view.document = documentModel;
-    document.body.append(view);
-    await view.updateComplete;
-    const root = view.shadowRoot!;
-    expect(
-      [...root.querySelectorAll("article")].map((e) => e.getAttribute("data-entry-id")),
-    ).toEqual(["u", "t", "a"]);
-    const frame = root.querySelector("iframe")!;
+    expect(conversationRows(documentModel).map((row) => row.id)).toEqual([
+      "u:header",
+      "u:0",
+      "t:header",
+      "t:0",
+      "a:header",
+      "a:0",
+    ]);
+    const block = new LensConversationBlock();
+    block.block = documentModel.entries[1]!.blocks[0];
+    block.contentKey = "sandbox";
+    block.cache = new ConversationRenderCache();
+    document.body.append(block);
+    await block.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await block.updateComplete;
+    const frame = block.shadowRoot!.querySelector("iframe")!;
     expect(frame.getAttribute("sandbox")).toBe("allow-popups");
     expect(frame.srcdoc).toContain("Saved");
     expect(frame.srcdoc).not.toContain("<script>");
     expect(frame.srcdoc).toContain("img-src data:");
     expect(frame.srcdoc).toContain("connect-src 'none'");
-    expect(root.querySelector("img")?.src).toBe("data:image/png;base64,aA==");
   });
+  it("builds rows for a large manifest without requesting any body", () => {
+    const model: SessionDocument = {
+      entries: Array.from({ length: 10000 }, (_, i) => ({
+        id: String(i),
+        kind: "message",
+        role: "assistant",
+        blocks: [
+          {
+            type: "deferred",
+            entry_id: String(i),
+            block_index: 0,
+            content_type: "markdown",
+            revision: 1,
+            byte_length: 1000000,
+          },
+        ],
+      })),
+    };
+    expect(conversationRows(model)).toHaveLength(20000);
+  });
+  it("retries interrupted visible preparation after reconnect", async () => {
+    const block = new LensConversationBlock();
+    const cache = new ConversationRenderCache();
+    block.cache = cache;
+    block.contentKey = "reconnect";
+    block.block = {
+      type: "deferred",
+      entry_id: "a",
+      block_index: 0,
+      content_type: "unsupported",
+      revision: 1,
+      byte_length: 1,
+    };
+    let finish!: (value: { type: "unsupported"; content_type: string }) => void;
+    block.loadBlock = () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      });
+    document.body.append(block);
+    await block.updateComplete;
+    block.remove();
+    cache.suspend();
+    finish({ type: "unsupported", content_type: "stale" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    block.loadBlock = async () => ({ type: "unsupported", content_type: "fresh" });
+    document.body.append(block);
+    await block.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await block.updateComplete;
+    expect(block.shadowRoot!.textContent).toContain("fresh");
+    expect(block.shadowRoot!.textContent).not.toContain("stale");
+  });
+  it("restores a saved row offset after a cached tab reconnects", async () => {
+    const view = new LensSessionDocument();
+    view.identity = "anchor-contract";
+    view.document = documentModel;
+    document.body.append(view);
+    await view.updateComplete;
+    const virtualizer = view.shadowRoot!.querySelector("lit-virtualizer")!;
+    await virtualizer.updateComplete;
+    Object.defineProperties(virtualizer, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 1000 },
+      layoutComplete: { configurable: true, get: () => Promise.resolve() },
+    });
+    virtualizer.scrollTop = 120;
+    const row = document.createElement("div");
+    row.setAttribute("data-row-id", "u:header");
+    row.getBoundingClientRect = () => ({ top: -12 }) as DOMRect;
+    virtualizer.append(row);
+    virtualizer.dispatchEvent(new Event("scroll"));
+    const scrollIntoView = vi.fn<(options?: ScrollIntoViewOptions) => void>(() => {
+      virtualizer.scrollTop = 120;
+    });
+    Object.defineProperty(virtualizer, "element", {
+      configurable: true,
+      value: () => ({ scrollIntoView }),
+    });
+    view.remove();
+    virtualizer.scrollTop = 0;
+    document.body.append(view);
+    await view.updateComplete;
+    await Promise.resolve();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    expect(virtualizer.scrollTop).toBe(132);
+  });
+  it.each(["wheel", "touchstart", "keyboard", "programmatic"])(
+    "respects %s while an asynchronous anchor restoration is pending",
+    async (input) => {
+      const view = new LensSessionDocument();
+      view.identity = `pending-anchor-${input}`;
+      view.document = documentModel;
+      document.body.append(view);
+      await view.updateComplete;
+      const virtualizer = view.shadowRoot!.querySelector("lit-virtualizer")!;
+      await virtualizer.updateComplete;
+      let complete!: () => void;
+      const layout = new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      Object.defineProperties(virtualizer, {
+        clientHeight: { configurable: true, value: 100 },
+        scrollHeight: { configurable: true, value: 1000 },
+        layoutComplete: { configurable: true, get: () => layout },
+        element: {
+          configurable: true,
+          value: () => ({
+            scrollIntoView: () => {
+              virtualizer.scrollTop = 120;
+            },
+          }),
+        },
+      });
+      virtualizer.scrollTop = 120;
+      const row = document.createElement("div");
+      row.setAttribute("data-row-id", "u:header");
+      row.getBoundingClientRect = () => ({ top: -12 }) as DOMRect;
+      virtualizer.append(row);
+      virtualizer.dispatchEvent(new Event("scroll"));
+      view.remove();
+      document.body.append(view);
+      await view.updateComplete;
+      if (input === "keyboard")
+        virtualizer.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
+      else if (input !== "programmatic")
+        virtualizer.dispatchEvent(new Event(input, { bubbles: true }));
+      virtualizer.scrollTop = 240;
+      virtualizer.dispatchEvent(new Event("scroll"));
+      complete();
+      await layout;
+      await Promise.resolve();
+      expect(virtualizer.scrollTop).toBe(input === "programmatic" ? 252 : 240);
+    },
+  );
   it("renders history without live controls or needing a live snapshot", async () => {
     const view = new LensOverlayView();
     view.active = true;
@@ -126,7 +272,7 @@ describe("canonical session renderer", () => {
     const rendered = view.shadowRoot!.querySelector<LensSessionDocument>("lens-session-document")!;
     await rendered.updateComplete;
     expect(rendered.document).toBe(documentModel);
-    expect(rendered.shadowRoot!.querySelectorAll("article")).toHaveLength(3);
+    expect(conversationRows(rendered.document)).toHaveLength(6);
   });
 });
 

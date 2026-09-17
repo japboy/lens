@@ -25,6 +25,7 @@ export function historyPresentation(
     if (entry.kind === "tool" && entry.accepted_html)
       content.push({ type: "html", text: entry.accepted_html });
     content.forEach((block, index) => {
+      if (block.type === "deferred") return;
       if (block.type === "html") {
         const resourceId = `${identity}:${entry.id}:${index}`;
         // The normal media presenter supports one HTML artifact: retain the latest.

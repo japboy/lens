@@ -1,5 +1,11 @@
 import { historyPresentation } from "../application/history-presentation";
-import { isHistoryView, type SessionView } from "../application/session-document";
+import {
+  isHistoryView,
+  type SessionView,
+  type DeferredDocumentBlock,
+  type DocumentBlock,
+} from "../application/session-document";
+import { cache } from "lit/directives/cache.js";
 import { initialOverlayState } from "../rendering/initial-state";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
@@ -1596,6 +1602,9 @@ export class LensOverlayView extends LitElement {
   ];
 
   @property({ attribute: false }) sessionView: SessionView | undefined;
+  @property({ attribute: false }) loadSessionBlock:
+    | ((block: DeferredDocumentBlock) => Promise<DocumentBlock>)
+    | undefined;
   @property({ type: Boolean }) active = initialOverlayState().active;
   @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
@@ -1810,7 +1819,7 @@ export class LensOverlayView extends LitElement {
                 </section>`
               : nothing
           }
-          ${this.renderActivePanel(lens, displayLens, sourceJson)}
+          ${cache(this.renderActivePanel(lens, displayLens, sourceJson))}
         </main>
 
         <div id="lens-progress-notification" class="lens-progress-region">
@@ -1925,7 +1934,7 @@ export class LensOverlayView extends LitElement {
 
   private renderHistory() {
     const view = this.sessionView!;
-    const identity = `${view.agent}:${view.session_id}`;
+    const identity = `${view.agent}:${view.session_id}${view.generation ? `:${view.generation}` : ""}`;
     const output = historyPresentation(view.document, identity);
     const activeTab = this.activeTab === "conversation" ? "conversation" : "interpretation";
     return html`<div class="overlay-shell" @lens-agent-output-intent=${this.forwardOutputIntent}>
@@ -1947,21 +1956,22 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="${activeTab}-tab"
           tabindex="0"
         >
-          ${
+          ${cache(
             view.phase === "ready"
               ? activeTab === "conversation"
                 ? html`<div class="lens-content">
                     <lens-session-document
-                      .document=${view.document}
+                      .document=${view.conversation ?? view.document}
                       .identity=${identity}
+                      .loadBlock=${this.loadSessionBlock}
                     ></lens-session-document>
                   </div>`
                 : html`<lens-agent-output
                     .presentation=${output.presentation}
                     .htmlContent=${output.htmlContent}
                   ></lens-agent-output>`
-              : nothing
-          }
+              : nothing,
+          )}
         </section>
       </main>
       <footer class="overlay-footer">
@@ -1992,8 +2002,9 @@ export class LensOverlayView extends LitElement {
             : nothing
         }
         <lens-session-document
-          .document=${this.sessionView?.phase === "live" ? this.sessionView.document : undefined}
-          .identity=${`${this.sessionView?.agent}:${this.sessionView?.session_id}`}
+          .document=${this.sessionView?.phase === "live" ? (this.sessionView.conversation ?? this.sessionView.document) : undefined}
+          .identity=${`${this.sessionView?.agent}:${this.sessionView?.session_id}:${this.sessionView?.generation ?? "legacy"}`}
+          .loadBlock=${this.loadSessionBlock}
         ></lens-session-document>
       </section>`;
     if (!lens || !displayLens)

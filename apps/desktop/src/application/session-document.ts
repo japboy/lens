@@ -1,6 +1,16 @@
 import type { AgentKind } from "../types";
 
+export interface DeferredDocumentBlock {
+  type: "deferred";
+  entry_id: string;
+  block_index: number;
+  content_type: "markdown" | "image" | "html" | "unsupported";
+  revision: number;
+  byte_length: number;
+  append_only?: boolean;
+}
 export type DocumentBlock =
+  | DeferredDocumentBlock
   | { type: "markdown"; text: string }
   | { type: "image"; mime_type: string; data: string }
   | { type: "html"; text: string }
@@ -20,6 +30,9 @@ export interface SessionDocument {
 }
 export interface SessionView {
   revision: number;
+  generation?: string;
+  conversation?: SessionDocument;
+  patch?: { base_revision: number; index: number; entry: SessionEntry };
   phase: "idle" | "live" | "loading" | "ready" | "failed";
   agent?: AgentKind;
   session_id?: string;
