@@ -97,12 +97,33 @@ fn history_answer_entries(document: &SessionDocument) -> &[DocumentEntry] {
             }
         )
     };
-    let latest_media = document.entries.iter().rposition(|entry| {
-        matches!(entry, DocumentEntry::Tool { status, blocks, accepted_html, .. }
-            if *status == agent_client_protocol::schema::v1::ToolCallStatus::Completed
-                && (accepted_html.is_some()
-                    || blocks.iter().any(|block| matches!(block,
-                        DocumentBlock::Html { .. } | DocumentBlock::Image { .. }))))
+    let has_media = |blocks: &[DocumentBlock]| {
+        blocks.iter().any(|block| {
+            matches!(
+                block,
+                DocumentBlock::Html { .. } | DocumentBlock::Image { .. }
+            )
+        })
+    };
+    let latest_media = document.entries.iter().rposition(|entry| match entry {
+        DocumentEntry::Message {
+            role: MessageRole::Assistant,
+            blocks,
+            ..
+        } => has_media(blocks),
+        DocumentEntry::Message {
+            role: MessageRole::User,
+            ..
+        } => false,
+        DocumentEntry::Tool {
+            status,
+            blocks,
+            accepted_html,
+            ..
+        } => {
+            *status == agent_client_protocol::schema::v1::ToolCallStatus::Completed
+                && (accepted_html.is_some() || has_media(blocks))
+        }
     });
     let end = latest_media
         .and_then(|index| {
@@ -437,6 +458,111 @@ mod tests {
                 message("a1", MessageRole::Assistant, "second narrative"),
             ]
         );
+    }
+
+    #[test]
+    fn history_retains_assistant_media_from_replayed_chunks() {
+        use agent_client_protocol::schema::v1::{
+            ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent,
+            SessionUpdate, TextContent, TextResourceContents,
+        };
+        let html = ContentBlock::Resource(EmbeddedResource::new(
+            EmbeddedResourceResource::TextResourceContents(
+                TextResourceContents::new("<p>Synthetic result</p>", "urn:test:retained-html")
+                    .mime_type("text/html"),
+            ),
+        ));
+        let image = ContentBlock::Image(ImageContent::new("c3ludGhldGlj", "image/png"));
+        for media in [html, image] {
+            let mut document = SessionDocument::default();
+            document
+                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(
+                    ContentBlock::Text(TextContent::new("initial")),
+                )))
+                .unwrap();
+            document
+                .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                    media.clone(),
+                )))
+                .unwrap();
+            let expected = document.entries[1..].to_vec();
+            // User-supplied media must not replace the preceding assistant result.
+            document
+                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(media)))
+                .unwrap();
+            document
+                .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                    ContentBlock::Text(TextContent::new("working on the update")),
+                )))
+                .unwrap();
+            let retained = history_view(document.entries.clone()).wire(None);
+            assert_eq!(retained.document.unwrap().entries, expected);
+            document
+                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(
+                    ContentBlock::Text(TextContent::new("another pending update")),
+                )))
+                .unwrap();
+            let count = document.entries.len();
+            let wire = history_view(document.entries).wire(None);
+            assert_eq!(wire.document.unwrap().entries, expected);
+            assert_eq!(wire.conversation.unwrap().entries.len(), count);
+        }
+    }
+
+    #[test]
+    fn history_does_not_replace_assistant_media_with_unsuccessful_tool_media() {
+        let output = DocumentEntry::Message {
+            id: "assistant-media".into(),
+            role: MessageRole::Assistant,
+            blocks: vec![DocumentBlock::Html {
+                text: "<p>retained result</p>".into(),
+            }],
+        };
+        for status in [
+            ToolCallStatus::Pending,
+            ToolCallStatus::InProgress,
+            ToolCallStatus::Failed,
+        ] {
+            let wire = history_view(vec![
+                output.clone(),
+                message("u1", MessageRole::User, "update"),
+                DocumentEntry::Tool {
+                    id: "unsuccessful-media".into(),
+                    title: "Synthetic media".into(),
+                    status,
+                    blocks: vec![DocumentBlock::Image {
+                        mime_type: "image/png".into(),
+                        data: "c3ludGhldGlj".into(),
+                    }],
+                    accepted_html: None,
+                },
+            ])
+            .wire(None);
+            assert_eq!(wire.document.unwrap().entries, vec![output.clone()]);
+        }
+    }
+
+    #[test]
+    fn history_selects_new_assistant_media_without_mixing_updates() {
+        let output = DocumentEntry::Message {
+            id: "new-media".into(),
+            role: MessageRole::Assistant,
+            blocks: vec![DocumentBlock::Html {
+                text: "<p>new assistant result</p>".into(),
+            }],
+        };
+        let narrative = message("a1", MessageRole::Assistant, "new narrative");
+        let wire = history_view(vec![
+            message("u0", MessageRole::User, "initial"),
+            publication("p0", ToolCallStatus::Completed, Some("<p>old result</p>")),
+            message("a0", MessageRole::Assistant, "old narrative"),
+            message("u1", MessageRole::User, "update"),
+            output.clone(),
+            narrative.clone(),
+            message("u2", MessageRole::User, "pending"),
+        ])
+        .wire(None);
+        assert_eq!(wire.document.unwrap().entries, vec![output, narrative]);
     }
 
     #[test]
