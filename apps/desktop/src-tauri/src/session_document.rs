@@ -400,30 +400,15 @@ impl SessionDocument {
                     })
                     .collect();
             }
-            // Codex supplies MCP results in rawOutput instead of ACP tool content.
+            // Adapters can supply tool results in rawOutput instead of ACP content.
             // Explicit content (including an update clearing it) remains authoritative.
             // Retained raw output is projected on completion even if it arrived earlier.
             if !evidence.explicit_content {
                 blocks.clear();
             }
             if !evidence.explicit_content && *status == ToolCallStatus::Completed {
-                if let Some(items) = evidence
-                    .output
-                    .as_ref()
-                    .and_then(successful_tool_result)
-                    .and_then(|result| result.get("content"))
-                    .and_then(Value::as_array)
-                {
-                    *blocks = items
-                        .iter()
-                        .map(|item| {
-                            serde_json::from_value::<ContentBlock>(item.clone())
-                                .map(convert)
-                                .unwrap_or_else(|_| DocumentBlock::Unsupported {
-                                    content_type: "tool result content".into(),
-                                })
-                        })
-                        .collect();
+                if let Some(result) = evidence.output.as_ref().and_then(successful_tool_result) {
+                    *blocks = result.blocks();
                 }
             }
             *accepted_html = if *status == ToolCallStatus::Completed {
@@ -435,18 +420,82 @@ impl SessionDocument {
     }
 }
 
-/// Unwrap the adapter's MCP result envelope without treating errors as success.
-fn successful_tool_result(output: &Value) -> Option<&Value> {
-    if output.get("isError") == Some(&Value::Bool(true))
+/// Borrowed adapter payload shapes; strings are text, never recursive envelopes.
+enum SuccessfulToolResult<'a> {
+    Structured(&'a Value),
+    Content(&'a [Value]),
+    Text(&'a str),
+}
+
+impl SuccessfulToolResult<'_> {
+    fn blocks(&self) -> Vec<DocumentBlock> {
+        match self {
+            Self::Structured(value) => value
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|items| Self::Content(items).blocks())
+                .unwrap_or_default(),
+            Self::Content(items) => items
+                .iter()
+                .map(|item| {
+                    serde_json::from_value::<ContentBlock>(item.clone())
+                        .map(convert)
+                        .unwrap_or_else(|_| DocumentBlock::Unsupported {
+                            content_type: "tool result content".into(),
+                        })
+                })
+                .collect(),
+            Self::Text(text) => vec![DocumentBlock::Markdown {
+                text: (*text).to_owned(),
+            }],
+        }
+    }
+
+    fn has_receipt(&self) -> bool {
+        match self {
+            Self::Structured(value) => {
+                receipt(value)
+                    || value
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| Self::Content(items).has_receipt())
+            }
+            Self::Content(items) => items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("text")
+                    && item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(text_receipt)
+            }),
+            Self::Text(text) => text_receipt(text),
+        }
+    }
+}
+
+fn failed_tool_result(output: &Value) -> bool {
+    output.get("isError") == Some(&Value::Bool(true))
         || output.get("error").is_some_and(|error| !error.is_null())
-    {
+}
+
+/// Check errors before normalizing Codex envelopes and Claude content/text payloads.
+fn successful_tool_result(output: &Value) -> Option<SuccessfulToolResult<'_>> {
+    if failed_tool_result(output) {
         return None;
     }
     let result = output.get("result").unwrap_or(output);
-    if !result.is_object() || result.get("isError") == Some(&Value::Bool(true)) {
+    if failed_tool_result(result) {
         return None;
     }
-    Some(result)
+    match result {
+        Value::Object(_) => Some(SuccessfulToolResult::Structured(result)),
+        Value::Array(items) => Some(SuccessfulToolResult::Content(items)),
+        Value::String(text) => Some(SuccessfulToolResult::Text(text)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => None,
+    }
+}
+
+fn text_receipt(text: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|value| receipt(&value))
 }
 
 fn receipt(value: &Value) -> bool {
@@ -477,9 +526,10 @@ fn accepted_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Op
         Some(output) => Some(successful_tool_result(output)?),
         None => None,
     };
-    let accepted = output.is_some_and(|output| {
-        receipt(output) || output.get("content").and_then(Value::as_array).is_some_and(|items| items.iter().any(|item| item.get("text").and_then(Value::as_str).and_then(|text| serde_json::from_str::<Value>(text).ok()).is_some_and(|v| receipt(&v))))
-    }) || blocks.iter().any(|block| matches!(block, DocumentBlock::Markdown { text } if serde_json::from_str::<Value>(text).is_ok_and(|value| receipt(&value))));
+    let accepted = output.is_some_and(|output| output.has_receipt())
+        || blocks
+            .iter()
+            .any(|block| matches!(block, DocumentBlock::Markdown { text } if text_receipt(text)));
     accepted.then(|| html.to_owned())
 }
 
@@ -654,6 +704,106 @@ mod tests {
     }
 
     #[test]
+    fn claude_receipt_array_and_string_restore_html_on_sparse_completion() {
+        let receipt = serde_json::json!({"accepted":true,"publication_id":"e9e57747-88ed-47b7-a301-47f6c13e4503"}).to_string();
+        for output in [
+            serde_json::json!([{"type":"text","text":receipt}]),
+            serde_json::json!(receipt),
+        ] {
+            let mut document = SessionDocument::default();
+            document.record_update(SessionUpdate::ToolCall(
+                ToolCall::new("publication", "mcp__lens_output__publish_html")
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(serde_json::json!({"html":"<h1>Claude</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}))
+                    .raw_output(output),
+            )).unwrap();
+            document
+                .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "publication",
+                    ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                )))
+                .unwrap();
+            assert!(
+                matches!(&document.entries[0], DocumentEntry::Tool { blocks, accepted_html: Some(html), .. }
+                if html == "<h1>Claude</h1>" && blocks == &vec![DocumentBlock::Markdown { text: receipt.clone() }])
+            );
+            assert_accounting(&document);
+        }
+    }
+
+    #[test]
+    fn failed_or_unsupported_results_cannot_be_overridden_by_receipt_content() {
+        let accepted = serde_json::json!({"accepted":true,"publication_id":"e9e57747-88ed-47b7-a301-47f6c13e4503"});
+        let blocks = [DocumentBlock::Markdown {
+            text: accepted.to_string(),
+        }];
+        for output in [
+            Value::Null,
+            serde_json::json!(true),
+            serde_json::json!(42),
+            serde_json::json!({"result":null,"error":null}),
+            serde_json::json!({"isError":true,"content":[{"type":"text","text":accepted.to_string()}]}),
+            serde_json::json!({"result":accepted,"error":"failed"}),
+            serde_json::json!({"result":accepted,"isError":true}),
+            serde_json::json!({"result":{"isError":true,"accepted":true,"publication_id":accepted["publication_id"]}}),
+            serde_json::json!({"result":{"error":"failed","accepted":true,"publication_id":accepted["publication_id"]}}),
+        ] {
+            let evidence = ToolEvidence {
+                input: Some(
+                    serde_json::json!({"html":"<h1>Rejected</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}),
+                ),
+                output: Some(output),
+                ..Default::default()
+            };
+            assert!(accepted_publication(&evidence, &blocks).is_none());
+        }
+    }
+
+    #[test]
+    fn claude_receipts_require_completed_status_and_valid_receipt() {
+        let receipt = serde_json::json!({"accepted":true,"publication_id":"e9e57747-88ed-47b7-a301-47f6c13e4503"}).to_string();
+        for output in [
+            serde_json::json!([{"type":"text","text":receipt}]),
+            serde_json::json!(receipt),
+        ] {
+            let mut document = SessionDocument::default();
+            document.record_update(SessionUpdate::ToolCall(
+                ToolCall::new("publication", "publish_html")
+                    .status(ToolCallStatus::Completed)
+                    .raw_input(serde_json::json!({"html":"<h1>Accepted</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}))
+                    .raw_output(output),
+            )).unwrap();
+            assert!(matches!(
+                &document.entries[0],
+                DocumentEntry::Tool {
+                    accepted_html: Some(_),
+                    ..
+                }
+            ));
+            document
+                .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "publication",
+                    ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
+                )))
+                .unwrap();
+            assert!(
+                matches!(&document.entries[0], DocumentEntry::Tool { blocks, accepted_html: None, .. } if blocks.is_empty())
+            );
+            for invalid in [
+                "not JSON".to_string(),
+                serde_json::json!({"accepted":false,"publication_id":"e9e57747-88ed-47b7-a301-47f6c13e4503"}).to_string(),
+                serde_json::json!({"accepted":true,"publication_id":"00000000-0000-0000-0000-000000000000"}).to_string(),
+            ] {
+                document.record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "publication", ToolCallUpdateFields::new().status(ToolCallStatus::Completed)
+                        .raw_output(serde_json::json!([{"type":"text","text":invalid}])),
+                ))).unwrap();
+                assert!(matches!(&document.entries[0], DocumentEntry::Tool { accepted_html: None, .. }));
+            }
+        }
+    }
+
+    #[test]
     fn codex_modern_receipt_unwraps_result_without_weakening_turn_or_error_checks() {
         let evidence = ToolEvidence {
             input: Some(
@@ -717,39 +867,44 @@ mod tests {
 
     #[test]
     fn raw_mcp_results_do_not_replace_explicit_content_and_explicit_empty_clears() {
-        let mut document = SessionDocument::default();
-        let output = codex_result(serde_json::json!([{"type":"text","text":"raw"}]));
-        document
-            .record_update(SessionUpdate::ToolCall(
-                ToolCall::new("tool", "Tool")
-                    .status(ToolCallStatus::Completed)
-                    .content(vec![text("explicit").into()])
-                    .raw_output(output.clone()),
-            ))
-            .unwrap();
-        assert!(
-            matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. }
+        for output in [
+            codex_result(serde_json::json!([{"type":"text","text":"raw"}])),
+            serde_json::json!([{"type":"text","text":"raw"}]),
+            serde_json::json!("raw"),
+        ] {
+            let mut document = SessionDocument::default();
+            document
+                .record_update(SessionUpdate::ToolCall(
+                    ToolCall::new("tool", "Tool")
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![text("explicit").into()])
+                        .raw_output(output.clone()),
+                ))
+                .unwrap();
+            assert!(
+                matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. }
             if blocks == &vec![DocumentBlock::Markdown { text: "explicit".into() }])
-        );
-        document
-            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                "tool",
-                ToolCallUpdateFields::new()
-                    .content(vec![])
-                    .raw_output(output.clone()),
-            )))
-            .unwrap();
-        document
-            .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                "tool",
-                ToolCallUpdateFields::new()
-                    .status(ToolCallStatus::Completed)
-                    .raw_output(output),
-            )))
-            .unwrap();
-        assert!(
-            matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. } if blocks.is_empty())
-        );
+            );
+            document
+                .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tool",
+                    ToolCallUpdateFields::new()
+                        .content(vec![])
+                        .raw_output(output.clone()),
+                )))
+                .unwrap();
+            document
+                .record_update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tool",
+                    ToolCallUpdateFields::new()
+                        .status(ToolCallStatus::Completed)
+                        .raw_output(output),
+                )))
+                .unwrap();
+            assert!(
+                matches!(&document.entries[0], DocumentEntry::Tool { blocks, .. } if blocks.is_empty())
+            );
+        }
     }
     #[test]
     fn raw_mcp_result_before_completion_is_projected_on_sparse_completion() {
