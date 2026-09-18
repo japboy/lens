@@ -68,6 +68,7 @@ export interface WebviewPort {
   ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
   getAppSnapshot(): Promise<AppSnapshot>;
+  openScreenRecordingSettings(): Promise<void>;
   getAccessibilityPermission(): Promise<boolean>;
   requestAccessibilityPermission(): Promise<boolean>;
   setAgent(agent: AgentKind): Promise<void>;
@@ -133,6 +134,7 @@ export const tauriWebviewPort: WebviewPort = {
     return listen<AppSnapshot>("app-state-changed", ({ payload }) => listener(payload));
   },
   getAppSnapshot: () => invoke<AppSnapshot>("get_app_snapshot"),
+  openScreenRecordingSettings: () => invoke<void>("open_screen_recording_settings"),
   getAccessibilityPermission: () => invoke<boolean>("accessibility_permission"),
   requestAccessibilityPermission: () => invoke<boolean>("request_accessibility_permission"),
   async setAgent(agent) {

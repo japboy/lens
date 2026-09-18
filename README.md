@@ -26,7 +26,7 @@ You will need:
 
 - An Apple silicon Mac running macOS 15.2 or later.
 - Access to Claude or Codex and an internet connection.
-- Accessibility permission to read window content, and Screen Recording permission to capture images.
+- Accessibility permission to read window content. The macOS window picker authorizes image capture for the windows you select.
 
 ## How to use
 
@@ -57,4 +57,4 @@ Markdown responses and static HTML previews support TeX math: use `\(...\)` for 
 
 ## Content access
 
-Lens reads the windows you explicitly select and sends their text and captured images to your chosen Agent. Available content depends on what each application exposes to macOS Accessibility. If readable content is unavailable, Lens attempts to use a window image instead. Text remains usable without Screen Recording permission when Accessibility content is available.
+Lens reads the windows you explicitly select and sends their text and captured images to your chosen Agent. Available content depends on what each application exposes to macOS Accessibility. If readable content is unavailable, Lens attempts to use a window image instead. The macOS window picker handles authorization for selected-window capture without requiring a separate global Screen Recording grant. Privacy & Security in Lens Settings also provides access to the system’s Screen & System Audio Recording settings. Lens does not record audio.

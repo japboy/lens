@@ -84,6 +84,7 @@ function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestinati
     case "choose-directory":
       return "connection";
     case "request-accessibility-permission":
+    case "open-screen-recording-settings":
       return "privacy-security";
     case "update-prompt-presets":
     case "save-agent-prompt-template":
@@ -112,7 +113,7 @@ function connectionFeedback(connection: SnapshotConnectionState): SettingsFeedba
   }
 }
 
-function settingsFeedback(
+export function settingsFeedback(
   command: CommandState,
   connection: SnapshotConnectionState,
 ): SettingsFeedback {

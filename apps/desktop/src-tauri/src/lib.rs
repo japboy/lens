@@ -119,6 +119,7 @@ fn command_handler<R: tauri::Runtime>(
         commands::set_agent_prompt_template,
         commands::update_prompt_presets,
         commands::reset_agent_prompt_template,
+        commands::open_screen_recording_settings,
         commands::accessibility_permission,
         commands::request_accessibility_permission,
         commands::select_lens_target,
