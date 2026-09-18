@@ -289,7 +289,6 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
                 kind,
                 adapter_name: "fixture-codex",
                 adapter_version: "1.0.0".into(),
-                safe_mode_id: "unused",
                 command: "/must-not-spawn".into(),
                 args: vec![],
                 installation: None,
@@ -498,7 +497,7 @@ fn same_provider_history_preserves_selection_identity_and_settings_catalog() {
         candidate: Some(AgentKind::Codex),
         stage: AgentSelectionStage::Selected,
         config_options: Some(vec![]),
-        policy_default: Some("read-only".into()),
+        agent_default: Some("read-only".into()),
         message: Some("Verified".into()),
         ..Default::default()
     };
@@ -511,7 +510,7 @@ fn cross_provider_history_choice_does_not_claim_live_readiness() {
         candidate: Some(AgentKind::Claude),
         stage: AgentSelectionStage::Selected,
         operation_id: Some(Uuid::new_v4()),
-        policy_default: Some("old-policy".into()),
+        agent_default: Some("old-policy".into()),
         ..Default::default()
     };
     let next = selection_after_history(&current, AgentKind::Codex);
@@ -522,7 +521,7 @@ fn cross_provider_history_choice_does_not_claim_live_readiness() {
     assert_eq!(next.selected_agent(), None);
     assert!(!next.can_select_lens_target());
     assert_eq!(next.config_options, None);
-    assert_eq!(next.policy_default, None);
+    assert_eq!(next.agent_default, None);
 }
 
 #[test]

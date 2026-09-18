@@ -28,7 +28,7 @@ use agent_client_protocol::{
             CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
             EmbeddedResourceResource, ImageContent, Implementation, InitializeRequest,
             LogoutRequest, PromptCapabilities, PromptRequest, RequestPermissionRequest,
-            SessionModeId, SessionNotification, StopReason, TextContent, TextResourceContents,
+            SessionNotification, StopReason, TextContent, TextResourceContents,
         },
         ProtocolVersion,
     },
@@ -127,7 +127,6 @@ struct AgentSessionMetadata<'a> {
     auth_methods: &'a [AgentAuthMethod],
     agent_info: Option<&'a (String, String)>,
     session_id: &'a str,
-    safe_mode_id: &'a str,
 }
 
 struct AgentTurnExecution<'a, R: tauri::Runtime> {
@@ -153,7 +152,6 @@ pub(crate) struct AgentDescriptor {
     kind: AgentKind,
     adapter_name: &'static str,
     adapter_version: String,
-    safe_mode_id: &'static str,
     command: PathBuf,
     args: Vec<String>,
     installation: Option<Arc<agent_runtime::RuntimeInstallation>>,
@@ -333,7 +331,6 @@ impl AgentDescriptor {
             kind: runtime.kind,
             adapter_name: runtime.adapter_name,
             adapter_version: runtime.adapter_version,
-            safe_mode_id: runtime.safe_mode_id,
             command: runtime.command,
             args: runtime.args,
             installation: runtime.installation,
@@ -345,7 +342,6 @@ impl AgentDescriptor {
             kind: self.kind,
             adapter_name: self.adapter_name,
             adapter_version: self.adapter_version.clone(),
-            safe_mode_id: self.safe_mode_id,
             command: self.command.clone(),
             args: self.args.clone(),
             installation: self.installation.clone(),
@@ -788,7 +784,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .cloned().collect::<Vec<_>>();
             if !model_choices.is_empty() {
                 let model_defaults = crate::agent_preferences::AgentDefaults { choices: model_choices, ..Default::default() };
-                if let Ok((resolved, _)) = session_controls::apply_defaults(&connection, session.session_id(), options.clone(), session.modes(), &model_defaults, descriptor.safe_mode_id).await {
+                if let Ok((resolved, _)) = session_controls::apply_defaults(&connection, session.session_id(), options.clone(), session.modes(), &model_defaults).await {
                     options = resolved;
                 }
             }
@@ -798,7 +794,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                     .modes()
                     .map(|m| m.available_modes.clone())
                     .unwrap_or_default();
-                selection.policy_default = Some(descriptor.safe_mode_id.into());
+                selection.agent_default = session_controls::advertised_mode(session.config_options(), session.modes()).ok().flatten();
             })
             .map_err(state_error)?;
             Ok(())
@@ -1275,28 +1271,27 @@ async fn run_persistent_session<R: tauri::Runtime>(
             };
             let session_id = session.session_id().clone();
             crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
-            if let Err(error) = session_controls::require_safe_mode(
-                session.config_options(), session.modes(), descriptor.safe_mode_id,
-            ) {
-                *startup = SessionStartup::Incompatible;
-                return Err(error);
-            }
+            let agent_default = session_controls::advertised_mode(session.config_options(), session.modes())?;
             let defaults = identity.config.agent_preferences.get(identity.config.agent);
             let setup = session_controls::apply_defaults(
                 &connection, &session_id, session.config_options().map(<[_]>::to_vec),
-                session.modes(), defaults, descriptor.safe_mode_id,
+                session.modes(), defaults,
             );
             let (initial_options, effective_mode) = tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(30), setup) => result.map_err(|_| state_error("Agent settings setup timed out".into()))??,
                 _ = shutdown.changed() => return Err(Error::request_cancelled()),
             };
-            let safe_mode_id = SessionModeId::new(effective_mode.clone());
             let (controls, control_requests) = SessionControls::new(
                 identity.operation_id, session_id.to_string(), descriptor.adapter_name.into(),
-                descriptor.safe_mode_id.into(), initial_options.clone(),
+                agent_default, initial_options.clone(),
                 session.modes().map(|m| m.available_modes.clone()).unwrap_or_default(), shutdown.clone(),
             )?;
-            controls.set_initial_authority(effective_mode, defaults.tools.clone())?;
+            let mode_key = initial_options.as_deref().map(session_controls::mode_option).transpose()?.flatten()
+                .map(|o| o.id.to_string()).or_else(|| initial_options.is_none().then(|| "mode".into()));
+            let origin = if defaults.choices.iter().any(|c| Some(&c.config_id) == mode_key.as_ref()) {
+                session_controls::ModeOrigin::User
+            } else { session_controls::ModeOrigin::AgentDefault };
+            controls.set_initial_authority(effective_mode.clone(), origin, defaults.tools.clone())?;
             if let Some(options) = initial_options { controls.replace_options(options)?; }
             controls.install(&app, &identity.config).map_err(state_error)?;
             let _control_lifetime = session_controls::ControlLifetime { app: app.clone(), controls: Arc::clone(&controls) };
@@ -1309,13 +1304,11 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 .map_err(state_error)?;
 
             let session_id_text = session_id.to_string();
-            let safe_mode_id_text = safe_mode_id.to_string();
             let session_metadata = AgentSessionMetadata {
                 descriptor: &descriptor,
                 auth_methods: &auth_methods,
                 agent_info: agent_info.as_ref(),
                 session_id: &session_id_text,
-                safe_mode_id: &safe_mode_id_text,
             };
             let mut applied_projection = None;
             let mut cadence = AgentTurnCadence::default();
@@ -1542,7 +1535,10 @@ fn prepare_agent_turn<R: tauri::Runtime>(
             }
             let mut run = metadata.descriptor.run_state(run_id);
             run.session_id = Some(metadata.session_id.into());
-            run.session_mode_id = Some(metadata.safe_mode_id.into());
+            run.session_mode_id = lens
+                .session_controls
+                .as_ref()
+                .and_then(|controls| controls.effective_mode.clone());
             run.auth_methods = metadata.auth_methods.to_vec();
             if let Some((name, version)) = metadata.agent_info {
                 run.adapter_name = name.clone();
@@ -2245,32 +2241,6 @@ fn auth_method_model(method: &AuthMethod) -> AgentAuthMethod {
     }
 }
 
-#[cfg(test)]
-fn required_safe_mode(
-    adapter_name: &str,
-    safe_mode_id: &str,
-    modes: Option<&agent_client_protocol::schema::v1::SessionModeState>,
-) -> Result<SessionModeId, Error> {
-    let modes = modes.ok_or_else(|| {
-        Error::invalid_params().data(format!(
-            "{adapter_name} did not advertise ACP session modes; refusing to send a prompt"
-        ))
-    })?;
-    modes
-        .available_modes
-        .iter()
-        .find(|mode| mode.id.to_string() == safe_mode_id)
-        .map(|mode| mode.id.clone())
-        .ok_or_else(|| {
-            Error::invalid_params().data(format!(
-                "{adapter_name} did not advertise required safe mode {safe_mode_id}; refusing to send a prompt"
-            ))
-        })
-}
-
-// Consume session notifications and requests through the same ActiveSession queue.
-// Global request handlers can overtake a queued tool update and lose its correlation.
-// Reserve responders here in receipt order; their connection-scoped waits never block this queue.
 pub(crate) async fn record_control_update<R: tauri::Runtime>(
     app: &AppHandle<R>,
     controls: &Arc<SessionControls>,
@@ -2299,8 +2269,7 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
                 _ => {}
             }
             if let Some(candidate) = candidate.as_mut() {
-                let effective = controls.snapshot().map_err(state_error)?.effective_mode;
-                changed = candidate.record_update(notification.update, &effective)?;
+                changed = candidate.record_update(notification.update)?;
             }
             controls.publish(app).map_err(state_error)?;
             Ok(())
@@ -2325,12 +2294,11 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
 async fn record_agent_output(
     dispatch: Dispatch,
     candidate: &mut AgentOutputCandidate,
-    safe_mode_id: &str,
 ) -> Result<bool, Error> {
     let mut changed = false;
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
-            changed = candidate.record_update(notification.update, safe_mode_id)?;
+            changed = candidate.record_update(notification.update)?;
             Ok(())
         })
         .await
@@ -2583,7 +2551,6 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
                     session.config_options().map(<[_]>::to_vec),
                     session.modes(),
                     defaults,
-                    descriptor.safe_mode_id,
                 )
                 .await?;
                 Ok(options)
@@ -2608,7 +2575,6 @@ mod tests {
         model::{Bounds, ExtractionQuality, SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
-    use agent_client_protocol::schema::v1::{SessionMode, SessionModeState};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
         use adapter_output_mcp::HttpPublisher;
@@ -2886,7 +2852,6 @@ mod tests {
             adapter_name: "@agentclientprotocol/codex-acp",
             adapter_version: "1.6.2".into(),
             installation: None,
-            safe_mode_id: "read-only",
             command: PathBuf::from("/managed/node"),
             args: vec![],
         };
@@ -3292,28 +3257,21 @@ mod tests {
         };
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new("New ")))
-                        .message_id("new"),
-                ),
-                "read-only",
-            )
+            .record_update(SessionUpdate::AgentMessageChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new("New "))).message_id("new"),
+            ))
             .expect("first update");
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new("representation")))
-                        .message_id("new"),
-                ),
-                "read-only",
-            )
+            .record_update(SessionUpdate::AgentMessageChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new("representation")))
+                    .message_id("new"),
+            ))
             .expect("second update");
 
         candidate.record_update(serde_json::from_value(serde_json::json!({
             "sessionUpdate": "tool_call_update", "toolCallId": "generated-image", "status": "completed",
             "content": [{"type":"content", "content":{"type":"image", "mimeType":"image/png", "data":"aW1hZ2U="}}]
-        })).unwrap(), "read-only").unwrap();
+        })).unwrap()).unwrap();
         assert_eq!(lens.representation, Some(old_representation));
         assert!(lens.output_blocks.is_empty());
         finish_prompt_response(
@@ -3661,28 +3619,6 @@ mod tests {
         assert_eq!(lens.error, None);
     }
 
-    #[test]
-    fn required_safe_mode_is_selected_only_when_explicitly_advertised() {
-        let modes = SessionModeState::new(
-            "agent",
-            vec![
-                SessionMode::new("agent", "Agent"),
-                SessionMode::new("read-only", "Read-only"),
-            ],
-        );
-
-        assert_eq!(
-            required_safe_mode("@agentclientprotocol/codex-acp", "read-only", Some(&modes))
-                .expect("advertised safe mode")
-                .to_string(),
-            "read-only"
-        );
-        assert!(
-            required_safe_mode("@agentclientprotocol/codex-acp", "plan", Some(&modes)).is_err()
-        );
-        assert!(required_safe_mode("@agentclientprotocol/codex-acp", "read-only", None).is_err());
-    }
-
     #[tokio::test]
     async fn queued_session_update_precedes_ready_prompt_response() {
         let event = next_prompt_event(
@@ -3708,7 +3644,7 @@ mod tests {
                 &notification["params"],
             )
             .unwrap();
-            record_agent_output(Dispatch::Notification(message), &mut candidate, "read-only")
+            record_agent_output(Dispatch::Notification(message), &mut candidate)
                 .await
                 .unwrap();
         }

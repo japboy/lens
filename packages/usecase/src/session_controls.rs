@@ -51,10 +51,6 @@ pub enum InteractionStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InteractionDetails {
-    ModeTransition {
-        from: String,
-        to: String,
-    },
     Form {
         message: String,
         schema: serde_json::Value,
@@ -101,7 +97,7 @@ pub struct ConfigChange {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModeOrigin {
-    Policy,
+    AgentDefault,
     User,
     Agent,
 }
@@ -116,11 +112,11 @@ pub struct AgentSessionControlState {
     pub config_revision: u32,
     pub config_options: Option<Vec<SessionConfigOption>>,
     pub modes: Vec<SessionMode>,
-    pub effective_mode: String,
-    pub configured_mode: String,
+    pub effective_mode: Option<String>,
+    pub configured_mode: Option<String>,
     pub configured_origin: ModeOrigin,
     pub last_mode_origin: ModeOrigin,
-    pub policy_default: String,
+    pub agent_default: Option<String>,
     pub change: Option<ConfigChange>,
     pub notice: Option<String>,
     pub interactions: Vec<AgentInteraction>,
@@ -324,7 +320,7 @@ mod tests {
             }],
             "modes":[{"id":"safe","name":"Safe","_meta":{"vendor":true}}],
             "effective_mode":"safe", "configured_mode":"safe",
-            "configured_origin":"user", "last_mode_origin":"agent", "policy_default":"safe",
+            "configured_origin":"user", "last_mode_origin":"agent", "agent_default":"safe",
             "change":{"config_id":"mode","value":"safe","status":"succeeded"},
             "notice":null,
             "interactions":[{

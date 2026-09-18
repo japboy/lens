@@ -1009,6 +1009,45 @@ describe("Lens Settings", () => {
     }
   });
 
+  it("saves an advertised Agent mode without a separate privilege confirmation", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const { DEFAULT_AGENT_DEFAULTS } = await import("./components/lens-agent-defaults");
+    const previousSelection = snapshot.agent_selection;
+    snapshot.agent_selection = {
+      ...previousSelection,
+      operation_id: operationId,
+      agent_default: "default",
+      modes: [
+        { id: "default", name: "Default" },
+        { id: "write", name: "Write" },
+      ],
+    };
+    try {
+      const page = await createPage("settings");
+      const defaults = {
+        ...structuredClone(DEFAULT_AGENT_DEFAULTS),
+        choices: [{ config_id: "mode", value: "write" }],
+      };
+      page.querySelector("lens-settings-view")!.dispatchEvent(
+        new CustomEvent("lens-settings-intent", {
+          detail: { type: "save-agent-defaults", defaults },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("set_agent_defaults", {
+          selectionId: operationId,
+          defaults,
+        }),
+      );
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      snapshot.agent_selection = previousSelection;
+    }
+  });
+
   it("uses one System Settings-style navigation authority and one detail destination", async () => {
     const element = await createPage("settings");
     const settingsRoot = viewRoot(element, "lens-settings-view");

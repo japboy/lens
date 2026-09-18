@@ -50,7 +50,6 @@ pub struct ResolvedAgentRuntime {
     pub kind: AgentKind,
     pub adapter_name: &'static str,
     pub adapter_version: String,
-    pub safe_mode_id: &'static str,
     pub command: PathBuf,
     pub args: Vec<String>,
     pub(crate) installation: Option<std::sync::Arc<RuntimeInstallation>>,
@@ -84,7 +83,6 @@ struct Provider {
     kind: AgentKind,
     registry_id: &'static str,
     adapter_name: &'static str,
-    safe_mode_id: &'static str,
     bin_name: &'static str,
 }
 fn provider(kind: AgentKind) -> Provider {
@@ -93,14 +91,12 @@ fn provider(kind: AgentKind) -> Provider {
             kind,
             registry_id: "claude-acp",
             adapter_name: "@agentclientprotocol/claude-agent-acp",
-            safe_mode_id: "plan",
             bin_name: "claude-agent-acp",
         },
         AgentKind::Codex => Provider {
             kind,
             registry_id: "codex-acp",
             adapter_name: "@agentclientprotocol/codex-acp",
-            safe_mode_id: "read-only",
             bin_name: "codex-acp",
         },
     }
@@ -850,7 +846,6 @@ async fn verify_runtime_paths(
         kind: policy.kind,
         adapter_name: policy.adapter_name,
         adapter_version: version.into(),
-        safe_mode_id: policy.safe_mode_id,
         command: node,
         args: vec![entrypoint.to_string_lossy().into_owned()],
         installation: None,
@@ -1919,7 +1914,6 @@ mod tests {
             kind,
             adapter_name: policy.adapter_name,
             adapter_version: "1.2.3".into(),
-            safe_mode_id: policy.safe_mode_id,
             command: PathBuf::new(),
             args: vec![],
             installation: Some(acquire_lease(root, kind, id).unwrap()),

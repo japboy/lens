@@ -99,12 +99,38 @@ function expectSavedDisplay(element: LensAgentDefaults) {
 }
 
 describe("Model & Behavior selection persistence", () => {
-  it("keeps all seven editable policies collapsed while Save and Revert remain outside", async () => {
+  it("uses Agent default for unset options and Ask for Other requests", async () => {
+    const { element, intents } = await mount(structuredClone(DEFAULT_AGENT_DEFAULTS));
+    for (const label of ["Model", "Reasoning effort", "Mode"]) {
+      expect(select(element, label).value).toBe("");
+      expect(select(element, label).selectedOptions[0]?.textContent?.trim()).toBe("Agent default");
+    }
+    const other = element.querySelector<HTMLSelectElement>(
+      'select[aria-label="Other requests policy"]',
+    )!;
+    expect(other.value).toBe("ask");
+    expect(other.closest("label")?.textContent).toContain(
+      "Requests without a recognized classification",
+    );
+    expect(other.closest("label")?.textContent).toContain("including HTML output publication");
+    other.value = "deny";
+    other.dispatchEvent(new Event("change"));
+    await element.updateComplete;
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toMatchObject({
+      type: "save-defaults",
+      defaults: { choices: [], tools: { other: "deny" } },
+    });
+    click(element, "Revert");
+    await element.updateComplete;
+    expect(other.value).toBe("ask");
+  });
+  it("keeps all eight editable policies collapsed while Save and Revert remain outside", async () => {
     const { element, intents } = await mount();
     const details = element.querySelector<HTMLDetailsElement>("details")!;
     expect(details.open).toBe(false);
     const policies = details.querySelectorAll<HTMLSelectElement>('select[aria-label$=" policy"]');
-    expect(policies).toHaveLength(7);
+    expect(policies).toHaveLength(8);
     for (const policy of policies) {
       expect([...policy.options].map((option) => option.value)).toEqual(["ask", "allow", "deny"]);
       policy.value = "allow";
@@ -127,6 +153,7 @@ describe("Model & Behavior selection persistence", () => {
           delete: "allow",
           move: "allow",
           execute: "allow",
+          other: "allow",
         },
       },
     });
@@ -251,7 +278,7 @@ describe("Model & Behavior selection persistence", () => {
     click(element, "Save Defaults");
     expect(intents).toEqual([{ type: "save-defaults", defaults }]);
     await choose(element, "Mode", "");
-    expect(select(element, "Mode").selectedOptions[0]?.textContent).toContain("Lens safe default");
+    expect(select(element, "Mode").selectedOptions[0]?.textContent).toContain("Agent default");
     click(element, "Save Defaults");
     expect(intents.at(-1)).toMatchObject({ type: "save-defaults", defaults: { choices: [] } });
   });

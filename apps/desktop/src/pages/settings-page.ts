@@ -190,19 +190,9 @@ export class SettingsPage extends ReactiveElement {
         const snapshot = this.snapshots.snapshot;
         const selection = snapshot?.agent_selection;
         if (!selection?.operation_id) return;
-        const modeId = selection.config_options?.find((o) => o.category === "mode")?.id ?? "mode";
-        const mode = intent.defaults.choices.find((c) => c.config_id === modeId)?.value;
-        const elevated = Boolean(mode && mode !== selection.policy_default);
-        const approved =
-          !elevated ||
-          (await this.port.confirmAction(
-            `Use mode ${mode} for all new sessions of this Agent? It may allow changes or commands. Tool approval policies remain separate.`,
-            "Save Shared Agent Mode",
-          ));
-        if (!approved) return;
         await this.commands.run(
           identity,
-          () => this.port.setAgentDefaults(selection.operation_id!, intent.defaults, elevated),
+          () => this.port.setAgentDefaults(selection.operation_id!, intent.defaults),
           "Shared Agent settings saved.",
         );
         return;

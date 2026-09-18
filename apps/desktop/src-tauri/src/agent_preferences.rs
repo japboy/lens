@@ -11,7 +11,7 @@ pub fn policy_for_tool(policies: &ToolPolicies, kind: ToolKind) -> ToolPolicy {
         ToolKind::Delete => policies.delete,
         ToolKind::Move => policies.r#move,
         ToolKind::Execute => policies.execute,
-        _ => ToolPolicy::Ask,
+        _ => policies.other,
     }
 }
 
@@ -29,6 +29,7 @@ mod tests {
             delete: ToolPolicy::Deny,
             r#move: ToolPolicy::Ask,
             execute: ToolPolicy::Allow,
+            other: ToolPolicy::Deny,
         };
         for (kind, expected) in [
             (ToolKind::Read, policies.read),
@@ -38,7 +39,7 @@ mod tests {
             (ToolKind::Delete, policies.delete),
             (ToolKind::Move, policies.r#move),
             (ToolKind::Execute, policies.execute),
-            (ToolKind::Other, ToolPolicy::Ask),
+            (ToolKind::Other, policies.other),
         ] {
             assert_eq!(policy_for_tool(&policies, kind), expected);
         }

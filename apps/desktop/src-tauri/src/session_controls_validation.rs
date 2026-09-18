@@ -46,7 +46,7 @@ fn install<R: tauri::Runtime>(
         operation,
         "fixture-session".into(),
         "Validation Agent".into(),
-        "safe".into(),
+        Some("safe".into()),
         Some(options()),
         vec![],
         receiver,
@@ -173,13 +173,13 @@ async fn protocol_and_ui<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Er
             let before = controls.snapshot().unwrap().interactions.len();
             let saved = crate::agent_preferences::AgentDefaults { tools: crate::agent_preferences::ToolPolicies {read:policy, ..Default::default()}, ..Default::default() };
             let restored: crate::agent_preferences::AgentDefaults = serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap();
-            controls.set_initial_authority("safe".into(), restored.tools)?;
+            controls.set_initial_authority(Some("safe".into()), super::ModeOrigin::AgentDefault, restored.tools)?;
             let response = connection.send_request(permission("Automatic permission fixture")).block_task().await?;
             check(serde_json::to_value(response).unwrap()["outcome"]["optionId"] == expected, "Automatic response did not select exact one-shot ID")?;
             check(controls.snapshot().unwrap().interactions.len() == before, "Automatic response opened a dialog")?;
             println!("LENS_INTERACTION_CASE=automatic_{expected}:passed");
         }
-        controls.set_initial_authority("safe".into(), Default::default())?;
+        controls.set_initial_authority(Some("safe".into()), super::ModeOrigin::AgentDefault, Default::default())?;
         for (button, expected) in [("Send response", "accept"), ("Decline", "decline")] {
             ui_response(app, "Native form fixture", button)?;
             let response = connection.send_request(form()).block_task().await?;

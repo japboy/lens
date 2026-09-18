@@ -295,7 +295,6 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                                 "agent": runtime.kind,
                                 "adapter_name": runtime.adapter_name,
                                 "adapter_version": runtime.adapter_version,
-                                "safe_mode_id": runtime.safe_mode_id,
                             }),
                             0,
                         ),
@@ -842,7 +841,7 @@ fn rich_output_validation_blocks() -> Result<Vec<model::LensOutputBlock>, String
             );
         }
         candidate
-            .record_update(notification.params.update, "read-only")
+            .record_update(notification.params.update)
             .map_err(|error| error.to_string())?;
     }
     if !candidate.has_output() {

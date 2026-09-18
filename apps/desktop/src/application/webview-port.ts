@@ -48,11 +48,7 @@ export interface WebviewPort {
   getAboutDocuments(): Promise<AboutDocuments>;
   showAbout(): Promise<void>;
   previewAgentModel(selectionId: string, configId: string, value?: string): Promise<void>;
-  setAgentDefaults(
-    selectionId: string,
-    defaults: AgentDefaults,
-    confirmPrivilege: boolean,
-  ): Promise<void>;
+  setAgentDefaults(selectionId: string, defaults: AgentDefaults): Promise<void>;
   setSessionOption(
     operationId: string,
     instanceId: string,
@@ -115,8 +111,8 @@ export const tauriWebviewPort: WebviewPort = {
   async previewAgentModel(selectionId, configId, value) {
     await invoke("preview_agent_model", { selectionId, configId, value });
   },
-  async setAgentDefaults(selectionId, defaults, confirmPrivilege) {
-    await invoke("set_agent_defaults", { selectionId, defaults, confirmPrivilege });
+  async setAgentDefaults(selectionId, defaults) {
+    await invoke("set_agent_defaults", { selectionId, defaults });
   },
   async setSessionOption(operationId, instanceId, configRevision, configId, value) {
     await invoke("set_session_option", {

@@ -18,8 +18,9 @@ function snapshot(): AgentSessionControlState {
     agent_name: "Synthetic Agent",
     active: true,
     config_revision: 4,
-    policy_default: "safe",
+    agent_default: "safe",
     effective_mode: "safe",
+    configured_mode: "safe",
     modes: [],
     config_options: [
       {
@@ -159,25 +160,27 @@ describe("session control boundary", () => {
     expect(element.querySelector("button")).toBeNull();
   });
 
-  it("requires a separate explicit mode confirmation", async () => {
+  it("displays the Agent's reported mode without an additional approval", async () => {
     const controls = snapshot();
-    controls.interactions = [
-      {
-        id: "mode",
-        sequence: 1,
-        status: "pending",
-        details: { kind: "mode_transition", from: "safe", to: "write" },
-      },
-    ];
     const element = await mount(controls);
     const intents: OverlayIntent[] = [];
     element.addEventListener("lens-overlay-intent", (e) =>
       intents.push((e as CustomEvent<OverlayIntent>).detail),
     );
-    expect(element.textContent).toContain("safe → write");
+    element.controls = { ...controls, effective_mode: "write", last_mode_origin: "agent" };
+    await element.updateComplete;
+    expect(element.querySelector("strong")?.textContent).toBe("write");
+    expect(element.querySelector("button")).toBeNull();
     expect(intents).toEqual([]);
-    click(element, "Confirm mode change");
-    expect(intents[0]).toMatchObject({ response: { action: "accept" } });
+  });
+  it("does not invent a mode when the Agent reports none", async () => {
+    const element = await mount({
+      ...snapshot(),
+      effective_mode: null,
+      configured_mode: null,
+      agent_default: null,
+    });
+    expect(element.querySelector("strong")?.textContent).toBe("Not reported by Agent");
   });
   it("collects typed form values without opening a URL implicitly", async () => {
     const controls = snapshot();
@@ -264,7 +267,7 @@ describe("shared Agent defaults", () => {
       candidate: "codex",
       auth_methods: [],
       config_options: snapshot().config_options,
-      policy_default: "safe",
+      agent_default: "safe",
     };
     document.body.append(element);
     await element.updateComplete;

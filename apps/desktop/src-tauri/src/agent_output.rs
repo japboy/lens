@@ -104,11 +104,7 @@ impl AgentOutputCandidate {
 
     /// Returns whether the displayable content changed. Protocol-only updates
     /// still advance the received-update count without becoming Interpretation.
-    pub(crate) fn record_update(
-        &mut self,
-        update: SessionUpdate,
-        safe_mode_id: &str,
-    ) -> Result<bool, Error> {
+    pub(crate) fn record_update(&mut self, update: SessionUpdate) -> Result<bool, Error> {
         self.received_updates = self.received_updates.checked_add(1).ok_or_else(|| {
             Error::internal_error().data("Agent update count exceeded the finite local limit")
         })?;
@@ -142,13 +138,6 @@ impl AgentOutputCandidate {
                 update.fields.status,
                 update.fields.content,
             ),
-            SessionUpdate::CurrentModeUpdate(update)
-                if update.current_mode_id.to_string() != safe_mode_id =>
-            {
-                Err(Error::invalid_params().data(format!(
-                    "ACP session left required safe mode {safe_mode_id}; refusing to continue"
-                )))
-            }
             _ => Ok(false),
         }
     }
@@ -481,8 +470,6 @@ mod tests {
         ImageContent, TextContent, ToolCall, ToolCallUpdate, ToolCallUpdateFields,
     };
 
-    const SAFE_MODE: &str = "read-only";
-
     fn html_resource(value: &str, mime: &str) -> ContentBlock {
         use agent_client_protocol::schema::v1::{EmbeddedResource, TextResourceContents};
         ContentBlock::Resource(EmbeddedResource::new(
@@ -495,9 +482,7 @@ mod tests {
     #[test]
     fn direct_publication_preserves_private_body_and_receipt_identity() {
         let mut candidate = AgentOutputCandidate::default();
-        candidate
-            .record_update(text("Summary", "result"), SAFE_MODE)
-            .unwrap();
+        candidate.record_update(text("Summary", "result")).unwrap();
         let id = uuid::Uuid::new_v4();
         let html = "<p>\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{7d50}\u{679c}</p>";
         candidate
@@ -538,13 +523,9 @@ mod tests {
         }
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
-                    "<p>upstream</p>",
-                    "text/html",
-                ))),
-                SAFE_MODE,
-            )
+            .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                html_resource("<p>upstream</p>", "text/html"),
+            )))
             .unwrap();
         assert!(candidate
             .accept_published_html(adapter_output_mcp::PublishedHtml {
@@ -559,13 +540,12 @@ mod tests {
     fn html_is_bounded_private_and_counts_as_output() {
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
+            .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                html_resource(
                     "<p>\u{65e5}\u{672c}\u{8a9e}</p>",
                     " Text/HTML; charset=utf-8",
-                ))),
-                SAFE_MODE,
-            )
+                ),
+            )))
             .unwrap();
         assert!(candidate.has_output());
         let blocks = candidate.blocks();
@@ -586,20 +566,16 @@ mod tests {
         assert!(public[0].get("text").is_none());
         assert!(!public.to_string().contains("\u{65e5}\u{672c}\u{8a9e}"));
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
-                    "second",
-                    "text/html",
-                ))),
-                SAFE_MODE,
-            )
+            .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                html_resource("second", "text/html"),
+            )))
             .unwrap();
         assert!(matches!(
             candidate.blocks()[1],
             LensOutputBlock::Unsupported { .. }
         ));
         candidate
-            .record_update(text("ordinary result", "message-2"), SAFE_MODE)
+            .record_update(text("ordinary result", "message-2"))
             .unwrap();
         assert!(matches!(
             candidate.blocks().last(),
@@ -654,13 +630,9 @@ mod tests {
                 .unwrap();
             assert_eq!(candidate.retained_html_count(None), 0);
             candidate
-                .record_update(
-                    SessionUpdate::AgentMessageChunk(ContentChunk::new(html_resource(
-                        "<p>final</p>",
-                        "text/html",
-                    ))),
-                    SAFE_MODE,
-                )
+                .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                    html_resource("<p>final</p>", "text/html"),
+                )))
                 .unwrap();
             assert!(matches!(
                 candidate.blocks().as_slice(),
@@ -742,7 +714,7 @@ mod tests {
                 ContentChunk::new(ContentBlock::Text(TextContent::new(value)))
                     .message_id("thought-1"),
             );
-            assert!(!candidate.record_update(update, SAFE_MODE).unwrap());
+            assert!(!candidate.record_update(update).unwrap());
         }
         assert_eq!(
             candidate.progress_text().as_deref(),
@@ -751,7 +723,7 @@ mod tests {
         assert!(candidate.blocks().is_empty());
         assert!(!candidate.has_output());
         candidate
-            .record_update(text("Result", "message-1"), SAFE_MODE)
+            .record_update(text("Result", "message-1"))
             .unwrap();
         assert_eq!(candidate.progress_text().as_deref(), Some("Result"));
         assert_eq!(candidate.blocks().len(), 1);
@@ -761,11 +733,11 @@ mod tests {
     fn progress_is_unicode_bounded_and_resets_at_message_and_turn_boundaries() {
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(text(&"\u{754c}".repeat(1000), "first"), SAFE_MODE)
+            .record_update(text(&"\u{754c}".repeat(1000), "first"))
             .unwrap();
         assert_eq!(candidate.progress_text().unwrap(), "\u{754c}".repeat(512));
         candidate
-            .record_update(text("New message", "second"), SAFE_MODE)
+            .record_update(text("New message", "second"))
             .unwrap();
         assert_eq!(candidate.progress_text().as_deref(), Some("New message"));
         assert!(AgentOutputCandidate::default().progress_text().is_none());
@@ -811,18 +783,15 @@ mod tests {
     fn completed_tool_snapshot_renders_images_without_exposing_tool_prose() {
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                completed(
-                    "image-1",
-                    vec![
-                        ContentBlock::Text(TextContent::new("Revised prompt: private tool detail"))
-                            .into(),
-                        image("aW1hZ2U="),
-                        image("c2Vjb25k"),
-                    ],
-                ),
-                SAFE_MODE,
-            )
+            .record_update(completed(
+                "image-1",
+                vec![
+                    ContentBlock::Text(TextContent::new("Revised prompt: private tool detail"))
+                        .into(),
+                    image("aW1hZ2U="),
+                    image("c2Vjb25k"),
+                ],
+            ))
             .unwrap();
         assert!(candidate.has_output());
         assert_eq!(image_data(&candidate), ["aW1hZ2U=", "c2Vjb25k"]);
@@ -835,31 +804,21 @@ mod tests {
     #[test]
     fn status_only_completion_publishes_retained_images_at_the_tool_position() {
         let mut candidate = AgentOutputCandidate::default();
+        candidate.record_update(text("Before", "before")).unwrap();
         candidate
-            .record_update(text("Before", "before"), SAFE_MODE)
+            .record_update(SessionUpdate::ToolCall(
+                ToolCall::new("image-1", "Generating")
+                    .status(ToolCallStatus::InProgress)
+                    .content(vec![image("aW1hZ2U=")]),
+            ))
             .unwrap();
-        candidate
-            .record_update(
-                SessionUpdate::ToolCall(
-                    ToolCall::new("image-1", "Generating")
-                        .status(ToolCallStatus::InProgress)
-                        .content(vec![image("aW1hZ2U=")]),
-                ),
-                SAFE_MODE,
-            )
-            .unwrap();
-        candidate
-            .record_update(text("After", "after"), SAFE_MODE)
-            .unwrap();
+        candidate.record_update(text("After", "after")).unwrap();
         assert!(image_data(&candidate).is_empty());
         assert!(candidate
-            .record_update(
-                update(
-                    "image-1",
-                    ToolCallUpdateFields::new().status(ToolCallStatus::Completed)
-                ),
-                SAFE_MODE
-            )
+            .record_update(update(
+                "image-1",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed)
+            ),)
             .unwrap());
         assert!(matches!(candidate.blocks().as_slice(), [
             LensOutputBlock::Markdown { text: before, .. },
@@ -877,19 +836,14 @@ mod tests {
                 .status(ToolCallStatus::Completed)
                 .content(vec![image("aW1hZ2U=")]),
         );
-        assert!(candidate.record_update(event.clone(), SAFE_MODE).unwrap());
-        candidate
-            .record_update(text("After", "after"), SAFE_MODE)
-            .unwrap();
-        assert!(!candidate.record_update(event, SAFE_MODE).unwrap());
+        assert!(candidate.record_update(event.clone()).unwrap());
+        candidate.record_update(text("After", "after")).unwrap();
+        assert!(!candidate.record_update(event).unwrap());
         assert!(!candidate
-            .record_update(
-                update(
-                    "image-1",
-                    ToolCallUpdateFields::new().title("Metadata only")
-                ),
-                SAFE_MODE
-            )
+            .record_update(update(
+                "image-1",
+                ToolCallUpdateFields::new().title("Metadata only")
+            ),)
             .unwrap());
         assert_eq!(image_data(&candidate), ["aW1hZ2U="]);
         assert_eq!(candidate.received_updates, 4);
@@ -899,22 +853,17 @@ mod tests {
     fn content_replaces_instead_of_appending_and_empty_content_clears() {
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                completed("image-1", vec![image("Zmlyc3Q="), image("c2Vjb25k")]),
-                SAFE_MODE,
-            )
+            .record_update(completed(
+                "image-1",
+                vec![image("Zmlyc3Q="), image("c2Vjb25k")],
+            ))
             .unwrap();
+        candidate.record_update(text("After", "after")).unwrap();
         candidate
-            .record_update(text("After", "after"), SAFE_MODE)
-            .unwrap();
-        candidate
-            .record_update(
-                update(
-                    "image-1",
-                    ToolCallUpdateFields::new().content(vec![image("cmVwbGFjZWQ=")]),
-                ),
-                SAFE_MODE,
-            )
+            .record_update(update(
+                "image-1",
+                ToolCallUpdateFields::new().content(vec![image("cmVwbGFjZWQ=")]),
+            ))
             .unwrap();
         assert_eq!(image_data(&candidate), ["cmVwbGFjZWQ="]);
         assert!(matches!(
@@ -922,10 +871,10 @@ mod tests {
             LensOutputBlock::Image { .. }
         ));
         candidate
-            .record_update(
-                update("image-1", ToolCallUpdateFields::new().content(vec![])),
-                SAFE_MODE,
-            )
+            .record_update(update(
+                "image-1",
+                ToolCallUpdateFields::new().content(vec![]),
+            ))
             .unwrap();
         assert!(image_data(&candidate).is_empty());
         assert_eq!(candidate.blocks().len(), 1);
@@ -935,45 +884,33 @@ mod tests {
     fn interleaved_tools_keep_creation_order_and_failed_tools_have_no_visible_media() {
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                SessionUpdate::ToolCall(ToolCall::new("first", "First")),
-                SAFE_MODE,
-            )
+            .record_update(SessionUpdate::ToolCall(ToolCall::new("first", "First")))
             .unwrap();
         candidate
-            .record_update(completed("second", vec![image("c2Vjb25k")]), SAFE_MODE)
+            .record_update(completed("second", vec![image("c2Vjb25k")]))
             .unwrap();
         candidate
-            .record_update(
-                update(
-                    "first",
-                    ToolCallUpdateFields::new()
-                        .status(ToolCallStatus::Completed)
-                        .content(vec![image("Zmlyc3Q=")]),
-                ),
-                SAFE_MODE,
-            )
+            .record_update(update(
+                "first",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![image("Zmlyc3Q=")]),
+            ))
             .unwrap();
         assert_eq!(image_data(&candidate), ["Zmlyc3Q=", "c2Vjb25k"]);
         candidate
-            .record_update(
-                update(
-                    "first",
-                    ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
-                ),
-                SAFE_MODE,
-            )
+            .record_update(update(
+                "first",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
+            ))
             .unwrap();
         assert_eq!(image_data(&candidate), ["c2Vjb25k"]);
         let mut next_turn = AgentOutputCandidate::default();
         next_turn
-            .record_update(
-                update(
-                    "first",
-                    ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
-                ),
-                SAFE_MODE,
-            )
+            .record_update(update(
+                "first",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            ))
             .unwrap();
         assert!(!next_turn.has_output());
     }
@@ -987,28 +924,22 @@ mod tests {
         ] {
             let mut candidate = AgentOutputCandidate::default();
             candidate
-                .record_update(
-                    update(
-                        "image-1",
-                        ToolCallUpdateFields::new()
-                            .status(status)
-                            .content(vec![image("aW1hZ2U=")]),
-                    ),
-                    SAFE_MODE,
-                )
+                .record_update(update(
+                    "image-1",
+                    ToolCallUpdateFields::new()
+                        .status(status)
+                        .content(vec![image("aW1hZ2U=")]),
+                ))
                 .unwrap();
             assert!(!candidate.has_output());
             assert!(candidate.blocks().is_empty());
         }
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                update(
-                    "image-1",
-                    ToolCallUpdateFields::new().content(vec![image("aW1hZ2U=")]),
-                ),
-                SAFE_MODE,
-            )
+            .record_update(update(
+                "image-1",
+                ToolCallUpdateFields::new().content(vec![image("aW1hZ2U=")]),
+            ))
             .unwrap();
         assert!(!candidate.has_output());
     }
@@ -1028,7 +959,7 @@ mod tests {
             ]
         })).unwrap();
         let mut candidate = AgentOutputCandidate::default();
-        candidate.record_update(update, SAFE_MODE).unwrap();
+        candidate.record_update(update).unwrap();
         assert_eq!(candidate.blocks().len(), 2);
         assert!(candidate
             .blocks()
@@ -1039,30 +970,19 @@ mod tests {
     #[test]
     fn markdown_merges_only_adjacent_content_from_the_same_message() {
         let mut candidate = AgentOutputCandidate::default();
+        candidate.record_update(text("First ", "same")).unwrap();
         candidate
-            .record_update(text("First ", "same"), SAFE_MODE)
+            .record_update(completed(
+                "text-tool",
+                vec![ContentBlock::Text(TextContent::new("Hidden")).into()],
+            ))
             .unwrap();
+        candidate.record_update(text("message", "same")).unwrap();
         candidate
-            .record_update(
-                completed(
-                    "text-tool",
-                    vec![ContentBlock::Text(TextContent::new("Hidden")).into()],
-                ),
-                SAFE_MODE,
-            )
+            .record_update(completed("image", vec![image("aW1hZ2U=")]))
             .unwrap();
-        candidate
-            .record_update(text("message", "same"), SAFE_MODE)
-            .unwrap();
-        candidate
-            .record_update(completed("image", vec![image("aW1hZ2U=")]), SAFE_MODE)
-            .unwrap();
-        candidate
-            .record_update(text("After", "same"), SAFE_MODE)
-            .unwrap();
-        candidate
-            .record_update(text("Next", "next"), SAFE_MODE)
-            .unwrap();
+        candidate.record_update(text("After", "same")).unwrap();
+        candidate.record_update(text("Next", "next")).unwrap();
         assert!(matches!(candidate.blocks().as_slice(), [
             LensOutputBlock::Markdown { text: first, .. }, LensOutputBlock::Image { .. },
             LensOutputBlock::Markdown { text: after, .. }, LensOutputBlock::Markdown { text: next, .. }
@@ -1074,21 +994,21 @@ mod tests {
         let mut candidate = AgentOutputCandidate::default();
         for index in 0..MAX_TOOL_CALLS {
             candidate
-                .record_update(completed(&index.to_string(), vec![]), SAFE_MODE)
+                .record_update(completed(&index.to_string(), vec![]))
                 .unwrap();
         }
         candidate
-            .record_update(completed("0", vec![image("aW1hZ2U=")]), SAFE_MODE)
+            .record_update(completed("0", vec![image("aW1hZ2U=")]))
             .unwrap();
         assert!(candidate
-            .record_update(completed("overflow", vec![]), SAFE_MODE)
+            .record_update(completed("overflow", vec![]))
             .is_err());
         assert_eq!(image_data(&candidate), ["aW1hZ2U="]);
         assert!(candidate
-            .record_update(
-                completed("0", vec![image("aW1hZ2U="); MAX_TOOL_MEDIA_BLOCKS + 1]),
-                SAFE_MODE
-            )
+            .record_update(completed(
+                "0",
+                vec![image("aW1hZ2U="); MAX_TOOL_MEDIA_BLOCKS + 1]
+            ),)
             .is_err());
         assert_eq!(image_data(&candidate), ["aW1hZ2U="]);
     }
@@ -1099,59 +1019,46 @@ mod tests {
         let data = BASE64_STANDARD.encode(vec![0_u8; MAX_INLINE_IMAGE_DECODED_BYTES]);
         for index in 0..4 {
             candidate
-                .record_update(
-                    update(
-                        &index.to_string(),
-                        ToolCallUpdateFields::new().content(vec![image(&data)]),
-                    ),
-                    SAFE_MODE,
-                )
+                .record_update(update(
+                    &index.to_string(),
+                    ToolCallUpdateFields::new().content(vec![image(&data)]),
+                ))
                 .unwrap();
         }
         assert!(candidate
-            .record_update(
-                update(
-                    "overflow",
-                    ToolCallUpdateFields::new().content(vec![image(&data)])
-                ),
-                SAFE_MODE
-            )
+            .record_update(update(
+                "overflow",
+                ToolCallUpdateFields::new().content(vec![image(&data)])
+            ),)
             .is_err());
         assert!(!candidate.has_output());
         candidate
-            .record_update(
-                update("0", ToolCallUpdateFields::new().content(vec![])),
-                SAFE_MODE,
-            )
+            .record_update(update("0", ToolCallUpdateFields::new().content(vec![])))
             .unwrap();
         candidate
-            .record_update(completed("replacement", vec![image(&data)]), SAFE_MODE)
+            .record_update(completed("replacement", vec![image(&data)]))
             .unwrap();
         assert_eq!(image_data(&candidate).len(), 1);
     }
 
     #[test]
-    fn safe_mode_changes_still_fail_closed() {
+    fn mode_updates_do_not_control_output_admission() {
         let mut candidate = AgentOutputCandidate::default();
         let event: SessionUpdate = serde_json::from_value(serde_json::json!({
             "sessionUpdate":"current_mode_update", "currentModeId":"full-access"
         }))
         .unwrap();
-        assert!(candidate.record_update(event, SAFE_MODE).is_err());
+        assert!(!candidate.record_update(event).unwrap());
     }
 
     #[test]
     fn whitespace_only_markdown_is_not_displayable_output() {
         let mut candidate = AgentOutputCandidate::default();
-        assert!(!candidate
-            .record_update(text("", "same"), SAFE_MODE)
-            .unwrap());
-        candidate
-            .record_update(text(" \n\t", "same"), SAFE_MODE)
-            .unwrap();
+        assert!(!candidate.record_update(text("", "same")).unwrap());
+        candidate.record_update(text(" \n\t", "same")).unwrap();
         assert!(!candidate.has_output());
         candidate
-            .record_update(completed("image", vec![image("invalid!")]), SAFE_MODE)
+            .record_update(completed("image", vec![image("invalid!")]))
             .unwrap();
         assert!(candidate.has_output());
     }

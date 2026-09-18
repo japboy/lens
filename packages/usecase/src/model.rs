@@ -104,7 +104,7 @@ pub struct AgentSelectionState {
     #[serde(default)]
     pub modes: Vec<agent_client_protocol_schema::v1::SessionMode>,
     #[serde(default)]
-    pub policy_default: Option<String>,
+    pub agent_default: Option<String>,
     #[serde(default)]
     pub operation_id: Option<Uuid>,
     pub stage: AgentSelectionStage,
@@ -137,7 +137,7 @@ impl Default for AgentSelectionState {
             stage: AgentSelectionStage::Unselected,
             config_options: None,
             modes: Vec::new(),
-            policy_default: None,
+            agent_default: None,
             candidate: None,
             auth_methods: Vec::new(),
             message: None,

@@ -349,7 +349,6 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                 adapter_name: "fixture-acp",
                 adapter_version: "2.0.0".into(),
                 installation: None,
-                safe_mode_id: "safe",
                 command: "/fixture/not-executed".into(),
                 args: vec![],
             })
@@ -658,6 +657,14 @@ fn setup(scenario: Scenario) -> Harness {
     {
         let mut snapshot = state.runtime.write().unwrap();
         snapshot.config.agent = AgentKind::Codex;
+        if scenario == Scenario::CandidateSetupFailure {
+            snapshot.config.agent_preferences.codex.choices.push(
+                crate::agent_preferences::SavedChoice {
+                    config_id: "mode".into(),
+                    value: "safe".into(),
+                },
+            );
+        }
         snapshot.agent_selection.stage = AgentSelectionStage::Selected;
         snapshot.agent_selection.candidate = Some(AgentKind::Codex);
         snapshot.lens = LensState {
@@ -762,7 +769,15 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
     assert!(position(&Effect::Extract) < position(&Effect::Capture));
     assert!(position(&Effect::Capture) < position(&Effect::Observe));
     assert!(position(&Effect::Observe) < position(&Effect::Resolve));
-    assert!(position(&Effect::Initialize) < position(&Effect::Configure));
+    assert!(
+        !effects.contains(&Effect::Configure),
+        "Agent defaults require no set RPC"
+    );
+    let session_created = effects
+        .iter()
+        .position(|effect| matches!(effect, Effect::NewSession(_)))
+        .unwrap();
+    assert!(position(&Effect::Initialize) < session_created);
     let request = effects
         .iter()
         .find_map(|e| {
@@ -900,9 +915,13 @@ fn incompatible_candidate_falls_back_once_before_exactly_one_prompt() {
             .count(),
         1
     );
-    let configured = effects
+    assert!(
+        !effects.contains(&Effect::Configure),
+        "Agent defaults require no set RPC"
+    );
+    let session_created = effects
         .iter()
-        .position(|e| *e == Effect::Configure)
+        .position(|e| matches!(e, Effect::NewSession(_)))
         .unwrap();
     let confirmed = effects
         .iter()
@@ -912,7 +931,7 @@ fn incompatible_candidate_falls_back_once_before_exactly_one_prompt() {
         .iter()
         .position(|e| matches!(e, Effect::Prompt(_)))
         .unwrap();
-    assert!(configured < confirmed && confirmed < prompted);
+    assert!(session_created < confirmed && confirmed < prompted);
     invoke(&harness.window, "stop_lens");
 }
 
@@ -982,9 +1001,13 @@ fn provider_failure_after_confirmation_never_rolls_back_or_replays_prompt() {
     assert!(!effects
         .iter()
         .any(|e| matches!(e, Effect::RejectCandidate(_))));
-    let configured = effects
+    assert!(
+        !effects.contains(&Effect::Configure),
+        "Agent defaults require no set RPC"
+    );
+    let session_created = effects
         .iter()
-        .position(|e| *e == Effect::Configure)
+        .position(|e| matches!(e, Effect::NewSession(_)))
         .unwrap();
     let confirmed = effects
         .iter()
@@ -994,7 +1017,7 @@ fn provider_failure_after_confirmation_never_rolls_back_or_replays_prompt() {
         .iter()
         .position(|e| matches!(e, Effect::Prompt(_)))
         .unwrap();
-    assert!(configured < confirmed && confirmed < prompted);
+    assert!(session_created < confirmed && confirmed < prompted);
     invoke(&harness.window, "stop_lens");
 }
 

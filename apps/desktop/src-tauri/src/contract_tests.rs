@@ -66,7 +66,7 @@ fn contract_snapshot() -> Value {
                 .into()]),
         ),
     ] {
-        output.record_update(update, "read-only").unwrap();
+        output.record_update(update).unwrap();
     }
     json!({
         "target_set": targets,

@@ -1582,7 +1582,6 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
     app: AppHandle<R>,
     selection_id: Uuid,
     defaults: crate::agent_preferences::AgentDefaults,
-    confirm_privilege: bool,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let expected = state.snapshot()?;
@@ -1590,22 +1589,6 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
         || expected.agent_selection.selected_agent() != Some(expected.config.agent)
     {
         return Err("Agent selection changed".into());
-    }
-    let mode_id = expected
-        .agent_selection
-        .config_options
-        .as_deref()
-        .map(crate::session_controls::mode_option)
-        .transpose()
-        .map_err(|_| "Ambiguous Agent modes")?
-        .flatten()
-        .map(|o| o.id.to_string())
-        .unwrap_or_else(|| "mode".into());
-    let elevated = defaults.choices.iter().any(|c| {
-        c.config_id == mode_id && Some(&c.value) != expected.agent_selection.policy_default.as_ref()
-    });
-    if elevated && !confirm_privilege {
-        return Err("Confirm the shared mode policy before saving".into());
     }
     let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
     // Cancel the old configuration's actor before changing persisted authority.

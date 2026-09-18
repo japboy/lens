@@ -27,7 +27,6 @@ struct PendingDecision {
 struct Runtime {
     state: AgentSessionControlState,
     decisions: Vec<PendingDecision>,
-    approved_mode: String,
     next_sequence: u32,
     tool_policies: crate::agent_preferences::ToolPolicies,
     active_turn: Option<Uuid>,
@@ -51,7 +50,7 @@ impl SessionControls {
         operation_id: Uuid,
         session_id: String,
         agent_name: String,
-        policy_default: String,
+        agent_default: Option<String>,
         options: Option<Vec<SessionConfigOption>>,
         modes: Vec<SessionMode>,
         shutdown: watch::Receiver<bool>,
@@ -69,11 +68,11 @@ impl SessionControls {
             config_revision: 0,
             config_options: options,
             modes,
-            effective_mode: policy_default.clone(),
-            configured_mode: policy_default.clone(),
-            configured_origin: ModeOrigin::Policy,
-            last_mode_origin: ModeOrigin::Policy,
-            policy_default: policy_default.clone(),
+            effective_mode: agent_default.clone(),
+            configured_mode: agent_default.clone(),
+            configured_origin: ModeOrigin::AgentDefault,
+            last_mode_origin: ModeOrigin::AgentDefault,
+            agent_default: agent_default.clone(),
             change: None,
             notice: None,
             interactions: Vec::new(),
@@ -83,7 +82,6 @@ impl SessionControls {
                 runtime: Mutex::new(Runtime {
                     state,
                     decisions: Vec::new(),
-                    approved_mode: policy_default,
                     next_sequence: 0,
                     tool_policies: Default::default(),
                     active_turn: None,
@@ -97,20 +95,16 @@ impl SessionControls {
     }
     pub fn set_initial_authority(
         &self,
-        mode: String,
+        mode: Option<String>,
+        mode_origin: ModeOrigin,
         policies: crate::agent_preferences::ToolPolicies,
     ) -> Result<(), Error> {
         let mut runtime = self
             .runtime
             .lock()
             .map_err(|_| invalid("Agent controls unavailable"))?;
-        runtime.approved_mode = mode.clone();
         runtime.state.configured_mode = mode.clone();
-        runtime.state.configured_origin = if mode == runtime.state.policy_default {
-            ModeOrigin::Policy
-        } else {
-            ModeOrigin::User
-        };
+        runtime.state.configured_origin = mode_origin;
         runtime.state.last_mode_origin = runtime.state.configured_origin;
         runtime.state.effective_mode = mode;
         runtime.tool_policies = policies;
@@ -164,6 +158,9 @@ impl SessionControls {
                 .as_ref()
                 .is_some_and(|s| s.instance_id == snapshot.instance_id)
             {
+                if let Some(agent) = lens.agent.as_mut() {
+                    agent.session_mode_id = snapshot.effective_mode.clone();
+                }
                 lens.session_controls = Some(snapshot);
             }
         })?;
@@ -238,17 +235,9 @@ impl SessionControls {
         if let Some(mode) = mode_option(&options)? {
             let effective = current_value(mode)?;
             runtime.state.last_mode_origin = ModeOrigin::Agent;
-            if effective != runtime.approved_mode {
-                return Err(invalid("Agent changed mode without approval"));
-            }
-            runtime.state.effective_mode = effective;
-        } else if runtime
-            .state
-            .config_options
-            .as_ref()
-            .is_some_and(|old| mode_option(old).ok().flatten().is_some())
-        {
-            return Err(invalid("Agent removed its authoritative mode selector"));
+            runtime.state.effective_mode = Some(effective);
+        } else {
+            runtime.state.effective_mode = None;
         }
         runtime.state.config_revision = runtime
             .state
@@ -263,11 +252,11 @@ impl SessionControls {
             .runtime
             .lock()
             .map_err(|_| invalid("Agent controls unavailable"))?;
-        runtime.state.last_mode_origin = ModeOrigin::Agent;
-        if mode != runtime.approved_mode {
-            return Err(invalid("Agent changed mode without approval"));
+        if runtime.state.config_options.is_some() {
+            return Ok(());
         }
-        runtime.state.effective_mode = mode.into();
+        runtime.state.last_mode_origin = ModeOrigin::Agent;
+        runtime.state.effective_mode = Some(mode.into());
         Ok(())
     }
     pub fn close<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
@@ -376,12 +365,6 @@ impl SessionControls {
                 open_url(url)?;
                 InteractionStatus::Accepted
             }
-            (Some(InteractionDetails::ModeTransition { .. }), InteractionResponse::Accept) => {
-                InteractionStatus::Accepted
-            }
-            (Some(InteractionDetails::ModeTransition { .. }), InteractionResponse::Decline) => {
-                InteractionStatus::Declined
-            }
             (
                 Some(InteractionDetails::Permission { options, .. }),
                 InteractionResponse::Select { option_id },
@@ -415,15 +398,7 @@ impl SessionControls {
             .send(response)
             .map_err(|_| "Agent interaction was cancelled".into())
     }
-    async fn decision<R: tauri::Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        details: InteractionDetails,
-        cancellation: Option<agent_client_protocol::RequestCancellation>,
-    ) -> InteractionResponse {
-        self.decision_with_deadline(app, details, cancellation, DECISION_TIMEOUT)
-            .await
-    }
+    #[cfg(any(test, debug_assertions))]
     async fn decision_with_deadline<R: tauri::Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -492,7 +467,8 @@ impl SessionControls {
             }
             let mut fields = runtime.tools[&request.tool_call.tool_call_id.to_string()].clone();
             if request.tool_call.fields.kind.is_some()
-                && request.tool_call.fields.kind != fields.kind
+                && request.tool_call.fields.kind.unwrap_or(ToolKind::Other)
+                    != fields.kind.unwrap_or(ToolKind::Other)
             {
                 return Err("Tool permission denied: conflicting effect descriptions".into());
             }
@@ -755,26 +731,6 @@ impl SessionControls {
                 .snapshot()
                 .map_err(|_| invalid("Agent controls unavailable"))?;
             let is_mode = Self::validate_change(&state, &change.config_id, &change.value)?;
-            if is_mode
-                && change.value != state.policy_default
-                && change.value != state.effective_mode
-                && !matches!(
-                    self.decision(
-                        app,
-                        InteractionDetails::ModeTransition {
-                            from: state.effective_mode.clone(),
-                            to: change.value.clone()
-                        },
-                        None
-                    )
-                    .await,
-                    InteractionResponse::Accept
-                )
-            {
-                self.finish_change(ChangeStatus::Rejected);
-                let _ = self.publish(app);
-                continue;
-            }
             let current = self
                 .snapshot()
                 .map_err(|_| invalid("Agent controls unavailable"))?;
@@ -784,8 +740,7 @@ impl SessionControls {
                     .runtime
                     .lock()
                     .map_err(|_| invalid("Agent controls unavailable"))?;
-                runtime.approved_mode = change.value.clone();
-                runtime.state.configured_mode = change.value.clone();
+                runtime.state.configured_mode = Some(change.value.clone());
                 runtime.state.configured_origin = ModeOrigin::User;
             }
             let request = async {
@@ -969,40 +924,32 @@ impl<R: tauri::Runtime> Drop for ControlLifetime<R> {
     }
 }
 
-/// Required provider capability, independent of the user's saved choice.
 /// Configuration catalogs take precedence over the legacy mode list.
-pub(crate) fn require_safe_mode(
+/// Resolve only the mode advertised by the Agent; absence is an explicit state.
+pub(crate) fn advertised_mode(
     options: Option<&[SessionConfigOption]>,
     modes: Option<&SessionModeState>,
-    safe_mode: &str,
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
     if let Some(options) = options {
         validate_options(options)?;
         if let Some(option) = mode_option(options)? {
-            return if values(option)?
-                .iter()
-                .any(|value| value.value.to_string() == safe_mode)
-            {
-                Ok(())
-            } else {
-                Err(invalid(
-                    "Agent does not provide the required non-mutating mode",
-                ))
-            };
+            return current_value(option).map(Some);
         }
+        return Ok(None);
     }
-    if modes.is_some_and(|modes| {
-        modes
+    if let Some(modes) = modes {
+        if !modes
             .available_modes
             .iter()
-            .any(|mode| mode.id.to_string() == safe_mode)
-    }) {
-        Ok(())
-    } else {
-        Err(invalid(
-            "Agent does not provide the required non-mutating mode",
-        ))
+            .any(|m| m.id == modes.current_mode_id)
+        {
+            return Err(invalid(
+                "Agent current mode is absent from its advertised modes",
+            ));
+        }
+        return Ok(Some(modes.current_mode_id.to_string()));
     }
+    Ok(None)
 }
 
 /// Resolve and apply defaults against this Agent's current catalog; never reconstruct choices.
@@ -1012,8 +959,7 @@ pub async fn apply_defaults(
     mut options: Option<Vec<SessionConfigOption>>,
     modes: Option<&SessionModeState>,
     defaults: &crate::agent_preferences::AgentDefaults,
-    safe_mode: &str,
-) -> Result<(Option<Vec<SessionConfigOption>>, String), Error> {
+) -> Result<(Option<Vec<SessionConfigOption>>, Option<String>), Error> {
     if defaults.choices.len() > 32 {
         return Err(invalid("Too many saved Agent choices"));
     }
@@ -1030,55 +976,60 @@ pub async fn apply_defaults(
         .transpose()?
         .flatten()
         .map(|o| o.id.to_string());
-    let mode_key = mode_id.clone().unwrap_or_else(|| "mode".into());
+    let mode_key = mode_id
+        .clone()
+        .or_else(|| options.is_none().then(|| "mode".into()));
+    let mut effective_mode = advertised_mode(options.as_deref(), modes)?;
     let requested_mode = defaults
         .choices
         .iter()
-        .find(|c| c.config_id == mode_key)
-        .map(|c| c.value.as_str())
-        .unwrap_or(safe_mode)
-        .to_string();
-    if let Some(config_id) = mode_id {
-        let option = options
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|o| o.id.to_string() == config_id)
-            .unwrap();
-        if !values(option)?
-            .iter()
-            .any(|v| v.value.to_string() == requested_mode)
-        {
-            return Err(invalid("Saved mode is unavailable; review Agent settings"));
-        }
-        let response = connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                config_id,
-                SessionConfigValueId::new(requested_mode.clone()),
-            ))
-            .block_task()
-            .await?;
-        validate_options(&response.config_options)?;
-        options = Some(response.config_options);
-    } else {
-        if !modes.is_some_and(|m| {
-            m.available_modes
+        .find(|c| Some(&c.config_id) == mode_key.as_ref())
+        .map(|c| c.value.clone());
+    if let Some(requested) = &requested_mode {
+        if let Some(config_id) = mode_id {
+            let option = options
+                .as_ref()
+                .unwrap()
                 .iter()
-                .any(|m| m.id.to_string() == requested_mode)
-        }) {
-            return Err(invalid("Saved mode is unavailable; review Agent settings"));
+                .find(|o| o.id.to_string() == config_id)
+                .unwrap();
+            if !values(option)?
+                .iter()
+                .any(|v| v.value.to_string() == *requested)
+            {
+                return Err(invalid("Saved mode is unavailable; review Agent settings"));
+            }
+            let response = connection
+                .send_request(SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    config_id.clone(),
+                    SessionConfigValueId::new(requested.clone()),
+                ))
+                .block_task()
+                .await?;
+            validate_options(&response.config_options)?;
+            confirm_choice(&response.config_options, &config_id, requested)?;
+            options = Some(response.config_options);
+        } else {
+            if !modes.is_some_and(|m| {
+                m.available_modes
+                    .iter()
+                    .any(|m| m.id.to_string() == *requested)
+            }) {
+                return Err(invalid("Saved mode is unavailable; review Agent settings"));
+            }
+            connection
+                .send_request(SetSessionModeRequest::new(
+                    session_id.clone(),
+                    requested.clone(),
+                ))
+                .block_task()
+                .await?;
         }
-        connection
-            .send_request(SetSessionModeRequest::new(
-                session_id.clone(),
-                requested_mode.clone(),
-            ))
-            .block_task()
-            .await?;
+        effective_mode = Some(requested.clone());
     }
     for saved in &defaults.choices {
-        if saved.config_id == mode_key {
+        if Some(&saved.config_id) == mode_key.as_ref() {
             continue;
         }
         let option = options
@@ -1105,19 +1056,23 @@ pub async fn apply_defaults(
         confirm_choice(&response.config_options, &saved.config_id, &saved.value)?;
         options = Some(response.config_options);
     }
-    if let Some(mode) = options.as_deref().map(mode_option).transpose()?.flatten() {
-        if current_value(mode)? != requested_mode {
-            return Err(invalid("Agent did not confirm the configured mode"));
-        }
+    if options.is_some() {
+        effective_mode = advertised_mode(options.as_deref(), None)?;
+    }
+    if requested_mode
+        .as_ref()
+        .is_some_and(|requested| effective_mode.as_ref() != Some(requested))
+    {
+        return Err(invalid("Agent did not confirm the configured mode"));
     }
     if let Some(catalog) = &options {
         for saved in &defaults.choices {
-            if saved.config_id != mode_key {
+            if Some(&saved.config_id) != mode_key.as_ref() {
                 confirm_choice(catalog, &saved.config_id, &saved.value)?;
             }
         }
     }
-    Ok((options, requested_mode))
+    Ok((options, effective_mode))
 }
 
 struct DecisionLifetime<'a> {
@@ -1193,7 +1148,7 @@ mod tests {
             Uuid::new_v4(),
             "session".into(),
             "Synthetic Agent".into(),
-            "safe".into(),
+            Some("safe".into()),
             Some(options()),
             vec![],
             receiver,
@@ -1201,10 +1156,11 @@ mod tests {
         .unwrap();
         (controls, shutdown)
     }
-    fn mode_decision() -> InteractionDetails {
-        InteractionDetails::ModeTransition {
-            from: "safe".into(),
-            to: "write".into(),
+    fn url_decision() -> InteractionDetails {
+        InteractionDetails::Url {
+            message: "Continue".into(),
+            elicitation_id: "test-url".into(),
+            url: "https://example.com".into(),
         }
     }
 
@@ -1225,7 +1181,7 @@ mod tests {
             operation,
             "next".into(),
             "Agent".into(),
-            "safe".into(),
+            Some("safe".into()),
             None,
             vec![],
             receiver,
@@ -1375,14 +1331,19 @@ mod tests {
     }
 
     #[test]
-    fn mode_authority_distinguishes_policy_user_and_agent_state() {
+    fn mode_state_distinguishes_agent_default_user_and_agent_changes() {
         let (controls, _shutdown) = controls();
+        controls.runtime.lock().unwrap().state.config_options = None;
         assert_eq!(
             controls.snapshot().unwrap().configured_origin,
-            ModeOrigin::Policy
+            ModeOrigin::AgentDefault
         );
         controls
-            .set_initial_authority("write".into(), ToolPolicies::default())
+            .set_initial_authority(
+                Some("write".into()),
+                ModeOrigin::User,
+                ToolPolicies::default(),
+            )
             .unwrap();
         assert_eq!(
             controls.snapshot().unwrap().configured_origin,
@@ -1390,11 +1351,14 @@ mod tests {
         );
         controls.record_mode("write").unwrap();
         let state = controls.snapshot().unwrap();
-        assert_eq!(state.configured_mode, "write");
-        assert_eq!(state.effective_mode, "write");
+        assert_eq!(state.configured_mode.as_deref(), Some("write"));
+        assert_eq!(state.effective_mode.as_deref(), Some("write"));
         assert_eq!(state.last_mode_origin, ModeOrigin::Agent);
-        assert!(controls.record_mode("unapproved").is_err());
-        assert_eq!(controls.snapshot().unwrap().effective_mode, "write");
+        controls.record_mode("unapproved").unwrap();
+        assert_eq!(
+            controls.snapshot().unwrap().effective_mode.as_deref(),
+            Some("unapproved")
+        );
     }
     #[test]
     fn malformed_or_ambiguous_options_fail_closed() {
@@ -1426,20 +1390,28 @@ mod tests {
             controls.snapshot().unwrap().config_options.unwrap().len(),
             1
         );
-        assert!(controls.record_mode("write").is_err());
-        assert_eq!(controls.snapshot().unwrap().effective_mode, "safe");
+        controls.record_mode("write").unwrap();
+        assert_eq!(
+            controls.snapshot().unwrap().effective_mode.as_deref(),
+            Some("safe")
+        );
         controls
-            .set_initial_authority("write".into(), ToolPolicies::default())
+            .set_initial_authority(
+                Some("write".into()),
+                ModeOrigin::User,
+                ToolPolicies::default(),
+            )
             .unwrap();
         controls.record_mode("write").unwrap();
-        assert!(controls.record_mode("unknown").is_err());
-        assert!(controls.replace_options(vec![]).is_err());
+        controls.record_mode("unknown").unwrap();
+        controls.replace_options(vec![]).unwrap();
+        assert_eq!(controls.snapshot().unwrap().effective_mode, None);
     }
     #[tokio::test]
     async fn decisions_are_single_use_and_terminal_payloads_are_erased() {
         let (controls, _shutdown) = controls();
-        let (first, response) = controls.begin_decision(mode_decision()).unwrap();
-        let (second, _) = controls.begin_decision(mode_decision()).unwrap();
+        let (first, response) = controls.begin_decision(url_decision()).unwrap();
+        let (second, _) = controls.begin_decision(url_decision()).unwrap();
         let state = controls.snapshot().unwrap();
         assert_eq!(
             state
@@ -1491,7 +1463,7 @@ mod tests {
             .queue_change(state.instance_id, 0, "z-model".into(), "invented".into())
             .is_err());
         shutdown.send(true).unwrap();
-        assert!(controls.begin_decision(mode_decision()).is_err());
+        assert!(controls.begin_decision(url_decision()).is_err());
     }
     #[tokio::test]
     async fn ending_a_turn_cancels_pending_responses_and_tool_correlations() {
@@ -1502,7 +1474,7 @@ mod tests {
                 ToolCall::new("tool", "Read").kind(ToolKind::Read),
             ))
             .unwrap();
-        let (id, receiver) = controls.begin_decision(mode_decision()).unwrap();
+        let (id, receiver) = controls.begin_decision(url_decision()).unwrap();
         controls.end_turn();
         assert!(matches!(
             receiver.await.unwrap(),
@@ -1643,7 +1615,8 @@ mod tests {
         assert!(controls.permission_details(request(ToolKind::Edit)).is_ok());
         controls
             .set_initial_authority(
-                "write".into(),
+                Some("write".into()),
+                ModeOrigin::User,
                 ToolPolicies {
                     edit: crate::agent_preferences::ToolPolicy::Ask,
                     ..ToolPolicies::default()
@@ -1660,7 +1633,7 @@ mod tests {
     #[tokio::test]
     async fn expiry_cannot_overwrite_an_accepted_response() {
         let (controls, _shutdown) = controls();
-        let (id, response) = controls.begin_decision(mode_decision()).unwrap();
+        let (id, response) = controls.begin_decision(url_decision()).unwrap();
         controls
             .respond_with(
                 controls.snapshot().unwrap().instance_id,
@@ -1674,7 +1647,7 @@ mod tests {
             response.await.unwrap(),
             InteractionResponse::Accept
         ));
-        let (expired, response) = controls.begin_decision(mode_decision()).unwrap();
+        let (expired, response) = controls.begin_decision(url_decision()).unwrap();
         assert!(controls.expire_decision(expired));
         assert!(response.await.is_err());
         assert!(controls
@@ -1715,14 +1688,286 @@ mod tests {
                     Some(expected.clone()),
                     None,
                     &defaults,
-                    "safe",
                 )
                 .await?;
                 assert_eq!(result, Some(expected));
-                assert_eq!(mode, "safe");
+                assert_eq!(mode.as_deref(), Some("safe"));
                 Ok(())
             });
         tokio::time::timeout(Duration::from_secs(5), client)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn absent_saved_mode_preserves_agent_defaults_without_mode_requests() {
+        for catalog in [None, Some(vec![]), Some(options())] {
+            let expected = advertised_mode(catalog.as_deref(), None).unwrap();
+            let client = Client
+                .builder()
+                .connect_with(Agent.builder(), async move |connection| {
+                    let (_, effective) = apply_defaults(
+                        &connection,
+                        &SessionId::new("fixture"),
+                        catalog,
+                        None,
+                        &AgentDefaults::default(),
+                    )
+                    .await?;
+                    assert_eq!(effective, expected);
+                    Ok(())
+                });
+            tokio::time::timeout(Duration::from_secs(2), client)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn model_response_sets_agent_mode_unless_an_explicit_saved_mode_conflicts() {
+        for explicit in [false, true] {
+            let agent = Agent.builder().on_receive_request(
+                async move |request: SetSessionConfigOptionRequest,
+                            responder: Responder<SetSessionConfigOptionResponse>,
+                            _connection: ConnectionTo<Client>| {
+                    let mut catalog = options();
+                    if request.config_id.to_string() == "z-model" {
+                        catalog[0] = SessionConfigOption::select(
+                            "session-mode",
+                            "Mode",
+                            "write",
+                            vec![
+                                SessionConfigSelectOption::new("safe", "Safe"),
+                                SessionConfigSelectOption::new("write", "Write"),
+                            ],
+                        )
+                        .category(SessionConfigOptionCategory::Mode);
+                        catalog[1] = SessionConfigOption::select(
+                            "z-model",
+                            "Model",
+                            "second",
+                            vec![
+                                SessionConfigSelectOption::new("first", "First"),
+                                SessionConfigSelectOption::new("second", "Second"),
+                            ],
+                        )
+                        .category(SessionConfigOptionCategory::Model);
+                    }
+                    responder.respond(SetSessionConfigOptionResponse::new(catalog))
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            let client = Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    let mut defaults = AgentDefaults::default();
+                    if explicit {
+                        defaults.choices.push(SavedChoice {
+                            config_id: "session-mode".into(),
+                            value: "safe".into(),
+                        });
+                    }
+                    defaults.choices.push(SavedChoice {
+                        config_id: "z-model".into(),
+                        value: "second".into(),
+                    });
+                    let result = apply_defaults(
+                        &connection,
+                        &SessionId::new("fixture"),
+                        Some(options()),
+                        None,
+                        &defaults,
+                    )
+                    .await;
+                    if explicit {
+                        assert!(result.is_err());
+                    } else {
+                        assert_eq!(result.unwrap().1.as_deref(), Some("write"));
+                    }
+                    Ok(())
+                });
+            tokio::time::timeout(Duration::from_secs(2), client)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_mode_id_remains_a_config_option_and_catalog_forbids_legacy_fallback() {
+        let legacy = SessionModeState::new("safe", vec![SessionMode::new("safe", "Safe")]);
+        assert_eq!(advertised_mode(Some(&[]), Some(&legacy)).unwrap(), None);
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection: ConnectionTo<Client>| {
+                assert_eq!(request.config_id.to_string(), "mode");
+                responder.respond(SetSessionConfigOptionResponse::new(vec![
+                    SessionConfigOption::select(
+                        "mode",
+                        "Generic selector",
+                        "next",
+                        vec![SessionConfigSelectOption::new("next", "Next")],
+                    ),
+                ]))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let client = Client
+            .builder()
+            .connect_with(agent, async move |connection| {
+                let defaults = AgentDefaults {
+                    choices: vec![SavedChoice {
+                        config_id: "mode".into(),
+                        value: "next".into(),
+                    }],
+                    ..Default::default()
+                };
+                let result = apply_defaults(
+                    &connection,
+                    &SessionId::new("fixture"),
+                    Some(vec![SessionConfigOption::select(
+                        "mode",
+                        "Generic selector",
+                        "next",
+                        vec![SessionConfigSelectOption::new("next", "Next")],
+                    )]),
+                    Some(&legacy),
+                    &defaults,
+                )
+                .await?;
+                assert_eq!(result.1, None);
+                assert!(apply_defaults(
+                    &connection,
+                    &SessionId::new("fixture"),
+                    Some(vec![]),
+                    Some(&legacy),
+                    &defaults
+                )
+                .await
+                .is_err());
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(2), client)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn unclassified_permissions_use_other_policy_and_missing_kind_matches_other() {
+        let (controls, _shutdown) = controls();
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        let call: ToolCall = serde_json::from_value(serde_json::json!({
+            "toolCallId":"unclassified", "title":"Unclassified tool", "status":"pending", "rawInput":{}
+        })).unwrap();
+        controls
+            .record_tool(&SessionUpdate::ToolCall(call))
+            .unwrap();
+        let request = RequestPermissionRequest::new(
+            "session",
+            ToolCallUpdate::new(
+                "unclassified",
+                ToolCallUpdateFields::new().kind(ToolKind::Other),
+            ),
+            vec![
+                PermissionOption::new("yes", "Allow once", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("no", "Reject once", PermissionOptionKind::RejectOnce),
+            ],
+        );
+        let details = controls.permission_details(request.clone()).unwrap();
+        assert!(controls
+            .automatic_permission_outcome(&details)
+            .unwrap()
+            .is_none());
+        controls.runtime.lock().unwrap().tool_policies.other =
+            crate::agent_preferences::ToolPolicy::Allow;
+        assert!(matches!(
+            controls.automatic_permission_outcome(&details).unwrap(),
+            Some(RequestPermissionOutcome::Selected(_))
+        ));
+        controls.end_turn();
+        assert!(controls.permission_details(request).is_err());
+    }
+    #[test]
+    fn config_catalog_excludes_legacy_mode_notifications() {
+        let (controls, _shutdown) = controls();
+        controls.record_mode("legacy-value").unwrap();
+        assert_eq!(
+            controls.snapshot().unwrap().effective_mode.as_deref(),
+            Some("safe")
+        );
+        controls.replace_options(vec![]).unwrap();
+        controls.record_mode("legacy-value").unwrap();
+        assert_eq!(controls.snapshot().unwrap().effective_mode, None);
+    }
+
+    #[tokio::test]
+    async fn legacy_mode_uses_agent_current_and_restores_only_explicit_choice() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded = calls.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionModeRequest,
+                        responder: Responder<SetSessionModeResponse>,
+                        _connection: ConnectionTo<Client>| {
+                assert_eq!(request.mode_id.to_string(), "write");
+                recorded.fetch_add(1, Ordering::SeqCst);
+                responder.respond(SetSessionModeResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let client = Client
+            .builder()
+            .connect_with(agent, async move |connection| {
+                let modes = SessionModeState::new(
+                    "safe",
+                    vec![
+                        SessionMode::new("safe", "Safe"),
+                        SessionMode::new("write", "Write"),
+                    ],
+                );
+                let (_, mode) = apply_defaults(
+                    &connection,
+                    &SessionId::new("fixture"),
+                    None,
+                    Some(&modes),
+                    &AgentDefaults::default(),
+                )
+                .await?;
+                assert_eq!(mode.as_deref(), Some("safe"));
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                let defaults = AgentDefaults {
+                    choices: vec![SavedChoice {
+                        config_id: "mode".into(),
+                        value: "write".into(),
+                    }],
+                    ..Default::default()
+                };
+                assert!(apply_defaults(
+                    &connection,
+                    &SessionId::new("fixture"),
+                    Some(vec![]),
+                    Some(&modes),
+                    &defaults
+                )
+                .await
+                .is_err());
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                let (_, mode) = apply_defaults(
+                    &connection,
+                    &SessionId::new("fixture"),
+                    None,
+                    Some(&modes),
+                    &defaults,
+                )
+                .await?;
+                assert_eq!(mode.as_deref(), Some("write"));
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(2), client)
             .await
             .unwrap()
             .unwrap();

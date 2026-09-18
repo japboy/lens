@@ -14,6 +14,7 @@ export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = {
     delete: "deny",
     move: "deny",
     execute: "deny",
+    other: "ask",
   },
 };
 const EFFECTS: { key: keyof ToolPolicies; label: string }[] = [
@@ -24,6 +25,7 @@ const EFFECTS: { key: keyof ToolPolicies; label: string }[] = [
   { key: "delete", label: "Delete content" },
   { key: "move", label: "Move content" },
   { key: "execute", label: "Execute commands" },
+  { key: "other", label: "Other requests" },
 ];
 
 @customElement("lens-agent-defaults")
@@ -91,7 +93,7 @@ export class LensAgentDefaults extends LitElement {
                   data-agent-config-id="mode"
                   @change=${(e: Event) => this.choose("mode", (e.target as HTMLSelectElement).value)}
                 >
-                  <option value="">Lens safe default</option>
+                  <option value="">Agent default</option>
                   ${this.unlistedChoice(
                     "mode",
                     modes.map((mode) => mode.id),
@@ -140,16 +142,16 @@ export class LensAgentDefaults extends LitElement {
                 >
                   <option value="ask">Ask each time</option>
                   <option value="allow">Automatically approve</option>
-                  <option value="deny">Automatically reject</option>
-                </select></label
+                  <option value="deny">Automatically reject</option></select
+                >${key === "other" ? html`<span class="help">Requests without a recognized classification, including HTML output publication.</span>` : nothing}</label
               >`,
           )}
         </fieldset>
         <p class="help">
           Applies only to permission requests sent by this Agent, including in future sessions.
-          Operations without a request follow the Agent’s own settings and mode. Unclassified
-          requests require confirmation; unsupported requests are never automatically approved.
-          Forms and URL requests always require a response.
+          Operations without a request follow the Agent’s own settings and mode. Other requests use
+          the policy above; unsupported requests are never automatically approved. Forms and URL
+          requests always require a response.
         </p>
       </details>
       <button
@@ -184,9 +186,7 @@ export class LensAgentDefaults extends LitElement {
         ?disabled=${option.type !== "select"}
         @change=${(e: Event) => this.choose(option.id, (e.target as HTMLSelectElement).value)}
       >
-        <option value="">
-          ${option.category === "mode" ? "Lens safe default" : "Agent default"}
-        </option>
+        <option value="">Agent default</option>
         ${this.unlistedChoice(
           option.id,
           (option.options ?? []).flatMap((choice) =>
