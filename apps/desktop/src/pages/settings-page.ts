@@ -6,7 +6,7 @@ import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
 import type { CommandIdentity } from "../application/command-state";
-import { settingsViewModel } from "../application/view-models";
+import { settingsFeedback, settingsViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
 import { platformFromSearch } from "../presentation-context";
 import { LensSettingsView } from "../components/lens-settings-view";
@@ -111,6 +111,7 @@ export class SettingsPage extends ReactiveElement {
           this.snapshots.connection,
         )
       : undefined;
+    view.feedback = settingsFeedback(this.commands.state);
     view.aboutOpenError = this.aboutOpenError;
     view.permission = this.accessibility.state;
     view.commandPending = this.commands.state.stage === "pending";
@@ -129,7 +130,12 @@ export class SettingsPage extends ReactiveElement {
       }
       return;
     }
-    if (!this.snapshots.snapshot && intent.type !== "request-accessibility-permission") return;
+    if (
+      !this.snapshots.snapshot &&
+      intent.type !== "request-accessibility-permission" &&
+      intent.type !== "open-screen-recording-settings"
+    )
+      return;
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
       case "update-prompt-presets": {
@@ -259,6 +265,13 @@ export class SettingsPage extends ReactiveElement {
       }
       case "choose-directory":
         await this.chooseDirectory(identity);
+        return;
+      case "open-screen-recording-settings":
+        await this.commands.run(
+          identity,
+          () => this.port.openScreenRecordingSettings(),
+          "Manage Screen & System Audio Recording access in System Settings.",
+        );
         return;
       case "request-accessibility-permission":
         await this.commands.run(

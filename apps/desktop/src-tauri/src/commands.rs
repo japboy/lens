@@ -325,6 +325,20 @@ fn update_config<R: tauri::Runtime>(
     Ok(snapshot)
 }
 
+/// The destination is fixed in the shell; the WebView cannot supply arbitrary URLs.
+#[tauri::command]
+pub fn open_screen_recording_settings<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            None::<&str>,
+        )
+        .map_err(|error| {
+            format!("Unable to open Screen & System Audio Recording settings: {error}")
+        })
+}
+
 #[tauri::command]
 pub fn accessibility_permission(state: State<'_, AppState>) -> bool {
     state.platform.trust.inspect()

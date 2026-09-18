@@ -315,6 +315,7 @@ describe("progressive DSD resources", () => {
       await vi.waitFor(() =>
         expect(root.querySelector("[role=alert]")?.textContent).toContain("Snapshot unavailable"),
       );
+      expect(root.querySelectorAll("[role=alert]")).toHaveLength(1);
       expect(root.querySelector(".settings-sidebar-status-value")?.textContent?.trim()).toBe("");
       const about = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent?.trim() === "About",
@@ -903,6 +904,111 @@ describe("Lens rich Agent output", () => {
 });
 
 describe("Lens Settings", () => {
+  it("reports screen recording settings launch failures without an application snapshot", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockedInvoke = vi.mocked(invoke);
+    const original = mockedInvoke.getMockImplementation()!;
+    mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+      if (command === "get_app_snapshot") throw new Error("Snapshot unavailable");
+      if (command === "open_screen_recording_settings")
+        throw new Error("System Settings unavailable");
+      return original(command, ...arguments_);
+    });
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      Array.from(root.querySelectorAll<HTMLButtonElement>("nav button"))
+        .find((button) => button.textContent?.trim() === "Privacy & Security")!
+        .click();
+      await vi.waitFor(() => {
+        expect(
+          root.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent?.trim(),
+        ).toBe("Privacy & Security");
+      });
+      expect(root.querySelectorAll("[role=alert]")).toHaveLength(1);
+      expect(root.querySelector("[role=alert]")?.textContent).toContain("Snapshot unavailable");
+      const button = root.querySelector<HTMLButtonElement>(
+        '[aria-labelledby="screen-recording-heading"] button',
+      )!;
+      expect(button.disabled).toBe(false);
+      button.click();
+      await vi.waitFor(() => {
+        expect(mockedInvoke).toHaveBeenCalledWith("open_screen_recording_settings");
+        expect(
+          root.querySelector(".settings-detail-panel:not([hidden]) [role=alert]")?.textContent,
+        ).toContain("System Settings unavailable");
+        const alerts = Array.from(root.querySelectorAll("[role=alert]"));
+        expect(alerts).toHaveLength(2);
+        expect(
+          alerts.filter((alert) => alert.textContent?.includes("Snapshot unavailable")),
+        ).toHaveLength(1);
+        expect(
+          alerts.filter((alert) => alert.textContent?.includes("System Settings unavailable")),
+        ).toHaveLength(1);
+        expect(button.disabled).toBe(false);
+      });
+    } finally {
+      mockedInvoke.mockImplementation(original);
+    }
+  });
+
+  it("opens screen recording settings explicitly and keeps launch errors in Privacy & Security", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockedInvoke = vi.mocked(invoke);
+    const previousImplementation = mockedInvoke.getMockImplementation();
+    mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+      if (command === "open_screen_recording_settings")
+        throw new Error("System Settings unavailable");
+      return previousImplementation?.(command, ...arguments_);
+    });
+    try {
+      const element = await createPage("settings");
+      const root = viewRoot(element, "lens-settings-view")!;
+      const navigation = Array.from(root.querySelectorAll<HTMLButtonElement>("nav button"));
+      navigation.find((button) => button.textContent?.trim() === "Privacy & Security")!.click();
+      await vi.waitFor(() => {
+        expect(
+          root.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent?.trim(),
+        ).toBe("Privacy & Security");
+      });
+      const section = root.querySelector('[aria-labelledby="screen-recording-heading"]')!;
+      expect(section.textContent).toContain("Screen & System Audio Recording");
+      expect(section.textContent).toContain("It does not record audio.");
+      expect(section.querySelector("output")).toBeNull();
+      expect(mockedInvoke).not.toHaveBeenCalledWith("open_screen_recording_settings");
+      const button = section.querySelector<HTMLButtonElement>("button")!;
+      button.focus();
+      button.click();
+      await vi.waitFor(() => {
+        expect(mockedInvoke).toHaveBeenCalledWith("open_screen_recording_settings");
+        expect(root.querySelector(".settings-detail-panel:not([hidden])")?.textContent).toContain(
+          "System Settings unavailable",
+        );
+      });
+      expect(section.querySelector("button")).toBe(button);
+      expect(root instanceof ShadowRoot ? root.activeElement : document.activeElement).toBe(button);
+      expect(button.disabled).toBe(false);
+      mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+        if (command === "open_screen_recording_settings") return undefined;
+        return previousImplementation?.(command, ...arguments_);
+      });
+      button.click();
+      await vi.waitFor(() => {
+        expect(root.querySelector(".settings-detail-panel:not([hidden])")?.textContent).toContain(
+          "Manage Screen & System Audio Recording access in System Settings.",
+        );
+      });
+      navigation.find((item) => item.textContent?.trim() === "Connection")!.click();
+      await vi.waitFor(() => {
+        expect(
+          root.querySelector(".settings-detail-panel:not([hidden])")?.textContent,
+        ).not.toContain("System Settings unavailable");
+      });
+    } finally {
+      if (previousImplementation) mockedInvoke.mockImplementation(previousImplementation);
+    }
+  });
+
   it("uses one System Settings-style navigation authority and one detail destination", async () => {
     const element = await createPage("settings");
     const settingsRoot = viewRoot(element, "lens-settings-view");

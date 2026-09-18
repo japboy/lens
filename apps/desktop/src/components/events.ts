@@ -39,7 +39,8 @@ export type SettingsIntent =
   | { type: "save-agent-prompt-template"; agentPromptTemplate: AgentPromptTemplate }
   | { type: "reset-agent-prompt-template" }
   | { type: "choose-directory" }
-  | { type: "request-accessibility-permission" };
+  | { type: "request-accessibility-permission" }
+  | { type: "open-screen-recording-settings" };
 
 export type TargetSelectionIntent =
   | { type: "add" }

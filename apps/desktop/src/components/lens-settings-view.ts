@@ -755,6 +755,7 @@ export class LensSettingsView extends LitElement {
   @property({ attribute: false })
   permission: import("../application/accessibility-permission-controller").AccessibilityPermissionState =
     { stage: "inactive" };
+  @property({ attribute: false }) feedback: SettingsFeedback = { stage: "none" };
   @property({ type: Boolean }) commandPending = false;
   @property({ type: Boolean }) active = initialSettingsState().active;
 
@@ -785,6 +786,7 @@ export class LensSettingsView extends LitElement {
 
   protected render() {
     const model = this.model;
+    const feedback = model?.feedback ?? this.feedback;
     const permission = model?.permission ?? this.permission;
     const permissionLabel = (() => {
       switch (permission.stage) {
@@ -800,12 +802,8 @@ export class LensSettingsView extends LitElement {
       }
     })();
     const permissionAllowed = permission.stage === "allowed";
-    const generalFeedback = model
-      ? feedbackForDestination(model?.feedback, "connection")
-      : undefined;
-    const promptFeedback = model
-      ? feedbackForDestination(model?.feedback, "prompt-presets")
-      : undefined;
+    const generalFeedback = feedbackForDestination(feedback, "connection");
+    const promptFeedback = feedbackForDestination(feedback, "prompt-presets");
     return html`
       <main
         class="settings-shell"
@@ -900,7 +898,7 @@ export class LensSettingsView extends LitElement {
                 </p>
               </div>
             </header>
-            ${renderSettingsFeedback(model ? feedbackForDestination(model.feedback, "session-defaults") : undefined)}
+            ${renderSettingsFeedback(feedbackForDestination(feedback, "session-defaults"))}
             <div class="settings-detail-groups">
               ${
                 model?.agentSelection?.stage === "selected"
@@ -932,8 +930,24 @@ export class LensSettingsView extends LitElement {
                 <p>Manage operating system permissions for Lens.</p>
               </div>
             </header>
-            ${renderSettingsFeedback(model ? feedbackForDestination(model.feedback, "privacy-security") : undefined)}
+            ${renderSettingsFeedback(feedbackForDestination(feedback, "privacy-security"))}
             <div class="settings-detail-groups">
+              <section class="settings-group" aria-labelledby="screen-recording-heading">
+                <h2 id="screen-recording-heading">Screen &amp; System Audio Recording</h2>
+                <p>
+                  Lens captures images from the windows you select. It does not record audio. The
+                  macOS window picker authorizes access to selected windows.
+                </p>
+                <div class="permission-row">
+                  <span>Manage access in System Settings.</span>
+                  <button
+                    @click=${() => this.emit({ type: "open-screen-recording-settings" })}
+                    ?disabled=${!this.active || this.commandPending}
+                  >
+                    Open System Settings
+                  </button>
+                </div>
+              </section>
               <section class="settings-group" aria-labelledby="permission-heading">
                 <h2 id="permission-heading">Accessibility</h2>
                 <div class="permission-row">
