@@ -3,6 +3,12 @@ name: Release PR
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to resume; leave empty to reconcile and propose.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -12,25 +18,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-pr:
-    # Provision the repository-scoped GitHub App before enabling automation.
+  reconcile:
     if: vars.RELEASE_APP_ID != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.reconcile.outputs.tag }}
     steps:
+      - name: Require the trusted main controller
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
           persist-credentials: false
-
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: "v2026.9.8"
-          sha256: ff182b17e78d2ae09b5ae3ff3c032eed061e6c2a6b2d4a03ce959d4d74c4b7dd # linux-x64
+          sha256: ff182b17e78d2ae09b5ae3ff3c032eed061e6c2a6b2d4a03ce959d4d74c4b7dd
           cache: false
           install: true
-
+      - run: pnpm install --frozen-lockfile
       - name: Mint the repository-scoped release automation token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -41,27 +51,36 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
-
-      - name: Reconcile release state and tag an admitted merged release PR
-        id: control
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          SOURCE_SHA: ${{ github.sha }}
-        run: node scripts/release/cli.ts control
-
-      - name: Propose the next version and committed changelog
-        if: steps.control.outputs.state == 'update-pr'
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      # Separate capability: ruleset bypass actors require ruleset write access.
+      # This token never reaches the Release Please client.
+      - name: Mint the repository-scoped ruleset policy token
+        id: policy
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          token: ${{ steps.app.outputs.token }}
-          target-branch: main
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-          skip-github-release: true
-
-      - name: Refresh the proposed Cargo lock with Cargo
-        if: steps.control.outputs.state == 'update-pr'
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+      - name: Reconcile and invoke the standard release phase
+        id: reconcile
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          SOURCE_SHA: ${{ github.sha }}
-        run: node scripts/release/cli.ts refresh-lock
+          GH_POLICY_TOKEN: ${{ steps.policy.outputs.token }}
+          CONTROLLER_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.tag || '' }}
+        run: node scripts/release/cli.ts generate
+
+  release:
+    needs: reconcile
+    if: needs.reconcile.outputs.tag != ''
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.reconcile.outputs.tag }}
+      controller_sha: ${{ github.sha }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

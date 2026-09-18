@@ -1,53 +1,20 @@
 #!/usr/bin/env node
-//MISE description = "Verify the exact release Action updaters and version policy without installing its dependency tree"
+//MISE description = "Verify pinned release library updaters, version policy and proposal discovery"
 //MISE dir = "{{config_root}}"
 
 import assert from "node:assert/strict";
+import { assertReleasePleaseVersion } from "../../scripts/release/library-version.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runInThisContext } from "node:vm";
-import { actionRevision, withActionSource } from "../../scripts/release/action-source.ts";
 import { VERSION_FILES, manifestVersionState } from "../../scripts/release/version.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const revision = actionRevision(
-  readFileSync(join(root, ".github/workflows/release-please.yml"), "utf8"),
-);
-const templates: string[] = JSON.parse(
-  readFileSync(join(root, "scripts/release/please-templates.json"), "utf8"),
-);
-await withActionSource(revision, templates, async ({ directory, bundle }) => {
-  const original = readFileSync(bundle, "utf8");
-  // Expose the pinned ncc modules in a test-only copy. Disable the Action entry point;
-  // the updater/strategy implementations are unmodified and receive no GitHub client.
-  const entry = "if (require.main === require.cache[eval('__filename')]) {";
-  const exportsLine = "module.exports = __webpack_exports__;";
-  assert.equal(original.split(entry).length, 2);
-  assert.equal(original.split(exportsLine).length, 2);
-  const adapted = original.replace(entry, "if (false) {").replace(
-    exportsLine,
-    `module.exports = {
-  library: __nccwpck_require__(24363),
-  factory: __nccwpck_require__(75695),
-  Merge: __nccwpck_require__(90514).Merge,
-  parseCommits: __nccwpck_require__(69158).parseConventionalCommits,
-  Version: __nccwpck_require__(17348).Version
-};`,
-  );
-  const module = { exports: {} };
-  const wrapper = runInThisContext(
-    `(function(require, module, exports, __filename, __dirname) { ${adapted}\n})`,
-    { filename: bundle },
-  ) as (
-    require: NodeJS.Require,
-    module: { exports: unknown },
-    exports: unknown,
-    filename: string,
-    dirname: string,
-  ) => void;
-  wrapper(createRequire(import.meta.url), module, module.exports, bundle, directory);
+const require = createRequire(import.meta.url);
+// Distributed library paths replace private ncc module IDs. These explicit
+// conformance-test couplings are pinned by the workspace dependency lock.
+{
   type Version = { toString(): string };
   type ReleaseProposal = {
     headRefName: string;
@@ -77,7 +44,13 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
       versionsMap: Map<string, Version>;
     }): Promise<Updater[]>;
   };
-  const bundled = module.exports as {
+  const bundled = {
+    library: require("release-please"),
+    factory: require("release-please/build/src/factory"),
+    Merge: require("release-please/build/src/plugins/merge").Merge,
+    parseCommits: require("release-please/build/src/commit").parseConventionalCommits,
+    Version: require("release-please/build/src/version").Version,
+  } as {
     library: {
       VERSION: string;
       setLogger(logger: unknown): void;
@@ -123,11 +96,16 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
   };
   bundled.library.setLogger(quiet);
   const config = JSON.parse(readFileSync(join(root, "release-please-config.json"), "utf8"));
+  assertReleasePleaseVersion(
+    JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies["release-please"],
+    config.$schema,
+    bundled.library.VERSION,
+  );
   assert.deepEqual(Object.keys(config.packages), ["."]);
   assert.equal(
     config["separate-pull-requests"],
-    false,
-    "One grouped branch must match tag admission",
+    true,
+    "Separate standard branch must match merged release discovery",
   );
   const component = config.packages["."];
   const strategy = await bundled.factory.buildStrategy({
@@ -229,35 +207,6 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
     assert.equal(result?.version.toString(), expected, `Version policy: ${message}`);
     cases++;
   }
-  const candidate = await strategy.buildReleasePullRequest(
-    bundled.parseCommits([
-      {
-        sha: "c".repeat(40),
-        message: "feat: shared capability",
-        files: ["packages/domain/src/lib.rs"],
-      },
-    ]),
-  );
-  const grouped = await new bundled.Merge(
-    { repository: { owner: "fixture", repo: "lens" } },
-    "main",
-    { ".": { releaseType: "node", separatePullRequests: false } },
-    {
-      pullRequestTitlePattern: config["group-pull-request-title-pattern"],
-      pullRequestHeader: config["pull-request-header"],
-      pullRequestFooter: config["pull-request-footer"],
-    },
-  ).run([
-    {
-      path: ".",
-      config: { releaseType: "node", separatePullRequests: false },
-      pullRequest: candidate,
-    },
-  ]);
-  assert.equal(grouped.length, 1);
-  assert.equal(grouped[0]!.pullRequest.headRefName, "release-please--branches--main");
-  assert.equal(grouped[0]!.pullRequest.title.toString(), "chore(main): release 0.1.0");
-  cases++;
   // Exercise the real Manifest path, including JSON config parsing, the empty version
   // manifest, complete initial history, grouping, changelog and manifest updaters.
   assert.equal(config["bootstrap-sha"], undefined);
@@ -331,7 +280,7 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
     assert.equal(proposals.length, message.startsWith("feat:") ? 1 : 0);
     if (proposals.length) {
       const proposal = proposals[0]!;
-      assert.equal(proposal.headRefName, "release-please--branches--main");
+      assert.equal(proposal.headRefName, "release-please--branches--main--components--lens");
       assert.equal(proposal.title.toString(), "chore(main): release 0.1.0");
       assert.deepEqual(proposal.labels, ["autorelease: pending"]);
       const updates = new Map(proposal.updates.map((update) => [update.path, update]));
@@ -385,6 +334,6 @@ await withActionSource(revision, templates, async ({ directory, bundle }) => {
     cases++;
   }
   process.stdout.write(
-    `Release Please Action ${revision} (release-please ${bundled.library.VERSION}) conformance passed: ${cases} cases.\n`,
+    `Release Please ${bundled.library.VERSION} conformance passed: ${cases} cases.\n`,
   );
-});
+}
