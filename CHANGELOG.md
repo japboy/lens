@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/japboy/lens/compare/v0.4.0...v0.4.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **history:** restore Claude HTML previews ([#93](https://github.com/japboy/lens/issues/93)) ([613e74a](https://github.com/japboy/lens/commit/613e74a4da1d835face018a01519e1d8cc2fda96))
+
 ## [0.4.0](https://github.com/japboy/lens/compare/v0.3.0...v0.4.0) (2026-09-18)
 
 
