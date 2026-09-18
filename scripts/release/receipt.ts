@@ -17,9 +17,11 @@ export type BuildIdentity = {
   runAttempt: string;
   workflow: typeof RELEASE_WORKFLOW;
 };
-export type ArtifactManifestV2 = Omit<ReleaseManifest, "schema"> & BuildIdentity & { schema: 2 };
+export type ArtifactManifestV2 = Omit<ReleaseManifest, "schema"> &
+  BuildIdentity & { schema: 2; verificationAttempt: string };
 export type ReleaseReceipt = BuildIdentity & {
   schema: 2;
+  verificationAttempt: string;
   version: string;
   pullRequest: number;
   releaseId: number;
@@ -40,6 +42,17 @@ export function requireBuildIdentity(input: BuildIdentity): void {
   )
     throw new Error("Invalid build identity");
 }
+export function requireVerificationAttempt(
+  identity: BuildIdentity & { verificationAttempt: string },
+): void {
+  requireBuildIdentity(identity);
+  if (
+    !positiveId(identity.verificationAttempt) ||
+    BigInt(identity.verificationAttempt) < BigInt(identity.runAttempt)
+  )
+    throw new Error("Verification attempt must identify this build or a later retry");
+}
+
 export function requireAssets(assets: Asset[], version: string): void {
   const names = [`Lens_${version}_aarch64.dmg`, "SHA256SUMS"];
   if (
@@ -69,6 +82,7 @@ export function packageArtifactV2(
     schema: 2,
     controller: input.controller,
     workflow: input.workflow,
+    verificationAttempt: input.runAttempt,
   };
   writeFileSync(
     join(destination, "release-manifest.json"),
@@ -83,7 +97,7 @@ export function verifyArtifactV2(
   const manifest = JSON.parse(
     readFileSync(join(directory, "release-manifest.json"), "utf8"),
   ) as ArtifactManifestV2;
-  requireBuildIdentity(manifest);
+  requireVerificationAttempt(manifest);
   const version = tagVersion(expected.tag);
   if (
     manifest.schema !== 2 ||
@@ -127,7 +141,7 @@ export function parseReceipt(
 ): ReleaseReceipt {
   if (bytes.length > 64 * 1024) throw new Error("Release receipt exceeds size limit");
   const receipt = JSON.parse(bytes.toString("utf8")) as ReleaseReceipt;
-  requireBuildIdentity(receipt);
+  requireVerificationAttempt(receipt);
   if (
     receipt.schema !== 2 ||
     receipt.tag !== admitted.tag ||
@@ -156,6 +170,7 @@ export function createReceipt(
     workflow: manifest.workflow,
     runId: manifest.runId,
     runAttempt: manifest.runAttempt,
+    verificationAttempt: manifest.verificationAttempt,
     version: manifest.version,
     pullRequest: admitted.pullRequest,
     releaseId: admitted.releaseId,
@@ -163,4 +178,20 @@ export function createReceipt(
     assets: manifest.assets,
   };
   return parseReceipt(Buffer.from(JSON.stringify(receipt)), admitted, manifest.repository);
+}
+
+/** Promotion runs in the trusted controller after the aggregate gate succeeds.
+ * Preserve the original build attempt when only failed jobs were rerun. */
+export function promoteArtifactV2(
+  directory: string,
+  expected: Pick<BuildIdentity, "repository" | "tag" | "source" | "controller" | "runId">,
+  verificationAttempt: string,
+): ArtifactManifestV2 {
+  const manifest = verifyArtifactV2(directory, expected);
+  if (manifest.controller !== expected.controller || manifest.runId !== expected.runId)
+    throw new Error("Candidate promotion controller/run identity mismatch");
+  const promoted = { ...manifest, verificationAttempt };
+  requireVerificationAttempt(promoted);
+  writeFileSync(join(directory, "release-manifest.json"), `${JSON.stringify(promoted, null, 2)}\n`);
+  return promoted;
 }

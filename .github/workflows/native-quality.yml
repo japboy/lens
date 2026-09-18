@@ -7,6 +7,10 @@ on:
         description: Exact verified source; defaults to the caller revision for ordinary CI.
         type: string
         default: ""
+      controller_sha:
+        description: Trusted release controller revision, distinct from product source.
+        type: string
+        default: ""
       bundle_kind:
         type: string
         default: app
@@ -109,20 +113,30 @@ jobs:
           BUNDLE_KIND: ${{ inputs.bundle_kind }}
         run: mise run verify:bundle -- "$BUNDLE_KIND"
 
+      - name: Check out the trusted release controller separately
+        if: inputs.release_tag != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.controller_sha }}
+          path: target/release-controller
+          persist-credentials: false
+
       - name: Package immutable source-bound release evidence
         if: inputs.release_tag != ''
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           PREVIOUS_TAG: ${{ inputs.previous_tag }}
-        run: node scripts/release/cli.ts package
+          CONTROLLER_SHA: ${{ inputs.controller_sha }}
+          SOURCE_ROOT: ${{ github.workspace }}
+        run: node target/release-controller/scripts/release/cli.ts package
 
       - name: Preserve the original verified distribution
         if: inputs.release_tag != ''
         id: release-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ inputs.release_tag }}
+          name: release-candidate-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/release-artifact
           if-no-files-found: error
           retention-days: 30

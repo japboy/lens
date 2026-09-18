@@ -38,6 +38,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Validate the complete release delta against the tested base
+        if: github.event.pull_request.head.ref == 'release-please--branches--main--components--lens'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: node scripts/release/cli.ts delta
+
       - run: mise run verify:portable
 
       - name: Classify the complete tested merge-ref change set

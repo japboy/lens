@@ -1,20 +1,20 @@
 import { appendFileSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { CONFIGURATION_FILES, sha256, releaseNotes } from "./artifact.ts";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { github } from "./github.ts";
-import { control, previousRelease, validateReleasePr } from "./control.ts";
-import type { PullRequest } from "./control.ts";
-import { assertPrTitle, changelogSection, cleanSource, git, inspectTag } from "./source.ts";
+import { previousRelease } from "./control.ts";
+import { assertPrTitle, changelogSection, commitSha, git, requireMain } from "./source.ts";
+import { admitRelease } from "./admission.ts";
+import { resumeRelease } from "./resume.ts";
 import {
-  packageArtifact,
-  sha256,
-  verifyArtifact,
-  CONFIGURATION_FILES,
-  releaseNotes,
-} from "./artifact.ts";
-import { publish, requireReleaseJobs } from "./publish.ts";
-import { preflight } from "./preflight.ts";
-import { refreshReleaseLock } from "./refresh-lock.ts";
+  packageArtifactV2,
+  promoteArtifactV2,
+  RELEASE_WORKFLOW,
+  verifyArtifactV2,
+} from "./receipt.ts";
+import { publishReleaseV2 } from "./publisher.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const env = (name: string) => {
@@ -26,80 +26,138 @@ const output = (name: string, value: string) => {
   if (/[\r\n]/u.test(value)) throw new Error("Multiline workflow output rejected");
   appendFileSync(env("GITHUB_OUTPUT"), `${name}=${value}\n`);
 };
+function controller(): string {
+  const sha = commitSha(env("CONTROLLER_SHA"));
+  if (
+    sha !== env("GITHUB_SHA") ||
+    env("GITHUB_REF") !== "refs/heads/main" ||
+    !["push", "workflow_dispatch"].includes(env("GITHUB_EVENT_NAME")) ||
+    git(root, "rev-parse", "HEAD") !== sha
+  )
+    throw new Error("Release controller must be the trusted main workflow revision");
+  requireMain(root, sha);
+  return sha;
+}
 const mode = process.argv[2];
 if (process.argv.length !== 3) throw new Error("Exactly one release operation required");
 if (mode === "pr-title") {
   assertPrTitle(env("PR_TITLE"));
-} else if (mode === "control") {
-  const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
-  const result = await control(api.request, root, env("SOURCE_SHA"), env("GITHUB_REPOSITORY"));
-  output("state", result);
-} else if (mode === "refresh-lock") {
-  const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
-  process.stdout.write(
-    `${await refreshReleaseLock(api.request, root, env("SOURCE_SHA"), env("GITHUB_REPOSITORY"))}\n`,
-  );
-} else if (mode === "preflight") {
-  const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
-  const tag = env("RELEASE_TAG");
-  const data = inspectTag(root, tag);
-  validateReleasePr(
-    await api.request<PullRequest>(`/pulls/${data.pullRequest}`),
-    data.commit,
+} else if (mode === "generate") {
+  const { generate } = await import("./generate.ts");
+  const result = await generate(
+    root,
+    env("GH_TOKEN"),
     env("GITHUB_REPOSITORY"),
+    controller(),
+    process.env.RELEASE_TAG || "",
   );
-  changelogSection(git(root, "show", `${data.commit}:CHANGELOG.md`), data.version);
-  output("source_sha", data.commit);
-  const previous = await previousRelease(api.request, data.version);
-  const plan = await preflight(api.request, tag, data.commit, env("GITHUB_RUN_ID"));
+  output("tag", result.state === "release" ? result.tag : "");
+} else if (mode === "delta") {
+  const { verifyReleaseDelta } = await import("./release-delta.ts");
+  verifyReleaseDelta(root, env("BASE_SHA"), env("HEAD_SHA"));
+} else if (mode === "preflight") {
+  controller();
+  const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
+  const admitted = await admitRelease(
+    api.request,
+    root,
+    env("GITHUB_REPOSITORY"),
+    env("RELEASE_TAG"),
+  );
+  const plan = await resumeRelease(api, admitted, env("GITHUB_REPOSITORY"));
+  const previous = admitted.draft
+    ? await previousRelease(api.request, admitted.version)
+    : undefined;
+  output("source_sha", admitted.source);
   output("state", plan.state);
-  output("artifact_id", plan.artifactId);
+  output("artifact_id", plan.state === "reuse" ? plan.artifactId : "");
+  output("artifact_run_id", plan.state === "reuse" ? plan.runId : "");
   output("previous_tag", previous ?? "");
+} else if (mode === "promote") {
+  const sha = controller();
+  promoteArtifactV2(
+    join(root, "target/release-artifact"),
+    {
+      repository: env("GITHUB_REPOSITORY"),
+      tag: env("RELEASE_TAG"),
+      source: env("SOURCE_SHA"),
+      controller: sha,
+      runId: env("GITHUB_RUN_ID"),
+    },
+    env("GITHUB_RUN_ATTEMPT"),
+  );
 } else if (mode === "package") {
-  packageArtifact(root, join(root, "target/release-artifact"), {
+  if (
+    git(root, "rev-parse", "HEAD") !== commitSha(env("CONTROLLER_SHA")) ||
+    env("CONTROLLER_SHA") !== env("GITHUB_SHA")
+  )
+    throw new Error("Packaging controller differs from workflow revision");
+  const sourceRoot = resolve(env("SOURCE_ROOT"));
+  packageArtifactV2(sourceRoot, join(sourceRoot, "target/release-artifact"), {
     tag: env("RELEASE_TAG"),
     source: env("SOURCE_SHA"),
+    controller: commitSha(env("CONTROLLER_SHA")),
     repository: env("GITHUB_REPOSITORY"),
     runId: env("GITHUB_RUN_ID"),
     runAttempt: env("GITHUB_RUN_ATTEMPT"),
+    workflow: RELEASE_WORKFLOW,
     previousTag: process.env.PREVIOUS_TAG || null,
   });
 } else if (mode === "publish") {
+  controller();
   const api = github(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
-  const tag = env("RELEASE_TAG");
-  const data = inspectTag(root, tag);
-  cleanSource(root, data.commit);
-  validateReleasePr(
-    await api.request<PullRequest>(`/pulls/${data.pullRequest}`),
-    data.commit,
+  const admitted = await admitRelease(
+    api.request,
+    root,
     env("GITHUB_REPOSITORY"),
+    env("RELEASE_TAG"),
   );
-  await previousRelease(api.request, data.version);
-  requireReleaseJobs(env("PORTABLE_RESULT"), env("COMMON_RESULT"), env("NATIVE_RESULT"));
-  const expected = {
-    tag,
-    source: data.commit,
-    repository: env("GITHUB_REPOSITORY"),
-    runId: env("GITHUB_RUN_ID"),
-  };
-  const directory = join(root, "target/release-artifact");
-  const manifest = verifyArtifact(directory, expected);
-  for (const path of CONFIGURATION_FILES)
-    if (manifest.configuration[path] !== sha256(readFileSync(join(root, path))))
-      throw new Error("Artifact configuration differs from tagged source");
-  const section = changelogSection(git(root, "show", `${data.commit}:CHANGELOG.md`), data.version);
-  const previous = await previousRelease(api.request, data.version);
-  if (
-    manifest.previousTag !== (previous ?? null) ||
-    readFileSync(join(directory, "release-notes.md"), "utf8") !==
-      releaseNotes(section, manifest, manifest.assets[0]!)
-  )
-    throw new Error("Release notes differ from the tagged source");
   const enabled = process.env.RELEASE_PUBLISH_ENABLED ?? "";
   if (!["", "false", "true"].includes(enabled)) throw new Error("Invalid publication switch");
-  process.stdout.write(
-    `${await publish(api, directory, expected, enabled === "true", process.env.IMMUTABILITY_RESULT === "success")}\n`,
+  const directory = join(root, "target/release-artifact");
+  if (admitted.draft) {
+    const manifest = verifyArtifactV2(directory, {
+      ...admitted,
+      repository: env("GITHUB_REPOSITORY"),
+    });
+    for (const path of CONFIGURATION_FILES) {
+      const sourceBytes = execFileSync("git", ["show", `${admitted.source}:${path}`], {
+        cwd: root,
+      });
+      if (manifest.configuration[path] !== sha256(sourceBytes))
+        throw new Error("Artifact configuration differs from admitted source");
+    }
+    const previous = await previousRelease(api.request, admitted.version);
+    const section = changelogSection(
+      git(root, "show", `${admitted.source}:CHANGELOG.md`),
+      admitted.version,
+    );
+    if (
+      manifest.previousTag !== (previous ?? null) ||
+      readFileSync(join(directory, "release-notes.md"), "utf8") !==
+        releaseNotes(section, manifest, manifest.assets[0]!)
+    )
+      throw new Error("Artifact notes differ from admitted source");
+  }
+  const result = await publishReleaseV2(
+    api,
+    directory,
+    admitted,
+    {
+      repository: env("GITHUB_REPOSITORY"),
+      artifactId: env("ARTIFACT_ID"),
+      readmit: () => admitRelease(api.request, root, env("GITHUB_REPOSITORY"), env("RELEASE_TAG")),
+      admitController(sha) {
+        requireMain(root, commitSha(sha));
+        // An older controller must implement this contract, not the legacy tag-push workflow.
+        if (!git(root, "show", `${sha}:scripts/release/receipt.ts`).includes(RELEASE_WORKFLOW))
+          throw new Error("Original controller predates the admitted build contract");
+      },
+    },
+    enabled === "true",
+    process.env.IMMUTABILITY_RESULT === "success",
   );
+  process.stdout.write(`${result}\n`);
 } else {
   throw new Error("Unknown release operation");
 }

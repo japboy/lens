@@ -9,7 +9,7 @@ import {
   positiveId,
   RECEIPT_NAME,
   RELEASE_WORKFLOW,
-  requireBuildIdentity,
+  requireVerificationAttempt,
 } from "./receipt.ts";
 import type { BuildIdentity, ReleaseReceipt } from "./receipt.ts";
 
@@ -51,39 +51,44 @@ async function artifactList(request: Request, tag: string): Promise<OriginalArti
 }
 export async function verifyBuildProvenance(
   request: Request,
-  identity: BuildIdentity,
+  identity: BuildIdentity & { verificationAttempt: string },
   artifactId: string,
   policy: ProvenancePolicy,
 ): Promise<void> {
-  requireBuildIdentity(identity);
+  requireVerificationAttempt(identity);
   if (identity.repository !== policy.repository || !positiveId(artifactId))
     throw new Error("Artifact repository/ID conflict");
   policy.admitController(identity.controller);
   const artifact = await request<OriginalArtifact>(`/actions/artifacts/${artifactId}`);
-  const run = await request<WorkflowRun>(
-    `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}`,
-  );
   if (
     String(artifact.id) !== artifactId ||
     artifact.name !== `release-${identity.tag}` ||
     artifact.expired ||
     String(artifact.workflow_run.id) !== identity.runId ||
     artifact.workflow_run.head_sha !== identity.controller ||
-    artifact.workflow_run.head_branch !== "main" ||
-    String(run.id) !== identity.runId ||
-    String(run.run_attempt) !== identity.runAttempt ||
-    run.head_sha !== identity.controller ||
-    run.path !== RELEASE_WORKFLOW ||
-    run.head_branch !== "main" ||
-    !["push", "workflow_dispatch"].includes(run.event) ||
-    run.repository.full_name !== policy.repository ||
-    run.head_repository.full_name !== policy.repository
+    artifact.workflow_run.head_branch !== "main"
   )
     throw new Error("Original artifact workflow provenance mismatch");
+  // A partial rerun may verify an earlier successful native build. Both attempts
+  // must belong to the same trusted controller run; only the later gate authorizes promotion.
+  for (const attempt of new Set([identity.runAttempt, identity.verificationAttempt])) {
+    const run = await request<WorkflowRun>(`/actions/runs/${identity.runId}/attempts/${attempt}`);
+    if (
+      String(run.id) !== identity.runId ||
+      String(run.run_attempt) !== attempt ||
+      run.head_sha !== identity.controller ||
+      run.path !== RELEASE_WORKFLOW ||
+      run.head_branch !== "main" ||
+      !["push", "workflow_dispatch"].includes(run.event) ||
+      run.repository.full_name !== policy.repository ||
+      run.head_repository.full_name !== policy.repository
+    )
+      throw new Error("Original artifact workflow provenance mismatch");
+  }
   const jobs: { name: string; conclusion: string | null }[] = [];
   for (let page = 1; ; page++) {
     const response = await request<{ jobs: { name: string; conclusion: string | null }[] }>(
-      `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}/jobs?per_page=100&page=${page}`,
+      `/actions/runs/${identity.runId}/attempts/${identity.verificationAttempt}/jobs?per_page=100&page=${page}`,
     );
     if (!Array.isArray(response.jobs)) throw new Error("Invalid verification jobs response");
     jobs.push(...response.jobs);

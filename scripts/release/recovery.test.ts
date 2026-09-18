@@ -7,7 +7,7 @@ import type { AdmittedRelease } from "./admission.ts";
 import { requireMergedReleasePr } from "./admission.ts";
 import type { PullRequest, Release } from "./control.ts";
 import { sha256 } from "./artifact.ts";
-import { RELEASE_WORKFLOW, RECEIPT_NAME, verifyArtifactV2 } from "./receipt.ts";
+import { RELEASE_WORKFLOW, RECEIPT_NAME, verifyArtifactV2, promoteArtifactV2 } from "./receipt.ts";
 import type { ArtifactManifestV2 } from "./receipt.ts";
 import { resumeRelease, verifyBuildProvenance, verifyPublishedRelease } from "./resume.ts";
 import type { OriginalArtifact, RemoteAsset } from "./resume.ts";
@@ -39,6 +39,7 @@ function fixture() {
     workflow: RELEASE_WORKFLOW,
     runId: "123",
     runAttempt: "2",
+    verificationAttempt: "2",
     version: "0.1.0",
     previousTag: null,
     assets: [
@@ -106,6 +107,7 @@ function fixture() {
     if (path === "/actions/artifacts/456") return artifact;
     if (path.includes("/jobs?")) return { jobs: [verification] };
     if (path === "/actions/runs/123/attempts/2") return run;
+    if (path === "/actions/runs/123/attempts/1") return { ...run, run_attempt: 1 };
     if (path === "/releases/50" && method === "PATCH") {
       if (JSON.stringify(payload) !== JSON.stringify({ draft: false, make_latest: "true" }))
         throw new Error("Unexpected publication fields");
@@ -239,6 +241,50 @@ describe("schema 2 artifact and Actions provenance", () => {
       f.close();
     }
   });
+  it("promotes an earlier native build after a successful later verification attempt", async () => {
+    const f = fixture();
+    try {
+      f.manifest.runAttempt = "1";
+      f.manifest.verificationAttempt = "1";
+      writeFileSync(join(f.directory, "release-manifest.json"), JSON.stringify(f.manifest));
+      const promoted = promoteArtifactV2(f.directory, f.manifest, "2");
+      expect(promoted.runAttempt).toBe("1");
+      expect(promoted.verificationAttempt).toBe("2");
+      const request = f.api.request;
+      f.api.request = (async (path: string, method?: string, body?: unknown) => {
+        if (path.includes("/attempts/1/jobs?"))
+          throw new Error("The failed first aggregate must not authorize publication");
+        return request(path, method, body);
+      }) as Request;
+      expect(await f.publish()).toBe("published");
+      expect(f.reads).toContain("/actions/runs/123/attempts/1");
+      expect(f.reads).toContain("/actions/runs/123/attempts/2/jobs?per_page=100&page=1");
+    } finally {
+      f.close();
+    }
+  });
+  it.each(["run", "controller", "earlier", "missing"])(
+    "rejects %s promotion/verification identity",
+    (fault) => {
+      const f = fixture();
+      try {
+        const expected = {
+          ...f.manifest,
+          ...(fault === "run" ? { runId: "999" } : {}),
+          ...(fault === "controller" ? { controller: source } : {}),
+        };
+        expect(() =>
+          promoteArtifactV2(
+            f.directory,
+            expected,
+            fault === "earlier" ? "1" : fault === "missing" ? "" : "2",
+          ),
+        ).toThrow(/.+/u);
+      } finally {
+        f.close();
+      }
+    },
+  );
   it("rejects tampered local artifact bytes", () => {
     const f = fixture();
     try {
