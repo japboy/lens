@@ -263,6 +263,27 @@ describe("schema 2 artifact and Actions provenance", () => {
       f.close();
     }
   });
+  it("retains gate attempt 1 when only promotion is retried in attempt 2", async () => {
+    const f = fixture();
+    try {
+      f.manifest.runAttempt = "1";
+      f.manifest.verificationAttempt = "1";
+      writeFileSync(join(f.directory, "release-manifest.json"), JSON.stringify(f.manifest));
+      // The gate's retained output is 1; the promotion job's current attempt is 2.
+      const promoted = promoteArtifactV2(f.directory, f.manifest, "1");
+      expect(promoted.verificationAttempt).toBe("1");
+      const request = f.api.request;
+      f.api.request = (async (path: string, method?: string, body?: unknown) => {
+        if (path.includes("/attempts/2"))
+          throw new Error("No verification gate ran in promotion retry attempt 2");
+        return request(path, method, body);
+      }) as Request;
+      expect(await f.publish()).toBe("published");
+      expect(f.reads).toContain("/actions/runs/123/attempts/1/jobs?per_page=100&page=1");
+    } finally {
+      f.close();
+    }
+  });
   it.each(["run", "controller", "earlier", "missing"])(
     "rejects %s promotion/verification identity",
     (fault) => {

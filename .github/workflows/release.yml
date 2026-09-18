@@ -140,15 +140,20 @@ jobs:
 
   release-verification:
     name: release-verification
+    outputs:
+      verification_attempt: ${{ steps.verified.outputs.attempt }}
     needs: [preflight, portable, common, native]
     if: always() && needs.preflight.outputs.state == 'build'
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: Require all source and package verification
+        id: verified
         env:
           RESULTS: ${{ needs.portable.result }}:${{ needs.common.result }}:${{ needs.native.result }}
-        run: test "$RESULTS" = success:success:success
+        run: |
+          test "$RESULTS" = success:success:success
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
   verified-artifact:
     needs: [preflight, native, release-verification]
@@ -178,6 +183,7 @@ jobs:
           merge-multiple: true
       - name: Bind the successful verification attempt to the original build
         env:
+          VERIFICATION_ATTEMPT: ${{ needs.release-verification.outputs.verification_attempt }}
           CONTROLLER_SHA: ${{ inputs.controller_sha }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           RELEASE_TAG: ${{ inputs.tag }}

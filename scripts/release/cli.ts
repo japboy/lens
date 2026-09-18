@@ -84,7 +84,7 @@ if (mode === "pr-title") {
       controller: sha,
       runId: env("GITHUB_RUN_ID"),
     },
-    env("GITHUB_RUN_ATTEMPT"),
+    env("VERIFICATION_ATTEMPT"),
   );
 } else if (mode === "package") {
   if (

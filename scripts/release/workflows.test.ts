@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { planChanges } from "../ci-plan.ts";
 const release = readFileSync(".github/workflows/release.yml", "utf8");
 const automation = readFileSync(".github/workflows/release-please.yml", "utf8");
+const cli = readFileSync("scripts/release/cli.ts", "utf8");
 const native = readFileSync(".github/workflows/native-quality.yml", "utf8");
 
 describe("release workflow authority and recovery", () => {
@@ -45,6 +46,16 @@ describe("release workflow authority and recovery", () => {
     expect(release).toContain("github-token: ${{ github.token }}");
     expect(release).not.toContain("overwrite: true");
     expect(release).toContain("needs.verified-artifact.result == 'success'");
+  });
+  it("retains the successful gate attempt when only artifact promotion is rerun", () => {
+    expect(release).toContain("verification_attempt: ${{ steps.verified.outputs.attempt }}");
+    expect(release).toContain('echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"');
+    expect(release).toContain(
+      "VERIFICATION_ATTEMPT: ${{ needs.release-verification.outputs.verification_attempt }}",
+    );
+    const promotion = cli.split('mode === "promote"')[1]!.split('mode === "package"')[0]!;
+    expect(promotion).toContain('env("VERIFICATION_ATTEMPT")');
+    expect(promotion).not.toContain('env("GITHUB_RUN_ATTEMPT")');
   });
   it.each([
     "release-please-config.json",
