@@ -70,11 +70,11 @@ beforeEach(() => {
     const root = fullscreenElement?.getRootNode();
     return root instanceof ShadowRoot ? root.host : fullscreenElement;
   });
-  vi.spyOn(ShadowRoot.prototype, "fullscreenElement", "get").mockImplementation(
-    function (this: ShadowRoot) {
-      return fullscreenElement?.getRootNode() === this ? fullscreenElement : null;
-    },
-  );
+  vi.spyOn(ShadowRoot.prototype, "fullscreenElement", "get").mockImplementation(function (
+    this: ShadowRoot,
+  ) {
+    return fullscreenElement?.getRootNode() === this ? fullscreenElement : null;
+  });
   vi.spyOn(HTMLElement.prototype, "requestFullscreen").mockImplementation(requestFullscreen);
   vi.spyOn(document, "exitFullscreen").mockImplementation(exitFullscreen);
 });
