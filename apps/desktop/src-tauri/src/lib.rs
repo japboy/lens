@@ -1,5 +1,7 @@
 mod about;
 mod agent;
+mod agent_environment;
+mod agent_launch;
 mod agent_output;
 mod agent_preferences;
 mod agent_runtime;
@@ -38,6 +40,11 @@ mod ui;
 use base64::prelude::*;
 use tauri::Manager;
 use usecase::{lens, prompt_template};
+
+/// Internal process modes must finish before native application initialization.
+pub fn internal_process_exit() -> Option<i32> {
+    agent_launch::early_helper_exit().or_else(agent_environment::dispatch_capture_mode)
+}
 
 /// Opt-in debug automation follows the same scoped catalog and admission as tray selection.
 #[cfg(debug_assertions)]

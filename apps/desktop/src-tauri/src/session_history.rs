@@ -100,7 +100,8 @@ pub async fn list_provider<R: tauri::Runtime>(
     cwd: &std::path::Path,
 ) -> Result<ProviderHistoryListing, String> {
     // Keep the installed runtime lease alive until its private transport exits.
-    let (_descriptor, transport) = crate::agent::history_transport(app, agent).await?;
+    let (_descriptor, transport) =
+        crate::agent::history_transport(app, agent, cwd.to_path_buf()).await?;
     list_transport(transport, agent, cwd.to_path_buf())
         .await
         .map_err(|e| e.to_string())
@@ -257,7 +258,8 @@ pub async fn load_provider<R: tauri::Runtime>(
     if session_id.is_empty() || !cwd.is_absolute() {
         return Err("History requires a session ID and absolute working directory".into());
     }
-    let (_descriptor, transport) = crate::agent::history_transport(app, agent).await?;
+    let (_descriptor, transport) =
+        crate::agent::history_transport(app, agent, cwd.to_path_buf()).await?;
     tokio::time::timeout(
         LOAD_TIMEOUT,
         load_transport(transport, session_id.to_owned(), cwd),

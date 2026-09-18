@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/japboy/lens/compare/v0.4.1...v0.4.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* **agent:** resolve initial working environments ([#102](https://github.com/japboy/lens/issues/102)) ([7f5b7c2](https://github.com/japboy/lens/commit/7f5b7c27d4ce00683f8d889a4817d817e45eee27)), closes [#97](https://github.com/japboy/lens/issues/97)
+* **history:** retain latest successful output ([#98](https://github.com/japboy/lens/issues/98)) ([cdbd881](https://github.com/japboy/lens/commit/cdbd8814e02a472cc214bc19dc89f0180d4c4f8f))
+
 ## [0.4.1](https://github.com/japboy/lens/compare/v0.4.0...v0.4.1) (2026-09-18)
 
 

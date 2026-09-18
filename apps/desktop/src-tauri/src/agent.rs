@@ -1,3 +1,4 @@
+use crate::agent_environment::EnvironmentPurpose;
 use crate::session_controls::{self, SessionControls};
 use crate::{
     agent_output::{
@@ -32,14 +33,13 @@ use agent_client_protocol::{
         ProtocolVersion,
     },
     util::MatchDispatch,
-    AcpAgent, AcpAgentConfig, ActiveSession, Agent, ConnectionTo, Dispatch, Error, ErrorCode,
-    SessionMessage,
+    ActiveSession, Agent, ConnectionTo, Dispatch, Error, ErrorCode, SessionMessage,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Stdio},
     sync::Arc,
@@ -193,6 +193,8 @@ pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
     fn connect(
         &self,
         descriptor: &AgentDescriptor,
+        cwd: PathBuf,
+        purpose: EnvironmentPurpose,
     ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client>;
 }
 
@@ -239,16 +241,31 @@ impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
     fn connect(
         &self,
         descriptor: &AgentDescriptor,
+        cwd: PathBuf,
+        purpose: EnvironmentPurpose,
     ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
-        agent_client_protocol::DynConnectTo::new(descriptor.process())
+        crate::agent_launch::working_transport(
+            descriptor.command.clone(),
+            descriptor
+                .args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect(),
+            cwd,
+            purpose,
+        )
     }
 }
 
 fn transport<R: tauri::Runtime>(
     app: &AppHandle<R>,
     descriptor: &AgentDescriptor,
+    cwd: PathBuf,
+    purpose: EnvironmentPurpose,
 ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
-    app.state::<AgentServices<R>>().0.connect(descriptor)
+    app.state::<AgentServices<R>>()
+        .0
+        .connect(descriptor, cwd, purpose)
 }
 
 /// History uses only an existing installation and never selects or upgrades an Agent.
@@ -256,6 +273,7 @@ fn transport<R: tauri::Runtime>(
 pub(crate) async fn history_transport<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
+    cwd: PathBuf,
 ) -> Result<
     (
         AgentDescriptor,
@@ -266,7 +284,7 @@ pub(crate) async fn history_transport<R: tauri::Runtime>(
     let descriptor = AgentDescriptor::resolve_installed(app, kind)
         .await?
         .ok_or_else(|| "Agent runtime is not installed".to_string())?;
-    let connection = transport(app, &descriptor);
+    let connection = transport(app, &descriptor, cwd, EnvironmentPurpose::History);
     Ok((descriptor, connection))
 }
 
@@ -332,15 +350,6 @@ impl AgentDescriptor {
             args: self.args.clone(),
             installation: self.installation.clone(),
         }
-    }
-
-    fn process(&self) -> AcpAgent {
-        AcpAgent::new(
-            AcpAgentConfig::new(self.command.clone())
-                .args(self.args.iter().cloned())
-                .env("NODE_OPTIONS", "")
-                .env("NODE_PATH", ""),
-        )
     }
 
     fn run_state(&self, run_id: Uuid) -> AgentRunState {
@@ -686,7 +695,9 @@ async fn run_logout<R: tauri::Runtime>(
     app: &AppHandle<R>,
     descriptor: AgentDescriptor,
 ) -> Result<Vec<AgentAuthMethod>, Error> {
-    let process = transport(app, &descriptor);
+    let cwd =
+        crate::agent_environment::user_home().map_err(|error| state_error(error.to_string()))?;
+    let process = transport(app, &descriptor, cwd, EnvironmentPurpose::Logout);
     agent_client_protocol::Client
         .builder()
         .name("lens-logout")
@@ -720,9 +731,15 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
 ) -> Result<(), Error> {
     let claude_authenticated = if descriptor.kind == AgentKind::Claude {
         let status_descriptor = descriptor.clone();
+        let home = crate::agent_environment::user_home()
+            .map_err(|error| state_error(error.to_string()))?;
+        let environment =
+            crate::agent_environment::resolve(&home, EnvironmentPurpose::AccountStatus)
+                .await
+                .map_err(|error| state_error(error.to_string()))?;
         Some(
             tauri::async_runtime::spawn_blocking(move || {
-                claude_cli_authentication_status(&status_descriptor)
+                claude_cli_authentication_status(&status_descriptor, environment)
             })
             .await
             .map_err(|error| state_error(error.to_string()))?
@@ -731,7 +748,12 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
     } else {
         None
     };
-    let process = transport(&app, &descriptor);
+    let process = transport(
+        &app,
+        &descriptor,
+        working_directory.clone(),
+        EnvironmentPurpose::Authentication,
+    );
     agent_client_protocol::Client
         .builder()
         .name("lens-agent-selection")
@@ -784,13 +806,25 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
         .await
 }
 
-fn claude_cli_authentication_status(descriptor: &AgentDescriptor) -> Result<bool, String> {
+fn claude_cli_authentication_status(
+    descriptor: &AgentDescriptor,
+    environment: crate::agent_environment::ResolvedEnvironment,
+) -> Result<bool, String> {
     if descriptor.kind != AgentKind::Claude {
         return Err("Claude authentication status requires the Claude adapter".into());
     }
-    let mut child = Command::new(&descriptor.command)
+    let mut command = Command::new(&descriptor.command);
+    crate::agent_environment::bind_directory(
+        &mut command,
+        &environment.cwd,
+        (environment.cwd_device, environment.cwd_inode),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut child = command
         .args(&descriptor.args)
         .args(["--cli", "auth", "status", "--json"])
+        .env_clear()
+        .envs(environment.values)
         .env("NODE_OPTIONS", "")
         .env("NODE_PATH", "")
         .stdout(Stdio::piped())
@@ -1189,7 +1223,12 @@ async fn run_persistent_session<R: tauri::Runtime>(
     let publisher = HttpPublisher::start()
         .await
         .map_err(|error| state_error(error.to_string()))?;
-    let process = transport(&app, &descriptor);
+    let process = transport(
+        &app,
+        &descriptor,
+        identity.config.working_directory.clone(),
+        EnvironmentPurpose::Session,
+    );
     agent_client_protocol::Client
         .builder()
         .name("lens")
@@ -2111,9 +2150,23 @@ async fn run_authentication<R: tauri::Runtime>(
     method_id: String,
     cancellation: &mut watch::Receiver<bool>,
 ) -> Result<AuthenticationAction, Error> {
-    let process = transport(&app, &descriptor);
+    if *cancellation.borrow() {
+        return Err(Error::request_cancelled());
+    }
+    let cwd = app
+        .state::<AppState>()
+        .config()
+        .map_err(state_error)?
+        .working_directory;
+    let process = transport(
+        &app,
+        &descriptor,
+        cwd.clone(),
+        EnvironmentPurpose::Authentication,
+    );
+    let mut startup_cancellation = cancellation.clone();
     let mut cancellation = cancellation.clone();
-    agent_client_protocol::Client
+    let connection = agent_client_protocol::Client
         .builder()
         .name("lens-auth")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
@@ -2128,7 +2181,7 @@ async fn run_authentication<R: tauri::Runtime>(
                 )));
             };
             if let AuthMethod::Terminal(terminal) = method {
-                launch_terminal_auth(&app, &descriptor, terminal).map_err(state_error)?;
+                launch_terminal_auth(&app, &descriptor, terminal, &cwd).await.map_err(state_error)?;
                 return Ok(AuthenticationAction::TerminalLaunched);
             }
             if !matches!(method, AuthMethod::Agent(_)) {
@@ -2151,8 +2204,11 @@ async fn run_authentication<R: tauri::Runtime>(
                 }
             }?;
             Ok(AuthenticationAction::Completed)
-        })
-        .await
+        });
+    tokio::select! {
+        result = connection => result,
+        _ = startup_cancellation.changed() => Err(Error::request_cancelled()),
+    }
 }
 
 async fn initialize(
@@ -2304,10 +2360,11 @@ fn complete_agent_authentication(lens: &mut LensState) {
     lens.error = None;
 }
 
-fn launch_terminal_auth<R: tauri::Runtime>(
+async fn launch_terminal_auth<R: tauri::Runtime>(
     app: &AppHandle<R>,
     descriptor: &AgentDescriptor,
     method: &AuthMethodTerminal,
+    cwd: &std::path::Path,
 ) -> Result<(), String> {
     let auth_dir = app
         .path()
@@ -2317,31 +2374,49 @@ fn launch_terminal_auth<R: tauri::Runtime>(
     fs::create_dir_all(&auth_dir).map_err(|error| error.to_string())?;
     let script_path = auth_dir.join(format!("{}.command", Uuid::new_v4()));
 
-    let mut environment = method.env.iter().collect::<Vec<_>>();
-    environment.sort_by(|left, right| left.0.cmp(right.0));
-    let mut script = String::from("#!/bin/sh\nset -u\ntrap 'rm -f -- \"$0\"' EXIT HUP INT TERM\n");
-    for (name, value) in environment {
+    let mut resolved = crate::agent_environment::resolve(cwd, EnvironmentPurpose::Authentication)
+        .await
+        .map_err(|error| error.to_string())?;
+    for (name, value) in &method.env {
         if !valid_environment_name(name) {
-            return Err(format!(
-                "Agent returned an invalid terminal-auth environment name: {name}"
-            ));
+            return Err("Agent returned an invalid terminal-auth environment name".into());
         }
-        script.push_str("export ");
-        script.push_str(name);
-        script.push('=');
-        script.push_str(&shell_quote(value));
-        script.push('\n');
+        resolved.values.insert(name.into(), value.into());
     }
-    script.push_str(&shell_quote(&descriptor.command.to_string_lossy()));
-    for argument in descriptor.args.iter().chain(method.args.iter()) {
+    resolved.values.insert("NODE_OPTIONS".into(), "".into());
+    resolved.values.insert("NODE_PATH".into(), "".into());
+    let launch = crate::agent_launch::prepare_external_launch(
+        descriptor.command.clone(),
+        descriptor
+            .args
+            .iter()
+            .chain(method.args.iter())
+            .map(std::ffi::OsString::from)
+            .collect(),
+        resolved,
+    )
+    .map_err(str::to_owned)?;
+    let mut script = String::from("#!/bin/sh\nset -u\ntrap 'rm -f -- \"$0\"' EXIT HUP INT TERM\n");
+    script.push_str(&shell_quote(
+        launch
+            .executable
+            .to_str()
+            .ok_or("Terminal launcher path is not UTF-8")?,
+    ));
+    for argument in &launch.arguments {
         script.push(' ');
-        script.push_str(&shell_quote(argument));
+        script.push_str(&shell_quote(
+            argument
+                .to_str()
+                .ok_or("Terminal launcher argument is not UTF-8")?,
+        ));
     }
     script.push_str(
         "\nstatus=$?\nrm -f -- \"$0\"\nprintf '\\nAuthentication command finished. Press Return to close.\\n'\nread -r _\nexit \"$status\"\n",
     );
 
     let mut file = OpenOptions::new()
+        .mode(0o700)
         .create_new(true)
         .write(true)
         .open(&script_path)
@@ -2352,15 +2427,20 @@ fn launch_terminal_auth<R: tauri::Runtime>(
     fs::set_permissions(&script_path, fs::Permissions::from_mode(0o700))
         .map_err(|error| error.to_string())?;
 
+    let cleanup_path = script_path.clone();
+    let broker = tauri::async_runtime::spawn(async move {
+        let _ = launch.serve().await;
+        let _ = fs::remove_file(cleanup_path);
+    });
     let status = Command::new("/usr/bin/open")
         .args(["-a", "Terminal"])
         .arg(&script_path)
-        .status()
-        .map_err(|error| error.to_string())?;
-    if !status.success() {
+        .status();
+    if !matches!(&status, Ok(status) if status.success()) {
+        broker.abort();
         let _ = fs::remove_file(&script_path);
         return Err(format!(
-            "unable to open terminal authentication command: {status}"
+            "unable to open terminal authentication command: {status:?}"
         ));
     }
     Ok(())
@@ -2484,7 +2564,12 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
         .builder()
         .name("lens-agent-settings")
         .connect_with(
-            transport(app, &descriptor),
+            transport(
+                app,
+                &descriptor,
+                config.working_directory.clone(),
+                EnvironmentPurpose::Validation,
+            ),
             async |connection: ConnectionTo<Agent>| {
                 initialize(&connection).await?;
                 let session = connection
@@ -3596,23 +3681,6 @@ mod tests {
             required_safe_mode("@agentclientprotocol/codex-acp", "plan", Some(&modes)).is_err()
         );
         assert!(required_safe_mode("@agentclientprotocol/codex-acp", "read-only", None).is_err());
-    }
-
-    #[test]
-    fn managed_node_launch_overrides_inherited_module_injection() {
-        let descriptor = AgentDescriptor {
-            kind: AgentKind::Codex,
-            adapter_name: "@agentclientprotocol/codex-acp",
-            adapter_version: "1.6.2".into(),
-            installation: None,
-            safe_mode_id: "read-only",
-            command: PathBuf::from("/managed/node"),
-            args: vec!["/managed/codex-acp.js".into()],
-        };
-        let config = serde_json::to_value(descriptor.process().config()).unwrap();
-
-        assert_eq!(config["env"]["NODE_OPTIONS"], "");
-        assert_eq!(config["env"]["NODE_PATH"], "");
     }
 
     #[tokio::test]
