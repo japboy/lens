@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string) => JSON.parse(readFileSync(resolve(root, path), "utf8"));
@@ -17,9 +18,9 @@ const config = (path: string) =>
 describe("shared TypeScript configuration", () => {
   it("lists only explicit non-root members in the pnpm workspace declaration", () => {
     const workspace = readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8");
-    expect(workspace.split("\n").filter((line) => line.startsWith("  - "))).toEqual([
-      '  - "apps/desktop"',
-      '  - "packages/typescript-config"',
+    expect((parse(workspace) as { packages: string[] }).packages).toEqual([
+      "apps/desktop",
+      "packages/typescript-config",
     ]);
   });
 

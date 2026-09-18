@@ -11,6 +11,14 @@ minimumReleaseAge: 4320
 minimumReleaseAgeIgnoreMissingTime: false
 minimumReleaseAgeStrict: true
 trustPolicy: no-downgrade
+# Approved exact release-please 17.6.0 security backports. Their integrity matches
+# the adopted Action lockfile; later-published backports lack earlier majors'
+# provenance, triggering no-downgrade's publish-date comparison.
+trustPolicyExclude:
+  # https://github.com/octokit/endpoint.js/compare/v9.0.5...v9.0.6
+  - "@octokit/endpoint@9.0.6"
+  # https://github.com/advisories/GHSA-c2qf-rxjj-qqgw
+  - "semver@5.7.2"
 trustLockfile: false
 blockExoticSubdeps: true
 strictDepBuilds: true

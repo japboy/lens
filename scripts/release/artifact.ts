@@ -10,7 +10,7 @@ import {
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { changelogSection, cleanSource, commitSha, git } from "./source.ts";
-import { readVersion, tagVersion } from "./version.ts";
+import { readVersion, stableVersion, tagVersion } from "./version.ts";
 
 export const sha256 = (bytes: Buffer | string): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -41,19 +41,11 @@ export const CONFIGURATION_FILES = [
   "apps/desktop/src-tauri/tauri.release.conf.json",
 ];
 
-export function releaseNotes(
-  section: string,
-  manifest: Pick<ReleaseManifest, "tag" | "source" | "repository" | "runId" | "previousTag">,
-  asset: Asset,
-): string {
-  const { repository, tag, source, runId, previousTag } = manifest;
-  const base = `https://github.com/${repository}`;
-  return `${section}
-
-## Install and update
+function installationText(assetName: string): string {
+  return `## Install and update
 
 This initial distribution is for testers with read access to this private repository.
-Requires **Apple Silicon and macOS 15.2 or later**. Download **${asset.name}** and **SHA256SUMS**.
+Requires **Apple Silicon and macOS 15.2 or later**. Download **${assetName}** and **SHA256SUMS**.
 The application has an ad-hoc signature. The DMG is unsigned; neither is Apple-notarized.
 
 Verify both downloaded files in the same directory:
@@ -67,7 +59,23 @@ For Gatekeeper, attempt launch and use System Settings > Privacy & Security > Op
 only after verifying the download. Follow [Apple's first-launch instructions](https://support.apple.com/en-us/102445).
 For updates, quit Lens before replacing the app. Accessibility and Screen Recording
 permissions may need to be granted again. There is no automatic updater.
-Agent runtimes are downloaded separately; select and authenticate an Agent in Settings.
+Agent runtimes are downloaded separately; select and authenticate an Agent in Settings.`;
+}
+
+export function installationNotes(version: string): string {
+  return installationText(`Lens_${stableVersion(version)}_aarch64.dmg`);
+}
+
+export function releaseNotes(
+  section: string,
+  manifest: Pick<ReleaseManifest, "tag" | "source" | "repository" | "runId" | "previousTag">,
+  asset: Asset,
+): string {
+  const { repository, tag, source, runId, previousTag } = manifest;
+  const base = `https://github.com/${repository}`;
+  return `${section}
+
+${installationText(asset.name)}
 
 ## Provenance
 
