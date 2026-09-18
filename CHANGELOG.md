@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0](https://github.com/japboy/lens/compare/v0.3.0...v0.4.0) (2026-09-18)
+
+
+### Features
+
+* add read-only ACP session history ([#74](https://github.com/japboy/lens/issues/74)) ([e20a1da](https://github.com/japboy/lens/commit/e20a1da40984056e4369ef2980de3b34b26bd6cc))
+* **math:** render LaTeX in Markdown and HTML ([#77](https://github.com/japboy/lens/issues/77)) ([693f88f](https://github.com/japboy/lens/commit/693f88fa2163eeafce6ddeae054c0d3ef651cd25))
+* **prompts:** refine presets and add Evocative ([#76](https://github.com/japboy/lens/issues/76)) ([ef92dee](https://github.com/japboy/lens/commit/ef92deee52a1f920b183ceb56e2ed93d5c267d78))
+* **settings:** add Screen & System Audio Recording ([#92](https://github.com/japboy/lens/issues/92)) ([8628f0d](https://github.com/japboy/lens/commit/8628f0d592b1a74644c4759edfa58db1dc8e97ac))
+
+
+### Bug Fixes
+
+* **ci:** remove dependency graph approval gate ([#90](https://github.com/japboy/lens/issues/90)) ([443345d](https://github.com/japboy/lens/commit/443345d4e96adee94bed89edb3e61ac038dca9bb))
+* **deps:** update Cytoscape to 3.34.3 with consistent lock metadata ([#78](https://github.com/japboy/lens/issues/78)) ([71813a0](https://github.com/japboy/lens/commit/71813a0d44df407f6afca1f23aa64944eb3063f4))
+* **deps:** update dependency mermaid to v12 ([#89](https://github.com/japboy/lens/issues/89)) ([5d71547](https://github.com/japboy/lens/commit/5d7154785c20f688f3fa329985ff735c527429a8))
+* **deps:** update tauri dependencies ([#80](https://github.com/japboy/lens/issues/80)) ([425e64e](https://github.com/japboy/lens/commit/425e64e6168e27462e583c94bb03d10b12c6c5d4))
+* **settings:** use app identifier for storage ([#79](https://github.com/japboy/lens/issues/79)) ([b1c4490](https://github.com/japboy/lens/commit/b1c44903fc51933c5d8bd7705742d2b8a79e73af))
+
 ## [0.3.0](https://github.com/japboy/lens/compare/v0.2.0...v0.3.0) (2026-09-10)
 
 
