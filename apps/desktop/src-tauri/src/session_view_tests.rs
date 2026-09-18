@@ -300,6 +300,8 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
     fn connect(
         &self,
         _: &crate::agent::AgentDescriptor,
+        cwd: std::path::PathBuf,
+        purpose: crate::agent_environment::EnvironmentPurpose,
     ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
         use agent_client_protocol::{
             schema::v1::{
@@ -309,6 +311,10 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
             },
             Agent, Client, ConnectionTo, DynConnectTo, Responder,
         };
+        assert_eq!(
+            purpose,
+            crate::agent_environment::EnvironmentPurpose::History
+        );
         let entered = Arc::clone(&self.entered);
         let release = Arc::clone(&self.release);
         let loaded = Arc::clone(&self.loaded);
@@ -329,6 +335,7 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
                             responder: Responder<LoadSessionResponse>,
                             cx: ConnectionTo<Client>| {
                     assert_eq!(request.session_id.to_string(), "external-codex-session");
+                    assert_eq!(request.cwd, cwd);
                     assert_eq!(request.cwd, std::path::PathBuf::from("/fixture"));
                     assert!(request.mcp_servers.is_empty());
                     loaded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

@@ -1,5 +1,8 @@
 #[cfg(target_os = "macos")]
 fn main() {
+    if let Some(status) = lens_lib::internal_process_exit() {
+        std::process::exit(status);
+    }
     lens_lib::run();
 }
 

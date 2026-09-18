@@ -389,7 +389,16 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
     ) -> agent::HostFuture<'a, Option<ResolvedAgentRuntime>> {
         panic!("confirmation does not restore an installation")
     }
-    fn connect(&self, _: &agent::AgentDescriptor) -> DynConnectTo<Client> {
+    fn connect(
+        &self,
+        _: &agent::AgentDescriptor,
+        cwd: std::path::PathBuf,
+        purpose: crate::agent_environment::EnvironmentPurpose,
+    ) -> DynConnectTo<Client> {
+        assert_eq!(
+            purpose,
+            crate::agent_environment::EnvironmentPurpose::Session
+        );
         let first_connection = !self.0.effects.lock().unwrap().contains(&Effect::Connect);
         self.0.record(Effect::Connect);
         let initialize = self.0.clone();
@@ -424,6 +433,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                     async move |request: NewSessionRequest,
                                 responder: Responder<NewSessionResponse>,
                                 _| {
+                        assert_eq!(request.cwd, cwd);
                         new_session
                             .record(Effect::NewSession(serde_json::to_value(request).unwrap()));
                         if new_session.scenario == Scenario::CandidateAuthRequired {

@@ -131,7 +131,7 @@ const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
     '#[cfg(target_os = "macos")] native::configure_activation(app, validate_a11y);',
   ],
   "apps/desktop/src-tauri/src/main.rs": [
-    '#[cfg(target_os = "macos")] fn main() { lens_lib::run(); }',
+    '#[cfg(target_os = "macos")] fn main() { if let Some(status) = lens_lib::internal_process_exit() { std::process::exit(status); } lens_lib::run(); }',
     '#[cfg(not(target_os = "macos"))] fn main() { eprintln!("Lens currently supports macOS only; this target is for common-library verification."); std::process::exit(1); }',
   ],
 };

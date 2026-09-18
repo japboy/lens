@@ -1583,6 +1583,26 @@ enum PnpmInstallMode<'a> {
     Frozen,
 }
 
+/// Installation has a managed bootstrap PATH, separate from Agent working PATH.
+/// User-shell proxy/certificate exports survive; package-manager policy does not.
+fn managed_process_environment(
+    command: &Path,
+    mut values: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+) -> Result<std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>, String> {
+    values.retain(|key, _| !package_manager_override(&key.to_string_lossy()));
+    let bin = command.parent().ok_or("managed command has no parent")?;
+    let path = std::env::join_paths([
+        bin,
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+        Path::new("/usr/sbin"),
+        Path::new("/sbin"),
+    ])
+    .map_err(|_| "managed bootstrap PATH is invalid".to_string())?;
+    values.insert("PATH".into(), path);
+    Ok(values)
+}
+
 async fn run_pnpm_install(
     node_root: &Path,
     pnpm_root: &Path,
@@ -1592,12 +1612,19 @@ async fn run_pnpm_install(
 ) -> Result<(), String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
     let pnpm = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
+    let home = crate::agent_environment::user_home().map_err(|error| error.to_string())?;
+    let resolved = crate::agent_environment::resolve(
+        &home,
+        crate::agent_environment::EnvironmentPurpose::Installation,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    resolved
+        .validate_directory()
+        .map_err(|error| error.to_string())?;
+    let environment = managed_process_environment(&node, resolved.values)?;
     let mut command = Command::new(node);
-    for (key, _) in std::env::vars_os() {
-        if package_manager_override(&key.to_string_lossy()) {
-            command.env_remove(key);
-        }
-    }
+    command.env_clear().envs(environment);
     command
         .arg(pnpm)
         .arg(match mode {
@@ -1648,9 +1675,8 @@ async fn run_pnpm_install(
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "managed Agent Safe-chain installation failed: {} {}",
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            "managed Agent Safe-chain installation failed ({})",
+            output.status
         ));
     }
     Ok(())
@@ -1699,12 +1725,10 @@ async fn verify_version_command(
     expected: &str,
     label: &str,
 ) -> Result<(), String> {
+    let seed = crate::agent_environment::managed_seed().map_err(|error| error.to_string())?;
+    let environment = managed_process_environment(command, seed)?;
     let mut process = Command::new(command);
-    for (key, _) in std::env::vars_os() {
-        if package_manager_override(&key.to_string_lossy()) {
-            process.env_remove(key);
-        }
-    }
+    process.env_clear().envs(environment);
     let future = process
         .current_dir(command.parent().ok_or("version command has no parent")?)
         .env("NPM_CONFIG_USERCONFIG", "/dev/null")
@@ -2333,6 +2357,36 @@ mod tests {
             assert!(!package_manager_override(key));
         }
     }
+    #[test]
+    fn installation_bootstrap_keeps_network_settings_without_project_path_or_policy() {
+        let values = [
+            ("PATH".into(), "/project/bin".into()),
+            ("HTTPS_PROXY".into(), "https://proxy.example".into()),
+            ("SSL_CERT_FILE".into(), "/account/cert.pem".into()),
+            (
+                "NPM_CONFIG_REGISTRY".into(),
+                "https://unexpected.example".into(),
+            ),
+            ("NODE_OPTIONS".into(), "--require=injection".into()),
+        ]
+        .into();
+        let values = managed_process_environment(Path::new("/managed/bin/node"), values).unwrap();
+        assert_eq!(
+            values.get(std::ffi::OsStr::new("PATH")).unwrap(),
+            "/managed/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        );
+        assert_eq!(
+            values.get(std::ffi::OsStr::new("HTTPS_PROXY")).unwrap(),
+            "https://proxy.example"
+        );
+        assert_eq!(
+            values.get(std::ffi::OsStr::new("SSL_CERT_FILE")).unwrap(),
+            "/account/cert.pem"
+        );
+        assert!(!values.contains_key(std::ffi::OsStr::new("NPM_CONFIG_REGISTRY")));
+        assert!(!values.contains_key(std::ffi::OsStr::new("NODE_OPTIONS")));
+    }
+
     #[test]
     fn eligible_candidate_is_exact_bounded_and_preserves_the_entire_manifest() {
         let request = CandidateRequest::Eligible {
