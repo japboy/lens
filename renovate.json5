@@ -49,8 +49,8 @@
 
   packageRules: [
     {
-      description: "npm manifest versions are pinned.",
-      matchManagers: ["npm"],
+      description: "npm and Cargo manifest versions are pinned.",
+      matchManagers: ["npm", "cargo"],
       rangeStrategy: "pin",
     },
     {
