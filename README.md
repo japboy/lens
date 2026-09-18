@@ -38,6 +38,8 @@ You will need:
 
 Automatic updates are spaced at least three minutes apart.
 
+When viewing session history, **Interpretation** shows the most recent update with a successful HTML or image result recorded in the history. Later inputs, progress messages, or unsuccessful updates do not hide that result. A newer successful result replaces it, together with the explanation from that update. **Conversation** keeps the full history. For sessions without a successful HTML or image result, Interpretation shows the response to the last input.
+
 To tailor the result, open **Settings → Agent → Prompt Presets**, choose a preset, and click **Use This Preset**. Lens initially uses **Conceptual** and includes four editable presets:
 
 - **Conceptual** explains the central idea and how concepts relate.

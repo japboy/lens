@@ -3,7 +3,7 @@ import type { HtmlOutputContent } from "./html-output-controller";
 import type { LensOutputBlock } from "../types";
 import type { LensOutputPresentation } from "../view-model";
 
-/** Last replayed answer, not a claim about a historical Lens publication commit. */
+/** Render the backend-selected history result without selecting a turn again. */
 export function historyPresentation(
   document: SessionDocument | undefined,
   identity: string,
@@ -12,13 +12,9 @@ export function historyPresentation(
   htmlContent?: HtmlOutputContent;
 } {
   const entries = document?.entries ?? [];
-  const lastUser = entries.reduce(
-    (latest, entry, index) => (entry.kind === "message" && entry.role === "user" ? index : latest),
-    -1,
-  );
   const blocks: LensOutputBlock[] = [];
   let htmlContent: HtmlOutputContent | undefined;
-  for (const entry of entries.slice(lastUser + 1)) {
+  for (const entry of entries) {
     if (entry.kind === "tool" && entry.status !== "completed") continue;
     if (entry.kind === "message" && entry.role !== "assistant") continue;
     const content = [...entry.blocks];

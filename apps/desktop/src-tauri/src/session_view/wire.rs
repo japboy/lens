@@ -84,6 +84,41 @@ fn manifest_entry(entry: &DocumentEntry, revision: u64) -> serde_json::Value {
     }
 }
 
+/// Select the update containing the latest successful media result. A replay does
+/// not attest prompt completion: later prompts, progress, or unsuccessful calls
+/// must not hide that result. Text-only histories keep their last-answer behavior.
+fn history_answer_entries(document: &SessionDocument) -> &[DocumentEntry] {
+    let is_user = |entry: &DocumentEntry| {
+        matches!(
+            entry,
+            DocumentEntry::Message {
+                role: MessageRole::User,
+                ..
+            }
+        )
+    };
+    let latest_media = document.entries.iter().rposition(|entry| {
+        matches!(entry, DocumentEntry::Tool { status, blocks, accepted_html, .. }
+            if *status == agent_client_protocol::schema::v1::ToolCallStatus::Completed
+                && (accepted_html.is_some()
+                    || blocks.iter().any(|block| matches!(block,
+                        DocumentBlock::Html { .. } | DocumentBlock::Image { .. }))))
+    });
+    let end = latest_media
+        .and_then(|index| {
+            document.entries[index + 1..]
+                .iter()
+                .position(is_user)
+                .map(|offset| index + 1 + offset)
+        })
+        .unwrap_or(document.entries.len());
+    let start = document.entries[..end]
+        .iter()
+        .rposition(is_user)
+        .map_or(0, |index| index + 1);
+    &document.entries[start..end]
+}
+
 impl SessionView {
     pub(super) fn wire(&self, change: Option<(u64, usize)>) -> WireView {
         let entry_revision = |i: usize| {
@@ -115,24 +150,11 @@ impl SessionView {
         } else {
             None
         };
-        // Interpretation receives only its last answer, not the entire conversation.
+        // Interpretation receives one selected update; Conversation retains every entry.
         let document = if self.phase == ViewPhase::Ready {
             self.document.as_ref().map(|doc| {
-                let start = doc
-                    .entries
-                    .iter()
-                    .rposition(|e| {
-                        matches!(
-                            e,
-                            DocumentEntry::Message {
-                                role: MessageRole::User,
-                                ..
-                            }
-                        )
-                    })
-                    .map_or(0, |i| i + 1);
                 let mut projection = SessionDocument::default();
-                projection.entries = doc.entries[start..]
+                projection.entries = history_answer_entries(doc)
                     .iter()
                     .filter_map(|entry| match entry {
                         DocumentEntry::Message {
@@ -332,6 +354,144 @@ mod tests {
             revision,
             offset,
         }
+    }
+
+    fn message(id: &str, role: MessageRole, text: &str) -> DocumentEntry {
+        DocumentEntry::Message {
+            id: id.into(),
+            role,
+            blocks: vec![DocumentBlock::Markdown { text: text.into() }],
+        }
+    }
+
+    fn publication(id: &str, status: ToolCallStatus, html: Option<&str>) -> DocumentEntry {
+        DocumentEntry::Tool {
+            id: id.into(),
+            title: "Synthetic publication".into(),
+            status,
+            blocks: vec![],
+            accepted_html: html.map(str::to_owned),
+        }
+    }
+
+    fn history_view(entries: Vec<DocumentEntry>) -> SessionView {
+        let mut document = SessionDocument::default();
+        document.entries = entries;
+        SessionView {
+            phase: ViewPhase::Ready,
+            document: Some(document),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn history_retains_successful_output_across_unpublished_updates() {
+        let original = vec![
+            message("u0", MessageRole::User, "initial"),
+            publication("p0", ToolCallStatus::Completed, Some("<p>first</p>")),
+            message("a0", MessageRole::Assistant, "first narrative"),
+        ];
+        let expected = history_view(original.clone())
+            .wire(None)
+            .document
+            .unwrap()
+            .entries;
+        for status in [
+            None,
+            Some(ToolCallStatus::Pending),
+            Some(ToolCallStatus::InProgress),
+            Some(ToolCallStatus::Failed),
+            Some(ToolCallStatus::Completed),
+        ] {
+            let mut entries = original.clone();
+            entries.push(message("u1", MessageRole::User, "update"));
+            entries.push(message("a1", MessageRole::Assistant, "working on update"));
+            if let Some(status) = status {
+                entries.push(publication("p1", status, None));
+            }
+            entries.push(message("u2", MessageRole::User, "another update"));
+            let count = entries.len();
+            let wire = history_view(entries).wire(None);
+            assert_eq!(wire.document.unwrap().entries, expected);
+            assert_eq!(wire.conversation.unwrap().entries.len(), count);
+        }
+    }
+
+    #[test]
+    fn history_selects_new_success_without_mixing_update_narratives() {
+        let wire = history_view(vec![
+            message("u0", MessageRole::User, "initial"),
+            publication("p0", ToolCallStatus::Completed, Some("<p>first</p>")),
+            message("a0", MessageRole::Assistant, "first narrative"),
+            message("u1", MessageRole::User, "update"),
+            publication("p1", ToolCallStatus::Completed, Some("<p>second</p>")),
+            message("a1", MessageRole::Assistant, "second narrative"),
+            publication("pending-after-success", ToolCallStatus::Pending, None),
+            message("u2", MessageRole::User, "pending"),
+        ])
+        .wire(None);
+        assert_eq!(
+            wire.document.unwrap().entries,
+            vec![
+                publication("p1", ToolCallStatus::Completed, Some("<p>second</p>")),
+                message("a1", MessageRole::Assistant, "second narrative"),
+            ]
+        );
+    }
+
+    #[test]
+    fn history_retains_legacy_media_and_preserves_assistant_only_selection() {
+        for block in [
+            DocumentBlock::Html {
+                text: "<p>legacy</p>".into(),
+            },
+            DocumentBlock::Image {
+                mime_type: "image/png".into(),
+                data: "synthetic".into(),
+            },
+        ] {
+            let output = DocumentEntry::Tool {
+                id: "media".into(),
+                title: "media".into(),
+                status: ToolCallStatus::Completed,
+                blocks: vec![block],
+                accepted_html: None,
+            };
+            let wire = history_view(vec![
+                output.clone(),
+                message("u", MessageRole::User, "pending"),
+            ])
+            .wire(None);
+            assert_eq!(wire.document.unwrap().entries, vec![output]);
+        }
+        let answer = message("a", MessageRole::Assistant, "text answer");
+        let wire = history_view(vec![
+            answer.clone(),
+            message("u", MessageRole::User, "pending"),
+        ])
+        .wire(None);
+        assert!(wire.document.unwrap().entries.is_empty());
+        let latest = message("latest", MessageRole::Assistant, "new text answer");
+        assert_eq!(
+            history_view(vec![
+                answer,
+                message("u", MessageRole::User, "question"),
+                latest.clone()
+            ])
+            .wire(None)
+            .document
+            .unwrap()
+            .entries,
+            vec![latest]
+        );
+        assert!(
+            history_view(vec![message("u", MessageRole::User, "unanswered")])
+                .wire(None)
+                .document
+                .unwrap()
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]

@@ -1,22 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { historyPresentation } from "./history-presentation";
 describe("history answer presentation", () => {
-  it("keeps final answer media and narrative without tool diagnostics or prior turns", () => {
+  it("renders selected result media and narrative without tool diagnostics", () => {
     const result = historyPresentation(
       {
         entries: [
-          {
-            id: "old",
-            kind: "message",
-            role: "assistant",
-            blocks: [{ type: "markdown", text: "old" }],
-          },
-          {
-            id: "user",
-            kind: "message",
-            role: "user",
-            blocks: [{ type: "markdown", text: "question" }],
-          },
           {
             id: "tool",
             kind: "tool",
@@ -51,22 +39,8 @@ describe("history answer presentation", () => {
     expect(JSON.stringify(result)).not.toContain("diagnostic");
     expect(JSON.stringify(result)).not.toContain("failed html");
   });
-  it("does not resurrect an earlier answer after a final unanswered prompt", () => {
-    expect(
-      historyPresentation(
-        {
-          entries: [
-            {
-              id: "a",
-              kind: "message",
-              role: "assistant",
-              blocks: [{ type: "markdown", text: "old" }],
-            },
-            { id: "u", kind: "message", role: "user", blocks: [] },
-          ],
-        },
-        "s",
-      ).presentation.blocks,
-    ).toEqual([]);
+  it("renders an empty backend selection without inventing an answer", () => {
+    expect(historyPresentation({ entries: [] }, "s").presentation.mode).toBe("empty");
+    expect(historyPresentation(undefined, "s").presentation.blocks).toEqual([]);
   });
 });

@@ -37,6 +37,7 @@ export interface SessionView {
   agent?: AgentKind;
   session_id?: string;
   title?: string;
+  /** Backend-selected Interpretation result; conversation retains the full history. */
   document?: SessionDocument;
   error?: string;
 }
