@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "@iarna/toml";
@@ -156,11 +156,20 @@ export function snapshotReleaseSource(
     maxBuffer: MAX_SNAPSHOT_BYTES,
     timeout: 120_000,
   });
-  execFileSync("tar", ["-xf", "-", "-C", directory], {
-    input: archive,
-    maxBuffer: MAX_SNAPSHOT_BYTES,
-    timeout: 120_000,
-  });
+  // tar can stop reading at its end-of-archive blocks before stdin padding has
+  // drained. A bounded regular file avoids treating that valid exit as EPIPE.
+  const archiveDirectory = mkdtempSync(join(tmpdir(), "lens-release-archive-"));
+  try {
+    const archivePath = join(archiveDirectory, "source.tar");
+    writeFileSync(archivePath, archive, { flag: "wx" });
+    execFileSync("tar", ["-xf", archivePath, "-C", directory], {
+      maxBuffer: MAX_SNAPSHOT_BYTES,
+      timeout: 120_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } finally {
+    rmSync(archiveDirectory, { recursive: true, force: true });
+  }
   const files = new Map<string, ReleaseFile>();
   let size = 0;
   for (const entry of entries) {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERSION } from "release-please";
 import type { Scm } from "release-please/build/src/scm.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { withReleaseProposalManifest } from "./proposal.ts";
 import { snapshotReleaseSource, verifyReleaseDelta } from "./release-delta.ts";
 import { installationNotes, releaseNotes } from "./artifact.ts";
@@ -16,6 +16,23 @@ const previous = JSON.parse(readFileSync(new URL("../../package.json", import.me
   .version as string;
 const oldSha = "a".repeat(40);
 afterEach(() => vi.useRealTimers());
+
+// Populate a cold registry once from the exact trusted input. Every assertion
+// below still runs Cargo offline, including checksum-failure and delta gates.
+beforeAll(() => {
+  const temporary = mkdtempSync(join(tmpdir(), "lens-proposal-dependencies-"));
+  try {
+    const snapshot = snapshotReleaseSource(root, baseSha, join(temporary, "baseline"));
+    execFileSync("cargo", ["fetch", "--locked"], {
+      cwd: snapshot.directory,
+      timeout: 120_000,
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}, 130_000);
 
 function github(options: { basePresent?: boolean; maintenance?: boolean; sha?: string } = {}): {
   scm: Scm;
