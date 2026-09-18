@@ -127,6 +127,7 @@ describe("separately compiled native consumers", () => {
         "common.rs",
         `
       #[cfg(test)] mod tests { fn x() {} }
+      #[cfg(any(test, debug_assertions))] fn debug_test_helper() {}
       fn value() -> bool { cfg!(target_os = "macos") }
     `,
       ),

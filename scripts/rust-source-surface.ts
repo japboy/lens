@@ -123,7 +123,12 @@ export function rustDeclarationSurface(source: string): string {
   return JSON.stringify(items(0, tokens.length));
 }
 
-const COMMON_CONDITIONS = new Set(["test", "debug_assertions", "all(test,debug_assertions)"]);
+const COMMON_CONDITIONS = new Set([
+  "test",
+  "debug_assertions",
+  "all(test,debug_assertions)",
+  "any(test,debug_assertions)",
+]);
 const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
   "apps/desktop/src-tauri/src/lib.rs": [
     '#[cfg(target_os = "macos")] mod native;',
