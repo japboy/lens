@@ -44,9 +44,12 @@ if (mode === "pr-title") {
   assertPrTitle(env("PR_TITLE"));
 } else if (mode === "generate") {
   const { generate } = await import("./generate.ts");
+  const policyToken = env("GH_POLICY_TOKEN");
+  delete process.env.GH_POLICY_TOKEN;
   const result = await generate(
     root,
     env("GH_TOKEN"),
+    policyToken,
     env("GITHUB_REPOSITORY"),
     controller(),
     process.env.RELEASE_TAG || "",

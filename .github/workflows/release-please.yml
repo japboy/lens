@@ -51,10 +51,22 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
+      # Separate capability: ruleset bypass actors require ruleset write access.
+      # This token never reaches the Release Please client.
+      - name: Mint the repository-scoped ruleset policy token
+        id: policy
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
       - name: Reconcile and invoke the standard release phase
         id: reconcile
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_POLICY_TOKEN: ${{ steps.policy.outputs.token }}
           CONTROLLER_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.tag || '' }}
         run: node scripts/release/cli.ts generate

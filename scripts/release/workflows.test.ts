@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { planChanges } from "../ci-plan.ts";
 const release = readFileSync(".github/workflows/release.yml", "utf8");
 const automation = readFileSync(".github/workflows/release-please.yml", "utf8");
@@ -7,6 +8,34 @@ const cli = readFileSync("scripts/release/cli.ts", "utf8");
 const native = readFileSync(".github/workflows/native-quality.yml", "utf8");
 
 describe("release workflow authority and recovery", () => {
+  it("separates live policy credentials from the release writer and child processes", () => {
+    const steps = parse(automation).jobs.reconcile.steps as {
+      id?: string;
+      with?: Record<string, string>;
+      env?: Record<string, string>;
+    }[];
+    const writer = steps.find((step) => step.id === "app")!.with!;
+    const policy = steps.find((step) => step.id === "policy")!.with!;
+    const permissions = (inputs: Record<string, string>) =>
+      Object.fromEntries(Object.entries(inputs).filter(([key]) => key.startsWith("permission-")));
+    expect(permissions(writer)).toEqual({
+      "permission-contents": "write",
+      "permission-pull-requests": "write",
+    });
+    expect(permissions(policy)).toEqual({ "permission-administration": "write" });
+    expect(policy.repositories).toBe("${{ github.event.repository.name }}");
+    expect(steps.filter((step) => step.env?.GH_POLICY_TOKEN).map((step) => step.id)).toEqual([
+      "reconcile",
+    ]);
+    expect(steps.find((step) => step.id === "reconcile")!.env?.GH_POLICY_TOKEN).toBe(
+      "${{ steps.policy.outputs.token }}",
+    );
+    const generation = cli.split('mode === "generate"')[1]!.split('mode === "delta"')[0]!;
+    expect(generation).toContain("delete process.env.GH_POLICY_TOKEN");
+    expect(generation.indexOf("delete process.env.GH_POLICY_TOKEN")).toBeLessThan(
+      generation.indexOf("await generate("),
+    );
+  });
   it("dispatches through one main controller without tag-push races", () => {
     expect(automation).toContain("workflow_dispatch:");
     expect(automation).toContain('test "$REF" = refs/heads/main');

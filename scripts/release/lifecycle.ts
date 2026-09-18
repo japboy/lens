@@ -46,6 +46,7 @@ export async function requireStrictChecks(request: Request): Promise<void> {
 
 export async function lifecycle(
   request: Request,
+  policyRequest: <T>(path: string) => Promise<T>,
   root: string,
   repository: string,
   controllerSha: string,
@@ -104,7 +105,7 @@ export async function lifecycle(
   }
   const tag = selectedTag || pendingTag || draftTag;
   if (pendingTag) {
-    await requireStrictChecks(request);
+    await requireStrictChecks(policyRequest);
     try {
       await operations.createReleases();
     } catch (error) {
@@ -131,7 +132,7 @@ export async function lifecycle(
   } else if (releases.length || (await pages(request, "/tags")).length) {
     throw new Error("Initial release conflicts with existing release state");
   }
-  await requireStrictChecks(request);
+  await requireStrictChecks(policyRequest);
   await operations.propose();
   return { state: "proposal" };
 }

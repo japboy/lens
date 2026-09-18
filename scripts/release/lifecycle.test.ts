@@ -74,22 +74,62 @@ function fixture(
   return { request, operations, releases };
 }
 describe("release lifecycle guards", () => {
+  it.each([false, true])(
+    "uses only the policy capability before mutations (pending=%s)",
+    async (pending) => {
+      const f = fixture({ pending });
+      const policyPaths: string[] = [];
+      const mutationRequest: Request = async <T>(
+        path: string,
+        method?: string,
+        body?: unknown,
+      ): Promise<T> => {
+        if (path.startsWith("/rules")) throw new Error("Policy read through mutation credential");
+        return f.request<T>(path, method, body);
+      };
+      const policyRequest = async <T>(path: string): Promise<T> => {
+        expect(["/rules/branches/main", "/rulesets/1"]).toContain(path);
+        policyPaths.push(path);
+        return f.request<T>(path);
+      };
+      await lifecycle(mutationRequest, policyRequest, ".", repo, sha, f.operations);
+      expect(policyPaths).toEqual(["/rules/branches/main", "/rulesets/1"]);
+      expect(pending ? f.operations.createReleases : f.operations.propose).toHaveBeenCalledOnce();
+    },
+  );
+  it.each([false, true])(
+    "rejects hidden bypass actors before any mutation (pending=%s)",
+    async (pending) => {
+      const f = fixture({ pending });
+      const policyRequest = async <T>(path: string): Promise<T> =>
+        path === "/rulesets/1" ? ({ enforcement: "active" } as T) : f.request<T>(path);
+      await expect(
+        lifecycle(f.request, policyRequest, ".", repo, sha, f.operations),
+      ).rejects.toThrow("without bypass actors");
+      expect(f.operations.createReleases).not.toHaveBeenCalled();
+      expect(f.operations.propose).not.toHaveBeenCalled();
+    },
+  );
   it("does not propose when strict checks are disabled or bypassable", async () => {
     for (const options of [{ strict: false }, { bypass: true }]) {
       const f = fixture(options);
-      await expect(lifecycle(f.request, ".", repo, sha, f.operations)).rejects.toThrow("strict");
+      await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).rejects.toThrow(
+        "strict",
+      );
       expect(f.operations.propose).not.toHaveBeenCalled();
       expect(f.operations.createReleases).not.toHaveBeenCalled();
     }
   });
   it("rejects legacy open PRs before mutations", async () => {
     const f = fixture({ legacy: true });
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).rejects.toThrow("old-format");
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).rejects.toThrow(
+      "old-format",
+    );
     expect(f.operations.propose).not.toHaveBeenCalled();
   });
   it("resumes an existing draft even without pending labels", async () => {
     const f = fixture({ draft: "v0.4.1", strict: false });
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).resolves.toEqual({
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).resolves.toEqual({
       state: "release",
       tag: "v0.4.1",
     });
@@ -97,9 +137,9 @@ describe("release lifecycle guards", () => {
   });
   it("rejects a selected release conflicting with the unfinished draft", async () => {
     const f = fixture({ draft: "v0.4.2" });
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations, "v0.4.1")).rejects.toThrow(
-      "conflicts",
-    );
+    await expect(
+      lifecycle(f.request, f.request, ".", repo, sha, f.operations, "v0.4.1"),
+    ).rejects.toThrow("conflicts");
   });
   it("rejects multiple unfinished releases before mutations", async () => {
     const f = fixture({ draft: "v0.4.1" });
@@ -110,7 +150,7 @@ describe("release lifecycle guards", () => {
       draft: true,
       prerelease: false,
     });
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).rejects.toThrow(
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).rejects.toThrow(
       "Multiple unfinished",
     );
     expect(f.operations.createReleases).not.toHaveBeenCalled();
@@ -118,7 +158,9 @@ describe("release lifecycle guards", () => {
   });
   it("rejects pending PR/draft mismatch", async () => {
     const f = fixture({ pending: true, draft: "v0.4.2" });
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).rejects.toThrow(/.+/u);
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).rejects.toThrow(
+      /.+/u,
+    );
     expect(f.operations.createReleases).not.toHaveBeenCalled();
   });
   it("reobserves duplicate releases and requires the actual tag target", async () => {
@@ -126,7 +168,7 @@ describe("release lifecycle guards", () => {
     f.operations.createReleases.mockRejectedValue(
       Object.assign(new Error("duplicate"), { name: "DuplicateReleaseError" }),
     );
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).resolves.toEqual({
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).resolves.toEqual({
       state: "release",
       tag: "v0.4.1",
     });
@@ -140,27 +182,27 @@ describe("release lifecycle guards", () => {
     f.operations.createReleases.mockRejectedValue(
       Object.assign(new Error("duplicate"), { name: "DuplicateReleaseError" }),
     );
-    await expect(lifecycle(request, ".", repo, sha, f.operations)).rejects.toThrow(
+    await expect(lifecycle(request, request, ".", repo, sha, f.operations)).rejects.toThrow(
       "tag does not match",
     );
   });
   it("propagates unrelated creator failures", async () => {
     const f = fixture({ pending: true });
     f.operations.createReleases.mockRejectedValue(new Error("permission denied"));
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).rejects.toThrow(
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).rejects.toThrow(
       "permission denied",
     );
   });
   it("rejects orphan tags before proposing", async () => {
     const f = fixture({ orphan: true });
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).rejects.toThrow(
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).rejects.toThrow(
       "not published",
     );
     expect(f.operations.propose).not.toHaveBeenCalled();
   });
   it("proposes only after the current release is published", async () => {
     const f = fixture();
-    await expect(lifecycle(f.request, ".", repo, sha, f.operations)).resolves.toEqual({
+    await expect(lifecycle(f.request, f.request, ".", repo, sha, f.operations)).resolves.toEqual({
       state: "proposal",
     });
     expect(f.operations.propose).toHaveBeenCalledOnce();
@@ -171,7 +213,7 @@ describe("release lifecycle guards", () => {
       const f = fixture();
       const request: Request = async <T>(path: string): Promise<T> =>
         path.startsWith("/tags?") || path.startsWith("/releases?") ? ([] as T) : f.request<T>(path);
-      await expect(lifecycle(request, ".", repo, sha, f.operations)).resolves.toEqual({
+      await expect(lifecycle(request, request, ".", repo, sha, f.operations)).resolves.toEqual({
         state: "proposal",
       });
       await expect(requireStrictChecks(fixture({ strict: false }).request)).rejects.toThrow(
