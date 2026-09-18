@@ -150,6 +150,8 @@ impl<R: tauri::Runtime> crate::agent::AgentHost<R> for UnusedAgent {
     fn connect(
         &self,
         _: &crate::agent::AgentDescriptor,
+        _: std::path::PathBuf,
+        _: crate::agent_environment::EnvironmentPurpose,
     ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
         panic!("unexpected Agent connection")
     }
