@@ -111,7 +111,7 @@ export class SettingsPage extends ReactiveElement {
           this.snapshots.connection,
         )
       : undefined;
-    view.feedback = settingsFeedback(this.commands.state, this.snapshots.connection);
+    view.feedback = settingsFeedback(this.commands.state);
     view.aboutOpenError = this.aboutOpenError;
     view.permission = this.accessibility.state;
     view.commandPending = this.commands.state.stage === "pending";

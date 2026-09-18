@@ -315,6 +315,7 @@ describe("progressive DSD resources", () => {
       await vi.waitFor(() =>
         expect(root.querySelector("[role=alert]")?.textContent).toContain("Snapshot unavailable"),
       );
+      expect(root.querySelectorAll("[role=alert]")).toHaveLength(1);
       expect(root.querySelector(".settings-sidebar-status-value")?.textContent?.trim()).toBe("");
       const about = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent?.trim() === "About",
@@ -924,6 +925,8 @@ describe("Lens Settings", () => {
           root.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent?.trim(),
         ).toBe("Privacy & Security");
       });
+      expect(root.querySelectorAll("[role=alert]")).toHaveLength(1);
+      expect(root.querySelector("[role=alert]")?.textContent).toContain("Snapshot unavailable");
       const button = root.querySelector<HTMLButtonElement>(
         '[aria-labelledby="screen-recording-heading"] button',
       )!;
@@ -934,6 +937,14 @@ describe("Lens Settings", () => {
         expect(
           root.querySelector(".settings-detail-panel:not([hidden]) [role=alert]")?.textContent,
         ).toContain("System Settings unavailable");
+        const alerts = Array.from(root.querySelectorAll("[role=alert]"));
+        expect(alerts).toHaveLength(2);
+        expect(
+          alerts.filter((alert) => alert.textContent?.includes("Snapshot unavailable")),
+        ).toHaveLength(1);
+        expect(
+          alerts.filter((alert) => alert.textContent?.includes("System Settings unavailable")),
+        ).toHaveLength(1);
         expect(button.disabled).toBe(false);
       });
     } finally {

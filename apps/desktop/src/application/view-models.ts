@@ -115,7 +115,7 @@ function connectionFeedback(connection: SnapshotConnectionState): SettingsFeedba
 
 export function settingsFeedback(
   command: CommandState,
-  connection: SnapshotConnectionState,
+  connection?: SnapshotConnectionState,
 ): SettingsFeedback {
   if (
     (command.stage === "succeeded" || command.stage === "failed") &&
@@ -127,7 +127,7 @@ export function settingsFeedback(
       message: command.message,
     };
   }
-  return connectionFeedback(connection);
+  return connection ? connectionFeedback(connection) : { stage: "none" };
 }
 
 export function settingsViewModel(
