@@ -3,6 +3,7 @@
 //MISE dir = "{{config_root}}"
 
 import assert from "node:assert/strict";
+import { assertReleasePleaseVersion } from "../../scripts/release/library-version.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -95,6 +96,11 @@ const require = createRequire(import.meta.url);
   };
   bundled.library.setLogger(quiet);
   const config = JSON.parse(readFileSync(join(root, "release-please-config.json"), "utf8"));
+  assertReleasePleaseVersion(
+    JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies["release-please"],
+    config.$schema,
+    bundled.library.VERSION,
+  );
   assert.deepEqual(Object.keys(config.packages), ["."]);
   assert.equal(
     config["separate-pull-requests"],

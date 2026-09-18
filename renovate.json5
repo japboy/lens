@@ -34,6 +34,17 @@
   customManagers: [
     {
       customType: "regex",
+      description: "Release Please schema follows the pinned npm library.",
+      managerFilePatterns: ["/^release-please-config\\.json$/"],
+      matchStrings: [
+        "https://raw\\.githubusercontent\\.com/googleapis/release-please/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/schemas/config\\.json",
+      ],
+      depNameTemplate: "release-please",
+      datasourceTemplate: "npm",
+      versioningTemplate: "npm",
+    },
+    {
+      customType: "regex",
       description: "hk Pkl package imports use the mise-managed hk release.",
       managerFilePatterns: ["/^hk\\.pkl$/"],
       matchStrings: [
@@ -109,6 +120,14 @@
       description: "Major updates require manual approval.",
       matchUpdateTypes: ["major"],
       dependencyDashboardApproval: true,
+      automerge: false,
+    },
+    {
+      description: "Release Please library and schema update together after conformance review.",
+      matchManagers: ["npm", "custom.regex"],
+      matchPackageNames: ["release-please"],
+      groupName: "release-please",
+      minimumGroupSize: 2,
       automerge: false,
     },
     {

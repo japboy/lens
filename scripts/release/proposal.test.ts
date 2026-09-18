@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERSION } from "release-please";
+import { assertReleasePleaseVersion } from "./library-version.ts";
 import type { Scm } from "release-please/build/src/scm.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { withReleaseProposalManifest } from "./proposal.ts";
@@ -74,7 +75,13 @@ describe("pinned Release Please Cargo proposal", () => {
   it("generates complete manifest+Cargo updates from the fixed snapshot with the adopted library", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-18T00:00:00Z"));
-    expect(VERSION).toBe("17.6.0");
+    assertReleasePleaseVersion(
+      JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies[
+        "release-please"
+      ],
+      JSON.parse(readFileSync(join(root, "release-please-config.json"), "utf8")).$schema,
+      VERSION,
+    );
     const { scm, writes } = github();
     const proposals = await withReleaseProposalManifest(
       { github: scm, root, baseSha, offline: true },
