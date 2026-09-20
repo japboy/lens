@@ -1204,3 +1204,34 @@ async fn successful_replay_clears_uncertain_availability_after_empty_listing() {
         EntryState::NotSeen
     );
 }
+
+#[tokio::test]
+async fn history_runtime_resolution_uses_admitted_profile_across_aba_settings_edits() {
+    use crate::agent::AgentHost;
+    let state = test_support::state();
+    let mut admitted = state.config().unwrap();
+    let profile = &mut admitted.external_agents[0];
+    profile.command = "/bin/echo".into();
+    profile.args = vec!["admitted-a".into()];
+    let kind = AgentKind::External(profile.id);
+    state.runtime.write().unwrap().config = admitted.clone();
+    let app = app(state);
+    let host = crate::agent::DefaultAgentHost;
+    // Create the resolution future from A, then replace settings before polling it.
+    // The production resolver must not recapture B from AppState.
+    let resolving = host.resolve_history(app.handle(), kind, &admitted, Path::new("/tmp"));
+    {
+        let state = app.state::<AppState>();
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.config.external_agents[0].command = "/bin/cat".into();
+        snapshot.config.external_agents[0].args = vec!["replacement-b".into()];
+    }
+    let resolved = resolving.await.unwrap().unwrap();
+    app.state::<AppState>().runtime.write().unwrap().config = admitted.clone();
+    // Both surrounding admission checks would now see A. Verify the actual
+    // descriptor, not just the restored settings, still identifies A.
+    assert_eq!(resolved.kind, kind);
+    assert_eq!(resolved.command, admitted.external_agents[0].command);
+    assert_eq!(resolved.args, admitted.external_agents[0].args);
+    assert!(resolved.installation.is_none());
+}

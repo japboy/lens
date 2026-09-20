@@ -172,6 +172,16 @@ pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
         app: &'a AppHandle<R>,
         kind: AgentKind,
     ) -> HostFuture<'a, Option<ResolvedAgentRuntime>>;
+    /// History resolution receives the immutable configuration admitted by its caller.
+    fn resolve_history<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+        _admitted: &'a crate::model::AppConfig,
+        _cwd: &'a std::path::Path,
+    ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        self.resolve_installed(app, kind)
+    }
     fn resolve_for_session<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -215,6 +225,28 @@ impl<R: tauri::Runtime> AgentHost<R> for DefaultAgentHost {
         kind: AgentKind,
     ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
         Box::pin(agent_runtime::resolve_installed(app, kind))
+    }
+
+    fn resolve_history<'a>(
+        &'a self,
+        app: &'a AppHandle<R>,
+        kind: AgentKind,
+        admitted: &'a crate::model::AppConfig,
+        cwd: &'a std::path::Path,
+    ) -> HostFuture<'a, Option<ResolvedAgentRuntime>> {
+        Box::pin(async move {
+            if kind.is_external() {
+                let profile = admitted
+                    .external_agents
+                    .iter()
+                    .find(|profile| kind == AgentKind::External(profile.id))
+                    .cloned()
+                    .ok_or("This Agent preset is no longer available")?;
+                crate::external_agent::resolve(profile, cwd).await.map(Some)
+            } else {
+                agent_runtime::resolve_installed(app, kind).await
+            }
+        })
     }
 
     fn resolve_for_session<'a>(
@@ -272,6 +304,7 @@ fn transport<R: tauri::Runtime>(
 pub(crate) async fn history_transport<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
+    admitted: &crate::model::AppConfig,
     cwd: PathBuf,
 ) -> Result<
     (
@@ -280,8 +313,12 @@ pub(crate) async fn history_transport<R: tauri::Runtime>(
     ),
     String,
 > {
-    let descriptor = AgentDescriptor::resolve_installed(app, kind)
+    let descriptor = app
+        .state::<AgentServices<R>>()
+        .0
+        .resolve_history(app, kind, admitted, &cwd)
         .await?
+        .map(AgentDescriptor::from_runtime)
         .ok_or_else(|| "Agent runtime is not installed".to_string())?;
     let connection = transport(app, &descriptor, cwd, EnvironmentPurpose::History);
     Ok((descriptor, connection))

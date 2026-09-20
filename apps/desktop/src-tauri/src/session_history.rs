@@ -246,7 +246,8 @@ pub async fn load_synced_provider<R: tauri::Runtime>(
         return Err("History requires a session ID and absolute working directory".into());
     }
     validate_admission(app, agent, admitted)?;
-    let (_descriptor, transport) = crate::agent::history_transport(app, agent, cwd.clone()).await?;
+    let (_descriptor, transport) =
+        crate::agent::history_transport(app, agent, admitted, cwd.clone()).await?;
     validate_admission(app, agent, admitted)?;
     load_synced_transport(transport, agent, session_id.to_owned(), cwd)
         .await
