@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/japboy/lens/compare/v0.5.0...v0.6.0) (2026-09-20)
+
+
+### Features
+
+* **app:** confirm quit during Agent work ([#112](https://github.com/japboy/lens/issues/112)) ([e1b696b](https://github.com/japboy/lens/commit/e1b696b1c78edfd7d70f576e931c14001568737f))
+* **history:** persist sessions and unify Agent selection ([#109](https://github.com/japboy/lens/issues/109)) ([776ae47](https://github.com/japboy/lens/commit/776ae476960ab059b63d3a80c3a606e08db27916))
+
+
+### Bug Fixes
+
+* **release:** preserve durable recovery evidence ([#106](https://github.com/japboy/lens/issues/106)) ([74ac4d9](https://github.com/japboy/lens/commit/74ac4d9804db2e90fdaea919b7f757a107f4cccd))
+* **ui:** foreground newly opened windows ([#111](https://github.com/japboy/lens/issues/111)) ([d09cf04](https://github.com/japboy/lens/commit/d09cf04c7f3a2341b2a3acc0a398140ba38a0193))
+
 ## [0.5.0](https://github.com/japboy/lens/compare/v0.4.2...v0.5.0) (2026-09-20)
 
 
