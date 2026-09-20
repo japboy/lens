@@ -634,7 +634,7 @@ fn sync_agent_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
 }
 
 /// Own the macOS application menu so Cmd+Q uses the same admission as tray Quit.
-/// The remaining standard roles match Tauri's default menu (including Services).
+/// Keep standard application roles, including Services and Show All.
 pub(crate) fn install_application_menu<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(
         app,
@@ -669,6 +669,7 @@ pub(crate) fn install_application_menu<R: tauri::Runtime>(app: &mut App<R>) -> t
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
