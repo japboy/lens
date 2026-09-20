@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/japboy/lens/compare/v0.4.2...v0.5.0) (2026-09-20)
+
+
+### Features
+
+* **agent:** support external ACP agent presets ([#103](https://github.com/japboy/lens/issues/103)) ([6979ec4](https://github.com/japboy/lens/commit/6979ec4f621f110ce390891cd854de18b83b5ae7))
+
 ## [0.4.2](https://github.com/japboy/lens/compare/v0.4.1...v0.4.2) (2026-09-18)
 
 
