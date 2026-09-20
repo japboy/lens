@@ -59,7 +59,7 @@ impl AccessibilityTrust for UnusedSources {
 
 pub(crate) fn state() -> AppState {
     let source = Arc::new(UnusedSources);
-    AppState::with_config(
+    let state = AppState::with_config(
         platform::Services {
             selection: source.clone(),
             accessibility: source.clone(),
@@ -73,7 +73,13 @@ pub(crate) fn state() -> AppState {
                 .join("settings.json"),
         ),
         AppConfig::new("/fixture".into()),
+    );
+    crate::history_catalog::install(
+        &state,
+        crate::session_history_store::HistoryStore::memory().unwrap(),
     )
+    .unwrap();
+    state
 }
 
 pub(crate) struct UnusedPresentation;

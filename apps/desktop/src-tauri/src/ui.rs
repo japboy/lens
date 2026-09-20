@@ -690,6 +690,33 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
                     }
                 });
             }
+            id if id.starts_with("history_filter:") => {
+                if let Some((generation, index)) = parse_history_choice(id, "history_filter", true)
+                {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            crate::session_view::set_filter(app, generation, index).await
+                        {
+                            eprintln!("Unable to filter history: {error}");
+                        }
+                    });
+                }
+            }
+            id if id.starts_with("history_import:") => {
+                if let Some((generation, Some(index))) =
+                    parse_history_choice(id, "history_import", false)
+                {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            crate::session_view::import_agent(app, generation, index).await
+                        {
+                            eprintln!("Unable to update Agent history: {error}");
+                        }
+                    });
+                }
+            }
             id if id.starts_with("session_history:") => {
                 let mut parts = id.split(':').skip(1);
                 if let (Some(generation), Some(index)) = (
@@ -814,6 +841,36 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     }
 }
 
+fn parse_history_choice(id: &str, prefix: &str, allow_all: bool) -> Option<(Uuid, Option<usize>)> {
+    let mut parts = id.split(':');
+    if parts.next()? != prefix {
+        return None;
+    }
+    let generation = Uuid::parse_str(parts.next()?).ok()?;
+    let selection = parts.next()?;
+    let index = if allow_all && selection == "all" {
+        None
+    } else {
+        Some(selection.parse().ok()?)
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((generation, index))
+}
+
+fn history_agent_label(config: &AppConfig, agent: AgentKind) -> &str {
+    match agent {
+        AgentKind::External(id) => config
+            .external_agents
+            .iter()
+            .find(|preset| preset.id == id)
+            .map(|preset| preset.name.as_str())
+            .unwrap_or("External ACP"),
+        managed => crate::session_view::agent_label(managed),
+    }
+}
+
 pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     // Mock shells need no native menu. Real menu mutation stays on its owning thread.
     if app.try_state::<TrayMenuItems<R>>().is_none() {
@@ -825,7 +882,8 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
             let app = &handle;
             let state = app.state::<crate::app_state::AppState>();
             let mut catalog = state.session_view.catalog()?;
-            let directory_matches = catalog.cwd == state.config()?.working_directory;
+            let config = state.config()?;
+            let directory_matches = catalog.cwd == config.working_directory;
             if !directory_matches {
                 catalog.entries.clear();
                 catalog.notices.clear();
@@ -863,27 +921,30 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     .unwrap_or_default();
                 let title: String = entry.title.chars().take(72).collect();
                 let label = menu_safe_path(&title);
-                let config = app.state::<crate::app_state::AppState>().config()?;
-                let agent = match entry.agent {
-                    AgentKind::External(id) => config
-                        .external_agents
-                        .iter()
-                        .find(|p| p.id == id)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("External ACP"),
-                    managed => crate::session_view::agent_label(managed),
-                };
-                tooltips.push(if date.is_empty() {
+                let agent = history_agent_label(&config, entry.agent);
+                let missing = entry.presence == crate::session_history_store::EntryState::NotSeen;
+                let mut tooltip = if date.is_empty() {
                     agent.to_string()
                 } else {
                     format!("{date} · {agent}")
-                });
+                };
+                if missing {
+                    tooltip.push_str(
+                        " · Not found in the last complete update; open to check availability",
+                    );
+                }
+                tooltips.push(tooltip);
+                let label = if missing {
+                    format!("{label} — Availability unknown")
+                } else {
+                    label
+                };
                 menu.append(
                     &MenuItem::with_id(
                         app,
                         format!("session_history:{}:{index}", catalog.generation),
                         label,
-                        enabled && entry.can_load,
+                        enabled && !catalog.loading && entry.can_load,
                         None::<&str>,
                     )
                     .map_err(|error| error.to_string())?,
@@ -928,9 +989,9 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     app,
                     "refresh_session_history",
                     if catalog.loading {
-                        "Refreshing…"
+                        "Reloading…"
                     } else {
-                        "Refresh Sessions"
+                        "Reload Saved Sessions"
                     },
                     !catalog.loading,
                     None::<&str>,
@@ -938,6 +999,65 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+            let filter_menu = Submenu::with_id(
+                app,
+                "history_filter_menu",
+                "Filter by Agent",
+                directory_matches && !catalog.loading,
+            )
+            .map_err(|error| error.to_string())?;
+            filter_menu
+                .append(
+                    &CheckMenuItem::with_id(
+                        app,
+                        format!("history_filter:{}:all", catalog.generation),
+                        "All Agents",
+                        directory_matches && !catalog.loading,
+                        catalog.filter.is_none(),
+                        None::<&str>,
+                    )
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            let import_menu = Submenu::with_id(
+                app,
+                "history_import_menu",
+                "Update from Agent…",
+                enabled && !catalog.loading,
+            )
+            .map_err(|error| error.to_string())?;
+            for (index, source) in catalog.sources.iter().enumerate() {
+                let label = menu_safe_path(history_agent_label(&config, source.agent));
+                filter_menu
+                    .append(
+                        &CheckMenuItem::with_id(
+                            app,
+                            format!("history_filter:{}:{index}", catalog.generation),
+                            &label,
+                            directory_matches && !catalog.loading,
+                            catalog.filter == Some(source.agent),
+                            None::<&str>,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                import_menu
+                    .append(
+                        &MenuItem::with_id(
+                            app,
+                            format!("history_import:{}:{index}", catalog.generation),
+                            &label,
+                            enabled && !catalog.loading,
+                            None::<&str>,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            menu.append(&filter_menu)
+                .map_err(|error| error.to_string())?;
+            menu.append(&import_menu)
+                .map_err(|error| error.to_string())?;
             app.state::<crate::platform::Presentation<R>>()
                 .0
                 .history_tooltips(app, &items.root, menu, tooltips)
@@ -1953,5 +2073,45 @@ mod tests {
             .all(|(enabled, disabled)| {
                 enabled[0..3] == disabled[0..3] && disabled[3] == enabled[3] / 2
             }));
+    }
+    #[test]
+    fn history_choices_require_exact_generation_and_selection_shape() {
+        let generation = Uuid::new_v4();
+        assert_eq!(
+            parse_history_choice(
+                &format!("history_filter:{generation}:all"),
+                "history_filter",
+                true
+            ),
+            Some((generation, None))
+        );
+        assert_eq!(
+            parse_history_choice(
+                &format!("history_import:{generation}:2"),
+                "history_import",
+                false
+            ),
+            Some((generation, Some(2)))
+        );
+        assert_eq!(
+            parse_history_choice(
+                &format!("history_import:{generation}:all"),
+                "history_import",
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            parse_history_choice(
+                &format!("history_filter:{generation}:1:extra"),
+                "history_filter",
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            parse_history_choice("history_filter:invalid:0", "history_filter", true),
+            None
+        );
     }
 }

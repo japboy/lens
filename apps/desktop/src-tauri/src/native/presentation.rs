@@ -4,6 +4,32 @@ use tauri::WebviewWindow;
 
 pub struct MacOsPresentation;
 
+// Keep every top-level row for native title/position validation, but only
+// the leading session MenuItems may receive the supplied tooltip metadata.
+fn history_tooltip_rows(
+    items: Vec<(String, bool)>,
+    tooltips: Vec<String>,
+) -> Result<Vec<(String, Option<String>)>, PlatformError> {
+    if tooltips.len() > items.len() {
+        return Err(PlatformError::Operation(
+            "history tooltip count exceeds menu items".into(),
+        ));
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(index, (text, is_session_item))| {
+            let tooltip = tooltips.get(index).cloned();
+            if tooltip.is_some() && !is_session_item {
+                return Err(PlatformError::Operation(
+                    "session tooltip points to a non-session menu item".into(),
+                ));
+            }
+            Ok((text, tooltip))
+        })
+        .collect()
+}
+
 // Wry executes tasks inline when already on the main thread. Elsewhere this waits only
 // for handle acquisition and native start, never for an animation callback.
 fn on_main_thread<R: tauri::Runtime, T: Send + 'static>(
@@ -44,24 +70,26 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
             .ok_or_else(|| PlatformError::Operation("history submenu is not attached".into()))?;
         let title = history.text().map_err(error)?;
         let items = history.items().map_err(error)?;
-        if tooltips.len() > items.len() {
-            return Err(PlatformError::Operation(
-                "history tooltip count exceeds menu items".into(),
-            ));
-        }
-        let mut expected = Vec::with_capacity(items.len());
-        for (index, item) in items.iter().enumerate() {
-            let text = match item {
-                tauri::menu::MenuItemKind::MenuItem(item) => item.text().map_err(error)?,
-                tauri::menu::MenuItemKind::Predefined(item) => item.text().map_err(error)?,
-                _ => {
-                    return Err(PlatformError::Operation(
+        let expected = history_tooltip_rows(
+            items
+                .iter()
+                .map(|item| match item {
+                    tauri::menu::MenuItemKind::MenuItem(item) => {
+                        item.text().map(|text| (text, true)).map_err(error)
+                    }
+                    tauri::menu::MenuItemKind::Predefined(item) => {
+                        item.text().map(|text| (text, false)).map_err(error)
+                    }
+                    tauri::menu::MenuItemKind::Submenu(item) => {
+                        item.text().map(|text| (text, false)).map_err(error)
+                    }
+                    _ => Err(PlatformError::Operation(
                         "unexpected history menu item kind".into(),
-                    ))
-                }
-            };
-            expected.push((text, tooltips.get(index).cloned()));
-        }
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            tooltips,
+        )?;
         app.tray_by_id("lens")
             .ok_or_else(|| PlatformError::Operation("Lens tray icon is unavailable".into()))?
             .with_inner_tray_icon(move |tray| {
@@ -175,5 +203,38 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
             })?;
             transition.wait().await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trailing_history_controls_keep_positions_without_session_tooltips() {
+        let rows = history_tooltip_rows(
+            vec![
+                ("Session".into(), true),
+                ("".into(), false),
+                ("Reload Saved Sessions".into(), true),
+                ("Filter by Agent".into(), false),
+                ("Update from Agent…".into(), false),
+            ],
+            vec!["date · agent".into()],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].1.as_deref(), Some("date · agent"));
+        assert_eq!(rows[3].0, "Filter by Agent");
+        assert_eq!(rows[4].0, "Update from Agent…");
+        assert!(rows[1..].iter().all(|(_, tooltip)| tooltip.is_none()));
+    }
+
+    #[test]
+    fn misplaced_or_excess_session_tooltips_are_rejected() {
+        assert!(
+            history_tooltip_rows(vec![("Filter".into(), false)], vec!["wrong".into()]).is_err()
+        );
+        assert!(history_tooltip_rows(Vec::new(), vec!["orphan".into()]).is_err());
     }
 }
