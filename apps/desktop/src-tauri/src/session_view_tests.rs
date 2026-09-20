@@ -61,32 +61,12 @@ async fn watching_paused_and_progressing_operations_reject_history_before_effect
 }
 
 #[tokio::test]
-async fn stale_catalog_and_unloadable_entries_never_resolve_an_agent() {
+async fn stale_catalog_never_resolves_an_agent() {
     let app = app(test_support::state());
     assert!(open(app.handle().clone(), Uuid::new_v4(), 0)
         .await
         .unwrap_err()
         .contains("changed"));
-    let generation = Uuid::new_v4();
-    *app.state::<AppState>().session_view.catalog.lock().unwrap() = HistoryCatalog {
-        cwd: PathBuf::from("/tmp"),
-        generation,
-        entries: vec![HistoryEntry {
-            agent: AgentKind::Codex,
-            session_id: "foreign-session".into(),
-            cwd: "/tmp".into(),
-            title: "Other app".into(),
-            updated_at: None,
-            can_load: false,
-            invocation: "managed-codex-v1".into(),
-            presence: EntryState::Listed,
-        }],
-        ..Default::default()
-    };
-    assert!(open(app.handle().clone(), generation, 0)
-        .await
-        .unwrap_err()
-        .contains("cannot load"));
     assert_eq!(
         app.state::<AppState>().session_view.view().unwrap().phase,
         ViewPhase::Idle
@@ -266,6 +246,7 @@ async fn history_loading_blocks_authentication_logout_and_reauthentication_befor
 /// This host admits only installed-runtime resolution and initialize/load. Any
 /// installation, generation or native-source access still fails loudly.
 struct ReplayHost {
+    load_supported: bool,
     empty_listing: bool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -322,14 +303,15 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
         let loaded = Arc::clone(&self.loaded);
         let listed_title = "Renamed elsewhere".to_string();
         let empty_listing = self.empty_listing;
+        let load_supported = self.load_supported;
         let fixture = Agent.builder()
             .on_receive_request(
-                async |_request: InitializeRequest,
+                async move |_request: InitializeRequest,
                        responder: Responder<InitializeResponse>,
                        _cx: ConnectionTo<Client>| {
                     responder.respond(serde_json::from_value(serde_json::json!({
                         "protocolVersion": 1,
-                        "agentCapabilities": {"loadSession": true, "sessionCapabilities": {"list": {}}},
+                        "agentCapabilities": {"loadSession": load_supported, "sessionCapabilities": {"list": {}}},
                         "authMethods": []
                     })).unwrap())
                 }, agent_client_protocol::on_receive_request!(),
@@ -411,7 +393,6 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
             cwd: "/tmp".into(),
             title: "Created outside Lens".into(),
             updated_at: Some("2026-09-17T00:00:00Z".into()),
-            can_load: true,
             invocation: history_catalog::source(&state.config().unwrap(), AgentKind::Codex)
                 .unwrap()
                 .invocation,
@@ -440,6 +421,7 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
 
 fn replay_host() -> Arc<ReplayHost> {
     Arc::new(ReplayHost {
+        load_supported: true,
         empty_listing: false,
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
@@ -1192,7 +1174,6 @@ async fn successful_replay_clears_uncertain_availability_after_empty_listing() {
         .find(|entry| entry.session_id == "external-codex-session")
         .unwrap();
     assert_eq!(opened.presence, EntryState::LocalOnly);
-    assert!(opened.can_load);
     assert_eq!(opened.updated_at.as_deref(), Some("2026-09-17T00:00:00Z"));
     assert_eq!(
         catalog
@@ -1234,4 +1215,51 @@ async fn history_runtime_resolution_uses_admitted_profile_across_aba_settings_ed
     assert_eq!(resolved.command, admitted.external_agents[0].command);
     assert_eq!(resolved.args, admitted.external_agents[0].args);
     assert!(resolved.installation.is_none());
+}
+
+#[tokio::test]
+async fn cached_negative_load_capability_is_rechecked_on_explicit_open() {
+    for supported in [false, true] {
+        let mut host = replay_host();
+        Arc::get_mut(&mut host).unwrap().load_supported = supported;
+        let (app, _) = replay_app(host.clone());
+        let state = app.state::<AppState>();
+        let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
+        let store = history_catalog::store(&state).unwrap();
+        let token = store.begin_scan(&source, "/tmp").unwrap();
+        store
+            .apply_listing(&token, &[], false, Some(false))
+            .unwrap();
+        refresh(app.handle().clone()).await.unwrap();
+        assert_eq!(host.loaded.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let catalog = state.session_view.catalog().unwrap();
+        let index = catalog
+            .entries
+            .iter()
+            .position(|entry| entry.session_id == "external-codex-session")
+            .unwrap();
+        host.release.notify_one();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open(app.handle().clone(), catalog.generation, index),
+        )
+        .await
+        .unwrap();
+        if supported {
+            result.unwrap();
+        } else {
+            assert!(result
+                .unwrap_err()
+                .contains("does not support ACP session/load"));
+        }
+        assert_eq!(
+            host.loaded.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(supported)
+        );
+        assert!(store
+            .entries(&source, "/tmp")
+            .unwrap()
+            .iter()
+            .all(|entry| entry.can_load == Some(supported)));
+    }
 }

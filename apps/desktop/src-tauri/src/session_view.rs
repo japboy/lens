@@ -61,7 +61,6 @@ pub(crate) struct HistoryEntry {
     pub cwd: String,
     pub title: String,
     pub updated_at: Option<String>,
-    pub can_load: bool,
     pub invocation: String,
     pub presence: EntryState,
 }
@@ -517,7 +516,6 @@ fn merge_listings(
                             .filter(|title| !title.trim().is_empty())
                             .unwrap_or_else(|| "Untitled session".into()),
                         updated_at: entry.updated_at,
-                        can_load: listing.can_load,
                         invocation: String::new(),
                         presence: EntryState::Listed,
                     });
@@ -669,7 +667,6 @@ fn cached_catalog(
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| "Untitled session".into()),
                 updated_at: latest_activity(entry.provider_updated_at, entry.local_activity_at),
-                can_load: entry.can_load != Some(false),
                 presence: entry.state,
             });
         }
@@ -747,9 +744,6 @@ pub(crate) async fn open<R: Runtime>(
             .get(index)
             .cloned()
             .ok_or("Session history entry is unavailable")?;
-        if !entry.can_load {
-            return Err("This Agent cannot load session history".into());
-        }
         let config = state.config()?;
         let effective_cwd = crate::store::effective_working_directory(&config);
         if catalog.cwd != effective_cwd || Path::new(&entry.cwd) != effective_cwd {

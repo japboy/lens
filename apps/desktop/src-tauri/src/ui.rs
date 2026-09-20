@@ -990,7 +990,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                         app,
                         format!("session_history:{}:{index}", catalog.generation),
                         label,
-                        enabled && entry.can_load,
+                        enabled,
                         None::<&str>,
                     )
                     .map_err(|error| error.to_string())?,
