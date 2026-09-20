@@ -44,7 +44,7 @@ export const CONFIGURATION_FILES = [
 function installationText(assetName: string): string {
   return `## Install and update
 
-This initial distribution is for testers with read access to this private repository.
+Lens is in early development. Packaged builds are publicly available on GitHub Releases.
 Requires **Apple Silicon and macOS 15.2 or later**. Download **${assetName}** and **SHA256SUMS**.
 The application has an ad-hoc signature. The DMG is unsigned; neither is Apple-notarized.
 

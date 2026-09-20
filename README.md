@@ -18,7 +18,7 @@ Lens asks your Agent to use your existing instructions, memory, and preferences.
 
 ## Getting started
 
-Lens is in early development. Packaged downloads are not yet available; check [GitHub Releases](https://github.com/japboy/lens/releases) for availability.
+Lens is in early development. Download the latest packaged build from [GitHub Releases](https://github.com/japboy/lens/releases/latest). Follow the release notes to verify the download and install or update Lens.
 
 Settings are stored in `~/Library/Application Support/com.github.japboy.lens/settings.json`, alongside the managed Agent runtimes. Earlier builds used `~/Library/Application Support/Lens/settings.json`. Settings from that location are not migrated or loaded; upgrading starts with defaults unless settings already exist at the new location. The old files are left untouched.
 
