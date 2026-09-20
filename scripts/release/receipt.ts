@@ -20,14 +20,15 @@ export type BuildIdentity = {
 export type ArtifactManifestV2 = Omit<ReleaseManifest, "schema"> &
   BuildIdentity & { schema: 2; verificationAttempt: string };
 export type ReleaseReceipt = BuildIdentity & {
-  schema: 2;
   verificationAttempt: string;
   version: string;
   pullRequest: number;
   releaseId: number;
-  artifactId: string;
   assets: Asset[];
-};
+} & (
+    | { schema: 2; artifactId: string; bundle?: never }
+    | { schema: 3; bundle: Asset; signingAttempt: string; artifactId?: never }
+  );
 export const positiveId = (value: unknown): value is string =>
   typeof value === "string" && /^[1-9]\d*$/u.test(value);
 export function requireBuildIdentity(input: BuildIdentity): void {
@@ -93,6 +94,7 @@ export function packageArtifactV2(
 export function verifyArtifactV2(
   directory: string,
   expected: Pick<BuildIdentity, "tag" | "source" | "repository">,
+  allowRecoveryBundle = false,
 ): ArtifactManifestV2 {
   const manifest = JSON.parse(
     readFileSync(join(directory, "release-manifest.json"), "utf8"),
@@ -116,8 +118,15 @@ export function verifyArtifactV2(
     "release-manifest.json",
     "release-notes.md",
   ].sort();
+  const entries = readdirSync(directory);
+  if (allowRecoveryBundle && entries.includes("release-recovery.json")) {
+    const bundle = lstatSync(join(directory, "release-recovery.json"));
+    if (!bundle.isFile() || bundle.size < 1 || bundle.size > 256 * 1024 * 1024)
+      throw new Error("Invalid recovery bundle file");
+    entries.splice(entries.indexOf("release-recovery.json"), 1);
+  }
   if (
-    JSON.stringify(readdirSync(directory).sort()) !== JSON.stringify(files) ||
+    JSON.stringify(entries.sort()) !== JSON.stringify(files) ||
     files.some((name) => !lstatSync(join(directory, name)).isFile())
   )
     throw new Error("Release artifact must contain exactly four regular files");
@@ -143,16 +152,29 @@ export function parseReceipt(
   const receipt = JSON.parse(bytes.toString("utf8")) as ReleaseReceipt;
   requireVerificationAttempt(receipt);
   if (
-    receipt.schema !== 2 ||
+    ![2, 3].includes(receipt.schema) ||
     receipt.tag !== admitted.tag ||
     receipt.source !== admitted.source ||
     receipt.repository !== repository ||
     receipt.version !== admitted.version ||
     receipt.pullRequest !== admitted.pullRequest ||
     receipt.releaseId !== admitted.releaseId ||
-    !positiveId(receipt.artifactId)
+    (receipt.schema === 2 && !positiveId(receipt.artifactId))
   )
     throw new Error("Release receipt identity mismatch");
+  if (
+    receipt.schema === 3 &&
+    (!positiveId(receipt.signingAttempt) ||
+      BigInt(receipt.signingAttempt) < BigInt(receipt.verificationAttempt) ||
+      !receipt.bundle ||
+      receipt.bundle.name !== "release-recovery.json" ||
+      !Number.isSafeInteger(receipt.bundle.size) ||
+      receipt.bundle.size < 1 ||
+      receipt.bundle.size > 256 * 1024 * 1024 ||
+      !/^[a-f0-9]{64}$/u.test(receipt.bundle.sha256) ||
+      receipt.artifactId !== undefined)
+  )
+    throw new Error("Invalid durable receipt bundle");
   requireAssets(receipt.assets, admitted.version);
   return receipt;
 }

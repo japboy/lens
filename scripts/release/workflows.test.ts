@@ -8,6 +8,24 @@ const cli = readFileSync("scripts/release/cli.ts", "utf8");
 const native = readFileSync(".github/workflows/native-quality.yml", "utf8");
 
 describe("release workflow authority and recovery", () => {
+  it("attests only after verification and grants signing authority only to promotion", () => {
+    const workflow = parse(release);
+    expect(workflow.permissions["id-token"]).toBeUndefined();
+    expect(workflow.permissions.attestations).toBeUndefined();
+    expect(workflow.jobs["verified-artifact"].permissions).toMatchObject({
+      "id-token": "write",
+      attestations: "write",
+    });
+    expect(workflow.jobs.publish.permissions.attestations).toBe("read");
+    expect(workflow.jobs.publish.permissions["id-token"]).toBeUndefined();
+    const steps = workflow.jobs["verified-artifact"].steps as { run?: string; uses?: string }[];
+    const promotion = steps.findIndex((step) => step.run?.endsWith(" promote"));
+    const attestation = steps.findIndex((step) => step.uses?.startsWith("actions/attest@"));
+    const upload = steps.findIndex((step) => step.uses?.startsWith("actions/upload-artifact@"));
+    expect(promotion).toBeGreaterThanOrEqual(0);
+    expect(attestation).toBeGreaterThan(promotion);
+    expect(upload).toBeGreaterThan(attestation);
+  });
   it("separates live policy credentials from the release writer and child processes", () => {
     const steps = parse(automation).jobs.reconcile.steps as {
       id?: string;
@@ -84,7 +102,8 @@ describe("release workflow authority and recovery", () => {
     );
     const promotion = cli.split('mode === "promote"')[1]!.split('mode === "package"')[0]!;
     expect(promotion).toContain('env("VERIFICATION_ATTEMPT")');
-    expect(promotion).not.toContain('env("GITHUB_RUN_ATTEMPT")');
+    expect(promotion.split("writeFileSync(")[0]).not.toContain('env("GITHUB_RUN_ATTEMPT")');
+    expect(promotion).toContain('manifest, env("GITHUB_RUN_ATTEMPT")');
   });
   it.each([
     "release-please-config.json",

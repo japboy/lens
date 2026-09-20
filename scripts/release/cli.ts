@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { CONFIGURATION_FILES, sha256, releaseNotes } from "./artifact.ts";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,13 @@ import {
   RELEASE_WORKFLOW,
   verifyArtifactV2,
 } from "./receipt.ts";
-import { publishReleaseV2 } from "./publisher.ts";
+import {
+  publishDurableRelease,
+  publishReviewedCheckpoint,
+  restoreDurableArtifact,
+} from "./durable.ts";
+import { BUNDLE_NAME, createBundle } from "./recovery-bundle.ts";
+import { verifyReviewedCheckpoint } from "./checkpoint.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const env = (name: string) => {
@@ -78,7 +84,7 @@ if (mode === "pr-title") {
   output("previous_tag", previous ?? "");
 } else if (mode === "promote") {
   const sha = controller();
-  promoteArtifactV2(
+  const manifest = promoteArtifactV2(
     join(root, "target/release-artifact"),
     {
       repository: env("GITHUB_REPOSITORY"),
@@ -88,6 +94,10 @@ if (mode === "pr-title") {
       runId: env("GITHUB_RUN_ID"),
     },
     env("VERIFICATION_ATTEMPT"),
+  );
+  writeFileSync(
+    join(root, "target/release-artifact", BUNDLE_NAME),
+    createBundle(join(root, "target/release-artifact"), manifest, env("GITHUB_RUN_ATTEMPT")),
   );
 } else if (mode === "package") {
   if (
@@ -118,11 +128,27 @@ if (mode === "pr-title") {
   const enabled = process.env.RELEASE_PUBLISH_ENABLED ?? "";
   if (!["", "false", "true"].includes(enabled)) throw new Error("Invalid publication switch");
   const directory = join(root, "target/release-artifact");
-  if (admitted.draft) {
-    const manifest = verifyArtifactV2(directory, {
-      ...admitted,
-      repository: env("GITHUB_REPOSITORY"),
-    });
+  const policy = {
+    repository: env("GITHUB_REPOSITORY"),
+    readmit: () => admitRelease(api.request, root, env("GITHUB_REPOSITORY"), env("RELEASE_TAG")),
+    admitController(sha: string) {
+      requireMain(root, commitSha(sha));
+      if (!git(root, "show", `${sha}:scripts/release/receipt.ts`).includes(RELEASE_WORKFLOW))
+        throw new Error("Original controller predates the admitted build contract");
+    },
+  };
+  const checkpoint = await verifyReviewedCheckpoint(api, admitted, policy.repository);
+  if (admitted.draft && !checkpoint && process.env.RECOVERY_STATE === "durable")
+    await restoreDurableArtifact(api, directory, admitted, policy);
+  if (admitted.draft && !checkpoint) {
+    const manifest = verifyArtifactV2(
+      directory,
+      {
+        ...admitted,
+        repository: env("GITHUB_REPOSITORY"),
+      },
+      true,
+    );
     for (const path of CONFIGURATION_FILES) {
       const sourceBytes = execFileSync("git", ["show", `${admitted.source}:${path}`], {
         cwd: root,
@@ -142,24 +168,22 @@ if (mode === "pr-title") {
     )
       throw new Error("Artifact notes differ from admitted source");
   }
-  const result = await publishReleaseV2(
-    api,
-    directory,
-    admitted,
-    {
-      repository: env("GITHUB_REPOSITORY"),
-      artifactId: env("ARTIFACT_ID"),
-      readmit: () => admitRelease(api.request, root, env("GITHUB_REPOSITORY"), env("RELEASE_TAG")),
-      admitController(sha) {
-        requireMain(root, commitSha(sha));
-        // An older controller must implement this contract, not the legacy tag-push workflow.
-        if (!git(root, "show", `${sha}:scripts/release/receipt.ts`).includes(RELEASE_WORKFLOW))
-          throw new Error("Original controller predates the admitted build contract");
-      },
-    },
-    enabled === "true",
-    process.env.IMMUTABILITY_RESULT === "success",
-  );
+  const result = checkpoint
+    ? await publishReviewedCheckpoint(
+        api,
+        admitted,
+        policy,
+        enabled === "true",
+        process.env.IMMUTABILITY_RESULT === "success",
+      )
+    : await publishDurableRelease(
+        api,
+        directory,
+        admitted,
+        policy,
+        enabled === "true",
+        process.env.IMMUTABILITY_RESULT === "success",
+      );
   process.stdout.write(`${result}\n`);
 } else {
   throw new Error("Unknown release operation");
