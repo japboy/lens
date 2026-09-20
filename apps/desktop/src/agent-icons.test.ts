@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import fixturesJson from "../agent-icons/fixtures.json?raw";
 import { agentIcon } from "./agent-icons";
-import claude from "../agent-icons/claude.svg";
-import openai from "../agent-icons/openai.svg";
-import copilot from "../agent-icons/copilot.svg";
-import robot from "../agent-icons/robot.svg";
+import claude from "@fortawesome/fontawesome-free/svgs/brands/claude.svg";
+import openai from "@fortawesome/fontawesome-free/svgs/brands/openai.svg";
+import copilot from "@fortawesome/fontawesome-free/svgs/brands/copilot.svg";
+import robot from "@fortawesome/fontawesome-free/svgs/solid/robot.svg";
 const assets: Record<string, string> = { claude, openai, copilot, robot };
 
 const fixtures = JSON.parse(fixturesJson) as { name: string; icon: string }[];

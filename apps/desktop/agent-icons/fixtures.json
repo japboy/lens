@@ -36,7 +36,7 @@
     "icon": "openai"
   },
   {
-    "name": "\uff23\uff2c\uff21\uff35\uff24\uff25",
+    "name": "ＣＬＡＵＤＥ",
     "icon": "robot"
   },
   {
@@ -44,7 +44,31 @@
     "icon": "claude"
   },
   {
-    "name": "cLaU\u212ade",
+    "name": "cLaUKde",
     "icon": "robot"
+  },
+  {
+    "name": "anthropic",
+    "icon": "claude"
+  },
+  {
+    "name": "My AnThRoPiC Agent",
+    "icon": "claude"
+  },
+  {
+    "name": "github",
+    "icon": "copilot"
+  },
+  {
+    "name": "My GiTHuB Agent",
+    "icon": "copilot"
+  },
+  {
+    "name": "github anthropic",
+    "icon": "claude"
+  },
+  {
+    "name": "GitHub OpenAI",
+    "icon": "openai"
   }
 ]

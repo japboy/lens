@@ -8,7 +8,7 @@
   },
   "rules": [
     {
-      "containsAny": ["claude"],
+      "containsAny": ["claude", "anthropic"],
       "icon": "claude"
     },
     {
@@ -16,7 +16,7 @@
       "icon": "openai"
     },
     {
-      "containsAny": ["copilot"],
+      "containsAny": ["copilot", "github"],
       "icon": "copilot"
     }
   ],

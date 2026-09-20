@@ -1,8 +1,8 @@
 import catalogJson from "../agent-icons/catalog.json?raw";
-import claude from "../agent-icons/claude.svg";
-import openai from "../agent-icons/openai.svg";
-import copilot from "../agent-icons/copilot.svg";
-import robot from "../agent-icons/robot.svg";
+import claude from "@fortawesome/fontawesome-free/svgs/brands/claude.svg";
+import openai from "@fortawesome/fontawesome-free/svgs/brands/openai.svg";
+import copilot from "@fortawesome/fontawesome-free/svgs/brands/copilot.svg";
+import robot from "@fortawesome/fontawesome-free/svgs/solid/robot.svg";
 
 const icons = { claude, openai, copilot, robot };
 type Icon = keyof typeof icons;

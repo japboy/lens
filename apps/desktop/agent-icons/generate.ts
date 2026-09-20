@@ -42,14 +42,13 @@ try {
       join(desktop, "node_modules/@fortawesome/fontawesome-free/svgs", source),
       "utf8",
     );
-    // Preserve the upstream attribution and path; center non-square marks on a square canvas.
+    // Native PNGs need a square canvas; web masks center the original package SVG with CSS.
     const normalized = svg.replace(/viewBox="0 0 (\d+) (\d+)"/, (_, w: string, h: string) => {
       const width = Number(w),
         height = Number(h),
         size = Math.max(width, height);
       return `viewBox="${(width - size) / 2} ${(height - size) / 2} ${size} ${size}"`;
     });
-    output(`${name}.svg`, Buffer.from(normalized));
     const input = join(staging, `${name}.svg`);
     writeFileSync(input, normalized.replaceAll('fill="currentColor"', 'fill="#000000"'));
     execFileSync(
