@@ -1,4 +1,6 @@
 import type { GitHub, Request } from "./github.ts";
+import { BUNDLE_NAME } from "./recovery-bundle.ts";
+import { verifyReviewedCheckpoint } from "./checkpoint.ts";
 import { pages } from "./github.ts";
 import { releaseByTag } from "./admission.ts";
 import type { AdmittedRelease } from "./admission.ts";
@@ -69,9 +71,24 @@ export async function verifyBuildProvenance(
     artifact.workflow_run.head_branch !== "main"
   )
     throw new Error("Original artifact workflow provenance mismatch");
+  await verifyBuildRun(request, identity, policy);
+}
+export async function verifyBuildRun(
+  request: Request,
+  identity: BuildIdentity & { verificationAttempt: string },
+  policy: ProvenancePolicy,
+  signingAttempt?: string,
+): Promise<void> {
+  requireVerificationAttempt(identity);
+  if (identity.repository !== policy.repository) throw new Error("Build repository conflict");
+  policy.admitController(identity.controller);
   // A partial rerun may verify an earlier successful native build. Both attempts
   // must belong to the same trusted controller run; only the later gate authorizes promotion.
-  for (const attempt of new Set([identity.runAttempt, identity.verificationAttempt])) {
+  for (const attempt of new Set([
+    identity.runAttempt,
+    identity.verificationAttempt,
+    ...(signingAttempt ? [signingAttempt] : []),
+  ])) {
     const run = await request<WorkflowRun>(`/actions/runs/${identity.runId}/attempts/${attempt}`);
     if (
       String(run.id) !== identity.runId ||
@@ -133,8 +150,7 @@ export async function verifyPublishedRelease(
     throw new Error("Expected immutable published release with matching source");
   const remote = await pages<RemoteAsset>(api.request, `/releases/${release.id}/assets`);
   const receipts = remote.filter((asset) => asset.name === RECEIPT_NAME);
-  if (receipts.length !== 1 || remote.length !== 3)
-    throw new Error("Published release receipt/inventory missing");
+  if (receipts.length !== 1) throw new Error("Published release receipt/inventory missing");
   const receiptAsset = receipts[0]!;
   if (
     !Number.isSafeInteger(receiptAsset.id) ||
@@ -149,7 +165,18 @@ export async function verifyPublishedRelease(
     sha256: sha256(bytes),
   });
   const receipt = parseReceipt(bytes, admitted, repository);
-  for (const expected of receipt.assets) {
+  const expectedAssets =
+    receipt.schema === 3 ? [...receipt.assets, receipt.bundle!] : receipt.assets;
+  if (
+    remote.length !== expectedAssets.length + 1 ||
+    remote.some(
+      (asset) =>
+        asset.name !== RECEIPT_NAME &&
+        !expectedAssets.some((expected) => expected.name === asset.name),
+    )
+  )
+    throw new Error("Published release receipt/inventory missing");
+  for (const expected of expectedAssets) {
     const matches = remote.filter((asset) => asset.name === expected.name);
     if (matches.length !== 1) throw new Error("Published release assets conflict");
     await verifyRemoteAsset(api, matches[0]!, expected);
@@ -166,6 +193,8 @@ export async function verifyPublishedRelease(
 export type ResumeState =
   | { state: "build" }
   | { state: "reuse"; artifactId: string; runId: string }
+  | { state: "durable" }
+  | { state: "checkpoint" }
   | { state: "published"; receipt: ReleaseReceipt }
   | { state: "legacy-published" };
 
@@ -184,6 +213,10 @@ export async function resumeRelease(
   if (admitted.legacy)
     throw new Error("Finish the legacy draft with the legacy release workflow before cutover");
   const assets = await pages<RemoteAsset>(api.request, `/releases/${release.id}/assets`);
+  const bundles = assets.filter((asset) => asset.name === BUNDLE_NAME);
+  if (bundles.length > 1) throw new Error("Duplicate recovery bundle");
+  if (bundles.length === 1) return { state: "durable" };
+  if (await verifyReviewedCheckpoint(api, admitted, repository)) return { state: "checkpoint" };
   const artifacts = (await artifactList(api.request, admitted.tag)).filter(
     (item) => item.name === `release-${admitted.tag}` && !item.expired,
   );

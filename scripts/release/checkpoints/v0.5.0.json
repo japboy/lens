@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "receipt": {
+    "schema": 2,
+    "repository": "japboy/lens",
+    "tag": "v0.5.0",
+    "source": "a9b261e084fd2f96fc8745c725525d17a7e56d91",
+    "controller": "a9b261e084fd2f96fc8745c725525d17a7e56d91",
+    "workflow": ".github/workflows/release-please.yml",
+    "runId": "35496202983",
+    "runAttempt": "1",
+    "verificationAttempt": "1",
+    "version": "0.5.0",
+    "pullRequest": 104,
+    "releaseId": 392344988,
+    "artifactId": "10601590488",
+    "assets": [
+      {
+        "name": "Lens_0.5.0_aarch64.dmg",
+        "size": 7483369,
+        "sha256": "78cfb400616afa7c1004fa484961b2757f53f6878fdc3beaa26402afcbc07d69"
+      },
+      {
+        "name": "SHA256SUMS",
+        "size": 89,
+        "sha256": "c49050c90e7b7c29752786577eac6d0bf8b6c239b64153cdb6beea75fdc67588"
+      }
+    ]
+  },
+  "assets": [
+    {
+      "id": 576341769,
+      "name": "Lens_0.5.0_aarch64.dmg",
+      "size": 7483369,
+      "sha256": "78cfb400616afa7c1004fa484961b2757f53f6878fdc3beaa26402afcbc07d69"
+    },
+    {
+      "id": 576341788,
+      "name": "release-receipt.json",
+      "size": 735,
+      "sha256": "0fc03db6e332e6f1539b19c03bad7ea18321637926023653954dc832a26a418c"
+    },
+    {
+      "id": 576341783,
+      "name": "SHA256SUMS",
+      "size": 89,
+      "sha256": "c49050c90e7b7c29752786577eac6d0bf8b6c239b64153cdb6beea75fdc67588"
+    }
+  ],
+  "gate": {
+    "id": 106040694548,
+    "name": "release / release-verification",
+    "completedAt": "2026-09-20T07:21:20Z"
+  },
+  "evidence": {
+    "observedBeforeRerun": true,
+    "originalArtifactZipSha256": "cc214c506ff8d9be0b36b16dc88000da581659fc29c96cf03646f9271138ab1c",
+    "originalArtifactUploadedAt": "2026-09-20T07:21:37Z",
+    "originalArtifactDownloadedAt": "2026-09-20T07:21:54Z"
+  }
+}

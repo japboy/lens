@@ -78,6 +78,8 @@ jobs:
       contents: write
       actions: read
       pull-requests: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.reconcile.outputs.tag }}

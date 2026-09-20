@@ -12,6 +12,8 @@ import type { ArtifactManifestV2 } from "./receipt.ts";
 import { resumeRelease, verifyBuildProvenance, verifyPublishedRelease } from "./resume.ts";
 import type { OriginalArtifact, RemoteAsset } from "./resume.ts";
 import { publishReleaseV2 } from "./publisher.ts";
+import { publishDurableRelease, restoreDurableArtifact } from "./durable.ts";
+import { BUNDLE_NAME, createBundle, restoreBundle } from "./recovery-bundle.ts";
 
 const source = "a".repeat(40),
   controller = "b".repeat(40);
@@ -319,6 +321,176 @@ describe("schema 2 artifact and Actions provenance", () => {
   });
 });
 
+describe("durable recovery after Actions artifacts disappear", () => {
+  it("retains the successful gate while binding a later promotion signing attempt", async () => {
+    const f = fixture();
+    try {
+      const bytes = createBundle(f.directory, f.manifest, "3");
+      writeFileSync(join(f.directory, BUNDLE_NAME), bytes);
+      const original = f.api.request;
+      f.api.request = (async (path: string, method?: string, body?: unknown) =>
+        path === "/actions/runs/123/attempts/3"
+          ? { ...f.run, run_attempt: 3 }
+          : original(path, method, body)) as Request;
+      expect(
+        await publishDurableRelease(
+          f.api,
+          f.directory,
+          admitted,
+          {
+            ...f.provenance,
+            verifyAttestation: (_path, identity) => {
+              expect(identity.signingAttempt).toBe("3");
+            },
+          },
+          false,
+          false,
+        ),
+      ).toBe("draft");
+      expect(f.reads).toContain("/actions/runs/123/attempts/2/jobs?per_page=100&page=1");
+      const receipt = JSON.parse(
+        f.remote.find((asset) => asset.name === RECEIPT_NAME)!.bytes.toString(),
+      );
+      expect(receipt).toMatchObject({
+        runAttempt: "2",
+        verificationAttempt: "2",
+        signingAttempt: "3",
+      });
+    } finally {
+      f.close();
+    }
+  });
+  it.each([false, true])(
+    "restores complete original bytes without artifact APIs (bundle-only=%s)",
+    async (bundleOnly) => {
+      const f = fixture();
+      const restored = join(f.directory, "restored");
+      try {
+        const bytes = createBundle(f.directory, f.manifest);
+        writeFileSync(join(f.directory, BUNDLE_NAME), bytes);
+        const policy = { ...f.provenance, verifyAttestation: () => undefined };
+        expect(
+          await publishDurableRelease(f.api, f.directory, admitted, policy, false, false),
+        ).toBe("draft");
+        expect(f.writes[0]).toBe(`upload ${BUNDLE_NAME}`);
+        if (bundleOnly) f.remote.splice(1);
+        f.flags.originalMissing = true;
+        const originalRequest = f.api.request;
+        f.api.request = (async (path: string, method?: string, body?: unknown) => {
+          if (path.startsWith("/actions/artifacts")) throw new Error("Original artifact is gone");
+          return originalRequest(path, method, body);
+        }) as Request;
+        expect(await resumeRelease(f.api, admitted, "owner/repo")).toEqual({ state: "durable" });
+        await restoreDurableArtifact(f.api, restored, admitted, policy);
+        expect(readFileSync(join(restored, BUNDLE_NAME))).toEqual(bytes);
+        const writes = f.writes.length;
+        expect(await publishDurableRelease(f.api, restored, admitted, policy, false, false)).toBe(
+          "draft",
+        );
+        expect(f.writes.length - writes).toBe(bundleOnly ? 3 : 0);
+        expect(f.remote.map((asset) => asset.name)).toEqual([
+          BUNDLE_NAME,
+          "Lens_0.1.0_aarch64.dmg",
+          "SHA256SUMS",
+          RECEIPT_NAME,
+        ]);
+        const receipt = JSON.parse(
+          f.remote.find((asset) => asset.name === RECEIPT_NAME)!.bytes.toString(),
+        );
+        expect(receipt.schema).toBe(3);
+        expect(receipt.artifactId).toBeUndefined();
+        expect(receipt.bundle.sha256).toBe(sha256(bytes));
+        expect(receipt.verificationAttempt).toBe("2");
+      } finally {
+        f.close();
+      }
+    },
+  );
+  it("publishes verified durable assets and verifies the immutable terminal state without Actions", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.directory, BUNDLE_NAME), createBundle(f.directory, f.manifest));
+      expect(
+        await publishDurableRelease(
+          f.api,
+          f.directory,
+          admitted,
+          { ...f.provenance, verifyAttestation: () => undefined },
+          true,
+          true,
+        ),
+      ).toBe("published");
+      expect(f.release.immutable).toBe(true);
+      f.flags.forbidActions = true;
+      expect((await verifyPublishedRelease(f.api, admitted, "owner/repo")).schema).toBe(3);
+    } finally {
+      f.close();
+    }
+  });
+  it("rejects invalid attestation before any upload", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.directory, BUNDLE_NAME), createBundle(f.directory, f.manifest));
+      await expect(
+        publishDurableRelease(
+          f.api,
+          f.directory,
+          admitted,
+          {
+            ...f.provenance,
+            verifyAttestation: () => {
+              throw new Error("Signature rejected");
+            },
+          },
+          false,
+          false,
+        ),
+      ).rejects.toThrow("Signature rejected");
+      expect(f.writes).toEqual([]);
+    } finally {
+      f.close();
+    }
+  });
+  it.each([RECEIPT_NAME, "Lens_0.1.0_aarch64.dmg"])(
+    "rejects remote %s conflict without further writes",
+    async (name) => {
+      const f = fixture();
+      try {
+        writeFileSync(join(f.directory, BUNDLE_NAME), createBundle(f.directory, f.manifest));
+        const policy = { ...f.provenance, verifyAttestation: () => undefined };
+        await publishDurableRelease(f.api, f.directory, admitted, policy, false, false);
+        f.remote.find((asset) => asset.name === name)!.bytes = Buffer.from("corrupted");
+        f.writes.length = 0;
+        await expect(
+          publishDurableRelease(f.api, f.directory, admitted, policy, false, false),
+        ).rejects.toThrow("bytes conflict");
+        expect(f.writes).toEqual([]);
+      } finally {
+        f.close();
+      }
+    },
+  );
+  it("keeps the default four-file contract and rejects noncanonical bundle paths", () => {
+    const f = fixture();
+    try {
+      const bytes = createBundle(f.directory, f.manifest);
+      writeFileSync(join(f.directory, BUNDLE_NAME), bytes);
+      expect(() =>
+        verifyArtifactV2(f.directory, { ...admitted, repository: "owner/repo" }),
+      ).toThrow("exactly four");
+      const value = JSON.parse(bytes.toString());
+      value.files[0].name = "../escape";
+      expect(() =>
+        restoreBundle(Buffer.from(JSON.stringify(value)), join(f.directory, "bad"), {
+          ...admitted,
+          repository: "owner/repo",
+        }),
+      ).toThrow("inventory");
+    } finally {
+      f.close();
+    }
+  });
+});
 describe("draft and published finite recovery", () => {
   it("builds only an empty draft without a retained original; refuses rebuilding uploaded bytes", async () => {
     const f = fixture();
