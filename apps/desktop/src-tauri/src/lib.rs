@@ -1,6 +1,7 @@
 mod about;
 mod agent;
 mod agent_environment;
+mod agent_icons;
 mod agent_launch;
 mod agent_output;
 mod agent_preferences;
@@ -62,14 +63,7 @@ async fn validate_history_session<R: tauri::Runtime>(
     }
     let catalog = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         session_view::refresh(app.clone()).await?;
-        loop {
-            // Restore may already own refresh; refresh() then returns without joining it.
-            let catalog = app.state::<app_state::AppState>().session_view.catalog()?;
-            if !catalog.loading {
-                return Ok::<_, String>(catalog);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        app.state::<app_state::AppState>().session_view.catalog()
     })
     .await
     .map_err(|_| "Timed out waiting for session history catalog".to_string())??;

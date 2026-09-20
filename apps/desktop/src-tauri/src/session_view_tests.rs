@@ -266,7 +266,6 @@ async fn history_loading_blocks_authentication_logout_and_reauthentication_befor
 /// This host admits only installed-runtime resolution and initialize/load. Any
 /// installation, generation or native-source access still fails loudly.
 struct ReplayHost {
-    oversized_listing: bool,
     empty_listing: bool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -321,11 +320,7 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
         let entered = Arc::clone(&self.entered);
         let release = Arc::clone(&self.release);
         let loaded = Arc::clone(&self.loaded);
-        let listed_title = if self.oversized_listing {
-            "x".repeat(65_537)
-        } else {
-            "Renamed elsewhere".into()
-        };
+        let listed_title = "Renamed elsewhere".to_string();
         let empty_listing = self.empty_listing;
         let fixture = Agent.builder()
             .on_receive_request(
@@ -445,7 +440,6 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
 
 fn replay_host() -> Arc<ReplayHost> {
     Arc::new(ReplayHost {
-        oversized_listing: false,
         empty_listing: false,
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
@@ -846,14 +840,16 @@ async fn external_history_rejects_profile_changes_during_runtime_resolution() {
     )
     .build(crate::product_context())
     .unwrap();
-    let error = session_history::list_explicit_provider(
+    let error = session_history::load_synced_provider(
         app.handle(),
         kind,
         &app.state::<AppState>().config().unwrap(),
-        std::path::Path::new("/tmp"),
+        "existing",
+        "/tmp",
     )
     .await
-    .unwrap_err();
+    .err()
+    .unwrap();
     assert!(error.contains("configuration changed"));
 }
 
@@ -877,7 +873,7 @@ fn seed_cached(state: &AppState, agent: AgentKind, id: &str, cwd: &str, time: &s
 }
 
 #[tokio::test]
-async fn cached_all_and_agent_filters_preserve_selection_and_never_connect() {
+async fn cached_all_agents_preserve_selection_and_never_connect() {
     let state = test_support::state();
     state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
     let external = AgentKind::External(state.config().unwrap().external_agents[0].id);
@@ -893,17 +889,6 @@ async fn cached_all_and_agent_filters_preserve_selection_and_never_connect() {
         .entries
         .iter()
         .all(|entry| entry.session_id == "shared-id"));
-    let index = catalog
-        .sources
-        .iter()
-        .position(|source| source.agent == external)
-        .unwrap();
-    set_filter(app.handle().clone(), catalog.generation, Some(index))
-        .await
-        .unwrap();
-    let filtered = app.state::<AppState>().session_view.catalog().unwrap();
-    assert_eq!(filtered.entries.len(), 1);
-    assert_eq!(filtered.entries[0].agent, external);
     let after = app.state::<AppState>().snapshot().unwrap();
     assert_eq!(after.config, before.config);
     assert_eq!(after.agent_selection, before.agent_selection);
@@ -911,7 +896,7 @@ async fn cached_all_and_agent_filters_preserve_selection_and_never_connect() {
 }
 
 #[test]
-fn cached_agent_and_directory_filters_precede_top_ten() {
+fn cached_directory_filter_precedes_global_top_ten() {
     let state = test_support::state();
     for index in 0..12 {
         seed_cached(
@@ -938,16 +923,12 @@ fn cached_agent_and_directory_filters_precede_top_ten() {
     );
     let store = history_catalog::store(&state).unwrap();
     let sources = history_catalog::sources(&state.config().unwrap()).unwrap();
-    let all = cached_catalog(&store, Path::new("/tmp"), sources.clone(), None).unwrap();
+    let all = cached_catalog(&store, Path::new("/tmp"), sources).unwrap();
     assert_eq!(all.entries.len(), 10);
     assert!(all
         .entries
         .iter()
         .all(|entry| entry.agent == AgentKind::Claude));
-    let filtered =
-        cached_catalog(&store, Path::new("/tmp"), sources, Some(AgentKind::Codex)).unwrap();
-    assert_eq!(filtered.entries.len(), 1);
-    assert_eq!(filtered.entries[0].session_id, "older-but-selected");
 }
 
 #[tokio::test]
@@ -1050,35 +1031,6 @@ fn live_info_updates_persist_metadata_but_stale_sessions_do_not() {
     );
 }
 
-#[tokio::test]
-async fn in_progress_import_rejects_current_generation_open_before_effects() {
-    let state = test_support::state();
-    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
-    seed_cached(
-        &state,
-        AgentKind::Claude,
-        "saved",
-        "/tmp",
-        "2026-09-20T00:00:00Z",
-    );
-    let app = app(state);
-    refresh(app.handle().clone()).await.unwrap();
-    let generation = {
-        let state = app.state::<AppState>();
-        let mut catalog = state.session_view.catalog.lock().unwrap();
-        catalog.loading = true;
-        catalog.generation
-    };
-    assert!(open(app.handle().clone(), generation, 0)
-        .await
-        .unwrap_err()
-        .contains("Session history changed"));
-    assert_eq!(
-        app.state::<AppState>().session_view.view().unwrap().phase,
-        ViewPhase::Idle
-    );
-}
-
 #[test]
 fn accepted_metadata_does_not_erase_a_previous_persistence_notice() {
     let app = app(test_support::state());
@@ -1126,7 +1078,7 @@ async fn remote_scan_follows_all_previously_queued_live_metadata() {
         )
         .unwrap();
     let app = app(state);
-    // This is the same barrier open/import await before admission and begin_scan.
+    // This is the same barrier open awaits before admission and begin_scan.
     flush_history_writes(app.handle()).await.unwrap();
     let state = app.state::<AppState>();
     let store = history_catalog::store(&state).unwrap();
@@ -1169,15 +1121,6 @@ async fn preset_edit_after_admission_never_resolves_replacement_command() {
         .config
         .external_agents[0]
         .command = "replacement-command".into();
-    let error = session_history::list_explicit_provider(
-        app.handle(),
-        kind,
-        &admitted,
-        &admitted.working_directory,
-    )
-    .await
-    .unwrap_err();
-    assert!(error.contains("configuration changed"));
     let result = session_history::load_synced_provider(
         app.handle(),
         kind,
@@ -1191,80 +1134,42 @@ async fn preset_edit_after_admission_never_resolves_replacement_command() {
 
 #[tokio::test]
 async fn scan_write_failures_preserve_cached_entries_and_display_notice() {
-    for importing in [true, false] {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("history.sqlite3");
-        let mut state = test_support::state();
-        state.history_writer.take();
-        state.history_store.take();
-        history_catalog::install(
-            &state,
-            crate::session_history_store::HistoryStore::open(&path).unwrap(),
-        )
-        .unwrap();
-        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
-        seed_cached(
-            &state,
-            AgentKind::Claude,
-            "retained",
-            "/tmp",
-            "2026-09-20T00:00:00Z",
-        );
-        // Reads remain usable while every scan write deterministically fails.
-        rusqlite::Connection::open(&path).unwrap().execute_batch(
-            "CREATE TRIGGER reject_history_clock BEFORE UPDATE ON history_clock BEGIN SELECT RAISE(ABORT, 'fixture scan write failed'); END;"
-        ).unwrap();
-        let app = app(state);
-        refresh(app.handle().clone()).await.unwrap();
-        let catalog = app.state::<AppState>().session_view.catalog().unwrap();
-        let error = if importing {
-            import_agent(app.handle().clone(), catalog.generation, 0)
-                .await
-                .unwrap_err()
-        } else {
-            open(app.handle().clone(), catalog.generation, 0)
-                .await
-                .unwrap_err()
-        };
-        assert!(error.contains("fixture scan write failed"));
-        let catalog = app.state::<AppState>().session_view.catalog().unwrap();
-        assert_eq!(catalog.entries.len(), 1);
-        assert_eq!(catalog.entries[0].session_id, "retained");
-        assert!(catalog
-            .notices
-            .iter()
-            .any(|notice| notice.contains("fixture scan write failed")));
-        assert!(!catalog.loading);
-    }
-}
-
-#[tokio::test]
-async fn import_commit_failure_preserves_old_cache_and_displays_notice() {
-    let mut host = replay_host();
-    Arc::get_mut(&mut host).unwrap().oversized_listing = true;
-    let (app, _) = replay_app(host);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("history.sqlite3");
+    let mut state = test_support::state();
+    state.history_writer.take();
+    state.history_store.take();
+    history_catalog::install(
+        &state,
+        crate::session_history_store::HistoryStore::open(&path).unwrap(),
+    )
+    .unwrap();
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
+    seed_cached(
+        &state,
+        AgentKind::Claude,
+        "retained",
+        "/tmp",
+        "2026-09-20T00:00:00Z",
+    );
+    // Reads remain usable while every scan write deterministically fails.
+    rusqlite::Connection::open(&path).unwrap().execute_batch(
+        "CREATE TRIGGER reject_history_clock BEFORE UPDATE ON history_clock BEGIN SELECT RAISE(ABORT, 'fixture scan write failed'); END;"
+    ).unwrap();
+    let app = app(state);
     refresh(app.handle().clone()).await.unwrap();
-    let before = app.state::<AppState>().session_view.catalog().unwrap();
-    let index = before
-        .sources
-        .iter()
-        .position(|source| source.agent == AgentKind::Codex)
-        .unwrap();
-    let error = import_agent(app.handle().clone(), before.generation, index)
+    let catalog = app.state::<AppState>().session_view.catalog().unwrap();
+    let error = open(app.handle().clone(), catalog.generation, 0)
         .await
         .unwrap_err();
-    assert!(error.contains("metadata field exceeds capacity"));
-    let after = app.state::<AppState>().session_view.catalog().unwrap();
-    assert_eq!(after.entries.len(), before.entries.len());
-    assert!(after
-        .entries
-        .iter()
-        .all(|entry| entry.title == "Created outside Lens"));
-    assert!(after
+    assert!(error.contains("fixture scan write failed"));
+    let catalog = app.state::<AppState>().session_view.catalog().unwrap();
+    assert_eq!(catalog.entries.len(), 1);
+    assert_eq!(catalog.entries[0].session_id, "retained");
+    assert!(catalog
         .notices
         .iter()
-        .any(|notice| notice.contains("metadata field exceeds capacity")));
-    assert!(!after.loading);
+        .any(|notice| notice.contains("fixture scan write failed")));
 }
 
 #[tokio::test]

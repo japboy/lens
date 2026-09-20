@@ -1,3 +1,6 @@
+import { agentIcon } from "../agent-icons";
+import "./lens-select";
+import type { LensSelect } from "./lens-select";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
@@ -152,12 +155,23 @@ export class LensAgentSettings extends LitElement {
     return html`
       <fieldset class="external-executable-settings" ?disabled=${controlsDisabled}>
         <legend class="visually-hidden">AI agent to use</legend>
-        <label class="settings-field"
-          ><span>Agent</span
-          ><select
-            aria-label="Agent"
+        <div class="settings-field">
+          <span>Agent</span>
+          <lens-select
+            label="Agent"
+            .disabled=${controlsDisabled}
+            .value=${this.editingId ?? this.managedSelection}
+            .options=${[
+              { value: "claude", label: "Claude", icon: agentIcon("Claude") },
+              { value: "codex", label: "Codex", icon: agentIcon("Codex") },
+              ...Object.values(this.drafts).map((profile) => ({
+                value: profile.id,
+                icon: agentIcon(profile.name),
+                label: `${profile.name || "New preset"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}`,
+              })),
+            ]}
             @change=${(event: Event) => {
-              const value = (event.target as HTMLSelectElement).value;
+              const value = (event.target as LensSelect).value;
               this.draftRevision += 1;
               this.editingId = value === "claude" || value === "codex" ? undefined : value;
               if (!this.editingId) this.managedSelection = value as "claude" | "codex";
@@ -166,19 +180,8 @@ export class LensAgentSettings extends LitElement {
               else if (this.profiles.some((profile) => profile.id === value))
                 this.emit({ type: "select", agent: { external: value } });
             }}
-          >
-            <option
-              value="claude"
-              .selected=${!this.editingId && this.managedSelection === "claude"}
-            >
-              Claude
-            </option>
-            <option value="codex" .selected=${!this.editingId && this.managedSelection === "codex"}>
-              Codex
-            </option>
-            ${Object.values(this.drafts).map((profile) => html`<option value=${profile.id} .selected=${profile.id === this.editingId}>${profile.name || "New preset"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}</option>`)}
-          </select></label
-        >
+          ></lens-select>
+        </div>
         <div class="agent-actions">
           <button
             ?disabled=${Object.keys(this.drafts).length >= 16}

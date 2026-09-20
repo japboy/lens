@@ -9,14 +9,18 @@ export function installGeneratedPage(view: AppView): HTMLElement {
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const page = parsed.querySelector<HTMLElement>(`lens-${view}-page`);
   if (!page) throw new Error("Missing generated page");
-  for (const template of page.querySelectorAll<HTMLTemplateElement>(
-    'template[shadowrootmode="open"]',
-  )) {
-    const host = template.parentElement!;
-    const root = host.attachShadow({ mode: "open" });
-    root.append(template.content);
-    template.remove();
+  function attachRoots(container: ParentNode): void {
+    for (const template of container.querySelectorAll<HTMLTemplateElement>(
+      'template[shadowrootmode="open"]',
+    )) {
+      const host = template.parentElement!;
+      const root = host.attachShadow({ mode: "open" });
+      root.append(template.content);
+      template.remove();
+      attachRoots(root);
+    }
   }
+  attachRoots(page);
   document.documentElement.dataset.view = view;
   window.history.replaceState({}, "", `/${view}.html?platform=macos`);
   document.body.replaceChildren(page);

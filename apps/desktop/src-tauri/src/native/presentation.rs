@@ -29,21 +29,21 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         presentation::format_short_datetime(unix_seconds)
     }
 
-    fn history_tooltips(
+    fn menu_presentation(
         &self,
         app: &tauri::AppHandle<R>,
         root: &tauri::menu::Menu<R>,
         history: &tauri::menu::Submenu<R>,
-        expected: Vec<(String, Option<String>)>,
+        expected: Vec<port_platform::MenuPresentationItem>,
     ) -> Result<(), PlatformError> {
         let error = |error: tauri::Error| PlatformError::Operation(error.to_string());
         let root_items = root.items().map_err(error)?;
         let index = root_items
             .iter()
             .position(|item| item.id() == history.id())
-            .ok_or_else(|| PlatformError::Operation("history submenu is not attached".into()))?;
+            .ok_or_else(|| PlatformError::Operation("target submenu is not attached".into()))?;
         let title = history.text().map_err(error)?;
-        // The bridge checks every attached NSMenuItem title and count before mutation.
+        // The bridge validates the entire attached tree and decodes template images before mutation.
         app.tray_by_id("lens")
             .ok_or_else(|| PlatformError::Operation("Lens tray icon is unavailable".into()))?
             .with_inner_tray_icon(move |tray| {
@@ -53,7 +53,7 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                 // SAFETY: Tauri runs this closure on AppKit's main thread. The retained
                 // status item remains alive throughout this synchronous borrowed call.
                 unsafe {
-                    presentation::set_menu_tooltips(
+                    presentation::set_menu_presentation(
                         &*item as *const _ as *mut std::ffi::c_void,
                         index,
                         &title,

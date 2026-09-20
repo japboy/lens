@@ -3,6 +3,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { installGeneratedPage } from "./rendering/generated-page.test-helper";
 import { startPage } from "./entries/start-page";
+import type { LensSelect } from "./components/lens-select";
 import type { AppView } from "./presentation-context";
 import type { AppSnapshot } from "./types";
 
@@ -354,7 +355,7 @@ describe("About", () => {
       "get_about_info",
       "get_about_documents",
     ]);
-    const select = root.querySelector("select")!;
+    const select = root.querySelector<LensSelect>("lens-select")!;
     documentText.scrollTop = 100;
     select.value = "notice";
     select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -393,7 +394,7 @@ describe("About", () => {
     expect(root.querySelectorAll(".document-chunk").length).toBeGreaterThan(1);
     expect(root.querySelector(".document-text")?.textContent).toBe(license);
     expect(root.querySelector("not-markup")).toBeNull();
-    const select = root.querySelector("select")!;
+    const select = root.querySelector<LensSelect>("lens-select")!;
     select.value = "notice";
     select.dispatchEvent(new Event("change", { bubbles: true }));
     await view.updateComplete;
@@ -415,7 +416,9 @@ describe("About", () => {
       .mockImplementationOnce(() => documents);
     const element = await createPage("about");
     await vi.waitFor(() =>
-      expect(viewRoot(element, "lens-about-view")?.querySelector("select")).toBeTruthy(),
+      expect(
+        viewRoot(element, "lens-about-view")?.querySelector<LensSelect>("lens-select"),
+      ).toBeTruthy(),
     );
     const root = viewRoot(element, "lens-about-view")!;
     const header = root.querySelector("header")!;
@@ -426,7 +429,7 @@ describe("About", () => {
     resolveInfo({ name: "Lens", version: "1.2.3", copyright: "Copyright" });
     await vi.waitFor(() => expect(header.textContent).toContain("Version 1.2.3"));
     await vi.waitFor(() => expect(root.querySelector(".document-text")?.textContent).toBe(""));
-    const select = root.querySelector("select")!;
+    const select = root.querySelector<LensSelect>("lens-select")!;
     select.value = "notice";
     select.dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() =>
@@ -456,7 +459,7 @@ describe("About", () => {
     await vi.waitFor(() =>
       expect(root.querySelector("header")?.textContent).toContain("Version 1.2.3"),
     );
-    expect(root.querySelector("select")?.disabled).toBe(false);
+    expect(root.querySelector<LensSelect>("lens-select")?.disabled).toBe(false);
     expect(root.querySelector(".document-text")?.getAttribute("aria-busy")).toBe("false");
   });
 
@@ -1177,16 +1180,14 @@ describe("Lens Settings", () => {
       const element = await createPage("settings");
       const settingsRoot = viewRoot(element, "lens-settings-view");
       await vi.waitFor(() => {
-        expect(
-          settingsRoot?.querySelector<HTMLSelectElement>('select[aria-label="Agent"]'),
-        ).not.toBeNull();
+        expect(settingsRoot?.querySelector<LensSelect>("lens-select")).not.toBeNull();
       });
 
-      const agentMenu = settingsRoot!.querySelector<HTMLSelectElement>(
-        'select[aria-label="Agent"]',
-      )!;
-      agentMenu.value = "claude";
-      agentMenu.dispatchEvent(new Event("change"));
+      const agentMenu = settingsRoot!.querySelector<LensSelect>("lens-select")!;
+      await agentMenu.updateComplete;
+      agentMenu.shadowRoot!.querySelector<HTMLButtonElement>("button")!.click();
+      await agentMenu.updateComplete;
+      agentMenu.shadowRoot!.querySelector<HTMLElement>('[data-index="0"]')!.click();
 
       await vi.waitFor(() => {
         const feedback = settingsRoot?.querySelector(
@@ -1414,7 +1415,11 @@ it.each(["cancel", "success", "failure"] as const)(
         ).toBe(outcome === "success" ? null : "unsaved-agent --stdio");
         expect(root.textContent?.includes("Reset write failed")).toBe(outcome === "failure");
         expect(
-          [...editor.querySelectorAll("option")].map((option) => option.textContent?.trim()),
+          [
+            ...editor
+              .querySelector<LensSelect>("lens-select")!
+              .shadowRoot!.querySelectorAll('[role="option"] .lens-select-label'),
+          ].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
             ? ["Claude", "Codex", "GitHub Copilot", "Goose"]

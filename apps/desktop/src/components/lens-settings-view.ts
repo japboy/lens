@@ -370,7 +370,7 @@ export class LensSettingsView extends LitElement {
         gap: 4px;
       }
       .prompt-presets input,
-      .prompt-presets select {
+      .prompt-presets lens-select {
         width: 100%;
         min-width: 0;
       }
@@ -381,7 +381,7 @@ export class LensSettingsView extends LitElement {
       .prompt-presets .prompt-actions {
         margin-top: 0;
       }
-      .prompt-presets select {
+      .prompt-presets lens-select {
         appearance: auto;
       }
       .prompt-preset-management {
@@ -493,7 +493,7 @@ export class LensSettingsView extends LitElement {
         gap: 6px;
         margin: 0 0 var(--disclosure-content-gap);
       }
-      .prompt-request-mode select {
+      .prompt-request-mode lens-select {
         width: 100%;
         min-width: 0;
       }
@@ -765,7 +765,7 @@ export class LensSettingsView extends LitElement {
         margin-block: 8px;
       }
 
-      lens-agent-defaults select {
+      lens-agent-defaults lens-select {
         max-width: 100%;
         min-width: 0;
       }

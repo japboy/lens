@@ -111,22 +111,7 @@ fn validate_admission<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Explicit user discovery authorizes the specified preset, independently of conversation selection.
-pub async fn list_explicit_provider<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    agent: AgentKind,
-    admitted: &crate::model::AppConfig,
-    cwd: &std::path::Path,
-) -> Result<ProviderHistoryListing, String> {
-    validate_admission(app, agent, admitted)?;
-    let (_descriptor, transport) =
-        crate::agent::history_transport(app, agent, cwd.to_path_buf()).await?;
-    validate_admission(app, agent, admitted)?;
-    list_transport(transport, agent, cwd.to_path_buf())
-        .await
-        .map_err(|e| e.to_string())
-}
-
+#[cfg(test)]
 async fn list_transport(
     transport: DynConnectTo<Client>,
     agent: AgentKind,

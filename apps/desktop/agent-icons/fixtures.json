@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Claude",
+    "icon": "claude"
+  },
+  {
+    "name": "My CLAUDE Agent",
+    "icon": "claude"
+  },
+  {
+    "name": "Codex",
+    "icon": "openai"
+  },
+  {
+    "name": "OpenAI local",
+    "icon": "openai"
+  },
+  {
+    "name": "GitHub Copilot",
+    "icon": "copilot"
+  },
+  {
+    "name": "Goose",
+    "icon": "robot"
+  },
+  {
+    "name": "",
+    "icon": "robot"
+  },
+  {
+    "name": "copilot Claude codex",
+    "icon": "claude"
+  },
+  {
+    "name": "Copilot OPENAI",
+    "icon": "openai"
+  },
+  {
+    "name": "\uff23\uff2c\uff21\uff35\uff24\uff25",
+    "icon": "robot"
+  },
+  {
+    "name": "CLaUdE",
+    "icon": "claude"
+  },
+  {
+    "name": "cLaU\u212ade",
+    "icon": "robot"
+  }
+]

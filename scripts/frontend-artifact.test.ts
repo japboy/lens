@@ -148,6 +148,28 @@ describe("same-source frontend artifact integrity", () => {
       seal(root, assets);
       expect(() => frontendArtifact("write", root)).toThrow("Invalid generated DSD");
     }));
+  it("admits the encapsulated select root but rejects unrelated nested roots", () =>
+    fixture((root, assets) => {
+      const nested = '<template shadowrootmode="open"><button>License</button></template>';
+      writeFileSync(
+        join(assets, "about.html"),
+        page("about").replace(
+          "<main>fixture</main>",
+          `<main><lens-select defer-hydration>${nested}</lens-select></main>`,
+        ),
+      );
+      seal(root, assets);
+      expect(() => frontendArtifact("write", root)).not.toThrow();
+      writeFileSync(
+        join(assets, "about.html"),
+        page("about").replace(
+          "<main>fixture</main>",
+          `<main><unknown-control>${nested}</unknown-control></main>`,
+        ),
+      );
+      seal(root, assets);
+      expect(() => frontendArtifact("write", root)).toThrow("Invalid generated DSD");
+    }));
   it("rejects missing initial assets and mixed development generations", () =>
     fixture((root, assets) => {
       writeFileSync(join(assets, "about.html"), page("about") + '<img src="/assets/missing.png">');

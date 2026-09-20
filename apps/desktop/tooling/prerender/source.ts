@@ -7,6 +7,7 @@ export const SOURCE_PATHS = [
   "apps/desktop/src",
   "apps/desktop/tooling",
   "apps/desktop/src-tauri/icons",
+  "apps/desktop/agent-icons",
   "apps/desktop/package.json",
   "apps/desktop/tsconfig.json",
   "apps/desktop/tsconfig.app.json",

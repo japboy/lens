@@ -84,12 +84,12 @@ pub(crate) fn state() -> AppState {
 
 pub(crate) struct UnusedPresentation;
 impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
-    fn history_tooltips(
+    fn menu_presentation(
         &self,
         _app: &tauri::AppHandle<R>,
         _root: &tauri::menu::Menu<R>,
         _history: &tauri::menu::Submenu<R>,
-        _rows: Vec<(String, Option<String>)>,
+        _rows: Vec<port_platform::MenuPresentationItem>,
     ) -> Result<(), platform::PlatformError> {
         Ok(())
     }

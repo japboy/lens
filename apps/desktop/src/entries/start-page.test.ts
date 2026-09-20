@@ -1,3 +1,4 @@
+import type { LensSelect } from "../components/lens-select";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installGeneratedPage } from "../rendering/generated-page.test-helper";
@@ -31,10 +32,10 @@ afterEach(() => {
 });
 
 describe("progressive page attachment", () => {
-  it("preserves the HTML header, native selection and focus made before the page module arrives", async () => {
+  it("preserves the HTML header, document selection and focus made before the page module arrives", async () => {
     installDocument();
     const header = root().querySelector("header");
-    const select = root().querySelector("select")!;
+    const select = root().querySelector<LensSelect>("lens-select")!;
     let allowImport!: () => void;
     const delayed = new Promise<void>((resolve) => {
       allowImport = resolve;
@@ -45,7 +46,7 @@ describe("progressive page attachment", () => {
     });
     expect(document.documentElement.dataset.platform).toBe("macos");
     expect(root().querySelector("h1")?.textContent).toBe("Lens");
-    select.focus();
+    select.shadowRoot!.querySelector<HTMLButtonElement>("button")!.focus();
     select.value = "notice";
     select.dispatchEvent(new Event("change", { bubbles: true }));
     allowImport();
@@ -54,8 +55,9 @@ describe("progressive page attachment", () => {
       expect(root().querySelector("lens-license-document")?.textContent).toBe("Notice"),
     );
     expect(root().querySelector("header")).toBe(header);
-    expect(root().querySelector("select")).toBe(select);
+    expect(root().querySelector<LensSelect>("lens-select")).toBe(select);
     expect(root().activeElement).toBe(select);
+    expect(select.shadowRoot!.activeElement).toBe(select.shadowRoot!.querySelector("button"));
     expect(select.value).toBe("notice");
   });
 

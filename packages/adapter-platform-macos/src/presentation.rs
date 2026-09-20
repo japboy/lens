@@ -25,46 +25,70 @@ pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError>
     Ok(value)
 }
 
-/// Apply tooltips to the attached status menu after validating its complete submenu shape.
+/// Apply template images and tooltips after validating the complete attached submenu tree.
 /// Duplicate titles are allowed: the shell supplies the submenu index from Tauri IDs,
 /// and each tooltip remains associated with its positional item.
 ///
 /// # Safety
 /// Call on the AppKit main thread with a live NSStatusItem borrowed for this call.
-pub unsafe fn set_menu_tooltips(
+pub unsafe fn set_menu_presentation(
     status_item: *mut c_void,
     submenu_index: usize,
     submenu_title: &str,
-    items: &[(String, Option<String>)],
+    items: &[port_platform::MenuPresentationItem],
 ) -> Result<(), PlatformError> {
     unsafe extern "C" {
-        fn lens_set_menu_tooltips(
+        fn lens_set_menu_presentation(
             status_item: *mut c_void,
             submenu_index: usize,
             submenu_title: *const std::ffi::c_char,
             items_json: *const std::ffi::c_char,
         ) -> bool;
     }
-    let invalid = |error| PlatformError::Operation(format!("invalid menu tooltip text: {error}"));
+    let invalid =
+        |error| PlatformError::Operation(format!("invalid menu appearance text: {error}"));
     let title = std::ffi::CString::new(submenu_title).map_err(invalid)?;
-    let values: Vec<_> = items
-        .iter()
-        .map(|(title, tooltip)| serde_json::json!({ "title": title, "tooltip": tooltip }))
-        .collect();
+    let values = menu_presentation_json(items, 0, &mut 0)?;
     let json = std::ffi::CString::new(
         serde_json::to_string(&values)
             .map_err(|error| PlatformError::Operation(error.to_string()))?,
     )
     .map_err(invalid)?;
     // SAFETY: Strings live through the synchronous call; caller guarantees handle/thread affinity.
-    if unsafe { lens_set_menu_tooltips(status_item, submenu_index, title.as_ptr(), json.as_ptr()) }
-    {
+    if unsafe {
+        lens_set_menu_presentation(status_item, submenu_index, title.as_ptr(), json.as_ptr())
+    } {
         Ok(())
     } else {
         Err(PlatformError::Operation(
-            "native history menu does not match tooltip metadata".into(),
+            "native menu appearance failed validation or image decoding".into(),
         ))
     }
+}
+
+fn menu_presentation_json(
+    items: &[port_platform::MenuPresentationItem],
+    depth: usize,
+    count: &mut usize,
+) -> Result<Vec<serde_json::Value>, PlatformError> {
+    use base64::Engine;
+    if depth > 1 || items.len() > 128 - (*count).min(128) {
+        return Err(PlatformError::Operation(
+            "menu appearance exceeds shape limits".into(),
+        ));
+    }
+    *count += items.len();
+    items.iter().map(|item| {
+        if item.template_icon_png.as_ref().is_some_and(|png| png.len() > 65_536) {
+            return Err(PlatformError::Operation("menu icon exceeds size limit".into()));
+        }
+        let children = item.children.as_ref().map(|items| menu_presentation_json(items, depth + 1, count)).transpose()?;
+        Ok(serde_json::json!({
+            "title": item.title, "tooltip": item.tooltip,
+            "icon": item.template_icon_png.as_ref().map(|png| base64::engine::general_purpose::STANDARD.encode(png)),
+            "children": children,
+        }))
+    }).collect()
 }
 
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
@@ -250,6 +274,44 @@ mod tests {
     use super::*;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
+
+    fn appearance(title: &str) -> port_platform::MenuPresentationItem {
+        port_platform::MenuPresentationItem {
+            title: title.into(),
+            tooltip: None,
+            template_icon_png: None,
+            children: None,
+        }
+    }
+
+    #[test]
+    fn menu_appearance_preserves_nested_positions_and_optional_images() {
+        let mut session = appearance("Session");
+        session.tooltip = Some("date · Agent".into());
+        session.template_icon_png = Some(vec![1, 2, 3]);
+        let mut filter = appearance("Filter by Agent");
+        filter.children = Some(vec![appearance("All Agents"), session.clone()]);
+        let rows = menu_presentation_json(&[session, filter], 0, &mut 0).unwrap();
+        assert_eq!(rows[0]["icon"], "AQID");
+        assert_eq!(rows[0]["tooltip"], "date · Agent");
+        assert!(rows[1]["icon"].is_null());
+        assert_eq!(rows[1]["children"][0]["title"], "All Agents");
+        assert!(rows[1]["children"][0]["icon"].is_null());
+        assert_eq!(rows[1]["children"][1]["icon"], "AQID");
+    }
+
+    #[test]
+    fn menu_appearance_rejects_unbounded_trees_and_images() {
+        assert!(menu_presentation_json(&vec![appearance("row"); 129], 0, &mut 0).is_err());
+        let mut deep = appearance("parent");
+        let mut child = appearance("child");
+        child.children = Some(vec![appearance("grandchild")]);
+        deep.children = Some(vec![child]);
+        assert!(menu_presentation_json(&[deep], 0, &mut 0).is_err());
+        let mut large = appearance("large");
+        large.template_icon_png = Some(vec![0; 65_537]);
+        assert!(menu_presentation_json(&[large], 0, &mut 0).is_err());
+    }
 
     fn ready(transition: WindowTransition) -> Result<(), PlatformError> {
         let mut future = std::pin::pin!(transition.wait());

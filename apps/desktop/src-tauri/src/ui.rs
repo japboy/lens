@@ -601,6 +601,25 @@ fn sync_agent_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+            let icons = entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    (
+                        format!("agent_choice:{generation}:{index}"),
+                        crate::agent_icons::icon_png(history_agent_label(
+                            &snapshot.config,
+                            entry.agent,
+                        )),
+                    )
+                })
+                .collect();
+            let rows = menu_appearance(menu, Vec::new(), &icons, 0)?;
+            handle
+                .state::<crate::platform::Presentation<R>>()
+                .0
+                .menu_presentation(&handle, &items.root, menu, rows)
+                .map_err(|error| error.to_string())?;
             *previous = AgentMenuState {
                 generation,
                 entries,
@@ -689,33 +708,6 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
                         eprintln!("Unable to refresh history: {error}");
                     }
                 });
-            }
-            id if id.starts_with("history_filter:") => {
-                if let Some((generation, index)) = parse_history_choice(id, "history_filter", true)
-                {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) =
-                            crate::session_view::set_filter(app, generation, index).await
-                        {
-                            eprintln!("Unable to filter history: {error}");
-                        }
-                    });
-                }
-            }
-            id if id.starts_with("history_import:") => {
-                if let Some((generation, Some(index))) =
-                    parse_history_choice(id, "history_import", false)
-                {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) =
-                            crate::session_view::import_agent(app, generation, index).await
-                        {
-                            eprintln!("Unable to update Agent history: {error}");
-                        }
-                    });
-                }
             }
             id if id.starts_with("session_history:") => {
                 let mut parts = id.split(':').skip(1);
@@ -841,24 +833,6 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     }
 }
 
-fn parse_history_choice(id: &str, prefix: &str, allow_all: bool) -> Option<(Uuid, Option<usize>)> {
-    let mut parts = id.split(':');
-    if parts.next()? != prefix {
-        return None;
-    }
-    let generation = Uuid::parse_str(parts.next()?).ok()?;
-    let selection = parts.next()?;
-    let index = if allow_all && selection == "all" {
-        None
-    } else {
-        Some(selection.parse().ok()?)
-    };
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((generation, index))
-}
-
 fn history_agent_label(config: &AppConfig, agent: AgentKind) -> &str {
     match agent {
         AgentKind::External(id) => config
@@ -897,6 +871,50 @@ fn history_tooltip_rows(
         .collect()
 }
 
+fn menu_appearance<R: tauri::Runtime>(
+    menu: &Submenu<R>,
+    tooltips: Vec<String>,
+    icons: &std::collections::HashMap<String, &'static [u8]>,
+    depth: usize,
+) -> Result<Vec<port_platform::MenuPresentationItem>, String> {
+    if depth > 1 {
+        return Err("Menu appearance exceeds submenu depth".into());
+    }
+    let items = menu.items().map_err(|error| error.to_string())?;
+    let texts = items
+        .iter()
+        .map(|item| {
+            match item {
+                tauri::menu::MenuItemKind::MenuItem(item) => item.text().map(|text| (text, true)),
+                tauri::menu::MenuItemKind::Check(item) => item.text().map(|text| (text, false)),
+                tauri::menu::MenuItemKind::Predefined(item) => {
+                    item.text().map(|text| (text, false))
+                }
+                tauri::menu::MenuItemKind::Submenu(item) => item.text().map(|text| (text, false)),
+                _ => return Err("Unexpected menu item kind".to_string()),
+            }
+            .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let rows = history_tooltip_rows(texts, tooltips).map_err(|error| error.to_string())?;
+    items
+        .iter()
+        .zip(rows)
+        .map(|(item, (title, tooltip))| {
+            let children = item
+                .as_submenu()
+                .map(|submenu| menu_appearance(submenu, Vec::new(), icons, depth + 1))
+                .transpose()?;
+            Ok(port_platform::MenuPresentationItem {
+                title,
+                tooltip,
+                template_icon_png: icons.get(item.id().as_ref()).map(|png| png.to_vec()),
+                children,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     // Mock shells need no native menu. Real menu mutation stays on its owning thread.
     if app.try_state::<TrayMenuItems<R>>().is_none() {
@@ -915,10 +933,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 catalog.notices.clear();
             }
             let enabled = directory_matches && crate::session_view::history_enabled(app)?;
-            let key = format!(
-                "{}:{}:{enabled}:{directory_matches}",
-                catalog.generation, catalog.loading
-            );
+            let key = format!("{}:{enabled}:{directory_matches}", catalog.generation);
             let items = app.state::<TrayMenuItems<R>>();
             let mut shown = items
                 .history_presentation
@@ -932,6 +947,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 menu.remove_at(0).map_err(|error| error.to_string())?;
             }
             let mut tooltips = Vec::with_capacity(catalog.entries.len());
+            let mut icons = std::collections::HashMap::new();
             for (index, entry) in catalog.entries.iter().enumerate() {
                 let date = entry
                     .updated_at
@@ -948,6 +964,10 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 let title: String = entry.title.chars().take(72).collect();
                 let label = menu_safe_path(&title);
                 let agent = history_agent_label(&config, entry.agent);
+                icons.insert(
+                    format!("session_history:{}:{index}", catalog.generation),
+                    crate::agent_icons::icon_png(agent),
+                );
                 let missing = entry.presence == crate::session_history_store::EntryState::NotSeen;
                 let mut tooltip = if date.is_empty() {
                     agent.to_string()
@@ -970,7 +990,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                         app,
                         format!("session_history:{}:{index}", catalog.generation),
                         label,
-                        enabled && !catalog.loading && entry.can_load,
+                        enabled && entry.can_load,
                         None::<&str>,
                     )
                     .map_err(|error| error.to_string())?,
@@ -982,11 +1002,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     &MenuItem::with_id(
                         app,
                         "history_empty",
-                        if catalog.loading {
-                            "Loading sessions…"
-                        } else {
-                            "No recent sessions"
-                        },
+                        "No recent sessions",
                         false,
                         None::<&str>,
                     )
@@ -1014,102 +1030,17 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 &MenuItem::with_id(
                     app,
                     "refresh_session_history",
-                    if catalog.loading {
-                        "Reloading…"
-                    } else {
-                        "Reload Saved Sessions"
-                    },
-                    !catalog.loading,
+                    "Reload Saved Sessions",
+                    true,
                     None::<&str>,
                 )
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
-            let filter_menu = Submenu::with_id(
-                app,
-                "history_filter_menu",
-                "Filter by Agent",
-                directory_matches && !catalog.loading,
-            )
-            .map_err(|error| error.to_string())?;
-            filter_menu
-                .append(
-                    &CheckMenuItem::with_id(
-                        app,
-                        format!("history_filter:{}:all", catalog.generation),
-                        "All Agents",
-                        directory_matches && !catalog.loading,
-                        catalog.filter.is_none(),
-                        None::<&str>,
-                    )
-                    .map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            let import_menu = Submenu::with_id(
-                app,
-                "history_import_menu",
-                "Update from Agent…",
-                enabled && !catalog.loading,
-            )
-            .map_err(|error| error.to_string())?;
-            for (index, source) in catalog.sources.iter().enumerate() {
-                let label = menu_safe_path(history_agent_label(&config, source.agent));
-                filter_menu
-                    .append(
-                        &CheckMenuItem::with_id(
-                            app,
-                            format!("history_filter:{}:{index}", catalog.generation),
-                            &label,
-                            directory_matches && !catalog.loading,
-                            catalog.filter == Some(source.agent),
-                            None::<&str>,
-                        )
-                        .map_err(|error| error.to_string())?,
-                    )
-                    .map_err(|error| error.to_string())?;
-                import_menu
-                    .append(
-                        &MenuItem::with_id(
-                            app,
-                            format!("history_import:{}:{index}", catalog.generation),
-                            &label,
-                            enabled && !catalog.loading,
-                            None::<&str>,
-                        )
-                        .map_err(|error| error.to_string())?,
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            menu.append(&filter_menu)
-                .map_err(|error| error.to_string())?;
-            menu.append(&import_menu)
-                .map_err(|error| error.to_string())?;
-            let rows = history_tooltip_rows(
-                menu.items()
-                    .map_err(|error| error.to_string())?
-                    .iter()
-                    .map(|item| {
-                        match item {
-                            tauri::menu::MenuItemKind::MenuItem(item) => {
-                                item.text().map(|text| (text, true))
-                            }
-                            tauri::menu::MenuItemKind::Predefined(item) => {
-                                item.text().map(|text| (text, false))
-                            }
-                            tauri::menu::MenuItemKind::Submenu(item) => {
-                                item.text().map(|text| (text, false))
-                            }
-                            _ => return Err("Unexpected history menu item kind".to_string()),
-                        }
-                        .map_err(|error| error.to_string())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                tooltips,
-            )
-            .map_err(|error| error.to_string())?;
+            let rows = menu_appearance(menu, tooltips, &icons, 0)?;
             app.state::<crate::platform::Presentation<R>>()
                 .0
-                .history_tooltips(app, &items.root, menu, rows)
+                .menu_presentation(app, &items.root, menu, rows)
                 .map_err(|error| error.to_string())?;
             *shown = key;
             Ok(())
@@ -2123,46 +2054,6 @@ mod tests {
                 enabled[0..3] == disabled[0..3] && disabled[3] == enabled[3] / 2
             }));
     }
-    #[test]
-    fn history_choices_require_exact_generation_and_selection_shape() {
-        let generation = Uuid::new_v4();
-        assert_eq!(
-            parse_history_choice(
-                &format!("history_filter:{generation}:all"),
-                "history_filter",
-                true
-            ),
-            Some((generation, None))
-        );
-        assert_eq!(
-            parse_history_choice(
-                &format!("history_import:{generation}:2"),
-                "history_import",
-                false
-            ),
-            Some((generation, Some(2)))
-        );
-        assert_eq!(
-            parse_history_choice(
-                &format!("history_import:{generation}:all"),
-                "history_import",
-                false
-            ),
-            None
-        );
-        assert_eq!(
-            parse_history_choice(
-                &format!("history_filter:{generation}:1:extra"),
-                "history_filter",
-                true
-            ),
-            None
-        );
-        assert_eq!(
-            parse_history_choice("history_filter:invalid:0", "history_filter", true),
-            None
-        );
-    }
 }
 
 #[cfg(test)]
@@ -2176,16 +2067,13 @@ mod history_tooltip_tests {
                 ("Session".into(), true),
                 ("".into(), false),
                 ("Reload Saved Sessions".into(), true),
-                ("Filter by Agent".into(), false),
-                ("Update from Agent…".into(), false),
             ],
             vec!["date · agent".into()],
         )
         .unwrap();
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].1.as_deref(), Some("date · agent"));
-        assert_eq!(rows[3].0, "Filter by Agent");
-        assert_eq!(rows[4].0, "Update from Agent…");
+        assert_eq!(rows[2].0, "Reload Saved Sessions");
         assert!(rows[1..].iter().all(|(_, tooltip)| tooltip.is_none()));
     }
 

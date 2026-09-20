@@ -70,11 +70,9 @@ pub(crate) struct HistoryEntry {
 pub(crate) struct HistoryCatalog {
     pub cwd: PathBuf,
     pub generation: Uuid,
-    pub loading: bool,
     pub entries: Vec<HistoryEntry>,
     pub notices: Vec<String>,
     pub sources: Vec<HistorySource>,
-    pub filter: Option<AgentKind>,
 }
 
 #[derive(Default)]
@@ -84,7 +82,6 @@ pub(crate) struct SessionViewStore {
     inner: Mutex<SessionView>,
     catalog: Mutex<HistoryCatalog>,
     display: Mutex<DisplayNotifications>,
-    filter: Mutex<Option<AgentKind>>,
     storage_notice: Mutex<Option<String>>,
 }
 
@@ -581,31 +578,16 @@ pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Re
 /// Rebuild a view from durable metadata only. Startup, cwd changes and menu
 /// reloads all use this path and therefore cannot start any Agent process.
 pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let (generation, cwd, sources, filter, store) = {
+    let (generation, cwd, sources, store) = {
         let state = app.state::<AppState>();
         let _guard = state.session_view.admission.lock().map_err(lock_error)?;
         let config = state.config()?;
         let cwd = crate::store::effective_working_directory(&config);
         let sources = history_catalog::sources(&config)?;
-        let mut filter = state.session_view.filter.lock().map_err(lock_error)?;
-        if filter.is_some_and(|kind| !sources.iter().any(|source| source.agent == kind)) {
-            *filter = None;
-        }
         let mut catalog = state.session_view.catalog.lock().map_err(lock_error)?;
-        // A network import owns loading until it completes; cached reload must not
-        // supersede the request token merely because another window published state.
-        if catalog.loading && catalog.cwd == cwd && catalog.sources == sources {
-            return Ok(());
-        }
         let generation = Uuid::new_v4();
         catalog.generation = generation;
-        (
-            generation,
-            cwd,
-            sources,
-            *filter,
-            history_catalog::store(&state),
-        )
+        (generation, cwd, sources, history_catalog::store(&state))
     };
     let query_cwd = cwd.clone();
     let query_sources = sources.clone();
@@ -614,7 +596,7 @@ pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         if let Some(writer) = handle.state::<AppState>().history_writer.get() {
             writer.flush()?;
         }
-        store.and_then(|store| cached_catalog(&store, &query_cwd, query_sources, filter))
+        store.and_then(|store| cached_catalog(&store, &query_cwd, query_sources))
     })
     .await
     .map_err(|_| "History storage task failed")?;
@@ -623,7 +605,6 @@ pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         Err(error) => HistoryCatalog {
             cwd,
             sources,
-            filter,
             notices: vec![error],
             ..Default::default()
         },
@@ -664,18 +645,13 @@ fn cached_catalog(
     store: &crate::session_history_store::HistoryStore,
     cwd: &Path,
     sources: Vec<HistorySource>,
-    filter: Option<AgentKind>,
 ) -> Result<HistoryCatalog, String> {
     let mut catalog = HistoryCatalog {
         cwd: cwd.into(),
         sources,
-        filter,
         ..Default::default()
     };
     for source in &catalog.sources {
-        if filter.is_some_and(|kind| kind != source.agent) {
-            continue;
-        }
         let summary = store.scan_summary(source, history_catalog::directory(cwd)?)?;
         if let Some(notice) = summary.notice {
             catalog
@@ -736,36 +712,6 @@ fn commit_catalog<R: Runtime>(app: &AppHandle<R>, merged: HistoryCatalog) -> Res
     Ok(())
 }
 
-pub(crate) async fn set_filter<R: Runtime>(
-    app: AppHandle<R>,
-    generation: Uuid,
-    index: Option<usize>,
-) -> Result<(), String> {
-    {
-        let state = app.state::<AppState>();
-        let _guard = state.session_view.admission.lock().map_err(lock_error)?;
-        let catalog = state.session_view.catalog()?;
-        if catalog.generation != generation || catalog.loading {
-            return Err("Session history changed; reopen the menu".into());
-        }
-        let selected = index
-            .map(|index| {
-                catalog
-                    .sources
-                    .get(index)
-                    .ok_or("Agent filter is unavailable")
-            })
-            .transpose()?;
-        let config = state.config()?;
-        if selected.is_some_and(|source| !history_catalog::same_source(&config, source)) {
-            return Err("Agent preset changed; reload saved sessions".into());
-        }
-        *state.session_view.filter.lock().map_err(lock_error)? =
-            selected.map(|source| source.agent);
-    }
-    refresh(app).await
-}
-
 /// Drain accepted live metadata before assigning the remote request's revision.
 /// No application lock crosses this wait; callers re-admit their action afterward.
 async fn flush_history_writes<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -778,99 +724,6 @@ async fn flush_history_writes<R: Runtime>(app: &AppHandle<R>) -> Result<(), Stri
     })
     .await
     .map_err(|_| "History persistence barrier failed")?
-}
-
-/// Explicit menu action is authority to contact precisely one configured source;
-/// browsing a catalog or selecting a filter never reaches this function.
-pub(crate) async fn import_agent<R: Runtime>(
-    app: AppHandle<R>,
-    generation: Uuid,
-    index: usize,
-) -> Result<(), String> {
-    flush_history_writes(&app).await?;
-    let admission = (|| {
-        let state = app.state::<AppState>();
-        let _guard = state.session_view.admission.lock().map_err(lock_error)?;
-        if !history_enabled(&app)? {
-            return Err("End the active session before updating history".into());
-        }
-        let mut catalog = state.session_view.catalog.lock().map_err(lock_error)?;
-        if catalog.generation != generation || catalog.loading {
-            return Err("Session history changed; reopen the menu".into());
-        }
-        let source = catalog
-            .sources
-            .get(index)
-            .cloned()
-            .ok_or("Agent is unavailable")?;
-        let config = state.config()?;
-        if !history_catalog::same_source(&config, &source)
-            || catalog.cwd != crate::store::effective_working_directory(&config)
-        {
-            return Err("History source changed; reload saved sessions".into());
-        }
-        let cwd = catalog.cwd.clone();
-        let store = history_catalog::store(&state)?;
-        let token = store
-            .begin_scan(&source, history_catalog::directory(&cwd)?)
-            .inspect_err(|error| report_history_write(&app, Err(error.clone())))?;
-        catalog.loading = true;
-        catalog.generation = Uuid::new_v4();
-        Ok::<_, String>((source, cwd, token, store, catalog.generation, config))
-    })();
-    let (source, cwd, token, store, request_generation, admitted) = match admission {
-        Ok(admission) => admission,
-        Err(error) => {
-            refresh(app.clone()).await?;
-            return Err(error);
-        }
-    };
-    crate::ui::sync_history_menu(&app)?;
-    let listing =
-        session_history::list_explicit_provider(&app, source.agent, &admitted, &cwd).await;
-    let handle = app.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let state = handle.state::<AppState>();
-        let _guard = state.session_view.admission.lock().map_err(lock_error)?;
-        let config = state.config()?;
-        let mut catalog = state.session_view.catalog.lock().map_err(lock_error)?;
-        if catalog.generation != request_generation
-            || !history_catalog::same_source(&config, &source)
-            || cwd != crate::store::effective_working_directory(&config)
-        {
-            return Ok(());
-        }
-        catalog.loading = false;
-        match listing {
-            Ok(listing) => {
-                history_catalog::apply_listing(&store, &token, &listing)?;
-                store.finish_scan(
-                    &token,
-                    &history_catalog::now(),
-                    if listing.complete {
-                        crate::session_history_store::ScanOutcome::Complete
-                    } else {
-                        crate::session_history_store::ScanOutcome::Partial
-                    },
-                    listing.error.as_deref(),
-                )?;
-            }
-            Err(error) => {
-                store.finish_scan(
-                    &token,
-                    &history_catalog::now(),
-                    crate::session_history_store::ScanOutcome::Failed,
-                    Some(&error),
-                )?;
-            }
-        }
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|_| "History import task failed")?;
-    report_history_write(&app, result.clone());
-    refresh(app).await?;
-    result
 }
 
 pub(crate) async fn open<R: Runtime>(
@@ -886,7 +739,7 @@ pub(crate) async fn open<R: Runtime>(
             return Err("End the active session before opening history".into());
         }
         let catalog = state.session_view.catalog()?;
-        if catalog.generation != catalog_generation || catalog.loading {
+        if catalog.generation != catalog_generation {
             return Err("Session history changed; reopen the menu".into());
         }
         let entry = catalog
