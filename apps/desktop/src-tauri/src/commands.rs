@@ -196,11 +196,11 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
             ..Default::default()
         };
         snapshot.revision = revision;
-        saved_revision = revision;
         drop(snapshot);
         crate::session_view::invalidate_working_directory(app)?;
+        crate::session_controls::close_active(app);
+        saved_revision = state.snapshot()?.revision;
     }
-    crate::session_controls::close_active(app);
     emit_app_snapshot(app, state.snapshot()?, true)?;
     Ok((kind, saved_revision))
 }

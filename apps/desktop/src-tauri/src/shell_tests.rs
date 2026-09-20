@@ -632,3 +632,86 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
         );
     }
 }
+
+#[test]
+fn saved_external_agent_verification_accepts_revision_after_closing_live_controls() {
+    struct ReachedProbe;
+    impl crate::agent::AgentHost<MockRuntime> for ReachedProbe {
+        fn resolve<'a>(
+            &'a self,
+            _: &'a tauri::AppHandle<MockRuntime>,
+            _: AgentKind,
+        ) -> crate::agent::HostFuture<'a, crate::agent_runtime::ResolvedAgentRuntime> {
+            Box::pin(async { Err("synthetic probe reached".into()) })
+        }
+        fn resolve_installed<'a>(
+            &'a self,
+            _: &'a tauri::AppHandle<MockRuntime>,
+            _: AgentKind,
+        ) -> crate::agent::HostFuture<'a, Option<crate::agent_runtime::ResolvedAgentRuntime>>
+        {
+            panic!("unexpected installed lookup")
+        }
+        fn connect(
+            &self,
+            _: &crate::agent::AgentDescriptor,
+            _: std::path::PathBuf,
+            _: crate::agent_environment::EnvironmentPurpose,
+        ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+            panic!("unexpected real ACP connection")
+        }
+    }
+    let operation = Uuid::from_u128(703);
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+    let (controls, _changes) = crate::session_controls::SessionControls::new(
+        operation,
+        "synthetic".into(),
+        "Synthetic Agent".into(),
+        None,
+        None,
+        vec![],
+        receiver,
+    )
+    .unwrap();
+    let state = test_support::state();
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.lens.operation_id = Some(operation);
+        snapshot.lens.session_controls = Some(controls.snapshot().unwrap());
+    }
+    *state.session_controls.lock().unwrap() = Some(controls.clone());
+    let before = state.snapshot().unwrap().revision;
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(ReachedProbe)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let (kind, revision) = crate::commands::save_external_agent_configuration(
+        app.handle(),
+        crate::external_agent::ExternalAgentDraft {
+            id: Uuid::from_u128(704),
+            name: "Synthetic".into(),
+            command_line: "synthetic --acp".into(),
+        },
+    )
+    .unwrap();
+    assert!(!controls.snapshot().unwrap().active);
+    assert!(
+        revision > before + 1,
+        "closing controls publishes an additional revision"
+    );
+    assert_eq!(
+        revision,
+        app.state::<AppState>().snapshot().unwrap().revision
+    );
+    let selection = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+        app.handle().clone(),
+        kind,
+        Some(revision),
+    ))
+    .unwrap();
+    assert_eq!(selection.error.as_deref(), Some("synthetic probe reached"));
+}
