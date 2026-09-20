@@ -633,6 +633,91 @@ fn sync_agent_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
     .map_err(|error| error.to_string())
 }
 
+/// Own the macOS application menu so Cmd+Q uses the same admission as tray Quit.
+/// Keep standard application roles, including Services and Show All.
+pub(crate) fn install_application_menu<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()> {
+    let quit = MenuItem::with_id(
+        app,
+        crate::quit::APPLICATION_QUIT_ID,
+        "Quit Lens",
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
+    let application = Submenu::with_items(
+        app,
+        "Lens",
+        true,
+        &[
+            &PredefinedMenuItem::about(
+                app,
+                None,
+                Some(tauri::menu::AboutMetadata {
+                    name: Some(app.package_info().name.clone()),
+                    version: Some(app.package_info().version.to_string()),
+                    copyright: app.config().bundle.copyright.clone(),
+                    authors: app
+                        .config()
+                        .bundle
+                        .publisher
+                        .clone()
+                        .map(|publisher| vec![publisher]),
+                    ..Default::default()
+                }),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let file = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[&PredefinedMenuItem::close_window(app, None)?],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let view = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
+    let window = Submenu::with_id_and_items(
+        app,
+        tauri::menu::WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    let help = Submenu::with_id(app, tauri::menu::HELP_SUBMENU_ID, "Help", true)?;
+    let menu = Menu::with_items(app, &[&application, &file, &edit, &view, &window, &help])?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()> {
     let select = MenuItem::with_id(
         app,
@@ -759,7 +844,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
                     eprintln!("Unable to show About: {error}");
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => crate::quit::request(app),
             _ => {}
         })
         .build(app)?;

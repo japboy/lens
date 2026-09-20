@@ -174,6 +174,18 @@ impl SessionControls {
         runtime.tool_policies = policies;
         Ok(())
     }
+    pub(crate) fn has_pending_work(&self) -> Result<bool, String> {
+        let runtime = self.runtime.lock().map_err(|_| lock_error())?;
+        Ok(runtime.state.active
+            && (runtime.active_turn.is_some()
+                || !runtime.decisions.is_empty()
+                || runtime
+                    .state
+                    .change
+                    .as_ref()
+                    .is_some_and(|change| change.status == ChangeStatus::Pending)))
+    }
+
     pub fn snapshot(&self) -> Result<AgentSessionControlState, String> {
         Ok(self.runtime.lock().map_err(|_| lock_error())?.state.clone())
     }
@@ -1236,6 +1248,62 @@ mod tests {
             elicitation_id: "test-url".into(),
             url: "https://example.com".into(),
         }
+    }
+
+    #[test]
+    fn quit_confirmation_tracks_active_turns_and_independent_decisions() {
+        let (controls, _shutdown) = controls();
+        assert!(controls.snapshot().unwrap().active);
+        assert!(!controls.has_pending_work().unwrap());
+
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        assert!(controls.has_pending_work().unwrap());
+        controls.end_turn();
+        assert!(!controls.has_pending_work().unwrap());
+
+        let (decision, _response) = controls.begin_decision(url_decision()).unwrap();
+        assert!(controls
+            .snapshot()
+            .unwrap()
+            .interactions
+            .last()
+            .unwrap()
+            .run_id
+            .is_none());
+        assert!(controls.has_pending_work().unwrap());
+        controls.cancel_decision(decision);
+        assert!(!controls.has_pending_work().unwrap());
+    }
+
+    #[test]
+    fn quit_confirmation_only_counts_unfinished_config_changes() {
+        let (shutdown, receiver) = watch::channel(false);
+        let (controls, mut requests) = SessionControls::new(
+            Uuid::new_v4(),
+            "session".into(),
+            "Synthetic Agent".into(),
+            Some("safe".into()),
+            Some(options()),
+            vec![],
+            receiver,
+        )
+        .unwrap();
+        let snapshot = controls.snapshot().unwrap();
+        controls
+            .queue_change(
+                snapshot.instance_id,
+                snapshot.config_revision,
+                "z-model".into(),
+                "second".into(),
+            )
+            .unwrap();
+        assert!(requests.try_recv().is_ok());
+        assert!(controls.has_pending_work().unwrap());
+        controls.finish_change(ChangeStatus::Succeeded);
+        assert!(!controls.has_pending_work().unwrap());
+        controls.finish_change(ChangeStatus::Failed);
+        assert!(!controls.has_pending_work().unwrap());
+        drop(shutdown);
     }
 
     #[test]

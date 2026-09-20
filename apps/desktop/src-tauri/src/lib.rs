@@ -30,6 +30,9 @@ pub use native::run;
 mod history_catalog;
 mod history_writer;
 mod platform;
+mod quit;
+#[cfg(debug_assertions)]
+mod quit_validation;
 mod session_controls;
 mod session_document;
 mod session_history;
@@ -103,6 +106,12 @@ fn configure_shell<R: tauri::Runtime>(
         .manage(tray)
         .manage(agents)
         .manage(ui::LensWindowPresentationState::default())
+        .manage(quit::QuitCoordinator::default())
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == quit::APPLICATION_QUIT_ID {
+                quit::request(app);
+            }
+        })
         .register_uri_scheme_protocol(media_protocol::LENS_MEDIA_SCHEME, media_protocol::handle)
         .register_uri_scheme_protocol(math_asset_protocol::SCHEME, math_asset_protocol::handle)
         .invoke_handler(command_handler())
@@ -214,6 +223,9 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         agent::AgentServices(std::sync::Arc::new(agent::DefaultAgentHost)),
     )
         .setup(move |app| {
+            if cfg!(target_os = "macos") {
+                ui::install_application_menu(app)?;
+            }
             let store = store::ConfigStore::new(app)?;
             let config = match store.try_load() {
                 Ok(config) => config,
@@ -236,6 +248,11 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             #[cfg(target_os = "macos")]
             native::configure_activation(app, validate_a11y);
             ui::install_menu_bar(app)?;
+            #[cfg(debug_assertions)]
+            if std::env::var_os("LENS_VALIDATE_QUIT").is_some() {
+                quit_validation::start(app.handle()).map_err(std::io::Error::other)?;
+                return Ok(());
+            }
             #[cfg(debug_assertions)]
             if std::env::var_os("LENS_VALIDATE_UI").is_some() {
                 ui::show_settings(app.handle())?;
@@ -311,6 +328,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 });
             }
             tauri::RunEvent::ExitRequested { code: Some(_), .. } | tauri::RunEvent::Exit => {
+                quit::mark_exiting(app);
                 session_controls::close_active(app);
                 let state = app.state::<app_state::AppState>();
                 let _ = state.agent_control.cancel_active();

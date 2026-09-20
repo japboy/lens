@@ -66,6 +66,51 @@ pub unsafe fn set_menu_presentation(
     }
 }
 
+/// Present a two-button alert with a safe default and an explicit destructive result.
+///
+/// # Safety
+/// Call on the AppKit main thread after NSApplication initialization, without holding app locks.
+pub unsafe fn confirm_destructive_action(
+    title: &str,
+    message: &str,
+    confirm_label: &str,
+    cancel_label: &str,
+) -> Result<bool, PlatformError> {
+    unsafe extern "C" {
+        fn lens_confirm_destructive_action(
+            title: *const std::ffi::c_char,
+            message: *const std::ffi::c_char,
+            confirm_label: *const std::ffi::c_char,
+            cancel_label: *const std::ffi::c_char,
+        ) -> i32;
+    }
+    let text = |value: &str| {
+        std::ffi::CString::new(value)
+            .map_err(|_| PlatformError::Operation("confirmation text contains NUL".into()))
+    };
+    let (title, message, confirm_label, cancel_label) = (
+        text(title)?,
+        text(message)?,
+        text(confirm_label)?,
+        text(cancel_label)?,
+    );
+    // SAFETY: UTF-8 strings remain valid for the synchronous main-thread modal call.
+    match unsafe {
+        lens_confirm_destructive_action(
+            title.as_ptr(),
+            message.as_ptr(),
+            confirm_label.as_ptr(),
+            cancel_label.as_ptr(),
+        )
+    } {
+        1 => Ok(true),
+        0 => Ok(false),
+        _ => Err(PlatformError::Operation(
+            "unable to present confirmation".into(),
+        )),
+    }
+}
+
 fn menu_presentation_json(
     items: &[port_platform::MenuPresentationItem],
     depth: usize,

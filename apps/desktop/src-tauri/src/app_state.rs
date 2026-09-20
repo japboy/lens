@@ -9,7 +9,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex, RwLock,
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -40,6 +40,7 @@ pub(crate) struct AgentSessionTurn {
     pub projection_ref: ProjectionRef,
     pub projection: LensAgentProjection,
     completion: Option<oneshot::Sender<Result<AgentSessionTurnCompletion, String>>>,
+    work: Option<AgentWorkLease>,
 }
 
 impl AgentSessionTurn {
@@ -58,9 +59,15 @@ impl AgentSessionTurn {
                 projection_ref,
                 projection,
                 completion: Some(completion),
+                work: None,
             },
             receiver,
         )
+    }
+
+    pub(crate) fn track_work(&mut self, count: Arc<AtomicUsize>) {
+        count.fetch_add(1, Ordering::AcqRel);
+        self.work = Some(AgentWorkLease(count));
     }
 
     pub fn complete(mut self, result: Result<AgentSessionTurnCompletion, String>) {
@@ -134,6 +141,16 @@ impl AgentSessionMailbox {
     }
 }
 
+/// Tracks admitted turns through queueing, startup, execution and cancellation.
+/// Ownership follows the turn, including the gap between dequeue and run admission.
+struct AgentWorkLease(Arc<AtomicUsize>);
+
+impl Drop for AgentWorkLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 struct ActiveAgentSession {
     generation: Uuid,
     identity: AgentSessionIdentity,
@@ -143,11 +160,43 @@ struct ActiveAgentSession {
 
 #[derive(Default)]
 pub struct AgentControl {
+    unfinished_turns: Arc<AtomicUsize>,
     active: Mutex<Option<ActiveAgentRun>>,
     session: Mutex<Option<ActiveAgentSession>>,
 }
 
+/// Clears only this run when its owning future completes or is dropped.
+pub(crate) struct AgentRunLifetime<'a> {
+    control: &'a AgentControl,
+    key: AgentRunKey,
+}
+
+impl Drop for AgentRunLifetime<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.control.finish(self.key) {
+            eprintln!("Unable to finish the dropped Agent run: {error}");
+        }
+    }
+}
+
 impl AgentControl {
+    pub(crate) fn run_lifetime(&self, key: AgentRunKey) -> AgentRunLifetime<'_> {
+        AgentRunLifetime { control: self, key }
+    }
+
+    pub(crate) fn has_pending_work(&self) -> Result<bool, String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Agent run state is unavailable".to_string())?;
+        Ok(active.is_some() || self.unfinished_turns.load(Ordering::Acquire) != 0)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn begin_validation(&self, operation_id: Uuid) -> Result<AgentRunHandle, String> {
+        self.begin(operation_id)
+    }
+
     fn begin(&self, operation_id: Uuid) -> Result<AgentRunHandle, String> {
         let key = AgentRunKey {
             operation_id,
@@ -221,7 +270,9 @@ impl AgentControl {
         projection_ref: ProjectionRef,
         projection: LensAgentProjection,
     ) -> Result<oneshot::Receiver<Result<AgentSessionTurnCompletion, String>>, String> {
-        let (turn, receiver) = AgentSessionTurn::new(context_revision, projection_ref, projection);
+        let (mut turn, receiver) =
+            AgentSessionTurn::new(context_revision, projection_ref, projection);
+        turn.track_work(Arc::clone(&self.unfinished_turns));
         let (previous, spawn) = {
             let mut session = self
                 .session
@@ -1009,6 +1060,57 @@ mod tests {
         assert_eq!(current.revision, original.revision);
         assert!(!*run.cancellation.borrow());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cancelled_agent_run_remains_pending_until_finished() {
+        let control = AgentControl::default();
+        let run = control.begin(Uuid::new_v4()).unwrap();
+        assert!(control.has_pending_work().unwrap());
+        assert_eq!(control.cancel_active().unwrap(), Some(run.key));
+        assert!(*run.cancellation.borrow());
+        assert!(control.has_pending_work().unwrap());
+        assert!(control.finish(run.key).unwrap());
+        assert!(!control.has_pending_work().unwrap());
+    }
+
+    #[test]
+    fn dropped_run_lifetime_clears_only_its_own_run() {
+        let control = AgentControl::default();
+        let operation = Uuid::new_v4();
+        let first = control.begin(operation).unwrap();
+        let first_lifetime = control.run_lifetime(first.key);
+        let second = control.begin(operation).unwrap();
+        let second_lifetime = control.run_lifetime(second.key);
+        drop(first_lifetime);
+        assert!(control.has_pending_work().unwrap());
+        assert_eq!(
+            control.active.lock().unwrap().as_ref().unwrap().key,
+            second.key
+        );
+        drop(second_lifetime);
+        assert!(!control.has_pending_work().unwrap());
+    }
+
+    #[test]
+    fn retained_idle_agent_session_does_not_require_quit_confirmation() {
+        let control = AgentControl::default();
+        let generation = Uuid::new_v4();
+        let (shutdown, _receiver) = watch::channel(false);
+        *control.session.lock().unwrap() = Some(ActiveAgentSession {
+            generation,
+            identity: AgentSessionIdentity {
+                operation_id: Uuid::new_v4(),
+                context_id: Uuid::new_v4(),
+                effective_working_directory: std::path::PathBuf::from("/tmp"),
+                config: AppConfig::new(std::path::PathBuf::from("/tmp")),
+            },
+            mailbox: Arc::new(AgentSessionMailbox::new()),
+            shutdown,
+        });
+        assert!(control.session.lock().unwrap().is_some());
+        assert!(!control.has_pending_work().unwrap());
+        assert!(control.finish_session(generation).unwrap());
     }
 
     #[test]

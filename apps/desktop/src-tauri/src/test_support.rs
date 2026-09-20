@@ -84,6 +84,17 @@ pub(crate) fn state() -> AppState {
 
 pub(crate) struct UnusedPresentation;
 impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
+    fn confirm_destructive_action(
+        &self,
+        _: &tauri::AppHandle<R>,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<bool, platform::PlatformError> {
+        panic!("unexpected destructive-action confirmation")
+    }
+
     fn menu_presentation(
         &self,
         _app: &tauri::AppHandle<R>,

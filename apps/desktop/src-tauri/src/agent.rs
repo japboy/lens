@@ -1473,6 +1473,8 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     }
                 };
                 let mut run = prepared.run;
+                let state = app.state::<AppState>();
+                let _run_lifetime = state.agent_control.run_lifetime(run.key);
                 let turn = prepared.turn;
                 let initial_streaming = prepared.initial_streaming;
                 cadence.record_start(Instant::now());
@@ -1765,8 +1767,11 @@ pub async fn authenticate_current<R: tauri::Runtime>(
         lens.error = None;
     })?;
 
-    let result =
-        run_authentication(app.clone(), descriptor, method_id, &mut run.cancellation).await;
+    let result = {
+        let state = app.state::<AppState>();
+        let _run_lifetime = state.agent_control.run_lifetime(run.key);
+        run_authentication(app.clone(), descriptor, method_id, &mut run.cancellation).await
+    };
     app.state::<AppState>().agent_control.finish(run.key)?;
 
     match result {
@@ -3304,6 +3309,61 @@ mod tests {
         assert!(!AgentTransformAdmission::InitialOrRetry.requires_watching());
         assert!(AgentTransformAdmission::LiveProjectionUpdate.requires_watching());
         assert!(AgentTransformAdmission::RecoveryCheckpoint.requires_watching());
+    }
+
+    #[test]
+    fn quit_work_lease_survives_dequeue_coalescing_and_releases_on_every_completion() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let count = Arc::new(AtomicUsize::new(0));
+        let mailbox = AgentSessionMailbox::new();
+        let (projection, projection_ref) = sample_projection(&sample_input("Queued work"), &[]);
+        let turn = || {
+            let (mut turn, _) =
+                AgentSessionTurn::new(1, projection_ref.clone(), projection.clone());
+            turn.track_work(Arc::clone(&count));
+            turn
+        };
+        mailbox.replace(turn()).unwrap();
+        assert_eq!(count.load(Ordering::Acquire), 1);
+        mailbox.replace(turn()).unwrap();
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "coalesced turn releases its lease"
+        );
+        let in_flight = mailbox.take_pending().unwrap().unwrap();
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "dequeue is not completion"
+        );
+        mailbox.replace(turn()).unwrap();
+        assert_eq!(count.load(Ordering::Acquire), 2);
+        mailbox.close("shutdown").unwrap();
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "cancelled queue releases only queued work"
+        );
+        drop(in_flight);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "error/drop acknowledges in-flight completion"
+        );
+        assert!(mailbox.replace(turn()).is_err());
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "rejected admission releases its lease"
+        );
+        let complete = turn();
+        complete.complete(Ok(AgentSessionTurnCompletion::Finished));
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "successful completion releases exactly once"
+        );
     }
 
     #[tokio::test]
