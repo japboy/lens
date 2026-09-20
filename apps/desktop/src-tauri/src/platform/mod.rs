@@ -28,7 +28,7 @@ pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
         app: &tauri::AppHandle<R>,
         root: &tauri::menu::Menu<R>,
         history: &tauri::menu::Submenu<R>,
-        tooltips: Vec<String>,
+        rows: Vec<(String, Option<String>)>,
     ) -> Result<(), PlatformError>;
     fn settings_background(
         &self,

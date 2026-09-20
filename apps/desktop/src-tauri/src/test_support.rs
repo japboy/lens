@@ -89,7 +89,7 @@ impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
         _app: &tauri::AppHandle<R>,
         _root: &tauri::menu::Menu<R>,
         _history: &tauri::menu::Submenu<R>,
-        _tooltips: Vec<String>,
+        _rows: Vec<(String, Option<String>)>,
     ) -> Result<(), platform::PlatformError> {
         Ok(())
     }

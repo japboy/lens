@@ -274,7 +274,7 @@ impl platform::WindowPresentation<MockRuntime> for Fixture {
         _app: &tauri::AppHandle<MockRuntime>,
         _root: &tauri::menu::Menu<MockRuntime>,
         _history: &tauri::menu::Submenu<MockRuntime>,
-        _tooltips: Vec<String>,
+        _rows: Vec<(String, Option<String>)>,
     ) -> Result<(), platform::PlatformError> {
         Ok(())
     }
