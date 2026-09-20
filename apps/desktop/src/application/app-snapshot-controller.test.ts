@@ -38,7 +38,7 @@ const snapshot = (revision: number): AppSnapshot => ({
       ],
     },
   },
-  agent_selection: { stage: "unselected", auth_methods: [] },
+  agent_selection: { stage: "unselected", supports_logout: false, auth_methods: [] },
   agent_runtime: { stage: "not_installed", downloaded_bytes: 0 },
   lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
 });

@@ -1,6 +1,7 @@
 import type {
   PromptPresetChange,
   AgentKind,
+  ExternalAgentDraft,
   AgentPromptTemplate,
   AgentDefaults,
   InteractionResponse,
@@ -15,6 +16,10 @@ export const AGENT_OUTPUT_INTENT_EVENT = "lens-agent-output-intent";
 export const OVERLAY_INTENT_EVENT = "lens-overlay-intent";
 
 export type AgentIntent =
+  | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }
+  | { type: "save-external-agent"; profile: ExternalAgentDraft }
+  | { type: "delete-external-agent"; id: string }
+  | { type: "reset-agent-presets" }
   | { type: "preview-model"; configId: string; value?: string }
   | { type: "save-defaults"; defaults: AgentDefaults }
   | { type: "select"; agent: AgentKind }
@@ -28,6 +33,10 @@ export type PromptIntent =
   | { type: "reset" };
 
 export type SettingsIntent =
+  | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }
+  | { type: "save-external-agent"; profile: ExternalAgentDraft }
+  | { type: "delete-external-agent"; id: string }
+  | { type: "reset-agent-presets" }
   | { type: "update-prompt-presets"; change: PromptPresetChange }
   | { type: "open-about" }
   | { type: "preview-agent-model"; configId: string; value?: string }

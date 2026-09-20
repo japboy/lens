@@ -308,6 +308,12 @@ pub fn managed_seed() -> Result<BTreeMap<OsString, OsString>, EnvironmentError> 
     Ok(seed(&account()?))
 }
 
+/// Explicit opt-in tests may delegate self-exec modes to a built Lens binary.
+#[cfg(test)]
+pub(crate) fn test_helper_executable() -> Option<PathBuf> {
+    std::env::var_os("LENS_TEST_AGENT_HELPER_EXECUTABLE").map(PathBuf::from)
+}
+
 /// Fresh acquisition; cancellation drops and terminates the owned shell group.
 pub async fn resolve(
     cwd: &Path,
@@ -315,6 +321,8 @@ pub async fn resolve(
 ) -> Result<ResolvedEnvironment, EnvironmentError> {
     let account = account()?;
     let helper = std::env::current_exe().map_err(|_| EnvironmentError::Spawn)?;
+    #[cfg(test)]
+    let helper = test_helper_executable().unwrap_or(helper);
     resolve_shell(cwd, purpose, &account.shell, &seed(&account), &helper).await
 }
 

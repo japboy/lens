@@ -62,6 +62,7 @@ export const MEMBERS: readonly Member[] = [
         "serde_json",
         "serde_json_canonicalizer",
         "sha2",
+        "shlex",
         "tar",
         "tempfile",
         "tauri",

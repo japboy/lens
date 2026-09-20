@@ -41,6 +41,7 @@ enum Scenario {
     CandidateAlwaysMissingHttp,
     CandidateAuthRequired,
     CandidateSetupFailure,
+    GoosePublisherFailure,
     CandidatePromptFailure,
     StopDuringDismiss,
     StopDuringPrompt,
@@ -414,16 +415,26 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         initialize.record(Effect::Initialize);
                         assert_eq!(request.protocol_version, ProtocolVersion::V1);
                         responder.respond(
-                            InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
-                                AgentCapabilities::new()
-                                    .mcp_capabilities(McpCapabilities::new().http(
-                                        initialize.scenario != Scenario::CandidateAlwaysMissingHttp
-                                            && !(first_connection
-                                                && initialize.scenario
-                                                    == Scenario::CandidateMissingHttp),
-                                    ))
-                                    .prompt_capabilities(PromptCapabilities::new().image(true)),
-                            ),
+                            InitializeResponse::new(ProtocolVersion::V1)
+                                .agent_info(Implementation::new(
+                                    if initialize.scenario == Scenario::GoosePublisherFailure {
+                                        "goose"
+                                    } else {
+                                        "fixture"
+                                    },
+                                    "1",
+                                ))
+                                .agent_capabilities(
+                                    AgentCapabilities::new()
+                                        .mcp_capabilities(McpCapabilities::new().http(
+                                            initialize.scenario
+                                                != Scenario::CandidateAlwaysMissingHttp
+                                                && !(first_connection
+                                                    && initialize.scenario
+                                                        == Scenario::CandidateMissingHttp),
+                                        ))
+                                        .prompt_capabilities(PromptCapabilities::new().image(true)),
+                                ),
                         )
                     },
                     agent_client_protocol::on_receive_request!(),
@@ -439,10 +450,19 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                             return responder
                                 .respond_with_error(agent_client_protocol::Error::auth_required());
                         }
-                        responder.respond(
-                            NewSessionResponse::new("fixture-session")
-                                .config_options(Fixture::options()),
-                        )
+                        let mut response = NewSessionResponse::new("fixture-session")
+                            .config_options(Fixture::options());
+                        if new_session.scenario == Scenario::GoosePublisherFailure {
+                            response = response.meta(
+                                json!({"extensionResults":[{
+                                    "name":"lens_output", "success":false, "error":"SECRET"
+                                }]})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                            );
+                        }
+                        responder.respond(response)
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
@@ -656,7 +676,22 @@ fn setup(scenario: Scenario) -> Harness {
         "title":"Selected document","application_name":"Fixture","frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}})).unwrap();
     {
         let mut snapshot = state.runtime.write().unwrap();
-        snapshot.config.agent = AgentKind::Codex;
+        snapshot.config.agent = if scenario == Scenario::GoosePublisherFailure {
+            AgentKind::External(Uuid::from_u128(1))
+        } else {
+            AgentKind::Codex
+        };
+        if scenario == Scenario::GoosePublisherFailure {
+            snapshot
+                .config
+                .external_agents
+                .push(crate::model::ExternalAgentProfile {
+                    id: Uuid::from_u128(1),
+                    name: "Fixture".into(),
+                    command: "/fixture/not-executed".into(),
+                    args: vec![],
+                });
+        }
         if scenario == Scenario::CandidateSetupFailure {
             snapshot.config.agent_preferences.codex.choices.push(
                 crate::agent_preferences::SavedChoice {
@@ -666,7 +701,7 @@ fn setup(scenario: Scenario) -> Harness {
             );
         }
         snapshot.agent_selection.stage = AgentSelectionStage::Selected;
-        snapshot.agent_selection.candidate = Some(AgentKind::Codex);
+        snapshot.agent_selection.candidate = Some(snapshot.config.agent);
         snapshot.lens = LensState {
             operation_id: Some(OPERATION),
             stage: LensStage::Selecting,
@@ -788,7 +823,17 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             }
         })
         .unwrap();
-    assert_eq!(request["cwd"], "/fixture");
+    let saved = app.state::<AppState>().config().unwrap();
+    assert_eq!(
+        saved.working_directory,
+        std::path::PathBuf::from("/fixture")
+    );
+    assert_eq!(
+        request["cwd"],
+        crate::store::effective_working_directory(&saved)
+            .to_string_lossy()
+            .as_ref()
+    );
     assert_eq!(request["mcpServers"].as_array().unwrap().len(), 1);
     let server = &request["mcpServers"][0];
     assert_eq!(server["name"], "lens_output");
@@ -963,6 +1008,7 @@ fn authentication_or_saved_settings_failure_never_rolls_back_candidate() {
             LensStage::AuthenticationRequired,
         ),
         (Scenario::CandidateSetupFailure, LensStage::Failed),
+        (Scenario::GoosePublisherFailure, LensStage::Failed),
     ] {
         let harness = setup(scenario);
         let result = invoke(&harness.window, "confirm_lens_targets");

@@ -35,6 +35,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
+shlex = "=2.0.1"
 tar = "=0.4.46"
 tempfile = "=3.27.0"
 tauri = { version = "=2.11.5", default-features = false, features = [

@@ -1,4 +1,16 @@
-export type AgentKind = "claude" | "codex";
+export type ManagedAgentKind = "claude" | "codex";
+export type AgentKind = ManagedAgentKind | { external: string };
+export interface ExternalAgentDraft {
+  id: string;
+  name: string;
+  command_line: string;
+}
+export interface ExternalAgentProfile {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+}
 export type AgentSelectionStage =
   | "unselected"
   | "checking"
@@ -67,7 +79,10 @@ export type PromptPresetChange =
   | { type: "reset_all"; expected_catalog_revision: number };
 
 export interface AppConfig {
-  agent_preferences?: { claude: AgentDefaults; codex: AgentDefaults };
+  agent_preferences?: Partial<Record<ManagedAgentKind, AgentDefaults>> & {
+    external?: Record<string, AgentDefaults>;
+  };
+  external_agents?: ExternalAgentProfile[];
   agent: AgentKind;
   working_directory: string;
   agent_prompt_template: AgentPromptTemplate;
@@ -334,6 +349,7 @@ export interface AgentAuthMethod {
 }
 
 export interface AgentSelectionState {
+  supports_logout: boolean;
   config_options?: SessionConfigOption[];
   modes?: SessionMode[];
   agent_default?: string | null;

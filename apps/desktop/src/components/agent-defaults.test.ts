@@ -10,6 +10,7 @@ function selection(): AgentSelectionState {
   return {
     stage: "selected",
     candidate: "codex",
+    supports_logout: false,
     auth_methods: [],
     config_options: [
       {
@@ -99,6 +100,61 @@ function expectSavedDisplay(element: LensAgentDefaults) {
 }
 
 describe("Model & Behavior selection persistence", () => {
+  it("shows an external agent's current provider as externally managed and excludes stored overrides from Save and Revert", async () => {
+    const state = selection();
+    state.candidate = { external: "profile-1" };
+    state.config_options!.push({
+      id: "provider",
+      name: "Provider",
+      type: "select",
+      currentValue: "current-provider",
+      options: [
+        { value: "current-provider", name: "Configured provider" },
+        { value: "stale-provider", name: "Stale provider" },
+      ],
+    });
+    const defaults = saved();
+    defaults.choices.push({ config_id: "provider", value: "stale-provider" });
+    const { element, intents } = await mount(defaults, state);
+    expect(element.querySelector('select[data-agent-config-id="provider"]')).toBeNull();
+    expect(
+      element.querySelector('output[aria-label="Provider managed by external CLI"]')?.textContent,
+    ).toBe("Configured provider");
+    expect(element.textContent).toContain("agent's own CLI");
+    expect(element.textContent?.replace(/\s+/g, " ")).toContain("Save and Verify in Connection");
+    expectSavedDisplay(element);
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toEqual({ type: "save-defaults", defaults: saved() });
+    click(element, "Revert");
+    await element.updateComplete;
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toEqual({ type: "save-defaults", defaults: saved() });
+    expect(defaults.choices.at(-1)).toEqual({ config_id: "provider", value: "stale-provider" });
+  });
+
+  it("keeps advertised provider options editable for other Agents", async () => {
+    const state = selection();
+    state.config_options!.push({
+      id: "provider",
+      name: "Provider",
+      type: "select",
+      currentValue: "first",
+      options: [
+        { value: "first", name: "First" },
+        { value: "second", name: "Second" },
+      ],
+    });
+    const { element, intents } = await mount(saved(), state);
+    await choose(element, "Provider", "second");
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toEqual({
+      type: "save-defaults",
+      defaults: {
+        ...saved(),
+        choices: [...saved().choices, { config_id: "provider", value: "second" }],
+      },
+    });
+  });
   it("uses Agent default for unset options and Ask for Other requests", async () => {
     const { element, intents } = await mount(structuredClone(DEFAULT_AGENT_DEFAULTS));
     for (const label of ["Model", "Reasoning effort", "Mode"]) {

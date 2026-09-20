@@ -8,6 +8,32 @@ use agent_client_protocol::Error;
 use std::path::Path;
 use uuid::Uuid;
 
+/// Goose reports extension failures without failing session/new. Only its
+/// explicit failure result is authoritative; absent metadata is ordinary ACP.
+pub(crate) fn require_no_publisher_failure(
+    agent_name: Option<&str>,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Result<(), Error> {
+    let failed = agent_name == Some("goose")
+        && meta
+            .and_then(|meta| meta.get("extensionResults"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|results| {
+                results.iter().any(|result| {
+                    result.get("name").and_then(serde_json::Value::as_str) == Some("lens_output")
+                        && result.get("success").and_then(serde_json::Value::as_bool) == Some(false)
+                })
+            });
+    if failed {
+        // Extension error strings may contain connection credentials.
+        Err(Error::internal_error().data(
+            "Goose could not initialize Lens HTML publication. Check Goose's extension configuration and try again.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn require_http(capabilities: &McpCapabilities) -> Result<(), Error> {
     if capabilities.http {
         Ok(())
@@ -50,6 +76,31 @@ pub(crate) fn publication_context(turn_id: Uuid, embedded: bool) -> ContentBlock
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_explicit_goose_publisher_failure_blocks_startup() {
+        use serde_json::json;
+        for meta in [
+            json!(null),
+            json!({}),
+            json!({"extensionResults":[{"name":"lens_output","success":true}]}),
+            json!({"extensionResults":[{"name":"other","success":false}]}),
+            json!({"extensionResults":"invalid"}),
+            json!({"extensionResults":[null,{"name":"lens_output","success":"false"}]}),
+        ] {
+            assert!(require_no_publisher_failure(Some("goose"), meta.as_object()).is_ok());
+        }
+        for results in [
+            json!([{"name":"lens_output","success":false,"error":"SECRET"}]),
+            json!([{"name":"lens_output","success":true},{"name":"other","success":true},{"name":"lens_output","success":false}]),
+        ] {
+            let meta = json!({"extensionResults":results});
+            let error = require_no_publisher_failure(Some("goose"), meta.as_object()).unwrap_err();
+            assert!(!format!("{error:?}").contains("SECRET"));
+            for agent in [None, Some("other")] {
+                assert!(require_no_publisher_failure(agent, meta.as_object()).is_ok());
+            }
+        }
+    }
     #[test]
     fn http_support_is_explicit() {
         assert!(require_http(&McpCapabilities::default()).is_err());

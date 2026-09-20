@@ -198,9 +198,9 @@ pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
 
 pub(crate) struct AgentServices<R: tauri::Runtime>(pub Arc<dyn AgentHost<R>>);
 
-pub(crate) struct ManagedAgentHost;
+pub(crate) struct DefaultAgentHost;
 
-impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
+impl<R: tauri::Runtime> AgentHost<R> for DefaultAgentHost {
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -251,6 +251,7 @@ impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
                 .collect(),
             cwd,
             purpose,
+            !descriptor.kind.is_external(),
         )
     }
 }
@@ -404,6 +405,7 @@ pub async fn select_agent<R: tauri::Runtime>(
         )?;
     }
 
+    let expected_config = app.state::<AppState>().config()?;
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
@@ -415,7 +417,7 @@ pub async fn select_agent<R: tauri::Runtime>(
             return current_agent_selection(&app);
         }
     };
-    finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
+    finish_agent_selection_probe(app, operation_id, candidate, descriptor, expected_config).await
 }
 
 pub async fn restore_agent_selection<R: tauri::Runtime>(
@@ -434,15 +436,20 @@ pub async fn restore_agent_selection<R: tauri::Runtime>(
         },
     )?;
 
+    let expected_config = app.state::<AppState>().config()?;
     let descriptor = match AgentDescriptor::resolve_installed(&app, candidate).await {
         Ok(Some(descriptor)) => descriptor,
         Ok(None) => {
             update_agent_selection(&app, operation_id, |selection| {
                 selection.stage = AgentSelectionStage::Unselected;
-                selection.message = Some(format!(
-                    "{} will be downloaded when selected.",
-                    agent_display_name(candidate)
-                ));
+                selection.message = Some(if candidate.is_external() {
+                    "Choose and save your external ACP executable in Settings.".into()
+                } else {
+                    format!(
+                        "{} will be downloaded when selected.",
+                        agent_display_name(candidate)
+                    )
+                });
                 selection.error = None;
             })?;
             return current_agent_selection(&app);
@@ -462,7 +469,7 @@ pub async fn restore_agent_selection<R: tauri::Runtime>(
             agent_display_name(candidate)
         ));
     })?;
-    finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
+    finish_agent_selection_probe(app, operation_id, candidate, descriptor, expected_config).await
 }
 
 async fn finish_agent_selection_probe<R: tauri::Runtime>(
@@ -470,12 +477,32 @@ async fn finish_agent_selection_probe<R: tauri::Runtime>(
     operation_id: Uuid,
     candidate: AgentKind,
     descriptor: AgentDescriptor,
+    expected_config: AppConfig,
 ) -> Result<AgentSelectionState, String> {
-    let working_directory = app.state::<AppState>().config()?.working_directory;
-    match probe_agent_authentication(app.clone(), operation_id, descriptor, working_directory).await
-    {
+    let working_directory = crate::store::effective_working_directory(&expected_config);
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        probe_agent_authentication(
+            app.clone(),
+            operation_id,
+            descriptor,
+            working_directory.clone(),
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| Err(state_error("Agent readiness verification timed out".into())));
+    let result = result.and_then(|()| {
+        if crate::store::effective_working_directory(&expected_config) != working_directory {
+            Err(state_error(
+                "Working Directory availability changed during verification. Verify again.".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    match result {
         Ok(()) => {
-            complete_agent_selection(&app, operation_id, candidate)?;
+            complete_agent_selection(&app, operation_id, candidate, &expected_config)?;
         }
         Err(error) if error.code == ErrorCode::AuthRequired => {
             update_agent_selection(&app, operation_id, |selection| {
@@ -491,7 +518,11 @@ async fn finish_agent_selection_probe<R: tauri::Runtime>(
             update_agent_selection(&app, operation_id, |selection| {
                 selection.stage = AgentSelectionStage::Failed;
                 selection.message = None;
-                selection.error = Some(error.to_string());
+                selection.error = Some(if candidate.is_external() {
+                    format!("External ACP is not ready. Configure the external Agent CLI, then verify again. {error}")
+                } else {
+                    error.to_string()
+                });
             })?;
         }
     }
@@ -606,6 +637,9 @@ async fn logout_selection<R: tauri::Runtime>(
         let snapshot = current_agent_selection(&app)?;
         if snapshot.stage != AgentSelectionStage::Selected {
             return Err("only an authenticated selected Agent can be signed out".into());
+        }
+        if !snapshot.supports_logout {
+            return Err("The selected Agent does not advertise ACP logout support.".into());
         }
         let candidate = snapshot
             .selected_agent()
@@ -755,6 +789,11 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
         .name("lens-agent-selection")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
             let initialize = initialize(&connection).await?;
+            if initialize.protocol_version != ProtocolVersion::V1 {
+                return Err(state_error("Agent returned an unsupported ACP protocol version".into()));
+            }
+            crate::output_mcp::require_http(&initialize.agent_capabilities.mcp_capabilities)?;
+            let supports_logout = initialize.agent_capabilities.auth.logout.is_some();
             let auth_methods = initialize
                 .auth_methods
                 .iter()
@@ -762,6 +801,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .collect::<Vec<_>>();
             update_agent_selection(&app, operation_id, |selection| {
                 selection.auth_methods = auth_methods;
+                selection.supports_logout = supports_logout;
             })
             .map_err(state_error)?;
             if claude_authenticated == Some(false) {
@@ -863,6 +903,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation_id: Uuid,
     candidate: AgentKind,
+    expected_config: &AppConfig,
 ) -> Result<bool, String> {
     let state = app.state::<AppState>();
     let (snapshot, persistence_error) = {
@@ -873,6 +914,21 @@ fn complete_agent_selection<R: tauri::Runtime>(
         if snapshot.agent_selection.operation_id != Some(operation_id)
             || snapshot.agent_selection.candidate != Some(candidate)
         {
+            return Ok(false);
+        }
+        if !snapshot.config.same_execution_config(expected_config)
+            || !snapshot
+                .config
+                .same_agent_execution(expected_config, candidate)
+        {
+            snapshot.agent_selection.stage = AgentSelectionStage::Failed;
+            snapshot.agent_selection.error =
+                Some("Agent settings changed during verification. Verify the Agent again.".into());
+            snapshot.agent_selection.message = None;
+            snapshot.revision = next_revision(&snapshot)?;
+            let stale = snapshot.clone();
+            drop(snapshot);
+            emit_app_snapshot(app, stale, true)?;
             return Ok(false);
         }
         let mut next_config = snapshot.config.clone();
@@ -891,7 +947,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
             snapshot.config = next_config;
             snapshot.agent_selection.stage = AgentSelectionStage::Selected;
             snapshot.agent_selection.message = Some(format!(
-                "{} is authenticated and selected.",
+                "{} is ready and selected.",
                 agent_display_name(candidate)
             ));
             snapshot.agent_selection.error = None;
@@ -915,14 +971,19 @@ fn current_agent_selection<R: tauri::Runtime>(
 fn confirm_agent_selection_after_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     agent: AgentKind,
+    expected_config: &AppConfig,
 ) -> Result<(), String> {
-    let selection = current_agent_selection(app)?;
+    let snapshot = app.state::<AppState>().snapshot()?;
+    if !snapshot.config.same_execution_config(expected_config) {
+        return Err("Agent settings changed before session readiness was confirmed".into());
+    }
+    let selection = snapshot.agent_selection;
     if selection.selected_agent() == Some(agent) {
         return Ok(());
     }
     if selection.candidate == Some(agent) {
         if let Some(operation_id) = selection.operation_id {
-            complete_agent_selection(app, operation_id, agent)?;
+            complete_agent_selection(app, operation_id, agent, expected_config)?;
         }
     }
     Ok(())
@@ -959,6 +1020,7 @@ fn agent_display_name(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Claude => "Claude",
         AgentKind::Codex => "Codex",
+        AgentKind::External(_) => "External ACP",
     }
 }
 
@@ -1048,6 +1110,9 @@ async fn submit_current_projection<R: tauri::Runtime>(
             AgentSessionIdentity {
                 operation_id: input.operation_id,
                 context_id: input.context_id,
+                effective_working_directory: crate::store::effective_working_directory(
+                    &input.config,
+                ),
                 config: input.config,
             },
             input.context_revision,
@@ -1222,7 +1287,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
     let process = transport(
         &app,
         &descriptor,
-        identity.config.working_directory.clone(),
+        identity.effective_working_directory.clone(),
         EnvironmentPurpose::Session,
     );
     agent_client_protocol::Client
@@ -1259,7 +1324,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             let mut session = tokio::select! {
                 result = connection
                     .build_session_from(crate::output_mcp::session_request(
-                        &identity.config.working_directory,
+                        &identity.effective_working_directory,
                         &publisher,
                     ))
                     .block_task()
@@ -1269,10 +1334,12 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     return Err(Error::request_cancelled());
                 }
             };
+            crate::output_mcp::require_no_publisher_failure(initialize.agent_info.as_ref().map(|info| info.name.as_str()), session.meta())?;
             let session_id = session.session_id().clone();
             crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
             let agent_default = session_controls::advertised_mode(session.config_options(), session.modes())?;
             let defaults = identity.config.agent_preferences.get(identity.config.agent);
+            crate::agent_preferences::validate_defaults(identity.config.agent, defaults, session.config_options()).map_err(state_error)?;
             let setup = session_controls::apply_defaults(
                 &connection, &session_id, session.config_options().map(<[_]>::to_vec),
                 session.modes(), defaults,
@@ -1300,7 +1367,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             }
             app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
             *startup = SessionStartup::Ready;
-            confirm_agent_selection_after_session(&app, identity.config.agent)
+            confirm_agent_selection_after_session(&app, identity.config.agent, &identity.config)
                 .map_err(state_error)?;
 
             let session_id_text = session_id.to_string();
@@ -1458,6 +1525,8 @@ fn agent_session_identity_is_current<R: tauri::Runtime>(
 ) -> Result<bool, String> {
     let snapshot = app.state::<AppState>().snapshot()?;
     Ok(snapshot.config.same_execution_config(&identity.config)
+        && crate::store::effective_working_directory(&snapshot.config)
+            == identity.effective_working_directory
         && snapshot.agent_selection.selected_agent() == Some(identity.config.agent)
         && snapshot.lens.operation_id == Some(identity.operation_id)
         && snapshot
@@ -2149,11 +2218,8 @@ async fn run_authentication<R: tauri::Runtime>(
     if *cancellation.borrow() {
         return Err(Error::request_cancelled());
     }
-    let cwd = app
-        .state::<AppState>()
-        .config()
-        .map_err(state_error)?
-        .working_directory;
+    let saved_config = app.state::<AppState>().config().map_err(state_error)?;
+    let cwd = crate::store::effective_working_directory(&saved_config);
     let process = transport(
         &app,
         &descriptor,
@@ -2351,10 +2417,13 @@ async fn launch_terminal_auth<R: tauri::Runtime>(
         }
         resolved.values.insert(name.into(), value.into());
     }
-    resolved.values.insert("NODE_OPTIONS".into(), "".into());
-    resolved.values.insert("NODE_PATH".into(), "".into());
+    let command = crate::agent_launch::prepare_working_command(
+        &descriptor.command,
+        &mut resolved,
+        !descriptor.kind.is_external(),
+    )?;
     let launch = crate::agent_launch::prepare_external_launch(
-        descriptor.command.clone(),
+        command,
         descriptor
             .args
             .iter()
@@ -2527,6 +2596,7 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
     config: &AppConfig,
     defaults: &crate::agent_preferences::AgentDefaults,
 ) -> Result<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>, String> {
+    let working_directory = crate::store::effective_working_directory(config);
     let descriptor = AgentDescriptor::resolve(app, config.agent).await?;
     let result = agent_client_protocol::Client
         .builder()
@@ -2535,16 +2605,22 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
             transport(
                 app,
                 &descriptor,
-                config.working_directory.clone(),
+                working_directory.clone(),
                 EnvironmentPurpose::Validation,
             ),
             async |connection: ConnectionTo<Agent>| {
                 initialize(&connection).await?;
                 let session = connection
-                    .build_session(&config.working_directory)
+                    .build_session(&working_directory)
                     .block_task()
                     .start_session()
                     .await?;
+                crate::agent_preferences::validate_defaults(
+                    config.agent,
+                    defaults,
+                    session.config_options(),
+                )
+                .map_err(state_error)?;
                 let (options, _) = session_controls::apply_defaults(
                     &connection,
                     session.session_id(),
@@ -2691,7 +2767,7 @@ mod tests {
         .await;
     }
 
-    fn sample_input(source_text: &str) -> LensInput {
+    pub(super) fn sample_input(source_text: &str) -> LensInput {
         LensInput {
             schema_version: LENS_INPUT_SCHEMA_VERSION,
             context_id: Uuid::nil(),
@@ -2789,7 +2865,7 @@ mod tests {
         .expect("sample target set")
     }
 
-    fn sample_projection(
+    pub(super) fn sample_projection(
         input: &LensInput,
         media: &[LensMediaPayload],
     ) -> (LensAgentProjection, ProjectionRef) {
@@ -2833,7 +2909,7 @@ mod tests {
             .projection_ref(std::num::NonZeroU64::new(revision).expect("test revision is non-zero"))
     }
 
-    fn sample_context(revision: u64) -> LensContext {
+    pub(super) fn sample_context(revision: u64) -> LensContext {
         LensContext {
             schema_version: LENS_CONTEXT_SCHEMA_VERSION,
             context_id: Uuid::nil(),
@@ -3662,3 +3738,7 @@ mod tests {
             .contains("Revised prompt"));
     }
 }
+
+#[cfg(test)]
+#[path = "external_agent_tests.rs"]
+mod external_tests;

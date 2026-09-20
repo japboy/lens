@@ -139,6 +139,172 @@ pub async fn set_agent<R: tauri::Runtime>(
 }
 
 #[tauri::command]
+pub async fn save_external_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    profile: crate::external_agent::ExternalAgentDraft,
+) -> Result<AgentSelectionState, String> {
+    let profile = profile.parse()?;
+    crate::external_agent::validate_profile(&profile)?;
+    let kind = AgentKind::External(profile.id);
+    let state = app.state::<AppState>();
+    {
+        let _admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission is unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
+            return Err("Wait for Agent logout to complete before changing executables.".into());
+        }
+        let mut config = snapshot.config.clone();
+        if let Some(existing) = config
+            .external_agents
+            .iter_mut()
+            .find(|p| p.id == profile.id)
+        {
+            *existing = profile;
+        } else {
+            if config.external_agents.len() >= 16 {
+                return Err("At most 16 external Agent profiles are supported.".into());
+            }
+            config.external_agents.push(profile);
+        }
+        config.agent = kind;
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to save external Agent profile")?;
+        state.agent_control.cancel_active()?;
+        snapshot.config = config;
+        snapshot.agent_selection = AgentSelectionState {
+            candidate: Some(kind),
+            ..Default::default()
+        };
+        snapshot.revision = revision;
+        drop(snapshot);
+        crate::session_view::invalidate_working_directory(&app)?;
+    }
+    crate::session_controls::close_active(&app);
+    emit_app_snapshot(&app, state.snapshot()?, true)?;
+    agent::select_agent(app, kind).await
+}
+
+#[tauri::command]
+pub fn delete_external_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    id: Uuid,
+) -> Result<AppConfig, String> {
+    let state = app.state::<AppState>();
+    let affected;
+    {
+        let _admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state unavailable")?;
+        if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
+            return Err("Wait for Agent logout to complete before deleting profiles.".into());
+        }
+        affected = snapshot.config.agent == AgentKind::External(id)
+            || snapshot.agent_selection.candidate == Some(AgentKind::External(id));
+        let mut config = snapshot.config.clone();
+        if !config.external_agents.iter().any(|p| p.id == id) {
+            return Err("External Agent profile not found.".into());
+        }
+        config.external_agents.retain(|p| p.id != id);
+        config.agent_preferences.external.remove(&id);
+        if config.agent == AgentKind::External(id) {
+            config.agent = AgentKind::Claude;
+        }
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to remove external Agent profile")?;
+        if affected {
+            state.agent_control.cancel_active()?;
+        }
+        snapshot.config = config;
+        if affected {
+            snapshot.agent_selection = AgentSelectionState::default();
+        }
+        snapshot.revision = revision;
+        drop(snapshot);
+        crate::session_view::invalidate_working_directory(&app)?;
+    }
+    if affected {
+        crate::session_controls::close_active(&app);
+    }
+    emit_app_snapshot(&app, state.snapshot()?, true)?;
+    state.config()
+}
+
+#[tauri::command]
+pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<AppConfig, String> {
+    let state = app.state::<AppState>();
+    let affected;
+    {
+        let _admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state unavailable")?;
+        if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
+            return Err("Wait for Agent logout to complete before resetting profiles.".into());
+        }
+        affected = snapshot.config.agent.is_external()
+            || snapshot
+                .agent_selection
+                .candidate
+                .is_some_and(AgentKind::is_external);
+        let mut config = snapshot.config.clone();
+        config.reset_external_agents();
+        if affected {
+            config.agent = AgentKind::Claude;
+        }
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to reset external Agent profiles")?;
+        if affected {
+            state.agent_control.cancel_active()?;
+        }
+        snapshot.config = config;
+        if affected {
+            snapshot.agent_selection = AgentSelectionState {
+                candidate: Some(AgentKind::Claude),
+                ..Default::default()
+            };
+        }
+        snapshot.revision = revision;
+        drop(snapshot);
+        crate::session_view::invalidate_working_directory(&app)?;
+    }
+    if affected {
+        crate::session_controls::close_active(&app);
+    }
+    emit_app_snapshot(&app, state.snapshot()?, true)?;
+    state.config()
+}
+
+#[tauri::command]
 pub fn set_working_directory<R: tauri::Runtime>(
     path: String,
     app: AppHandle<R>,
@@ -1560,6 +1726,11 @@ pub fn set_session_option<R: tauri::Runtime>(
     value: String,
 ) -> Result<(), String> {
     let controls = crate::session_controls::active_controls(&app, operation_id)?;
+    crate::agent_preferences::validate_config_choice(
+        app.state::<AppState>().config()?.agent,
+        &config_id,
+        controls.snapshot()?.config_options.as_deref(),
+    )?;
     controls.queue_change(instance_id, config_revision, config_id, value)?;
     controls.publish(&app)
 }

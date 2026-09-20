@@ -9,6 +9,7 @@ import type {
   AppConfig,
   PromptPresetChange,
   AgentKind,
+  ExternalAgentDraft,
   AgentPromptTemplate,
   AppSnapshot,
   AgentDefaults,
@@ -68,6 +69,10 @@ export interface WebviewPort {
   getAccessibilityPermission(): Promise<boolean>;
   requestAccessibilityPermission(): Promise<boolean>;
   setAgent(agent: AgentKind): Promise<void>;
+  saveExternalAgent(profile: ExternalAgentDraft): Promise<void>;
+  deleteExternalAgent(id: string): Promise<void>;
+  resetExternalAgents(): Promise<AppConfig>;
+  chooseExternalExecutable(defaultPath?: string): Promise<string | undefined>;
   authenticateAgentSelection(methodId: string): Promise<void>;
   reauthenticateAgentSelection(): Promise<void>;
   signOutAgentSelection(): Promise<void>;
@@ -135,6 +140,22 @@ export const tauriWebviewPort: WebviewPort = {
   requestAccessibilityPermission: () => invoke<boolean>("request_accessibility_permission"),
   async setAgent(agent) {
     await invoke("set_agent", { agent });
+  },
+  async saveExternalAgent(profile) {
+    await invoke("save_external_agent", { profile });
+  },
+  async deleteExternalAgent(id) {
+    await invoke("delete_external_agent", { id });
+  },
+  resetExternalAgents: () => invoke<AppConfig>("reset_external_agents"),
+  async chooseExternalExecutable(defaultPath) {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      defaultPath,
+      title: "Choose ACP Executable",
+    });
+    return typeof selected === "string" ? selected : undefined;
   },
   async authenticateAgentSelection(methodId) {
     await invoke("authenticate_agent_selection", { methodId });

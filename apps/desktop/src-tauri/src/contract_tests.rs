@@ -46,7 +46,8 @@ fn contract_snapshot() -> Value {
     let projection_ref = projection.projection_ref(std::num::NonZeroU64::new(1).unwrap());
     let prompt = AgentPromptTemplate::default();
     let config: AppConfig = serde_json::from_value(json!({
-        "agent":"codex", "working_directory":"/fixture", "response_prompt":"Explain {this}."
+        "agent":"codex", "working_directory":"/fixture",
+        "prompt_presets": AppConfig::new("/fixture".into()).prompt_presets
     }))
     .unwrap();
     let mut output = crate::agent_output::AgentOutputCandidate::default();

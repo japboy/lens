@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AgentRuntimeStage, AgentSelectionStage, LensStage, LensState } from "./types";
 import {
+  agentLabel,
+  sameAgent,
+  agentDefaults,
   AGENT_RUNTIME_LABEL,
   AGENT_SELECTION_LABEL,
   imageDataUrl,
@@ -87,7 +90,12 @@ describe("Lens view model", () => {
 
     expect(Object.keys(AGENT_SELECTION_LABEL)).toEqual(stages);
     for (const stage of stages) {
-      const selection = { stage, candidate: "codex" as const, auth_methods: [] };
+      const selection = {
+        stage,
+        candidate: "codex" as const,
+        supports_logout: false,
+        auth_methods: [],
+      };
       expect(selectedAgent(selection)).toBe(stage === "selected" ? "codex" : undefined);
     }
   });
@@ -402,4 +410,38 @@ describe("Lens view model", () => {
     expect(shouldApplySnapshot(7, Number.NaN)).toBe(false);
     expect(shouldApplySnapshot(7, 7.5)).toBe(false);
   });
+});
+
+it("keeps external identity independent of object references and duplicate display names", () => {
+  const first = { external: "first" };
+  const second = { external: "second" };
+  const profiles = [
+    { id: "first", name: "Local", command: "/first", args: [] },
+    { id: "second", name: "Local", command: "/second", args: [] },
+  ];
+  expect(sameAgent(first, { external: "first" })).toBe(true);
+  expect(sameAgent(first, second)).toBe(false);
+  expect(sameAgent(first, "claude")).toBe(false);
+  expect(agentLabel(first, profiles)).toBe("Local");
+  expect(agentLabel(second, profiles)).toBe("Local");
+  const defaults = {
+    choices: [{ config_id: "model", value: "first-model" }],
+    tools: {
+      read: "ask",
+      search: "ask",
+      fetch: "ask",
+      edit: "deny",
+      delete: "deny",
+      move: "deny",
+      execute: "deny",
+      other: "ask",
+    } as const,
+  };
+  const config = {
+    agent: first,
+    agent_preferences: { external: { first: defaults } },
+    external_agents: profiles,
+  };
+  expect(agentDefaults(config)).toBe(defaults);
+  expect(agentDefaults({ ...config, agent: second })).toBeUndefined();
 });

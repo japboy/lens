@@ -387,3 +387,165 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
         original.prompt_presets.presets[0].template
     );
 }
+
+#[test]
+fn recovery_window_cannot_invoke_normal_commands_without_app_state() {
+    let app = crate::configure_shell(
+        tauri::test::mock_builder(),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let recovery = tauri::WebviewWindowBuilder::new(&app, "settings-recovery", Default::default())
+        .build()
+        .unwrap();
+    for command in [
+        "get_app_snapshot",
+        "set_agent",
+        "update_prompt_presets",
+        "show_settings",
+        "select_lens_target",
+    ] {
+        let error = invoke(&recovery, command, json!({})).unwrap_err();
+        assert!(error
+            .as_str()
+            .unwrap()
+            .contains("unavailable while settings recovery"));
+    }
+    assert!(app.try_state::<AppState>().is_none());
+}
+
+#[test]
+fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_selection() {
+    for (external_selected, external_pending) in [(false, false), (true, false), (false, true)] {
+        let state = test_support::state();
+        let custom_id = Uuid::new_v4();
+        let operation = Uuid::new_v4();
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.config.external_agents[0].command = "/custom/goose".into();
+            snapshot.config.external_agents.push(ExternalAgentProfile {
+                id: custom_id,
+                name: "Custom".into(),
+                command: "custom".into(),
+                args: vec![],
+            });
+            let builtin = snapshot.config.external_agents[0].id;
+            snapshot
+                .config
+                .agent_preferences
+                .external
+                .entry(builtin)
+                .or_default()
+                .tools
+                .read = usecase::agent_preferences::ToolPolicy::Deny;
+            snapshot
+                .config
+                .agent_preferences
+                .external
+                .entry(custom_id)
+                .or_default();
+            snapshot.config.agent = if external_selected {
+                AgentKind::External(custom_id)
+            } else {
+                AgentKind::Codex
+            };
+            snapshot.agent_selection = AgentSelectionState {
+                stage: if external_pending {
+                    AgentSelectionStage::Checking
+                } else {
+                    AgentSelectionStage::Selected
+                },
+                candidate: Some(if external_pending {
+                    AgentKind::External(custom_id)
+                } else {
+                    snapshot.config.agent
+                }),
+                operation_id: Some(operation),
+                ..Default::default()
+            };
+        }
+        let before = state.snapshot().unwrap();
+        let app = crate::configure_shell(
+            tauri::test::mock_builder().manage(state),
+            platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+            crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+            crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+        )
+        .build(crate::product_context())
+        .unwrap();
+        let window = window(&app);
+        let result = invoke(&window, "reset_external_agents", json!({})).unwrap();
+        let after = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(
+            after.config.external_agents,
+            ExternalAgentProfile::bundled_presets()
+        );
+        assert_eq!(result, serde_json::to_value(&after.config).unwrap());
+        assert_eq!(after.config.prompt_presets, before.config.prompt_presets);
+        assert_eq!(
+            after.config.working_directory,
+            before.config.working_directory
+        );
+        assert_eq!(
+            after.config.agent_preferences.claude,
+            before.config.agent_preferences.claude
+        );
+        assert_eq!(
+            after.config.agent_preferences.codex,
+            before.config.agent_preferences.codex
+        );
+        assert!(!after
+            .config
+            .agent_preferences
+            .external
+            .contains_key(&custom_id));
+        assert!(after
+            .config
+            .agent_preferences
+            .external
+            .contains_key(&after.config.external_agents[0].id));
+        assert_eq!(
+            after
+                .config
+                .agent_preferences
+                .external
+                .get(&after.config.external_agents[0].id),
+            before
+                .config
+                .agent_preferences
+                .external
+                .get(&after.config.external_agents[0].id)
+        );
+        if external_selected || external_pending {
+            assert_eq!(after.config.agent, AgentKind::Claude);
+            assert_eq!(after.agent_selection.candidate, Some(AgentKind::Claude));
+            assert_eq!(after.agent_selection.stage, AgentSelectionStage::Unselected);
+            assert_eq!(after.agent_selection.operation_id, None);
+        } else {
+            assert_eq!(after.agent_selection, before.agent_selection);
+            assert_eq!(after.config.agent, AgentKind::Codex);
+        }
+        assert_eq!(app.state::<AppState>().store.load(), after.config);
+    }
+}
+
+#[test]
+fn reset_external_agents_save_failure_leaves_runtime_unchanged() {
+    let mut state = test_support::state();
+    let directory = std::env::temp_dir().join(format!("lens-reset-unwritable-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    state.store = crate::store::ConfigStore::at_path(directory.clone());
+    let before = state.snapshot().unwrap();
+    let app = app(state);
+    let window = window(&app);
+    assert!(invoke(&window, "reset_external_agents", json!({})).is_err());
+    let after = app.state::<AppState>().snapshot().unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+    std::fs::remove_dir(directory).unwrap();
+}

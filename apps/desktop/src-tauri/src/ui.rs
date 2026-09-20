@@ -72,6 +72,21 @@ fn webview_url(view: WebviewView) -> WebviewUrl {
     WebviewUrl::App(format!("{}?platform={DESKTOP_PLATFORM}", view.entry_path()).into())
 }
 
+pub(crate) fn show_settings_recovery<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let window = WebviewWindowBuilder::new(
+        app,
+        crate::settings_recovery::WINDOW_LABEL,
+        WebviewUrl::App(format!("settings-recovery.html?platform={DESKTOP_PLATFORM}").into()),
+    )
+    .title("Lens Settings Recovery")
+    .inner_size(640.0, 460.0)
+    .min_inner_size(480.0, 360.0)
+    .build()?;
+    window.show()?;
+    window.set_focus()?;
+    Ok(())
+}
+
 const SETTINGS_WINDOW_SIZE_POLICY: WindowSizePolicy = WindowSizePolicy {
     preferred: WindowSize::new(720.0, 800.0),
     minimum: WindowSize::new(SETTINGS_WINDOW_MIN_WIDTH, 360.0),
@@ -102,6 +117,8 @@ struct TrayMenuItems<R: tauri::Runtime> {
     select_target: MenuItem<R>,
     agent_claude: CheckMenuItem<R>,
     agent_codex: CheckMenuItem<R>,
+    agent_external: MenuItem<R>,
+    agent_status: MenuItem<R>,
     working_directory: MenuItem<R>,
     prompt_presets: Submenu<R>,
     prompt_presentation: Mutex<Vec<PromptPresetMenuItem>>,
@@ -380,6 +397,7 @@ pub(crate) struct TrayMenuPresentation {
     agent_verification_required: bool,
     claude_checked: bool,
     codex_checked: bool,
+    agent_status_text: String,
     working_directory_text: String,
 }
 
@@ -420,6 +438,28 @@ impl TrayMenuPresentation {
                 == crate::model::AgentSelectionStage::HistorySelected,
             claude_checked: selected == Some(AgentKind::Claude),
             codex_checked: selected == Some(AgentKind::Codex),
+            agent_status_text: match selected {
+                Some(agent) => {
+                    let name = match agent {
+                        AgentKind::External(id) => config
+                            .external_agents
+                            .iter()
+                            .find(|profile| profile.id == id)
+                            .map(|profile| profile.name.as_str())
+                            .unwrap_or("External ACP"),
+                        managed => crate::session_view::agent_label(managed),
+                    };
+                    let suffix = if agent_selection.stage
+                        == crate::model::AgentSelectionStage::HistorySelected
+                    {
+                        " — Verify to Start"
+                    } else {
+                        ""
+                    };
+                    format!("Current Agent: {}{suffix}", menu_safe_path(name))
+                }
+                None => "No Agent selected".into(),
+            },
             working_directory_text: menu_safe_path(&config.working_directory.to_string_lossy()),
         }
     }
@@ -436,7 +476,21 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
     let use_claude =
         CheckMenuItem::with_id(app, "agent_claude", "Claude", true, false, None::<&str>)?;
     let use_codex = CheckMenuItem::with_id(app, "agent_codex", "Codex", true, false, None::<&str>)?;
+    let use_external = MenuItem::with_id(
+        app,
+        "agent_external",
+        "Manage External ACP Profiles…",
+        true,
+        None::<&str>,
+    )?;
     let agent_label = MenuItem::with_id(app, "agent_label", "AI Agents", false, None::<&str>)?;
+    let agent_status = MenuItem::with_id(
+        app,
+        "agent_status",
+        "No Agent selected",
+        false,
+        None::<&str>,
+    )?;
     let directory_label = MenuItem::with_id(
         app,
         "directory_label",
@@ -467,8 +521,10 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             &history,
             &separator_one,
             &agent_label,
+            &agent_status,
             &use_claude,
             &use_codex,
+            &use_external,
             &separator_two,
             &directory_label,
             &working_directory,
@@ -527,6 +583,9 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             "select_target" => select_lens_target_from_tray(app),
             "agent_claude" => select_agent_from_menu(app, AgentKind::Claude),
             "agent_codex" => select_agent_from_menu(app, AgentKind::Codex),
+            "agent_external" => {
+                let _ = show_settings(app);
+            }
             "working_directory" => choose_working_directory(app),
             "settings" => {
                 if let Err(error) = show_settings(app) {
@@ -567,6 +626,8 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         select_target: select,
         agent_claude: use_claude,
         agent_codex: use_codex,
+        agent_external: use_external,
+        agent_status,
         working_directory,
         prompt_presets,
         prompt_presentation: Mutex::new(Vec::new()),
@@ -635,6 +696,14 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
                     "Codex"
                 },
             )
+            .map_err(|error| error.to_string())?;
+        items
+            .agent_external
+            .set_enabled(presentation.agent_selection_enabled)
+            .map_err(|e| e.to_string())?;
+        items
+            .agent_status
+            .set_text(presentation.agent_status_text)
             .map_err(|error| error.to_string())?;
         items
             .working_directory
@@ -714,7 +783,16 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     .unwrap_or_default();
                 let title: String = entry.title.chars().take(72).collect();
                 let label = menu_safe_path(&title);
-                let agent = crate::session_view::agent_label(entry.agent);
+                let config = app.state::<crate::app_state::AppState>().config()?;
+                let agent = match entry.agent {
+                    AgentKind::External(id) => config
+                        .external_agents
+                        .iter()
+                        .find(|p| p.id == id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("External ACP"),
+                    managed => crate::session_view::agent_label(managed),
+                };
                 tooltips.push(if date.is_empty() {
                     agent.to_string()
                 } else {
@@ -1521,9 +1599,55 @@ mod tests {
     }
 
     #[test]
+    fn tray_agent_status_and_managed_checks_share_one_selection() {
+        let config = AppConfig::new(PathBuf::from("/tmp"));
+        let external = &config.external_agents[0];
+        for stage in [
+            AgentSelectionStage::Selected,
+            AgentSelectionStage::HistorySelected,
+        ] {
+            for agent in [
+                AgentKind::Claude,
+                AgentKind::Codex,
+                AgentKind::External(external.id),
+            ] {
+                let state = AgentSelectionState {
+                    stage,
+                    candidate: Some(agent),
+                    ..Default::default()
+                };
+                let view = TrayMenuPresentation::derive(&state, &config, &LensState::default());
+                assert_eq!(view.claude_checked, agent == AgentKind::Claude);
+                assert_eq!(view.codex_checked, agent == AgentKind::Codex);
+                assert!(!(view.claude_checked && view.codex_checked));
+                let name = match agent {
+                    AgentKind::Claude => "Claude",
+                    AgentKind::Codex => "Codex",
+                    AgentKind::External(_) => external.name.as_str(),
+                };
+                assert!(view
+                    .agent_status_text
+                    .starts_with(&format!("Current Agent: {name}")));
+                assert_eq!(
+                    view.agent_status_text.ends_with("Verify to Start"),
+                    stage == AgentSelectionStage::HistorySelected
+                );
+            }
+        }
+        let view = TrayMenuPresentation::derive(
+            &AgentSelectionState::default(),
+            &config,
+            &LensState::default(),
+        );
+        assert_eq!(view.agent_status_text, "No Agent selected");
+        assert!(!view.claude_checked && !view.codex_checked);
+    }
+
+    #[test]
     fn tray_presentation_separates_chosen_agent_from_execution_readiness() {
         let config = AppConfig {
             agent: AgentKind::Codex,
+            external_agents: Vec::new(),
             working_directory: PathBuf::from("/Users/example/Work"),
             agent_prompt_template: crate::store::default_config().agent_prompt_template,
             prompt_presets: crate::store::default_config().prompt_presets,
@@ -1545,6 +1669,7 @@ mod tests {
                 agent_verification_required: false,
                 claude_checked: false,
                 codex_checked: true,
+                agent_status_text: "Current Agent: Codex".into(),
                 working_directory_text: "/Users/example/Work".into(),
             }
         );

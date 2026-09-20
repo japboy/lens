@@ -14,6 +14,36 @@ use uuid::Uuid;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DECISION_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_INTERACTIONS: usize = 32;
+// Serialized JSON bytes, not process RSS. This admits large bounded tool inputs
+// without multiplying the per-input limit by all 256 correlated tools.
+const MAX_PERMISSION_INPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RETAINED_PERMISSION_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+fn input_bytes(value: &serde_json::Value) -> Option<usize> {
+    struct LimitedCounter(usize);
+    impl std::io::Write for LimitedCounter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let next = self
+                .0
+                .checked_add(bytes.len())
+                .filter(|size| *size <= MAX_PERMISSION_INPUT_BYTES)
+                .ok_or_else(|| std::io::Error::other("Tool input exceeds its byte budget"))?;
+            self.0 = next;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = LimitedCounter(0);
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.0)
+}
+
+struct CorrelatedTool {
+    fields: ToolCallUpdateFields,
+    input_bytes: usize,
+}
 
 enum PermissionAdmission {
     Automatic(RequestPermissionOutcome),
@@ -22,6 +52,7 @@ enum PermissionAdmission {
 
 struct PendingDecision {
     id: Uuid,
+    input_bytes: usize,
     sender: oneshot::Sender<InteractionResponse>,
 }
 struct Runtime {
@@ -30,7 +61,40 @@ struct Runtime {
     next_sequence: u32,
     tool_policies: crate::agent_preferences::ToolPolicies,
     active_turn: Option<Uuid>,
-    tools: BTreeMap<String, ToolCallUpdateFields>,
+    tools: BTreeMap<String, CorrelatedTool>,
+}
+impl Runtime {
+    fn retained_input_bytes(&self) -> usize {
+        self.tools
+            .values()
+            .map(|tool| tool.input_bytes)
+            .sum::<usize>()
+            + self
+                .decisions
+                .iter()
+                .map(|decision| decision.input_bytes)
+                .sum::<usize>()
+    }
+
+    fn accepts_input(&self, added: usize, replaced: usize) -> bool {
+        self.retained_input_bytes()
+            .checked_sub(replaced)
+            .and_then(|retained| retained.checked_add(added))
+            .is_some_and(|total| total <= MAX_RETAINED_PERMISSION_INPUT_BYTES)
+    }
+
+    fn retain_input(
+        &self,
+        value: Option<&serde_json::Value>,
+        replaced: usize,
+    ) -> (Option<serde_json::Value>, usize) {
+        match value.and_then(|value| input_bytes(value).map(|bytes| (value, bytes))) {
+            Some((value, bytes)) if self.accepts_input(bytes, replaced) => {
+                (Some(value.clone()), bytes)
+            }
+            _ => (None, 0),
+        }
+    }
 }
 pub struct SessionControls {
     runtime: Mutex<Runtime>,
@@ -262,6 +326,8 @@ impl SessionControls {
     pub fn close<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.state.active = false;
+            runtime.active_turn = None;
+            runtime.tools.clear();
             for interaction in &mut runtime.state.interactions {
                 if interaction.status == InteractionStatus::Pending {
                     interaction.status = InteractionStatus::Cancelled;
@@ -285,6 +351,14 @@ impl SessionControls {
     ) -> Result<(Uuid, oneshot::Receiver<InteractionResponse>), String> {
         let mut runtime = self.runtime.lock().map_err(|_| lock_error())?;
         self.ensure_active(&runtime)?;
+        let input_bytes = match &details {
+            InteractionDetails::Permission { arguments, .. } => input_bytes(arguments)
+                .filter(|bytes| runtime.accepts_input(*bytes, 0))
+                .ok_or_else(|| {
+                    "Tool permission input exceeds the retained byte budget".to_string()
+                })?,
+            _ => 0,
+        };
         if runtime.decisions.len() >= 8 {
             return Err("Too many pending Agent interactions".into());
         }
@@ -312,7 +386,11 @@ impl SessionControls {
             status: InteractionStatus::Pending,
             details: Some(details),
         });
-        runtime.decisions.push(PendingDecision { id, sender });
+        runtime.decisions.push(PendingDecision {
+            id,
+            sender,
+            input_bytes,
+        });
         Ok((id, receiver))
     }
     pub fn respond<R: tauri::Runtime>(
@@ -442,68 +520,59 @@ impl SessionControls {
         &self,
         request: RequestPermissionRequest,
     ) -> Result<InteractionDetails, String> {
-        let Ok(state) = self.snapshot() else {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
+        let denied = || {
+            "Tool permission denied: its effect, policy, or correlation could not be verified"
+                .to_string()
         };
-        if !state.active || request.session_id.to_string() != state.session_id {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        }
-        let fields = {
-            let Ok(runtime) = self.runtime.lock() else {
-                return Err("Tool permission denied: its effect, policy, or correlation could not be verified".into());
-            };
-            if runtime.active_turn.is_none()
-                || !runtime
-                    .tools
-                    .contains_key(&request.tool_call.tool_call_id.to_string())
+        let (kind, title, arguments) = {
+            let runtime = self.runtime.lock().map_err(|_| denied())?;
+            self.ensure_active(&runtime).map_err(|_| denied())?;
+            if request.session_id.to_string() != runtime.state.session_id
+                || runtime.active_turn.is_none()
             {
-                return Err("Tool permission denied: its effect, policy, or correlation could not be verified".into());
+                return Err(denied());
             }
-            let mut fields = runtime.tools[&request.tool_call.tool_call_id.to_string()].clone();
+            let tool = runtime
+                .tools
+                .get(&request.tool_call.tool_call_id.to_string())
+                .ok_or_else(denied)?;
+            let fields = &tool.fields;
             if request.tool_call.fields.kind.is_some()
                 && request.tool_call.fields.kind.unwrap_or(ToolKind::Other)
                     != fields.kind.unwrap_or(ToolKind::Other)
             {
                 return Err("Tool permission denied: conflicting effect descriptions".into());
             }
-            if request.tool_call.fields.title.is_some() {
-                fields.title = request.tool_call.fields.title.clone();
+            let title = request
+                .tool_call
+                .fields
+                .title
+                .as_ref()
+                .or(fields.title.as_ref())
+                .ok_or_else(denied)?;
+            // A permission request may supply the first complete input after a
+            // pending tool notification. Validate that replacement before cloning.
+            let arguments = request
+                .tool_call
+                .fields
+                .raw_input
+                .as_ref()
+                .or(fields.raw_input.as_ref())
+                .ok_or_else(denied)?;
+            if title.is_empty()
+                || title.len() > 1024
+                || !arguments.is_object()
+                || request.tool_call.tool_call_id.to_string().is_empty()
+                || !input_bytes(arguments).is_some_and(|bytes| runtime.accepts_input(bytes, 0))
+            {
+                return Err(denied());
             }
-            if request.tool_call.fields.raw_input.is_some() {
-                fields.raw_input = request.tool_call.fields.raw_input.clone();
-            }
-            fields
+            (
+                fields.kind.unwrap_or(ToolKind::Other),
+                title.clone(),
+                arguments.clone(),
+            )
         };
-        let kind = fields.kind.unwrap_or(ToolKind::Other);
-        let Some(title) = fields.title else {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        };
-        let Some(arguments) = fields.raw_input else {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        };
-        if title.is_empty()
-            || title.len() > 1024
-            || !arguments.is_object()
-            || request.tool_call.tool_call_id.to_string().is_empty()
-            || serde_json::to_vec(&arguments).map_or(true, |v| v.len() > 16 * 1024)
-        {
-            return Err(
-                "Tool permission denied: its effect, policy, or correlation could not be verified"
-                    .into(),
-            );
-        }
         let mut ids = BTreeSet::new();
         if request.options.len() > 16
             || request
@@ -851,34 +920,39 @@ impl SessionControls {
                 {
                     return Err(invalid("Invalid or excessive tool call identities"));
                 }
-                let raw_input = call
-                    .raw_input
-                    .as_ref()
-                    .filter(|value| serde_json::to_vec(value).is_ok_and(|v| v.len() <= 16 * 1024))
-                    .cloned();
+                let (raw_input, input_bytes) = runtime.retain_input(call.raw_input.as_ref(), 0);
                 let fields = ToolCallUpdateFields::new()
                     .kind(call.kind)
                     .title(call.title.clone())
                     .raw_input(raw_input);
-                runtime.tools.insert(call.tool_call_id.to_string(), fields);
+                runtime.tools.insert(
+                    call.tool_call_id.to_string(),
+                    CorrelatedTool {
+                        fields,
+                        input_bytes,
+                    },
+                );
             }
             SessionUpdate::ToolCallUpdate(update) => {
-                if let Some(fields) = runtime.tools.get_mut(&update.tool_call_id.to_string()) {
+                let id = update.tool_call_id.to_string();
+                let replacement = runtime.tools.get(&id).and_then(|tool| {
+                    update
+                        .fields
+                        .raw_input
+                        .as_ref()
+                        .map(|value| runtime.retain_input(Some(value), tool.input_bytes))
+                });
+                if let Some(tool) = runtime.tools.get_mut(&id) {
                     if update.fields.kind.is_some() {
-                        fields.kind = update.fields.kind;
+                        tool.fields.kind = update.fields.kind;
                     }
                     if update.fields.title.is_some() {
-                        fields.title = update.fields.title.clone();
+                        tool.fields.title = update.fields.title.clone();
                     }
-                    if update.fields.raw_input.is_some() {
-                        fields.raw_input = update
-                            .fields
-                            .raw_input
-                            .as_ref()
-                            .filter(|value| {
-                                serde_json::to_vec(value).is_ok_and(|v| v.len() <= 16 * 1024)
-                            })
-                            .cloned();
+                    if let Some((raw_input, bytes)) = replacement {
+                        // Never preserve obsolete arguments after rejecting a replacement.
+                        tool.fields.raw_input = raw_input;
+                        tool.input_bytes = bytes;
                     }
                 }
             }
@@ -1971,5 +2045,241 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+    fn budget_request(
+        id: &str,
+        input: Option<serde_json::Value>,
+        kind: ToolKind,
+    ) -> RequestPermissionRequest {
+        RequestPermissionRequest::new(
+            "session",
+            ToolCallUpdate::new(
+                id.to_owned(),
+                ToolCallUpdateFields::new().kind(kind).raw_input(input),
+            ),
+            vec![
+                PermissionOption::new("yes", "Allow once", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("no", "Reject once", PermissionOptionKind::RejectOnce),
+            ],
+        )
+    }
+
+    fn budget_tool(
+        controls: &SessionControls,
+        id: &str,
+        input: Option<serde_json::Value>,
+        kind: ToolKind,
+    ) {
+        controls
+            .record_tool(&SessionUpdate::ToolCall(
+                ToolCall::new(id.to_owned(), "Tool input")
+                    .kind(kind)
+                    .raw_input(input),
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn permission_input_byte_limit_has_an_exact_boundary() {
+        let overhead = input_bytes(&serde_json::json!({"payload":""})).unwrap();
+        let maximum =
+            serde_json::json!({"payload":"x".repeat(MAX_PERMISSION_INPUT_BYTES - overhead)});
+        assert_eq!(input_bytes(&maximum), Some(MAX_PERMISSION_INPUT_BYTES));
+        let overflow =
+            serde_json::json!({"payload":"x".repeat(MAX_PERMISSION_INPUT_BYTES - overhead + 1)});
+        assert_eq!(input_bytes(&overflow), None);
+    }
+
+    #[test]
+    fn permission_budget_accepts_large_inputs_for_every_kind_and_late_input() {
+        const { assert!(adapter_output_mcp::MAX_FRAME_BYTES <= MAX_PERMISSION_INPUT_BYTES) };
+        for kind in [
+            ToolKind::Read,
+            ToolKind::Search,
+            ToolKind::Fetch,
+            ToolKind::Edit,
+            ToolKind::Delete,
+            ToolKind::Move,
+            ToolKind::Execute,
+            ToolKind::Other,
+        ] {
+            let (controls, _shutdown) = controls();
+            controls.begin_turn(Uuid::new_v4()).unwrap();
+            let arguments = serde_json::json!({"payload": "x".repeat(18 * 1024)});
+            budget_tool(&controls, "late", None, kind);
+            let details = controls
+                .permission_details(budget_request("late", Some(arguments.clone()), kind))
+                .unwrap();
+            let InteractionDetails::Permission {
+                arguments: retained,
+                ..
+            } = details
+            else {
+                panic!()
+            };
+            assert_eq!(retained, arguments);
+        }
+        for html in [
+            "x".repeat(adapter_output_mcp::MAX_HTML_BYTES),
+            "\u{0001}".repeat(adapter_output_mcp::MAX_HTML_BYTES),
+        ] {
+            let (controls, _shutdown) = controls();
+            controls.begin_turn(Uuid::new_v4()).unwrap();
+            let arguments = serde_json::json!({"html":html,"turn_id":Uuid::new_v4()});
+            budget_tool(&controls, "large", Some(arguments.clone()), ToolKind::Other);
+            let details = controls
+                .permission_details(budget_request("large", None, ToolKind::Other))
+                .unwrap();
+            let (id, _) = controls.begin_decision(details).unwrap();
+            let runtime = controls.runtime.lock().unwrap();
+            assert!(runtime.retained_input_bytes() <= MAX_RETAINED_PERMISSION_INPUT_BYTES);
+            let Some(InteractionDetails::Permission {
+                arguments: retained,
+                ..
+            }) = &runtime
+                .state
+                .interactions
+                .iter()
+                .find(|i| i.id == id)
+                .unwrap()
+                .details
+            else {
+                panic!()
+            };
+            assert_eq!(*retained, arguments);
+        }
+    }
+
+    #[test]
+    fn oversized_replacements_erase_old_input_and_valid_later_input_recovers() {
+        let (controls, _shutdown) = controls();
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        budget_tool(
+            &controls,
+            "tool",
+            Some(serde_json::json!({"old":true})),
+            ToolKind::Read,
+        );
+        let oversized = serde_json::json!({"payload":"x".repeat(MAX_PERMISSION_INPUT_BYTES)});
+        assert!(input_bytes(&oversized).is_none());
+        assert!(controls
+            .permission_details(budget_request(
+                "tool",
+                Some(oversized.clone()),
+                ToolKind::Read
+            ))
+            .is_err());
+        controls
+            .record_tool(&SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool",
+                ToolCallUpdateFields::new().raw_input(oversized),
+            )))
+            .unwrap();
+        assert!(controls
+            .permission_details(budget_request("tool", None, ToolKind::Read))
+            .is_err());
+        assert_eq!(controls.runtime.lock().unwrap().retained_input_bytes(), 0);
+        let replacement = serde_json::json!({"new":true});
+        let details = controls
+            .permission_details(budget_request(
+                "tool",
+                Some(replacement.clone()),
+                ToolKind::Read,
+            ))
+            .unwrap();
+        let InteractionDetails::Permission { arguments, .. } = details else {
+            panic!()
+        };
+        assert_eq!(arguments, replacement);
+        assert!(controls
+            .permission_details(budget_request(
+                "tool",
+                Some(serde_json::json!("invalid")),
+                ToolKind::Read
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn aggregate_budget_counts_correlations_and_pending_inputs_then_recovers() {
+        let (controls, _shutdown) = controls();
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        let large = || serde_json::json!({"payload":"x".repeat(3 * 1024 * 1024)});
+        budget_tool(&controls, "one", Some(large()), ToolKind::Other);
+        budget_tool(&controls, "two", Some(large()), ToolKind::Other);
+        assert!(controls
+            .permission_details(budget_request("one", None, ToolKind::Other))
+            .is_err());
+        // Replacing a retained input releases its previous size before admission.
+        controls
+            .record_tool(&SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "two",
+                ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
+            )))
+            .unwrap();
+        let details = controls
+            .permission_details(budget_request("one", None, ToolKind::Other))
+            .unwrap();
+        let (pending, receiver) = controls.begin_decision(details).unwrap();
+        budget_tool(&controls, "three", Some(large()), ToolKind::Other);
+        assert!(controls.runtime.lock().unwrap().tools["three"]
+            .fields
+            .raw_input
+            .is_none());
+        controls
+            .respond_with(
+                controls.snapshot().unwrap().instance_id,
+                pending,
+                InteractionResponse::Select {
+                    option_id: "no".into(),
+                },
+                |_| unreachable!(),
+            )
+            .unwrap();
+        drop(receiver);
+        controls
+            .record_tool(&SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "three",
+                ToolCallUpdateFields::new().raw_input(large()),
+            )))
+            .unwrap();
+        assert!(controls.runtime.lock().unwrap().tools["three"]
+            .fields
+            .raw_input
+            .is_some());
+        controls.end_turn();
+        assert_eq!(controls.runtime.lock().unwrap().retained_input_bytes(), 0);
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        budget_tool(&controls, "fresh", Some(large()), ToolKind::Read);
+        assert!(controls
+            .permission_details(budget_request("fresh", None, ToolKind::Read))
+            .is_ok());
+    }
+
+    #[test]
+    fn pending_admission_rechecks_budget_and_expiry_and_cancel_release_it() {
+        let (controls, _shutdown) = controls();
+        controls.begin_turn(Uuid::new_v4()).unwrap();
+        budget_tool(&controls, "late", None, ToolKind::Read);
+        let details = || {
+            controls
+                .permission_details(budget_request(
+                    "late",
+                    Some(serde_json::json!({"payload":"x".repeat(3 * 1024 * 1024)})),
+                    ToolKind::Read,
+                ))
+                .unwrap()
+        };
+        let first = details();
+        let second = details();
+        let third = details();
+        let (id, _) = controls.begin_decision(first).unwrap();
+        let (other, _) = controls.begin_decision(second).unwrap();
+        assert!(controls.begin_decision(third).is_err());
+        assert!(controls.expire_decision(id));
+        assert!(controls.begin_decision(details()).is_ok());
+        controls.cancel_decision(other);
+        controls.end_turn();
+        assert_eq!(controls.runtime.lock().unwrap().retained_input_bytes(), 0);
     }
 }

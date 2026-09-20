@@ -11,7 +11,7 @@ const options = [
  { id:"effort",name:"Reasoning effort",type:"select",category:"thought_level",currentValue:"medium",options:[{value:"medium",name:"Medium"},{value:"high",name:"High"}] }
 ];
 const shared = document.querySelector("lens-agent-defaults");
-shared.selection = { operation_id:"fixture-selection", stage:"selected", candidate:"claude", agent_default:"safe", config_options:options, modes:[] };
+shared.selection = { operation_id:"fixture-selection", stage:"selected", supports_logout:false, auth_methods:[], candidate:"claude", agent_default:"safe", config_options:options, modes:[] };
 shared.defaults = {choices:[],tools:{read:"ask",search:"ask",fetch:"ask",edit:"deny",delete:"deny",move:"deny",execute:"deny",other:"ask"}};
 const controls = document.querySelector("lens-session-controls");
 controls.controls = {instance_id:"fixture",operation_id:"fixture",session_id:"fixture",agent_name:"Fixture Agent",active:true,config_revision:1,config_options:options,modes:[],agent_default:"safe",effective_mode:"safe",configured_mode:"safe",interactions:[{id:"permission",sequence:1,status:"pending",details:{kind:"permission",tool_call_id:"read",title:"Read selected document",effect:"read",arguments:{path:"/fixture/document.txt"},options:[{optionId:"once",name:"Allow once",kind:"allow_once"},{optionId:"deny",name:"Reject once",kind:"reject_once"}]}}]};

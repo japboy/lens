@@ -1,0 +1,21 @@
+<!doctype html>
+<html data-view="settings-recovery">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Lens Settings Recovery</title>
+    <link rel="stylesheet" href="/styles/document.css" />
+  </head>
+  <body>
+    <lens-settings-recovery-page
+      ><!-- lens-prerender:settings-recovery --></lens-settings-recovery-page
+    >
+    <aside data-page-error hidden>
+      <p role="alert">Unable to open settings recovery.</p>
+      <button type="button">Reload</button>
+    </aside>
+    <noscript>This window needs JavaScript to load its interactive content.</noscript>
+    <script type="module" src="/entries/settings-recovery.ts"></script>
+  </body>
+</html>

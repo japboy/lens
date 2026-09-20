@@ -69,12 +69,12 @@ async fn stale_catalog_and_unloadable_entries_never_resolve_an_agent() {
         .contains("changed"));
     let generation = Uuid::new_v4();
     *app.state::<AppState>().session_view.catalog.lock().unwrap() = HistoryCatalog {
-        cwd: PathBuf::from("/fixture"),
+        cwd: PathBuf::from("/tmp"),
         generation,
         entries: vec![HistoryEntry {
             agent: AgentKind::Codex,
             session_id: "foreign-session".into(),
-            cwd: "/fixture".into(),
+            cwd: "/tmp".into(),
             title: "Other app".into(),
             updated_at: None,
             can_load: false,
@@ -149,7 +149,7 @@ fn listing(
 fn entry(id: &str, timestamp: Option<&str>) -> crate::session_history::HistorySessionEntry {
     crate::session_history::HistorySessionEntry {
         session_id: id.into(),
-        cwd: "/fixture".into(),
+        cwd: "/tmp".into(),
         title: Some(id.into()),
         updated_at: timestamp.map(str::to_owned),
     }
@@ -174,7 +174,7 @@ fn compound_identity_top_ten_offsets_and_partial_unknown_are_explicit() {
     partial.complete = false;
     partial.error = Some("page failed".into());
     let catalog = merge_listings(
-        Path::new("/fixture"),
+        Path::new("/tmp"),
         vec![
             (AgentKind::Claude, Ok(partial)),
             (
@@ -335,7 +335,7 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
                             cx: ConnectionTo<Client>| {
                     assert_eq!(request.session_id.to_string(), "external-codex-session");
                     assert_eq!(request.cwd, cwd);
-                    assert_eq!(request.cwd, std::path::PathBuf::from("/fixture"));
+                    assert_eq!(request.cwd, std::path::PathBuf::from("/tmp"));
                     assert!(request.mcp_servers.is_empty());
                     loaded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     cx.send_notification(SessionNotification::new(
@@ -367,15 +367,15 @@ impl crate::ui::TrayOutput<MockRuntime> for ReplayTray {
 fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
     let state = test_support::state();
     state.runtime.write().unwrap().config.agent = AgentKind::Claude;
-    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/fixture");
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
     let generation = Uuid::new_v4();
     *state.session_view.catalog.lock().unwrap() = HistoryCatalog {
-        cwd: PathBuf::from("/fixture"),
+        cwd: PathBuf::from("/tmp"),
         generation,
         entries: vec![HistoryEntry {
             agent: AgentKind::Codex,
             session_id: "external-codex-session".into(),
-            cwd: "/fixture".into(),
+            cwd: "/tmp".into(),
             title: "Created outside Lens".into(),
             updated_at: Some("2026-09-17T00:00:00Z".into()),
             can_load: true,
@@ -530,7 +530,7 @@ fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
     for index in 0..20 {
         let mut foreign = entry(&format!("foreign-{index}"), Some("2026-09-18T00:00:00Z"));
         foreign.cwd = if index % 2 == 0 {
-            "/other"
+            "/"
         } else {
             "/fixture/child"
         }
@@ -539,7 +539,7 @@ fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
     }
     entries.push(entry("current", Some("2026-09-17T00:00:00Z")));
     let catalog = merge_listings(
-        Path::new("/fixture"),
+        Path::new("/tmp"),
         vec![
             (AgentKind::Codex, Ok(listing(AgentKind::Codex, entries))),
             (
@@ -552,7 +552,7 @@ fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
         ],
     );
     assert_eq!(catalog.entries.len(), 2);
-    assert!(catalog.entries.iter().all(|e| e.cwd == "/fixture"));
+    assert!(catalog.entries.iter().all(|e| e.cwd == "/tmp"));
 }
 
 #[tokio::test]
@@ -563,7 +563,7 @@ async fn different_directory_catalog_is_rejected_before_transport() {
         .write()
         .unwrap()
         .config
-        .working_directory = PathBuf::from("/other");
+        .working_directory = PathBuf::from("/");
     assert!(open(app.handle().clone(), generation, 0)
         .await
         .unwrap_err()
@@ -584,7 +584,7 @@ async fn changing_directory_invalidates_late_replay_without_switching_agent() {
         {
             let state = app.state::<AppState>();
             let _guard = state.session_view.admission.lock().unwrap();
-            state.runtime.write().unwrap().config.working_directory = PathBuf::from("/other");
+            state.runtime.write().unwrap().config.working_directory = PathBuf::from("/");
             invalidate_working_directory(app.handle()).unwrap();
         }
         host.release.notify_one();
@@ -599,7 +599,7 @@ async fn changing_directory_invalidates_late_replay_without_switching_agent() {
     assert_eq!(state.config().unwrap().agent, AgentKind::Claude);
     assert_eq!(
         state.config().unwrap().working_directory,
-        PathBuf::from("/other")
+        PathBuf::from("/")
     );
     assert_eq!(state.session_view.view().unwrap().phase, ViewPhase::Idle);
     assert!(state.session_view.catalog().unwrap().entries.is_empty());
@@ -613,7 +613,7 @@ fn directory_change_rejects_late_catalog_even_after_returning_to_original_direct
     let old = state.session_view.catalog().unwrap();
     {
         let _guard = state.session_view.admission.lock().unwrap();
-        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/other");
+        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/");
         invalidate_working_directory(app.handle()).unwrap();
     }
     commit_catalog(app.handle(), old.clone()).unwrap();
@@ -625,4 +625,33 @@ fn directory_change_rejects_late_catalog_even_after_returning_to_original_direct
     }
     commit_catalog(app.handle(), old).unwrap();
     assert!(state.session_view.catalog().unwrap().entries.is_empty());
+}
+
+#[test]
+fn same_session_ids_from_different_external_profiles_remain_distinct() {
+    let listings = [Uuid::from_u128(1), Uuid::from_u128(2)]
+        .into_iter()
+        .map(|id| {
+            let agent = AgentKind::External(id);
+            (
+                agent,
+                Ok(ProviderHistoryListing {
+                    agent,
+                    complete: true,
+                    can_load: true,
+                    error: None,
+                    entries: vec![crate::session_history::HistorySessionEntry {
+                        session_id: "shared-id".into(),
+                        cwd: "/tmp".into(),
+                        title: Some("Same title".into()),
+                        updated_at: Some("2026-09-17T00:00:00Z".into()),
+                    }],
+                }),
+            )
+        })
+        .collect();
+    let catalog = merge_listings(Path::new("/tmp"), listings);
+    assert_eq!(catalog.entries.len(), 2);
+    assert_ne!(catalog.entries[0].agent, catalog.entries[1].agent);
+    assert_eq!(catalog.entries[0].session_id, catalog.entries[1].session_id);
 }

@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AgentDefaults, AgentSelectionState, ToolPolicies, ToolPolicy } from "../types";
 import { AGENT_INTENT_EVENT, dispatchComponentEvent, type AgentIntent } from "./events";
+import { sameAgent } from "../view-model";
 import { agentOptionChoices } from "./agent-option-choices";
 
 export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = {
@@ -43,9 +44,9 @@ export class LensAgentDefaults extends LitElement {
         JSON.stringify(changed.get("defaults") ?? DEFAULT_AGENT_DEFAULTS) !==
           JSON.stringify(this.defaults ?? DEFAULT_AGENT_DEFAULTS)) ||
       (changed.has("selection") &&
-        changed.get("selection")?.candidate !== this.selection?.candidate)
+        !sameAgent(changed.get("selection")?.candidate, this.selection?.candidate))
     ) {
-      this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
+      this.draft = this.editableDefaults(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
     }
   }
   protected updated() {
@@ -57,6 +58,18 @@ export class LensAgentDefaults extends LitElement {
   }
   private choiceValue(configId: string): string {
     return this.draft.choices.find((choice) => choice.config_id === configId)?.value ?? "";
+  }
+  private externallyManaged(configId: string): boolean {
+    if (typeof this.selection?.candidate !== "object") return false;
+    const options = this.selection.config_options;
+    if (!options) return configId !== "mode";
+    const category = options.find((option) => option.id === configId)?.category;
+    return !category || !["model", "mode", "thought_level"].includes(category);
+  }
+  private editableDefaults(defaults: AgentDefaults): AgentDefaults {
+    const result = structuredClone(defaults);
+    result.choices = result.choices.filter((choice) => !this.externallyManaged(choice.config_id));
+    return result;
   }
   private unlistedChoice(configId: string, values: string[]) {
     const value = this.choiceValue(configId);
@@ -156,14 +169,14 @@ export class LensAgentDefaults extends LitElement {
       </details>
       <button
         ?disabled=${this.disabled}
-        @click=${() => dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, { type: "save-defaults", defaults: structuredClone(this.draft) })}
+        @click=${() => dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, { type: "save-defaults", defaults: this.editableDefaults(this.draft) })}
       >
         Save Defaults
       </button>
       <button
         ?disabled=${this.disabled}
         @click=${() => {
-          this.draft = structuredClone(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
+          this.draft = this.editableDefaults(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
           const model = this.selection?.config_options?.find((o) => o.category === "model");
           if (model)
             dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, {
@@ -178,6 +191,21 @@ export class LensAgentDefaults extends LitElement {
     </section>`;
   }
   private renderOption(option: NonNullable<AgentSelectionState["config_options"]>[number]) {
+    if (this.externallyManaged(option.id)) {
+      const current = (option.options ?? [])
+        .flatMap((choice) => ("group" in choice ? choice.options : [choice]))
+        .find((choice) => choice.value === option.currentValue);
+      return html`<div class="settings-field">
+        <span>${option.name}</span>
+        <output aria-label=${`${option.name} managed by external CLI`}
+          >${current?.name ?? String(option.currentValue)}</output
+        >
+        <span class="help"
+          >Change this advanced option with the agent's own CLI, then use Save and Verify in
+          Connection. Lens uses the agent's configuration.</span
+        >
+      </div>`;
+    }
     return html`<label class="settings-field"
       ><span>${option.name}</span>
       <select
@@ -201,6 +229,7 @@ export class LensAgentDefaults extends LitElement {
     >`;
   }
   private choose(configId: string, value: string) {
+    if (this.externallyManaged(configId)) return;
     const isModel = this.selection?.config_options?.some(
       (o) => o.id === configId && o.category === "model",
     );

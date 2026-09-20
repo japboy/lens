@@ -134,3 +134,23 @@ describe("separately compiled native consumers", () => {
     ).toEqual([]);
   });
 });
+
+it("admits only the exact foreground recovery activation at the composition root", () => {
+  const source = '#[cfg(target_os = "macos")] native::configure_activation(app, true);';
+  expect(commonShellConditionalViolations("apps/desktop/src-tauri/src/lib.rs", source)).toEqual([]);
+  expect(
+    commonShellConditionalViolations("apps/desktop/src-tauri/src/settings_recovery.rs", source),
+  ).not.toEqual([]);
+  expect(
+    commonShellConditionalViolations(
+      "apps/desktop/src-tauri/src/lib.rs",
+      source.replace("true", "false"),
+    ),
+  ).not.toEqual([]);
+  expect(
+    commonShellConditionalViolations(
+      "apps/desktop/src-tauri/src/lib.rs",
+      source.replace("true", "read_settings()"),
+    ),
+  ).not.toEqual([]);
+});

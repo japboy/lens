@@ -12,11 +12,79 @@ use uuid::Uuid;
 #[cfg(test)]
 use crate::platform::WindowPickerReply;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {
     Claude,
     Codex,
+    External(Uuid),
+}
+
+impl AgentKind {
+    pub fn is_external(self) -> bool {
+        matches!(self, Self::External(_))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalAgentProfile {
+    pub id: Uuid,
+    pub name: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl ExternalAgentProfile {
+    pub fn bundled_presets() -> Vec<Self> {
+        vec![Self::goose_preset(), Self::copilot_preset()]
+    }
+
+    pub fn goose_preset() -> Self {
+        Self {
+            id: Uuid::from_u128(0x6b57315e9c134e4abf4ce6bc33b10b21),
+            name: "Goose".into(),
+            command: "goose".into(),
+            args: vec!["acp".into()],
+        }
+    }
+    pub fn copilot_preset() -> Self {
+        Self {
+            id: Uuid::from_u128(0xa14d73cb951c48eda3053829750c88da),
+            name: "GitHub Copilot".into(),
+            command: "copilot".into(),
+            args: vec!["--acp".into(), "--stdio".into()],
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.is_nil()
+            || self.name.trim().is_empty()
+            || self.name.len() > 128
+            || self.name.contains('\0')
+        {
+            return Err("Provide a profile ID and a name of at most 128 bytes.".into());
+        }
+        if self.command.as_os_str().is_empty()
+            || self.command.to_string_lossy().contains('\0')
+            || (!self.command.is_absolute()
+                && (self.command.components().count() != 1
+                    || !matches!(
+                        self.command.components().next(),
+                        Some(std::path::Component::Normal(_))
+                    )
+                    || self.command.to_string_lossy().contains('/')))
+        {
+            return Err(
+                "Use an executable name from PATH or an absolute path, without NUL.".into(),
+            );
+        }
+        if self.args.len() > 64
+            || self.args.iter().map(String::len).sum::<usize>() > 16384
+            || self.args.iter().any(|a| a.contains('\0'))
+        {
+            return Err("Arguments must contain no NUL, at most 64 values and 16384 bytes.".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +181,8 @@ pub struct AgentSelectionState {
     #[serde(default)]
     pub auth_methods: Vec<AgentAuthMethod>,
     #[serde(default)]
+    pub supports_logout: bool,
+    #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
@@ -140,6 +210,7 @@ impl Default for AgentSelectionState {
             agent_default: None,
             candidate: None,
             auth_methods: Vec::new(),
+            supports_logout: false,
             message: None,
             error: None,
         }
@@ -176,6 +247,7 @@ pub struct AppConfig {
     pub agent_preferences: crate::agent_preferences::AgentPreferences,
     pub agent: AgentKind,
     pub working_directory: PathBuf,
+    pub external_agents: Vec<ExternalAgentProfile>,
     pub agent_prompt_template: AgentPromptTemplate,
     pub prompt_presets: PromptPresetCatalog,
 }
@@ -188,8 +260,19 @@ impl AppConfig {
             agent: AgentKind::Claude,
             agent_preferences: Default::default(),
             working_directory: default_working_directory,
+            external_agents: ExternalAgentProfile::bundled_presets(),
             agent_prompt_template: prompt_presets.selected().template.clone(),
             prompt_presets,
+        }
+    }
+
+    pub fn reset_external_agents(&mut self) {
+        self.external_agents = ExternalAgentProfile::bundled_presets();
+        self.agent_preferences
+            .external
+            .retain(|id, _| self.external_agents.iter().any(|profile| profile.id == *id));
+        if self.agent.is_external() {
+            self.agent = AgentKind::Claude;
         }
     }
 
@@ -199,20 +282,32 @@ impl AppConfig {
         Ok(())
     }
 
+    pub fn same_agent_execution(&self, other: &Self, agent: AgentKind) -> bool {
+        self.agent_preferences.get(agent) == other.agent_preferences.get(agent)
+            && match agent {
+                AgentKind::External(id) => {
+                    let left = self.external_agents.iter().find(|p| p.id == id);
+                    let right = other.external_agents.iter().find(|p| p.id == id);
+                    match (left, right) {
+                        (Some(a), Some(b)) => a.command == b.command && a.args == b.args,
+                        (None, None) => false,
+                        _ => false,
+                    }
+                }
+                _ => true,
+            }
+    }
     pub fn same_execution_config(&self, other: &Self) -> bool {
         self.prompt_presets.execution_revision == other.prompt_presets.execution_revision
             && self.agent == other.agent
-            && self.agent_preferences == other.agent_preferences
+            && self.same_agent_execution(other, self.agent)
             && self.working_directory == other.working_directory
             && self.agent_prompt_template == other.agent_prompt_template
     }
 
     pub fn settings_require_prompt_migration(bytes: &[u8]) -> Result<bool, serde_json::Error> {
         let value: serde_json::Value = serde_json::from_slice(bytes)?;
-        Ok(value.get("prompt_presets").is_none()
-            || value["prompt_presets"]["schema_version"] == 1
-            || current_catalog_has_no_records(&value["prompt_presets"])
-            || current_catalog_needs_selection(&value["prompt_presets"])
+        Ok(current_catalog_needs_selection(&value["prompt_presets"])
             || catalog_has_legacy_ids(&value["prompt_presets"]))
     }
 
@@ -234,8 +329,16 @@ struct AppConfigWire {
     agent: AgentKind,
     #[serde(deserialize_with = "present_directory")]
     working_directory: Option<PathBuf>,
+    #[serde(deserialize_with = "present_external_agents")]
+    external_agents: Option<Vec<ExternalAgentProfile>>,
     #[serde(deserialize_with = "present_prompt_presets")]
     prompt_presets: Option<PromptPresetCatalog>,
+}
+
+fn present_external_agents<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<ExternalAgentProfile>>, D::Error> {
+    Vec::<ExternalAgentProfile>::deserialize(deserializer).map(Some)
 }
 
 fn catalog_has_legacy_ids(value: &serde_json::Value) -> bool {
@@ -247,15 +350,6 @@ fn catalog_has_legacy_ids(value: &serde_json::Value) -> bool {
                     .any(|(old, _)| p["id"].as_str() == Some(*old))
             })
         })
-}
-
-fn current_catalog_has_no_records(value: &serde_json::Value) -> bool {
-    value["schema_version"] == 2
-        && (value.get("presets").is_none()
-            || value
-                .get("presets")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(Vec::is_empty))
 }
 
 fn current_catalog_needs_selection(value: &serde_json::Value) -> bool {
@@ -278,17 +372,6 @@ fn present_prompt_presets<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<PromptPresetCatalog>, D::Error> {
     let mut value = serde_json::Value::deserialize(deserializer)?;
-    if current_catalog_has_no_records(&value) {
-        let defaults = PromptPresetCatalog::default();
-        value["presets"] =
-            serde_json::to_value(&defaults.presets).map_err(serde::de::Error::custom)?;
-        value["selected_id"] = serde_json::Value::String(defaults.selected_id.clone());
-        serde_json::from_value::<PromptPresetCatalog>(value)
-            .map_err(serde::de::Error::custom)?
-            .normalize()
-            .map_err(serde::de::Error::custom)?;
-        return Ok(Some(defaults));
-    }
     if current_catalog_needs_selection(&value) {
         value["selected_id"] = value["presets"][0]["id"].clone();
     }
@@ -296,7 +379,9 @@ fn present_prompt_presets<'de, D: serde::Deserializer<'de>>(
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
     {
-        Some(1) => Ok(Some(PromptPresetCatalog::default())),
+        Some(1) => Err(serde::de::Error::custom(
+            "Legacy prompt catalog requires recovery; saved content cannot be replaced automatically.",
+        )),
         Some(2) => serde_json::from_value::<PromptPresetCatalog>(value)
             .map(|catalog| Some(catalog.migrate_legacy_ids()))
             .map_err(serde::de::Error::custom),
@@ -319,6 +404,7 @@ impl Default for AppConfigWire {
             agent: AgentKind::Claude,
             agent_preferences: Default::default(),
             working_directory: None,
+            external_agents: None,
             prompt_presets: None,
         }
     }
@@ -326,9 +412,36 @@ impl Default for AppConfigWire {
 
 impl AppConfigWire {
     fn into_config(self, default_working_directory: PathBuf) -> Result<AppConfig, String> {
-        let prompt_presets = self.prompt_presets.unwrap_or_default().normalize()?;
+        let external_agents = self.external_agents.unwrap_or_default();
+        if external_agents.len() > 16 {
+            return Err("At most 16 external Agent profiles are supported.".into());
+        }
+        let mut ids = std::collections::HashSet::new();
+        for profile in &external_agents {
+            profile.validate()?;
+            if !ids.insert(profile.id) {
+                return Err("External Agent profile IDs must be unique.".into());
+            }
+        }
+        if let AgentKind::External(id) = self.agent {
+            if !ids.contains(&id) {
+                return Err("Selected external Agent profile does not exist.".into());
+            }
+        }
+        if self
+            .agent_preferences
+            .external
+            .keys()
+            .any(|id| !ids.contains(id))
+        {
+            return Err("External Agent defaults reference an unknown profile.".into());
+        }
+        let prompt_presets = self.prompt_presets.ok_or(
+            "Saved settings have no prompt catalog. Restore or explicitly recreate the catalog.",
+        )?.normalize()?;
         Ok(AppConfig {
             agent: self.agent,
+            external_agents,
             agent_preferences: self.agent_preferences,
             working_directory: self.working_directory.unwrap_or(default_working_directory),
             agent_prompt_template: prompt_presets.selected().template.clone(),
@@ -549,25 +662,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_upgrade_prompt_schema_once_and_preserve_other_settings() {
-        for legacy in [
+    fn existing_settings_without_recoverable_prompts_do_not_receive_defaults() {
+        for value in [
             serde_json::json!({}),
             serde_json::json!({"response_prompt":"old literal {text}"}),
             serde_json::json!({"prompt_presets":{"schema_version":1,"presets":[{"description":"old"}]}}),
+            serde_json::json!({"prompt_presets":{"schema_version":2,"revision":1,"execution_revision":1,"selected_id":"gone","presets":[]}}),
         ] {
-            let mut value = legacy;
-            value["agent"] = "codex".into();
-            value["working_directory"] = "/explicit".into();
             let bytes = serde_json::to_vec(&value).unwrap();
-            assert!(AppConfig::settings_require_prompt_migration(&bytes).unwrap());
-            let config = AppConfig::decode_settings(&bytes, PathBuf::from("/host")).unwrap();
-            assert_eq!(config.agent, AgentKind::Codex);
-            assert_eq!(config.working_directory, PathBuf::from("/explicit"));
-            assert_eq!(config.prompt_presets, PromptPresetCatalog::default());
-            assert_eq!(
-                config.agent_prompt_template,
-                config.prompt_presets.presets[0].template
-            );
+            assert!(!AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+            assert!(AppConfig::decode_settings(&bytes, PathBuf::from("/host")).is_err());
         }
         let mut config = AppConfig::new(PathBuf::from("/host"));
         config.prompt_presets.presets[0].name = "My visual".into();
@@ -577,6 +681,39 @@ mod tests {
             AppConfig::decode_settings(&bytes, PathBuf::from("/other")).unwrap(),
             config
         );
+    }
+
+    #[test]
+    fn selection_repair_preserves_every_saved_record_and_revision() {
+        let mut original = AppConfig::new("/fixture".into());
+        original.prompt_presets.presets.truncate(2);
+        original.prompt_presets.presets[0].name = "Saved custom title".into();
+        original.prompt_presets.presets[0]
+            .template
+            .common
+            .push_str("\nRetain this instruction.");
+        original.prompt_presets.revision = 9;
+        original.prompt_presets.execution_revision = 4;
+        original.sync_prompt_template().unwrap();
+        for missing in [true, false] {
+            let mut saved = serde_json::to_value(&original).unwrap();
+            if missing {
+                saved["prompt_presets"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("selected_id");
+            } else {
+                saved["prompt_presets"]["selected_id"] = "removed".into();
+            }
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            assert!(AppConfig::settings_require_prompt_migration(&bytes).unwrap());
+            let repaired = AppConfig::decode_settings(&bytes, "/other".into()).unwrap();
+            assert_eq!(repaired, original);
+            assert!(!AppConfig::settings_require_prompt_migration(
+                &serde_json::to_vec(&repaired).unwrap()
+            )
+            .unwrap());
+        }
     }
 
     #[test]
@@ -791,5 +928,142 @@ mod tests {
         };
         assert_eq!(selected.selected_agent(), Some(AgentKind::Codex));
         assert!(selected.can_select_lens_target());
+    }
+    #[test]
+    fn external_executable_is_part_of_execution_identity_and_legacy_defaults() {
+        let mut config = AppConfig::new("/fixture".into());
+        config.external_agents.clear();
+        let previous = config.clone();
+        config.external_agents.push(ExternalAgentProfile {
+            id: Uuid::from_u128(1),
+            name: "Custom".into(),
+            command: "/user/agent".into(),
+            args: vec![],
+        });
+        assert!(!config
+            .same_agent_execution(&previous, AgentKind::External(config.external_agents[0].id)));
+        let mut saved = serde_json::to_value(AppConfig::new("/fixture".into())).unwrap();
+        saved.as_object_mut().unwrap().remove("external_agents");
+        let decoded =
+            AppConfig::decode_settings(&serde_json::to_vec(&saved).unwrap(), "/fixture".into())
+                .unwrap();
+        assert!(decoded.external_agents.is_empty());
+        assert!(decoded.agent_preferences.external.is_empty());
+    }
+    #[test]
+    fn external_profiles_preserve_managed_wire_and_reject_invalid_catalogs() {
+        assert_eq!(serde_json::to_value(AgentKind::Claude).unwrap(), "claude");
+        assert_eq!(serde_json::to_value(AgentKind::Codex).unwrap(), "codex");
+        let id = Uuid::from_u128(1);
+        let profile = ExternalAgentProfile {
+            id,
+            name: "Custom".into(),
+            command: "/bin/agent".into(),
+            args: vec!["".into(), "argument with spaces".into()],
+        };
+        let mut config = AppConfig::new("/fixture".into());
+        config.external_agents = vec![profile.clone()];
+        config.agent = AgentKind::External(id);
+        let wire = serde_json::to_value(&config).unwrap();
+        assert_eq!(wire["agent"]["external"], id.to_string());
+        assert_eq!(
+            AppConfig::decode_settings(&serde_json::to_vec(&wire).unwrap(), "/fixture".into())
+                .unwrap(),
+            config
+        );
+        for profiles in [vec![profile.clone(); 2], vec![profile.clone(); 17], vec![]] {
+            let mut invalid = wire.clone();
+            invalid["external_agents"] = serde_json::to_value(profiles).unwrap();
+            assert!(AppConfig::decode_settings(
+                &serde_json::to_vec(&invalid).unwrap(),
+                "/fixture".into()
+            )
+            .is_err());
+        }
+        let mut renamed = config.clone();
+        renamed.external_agents[0].name = "Renamed".into();
+        assert!(config.same_execution_config(&renamed));
+        renamed.external_agents[0].args.push("--changed".into());
+        assert!(!config.same_execution_config(&renamed));
+    }
+    #[test]
+    fn initial_external_profiles_have_stable_distinct_ids_and_literal_commands() {
+        let goose = ExternalAgentProfile::goose_preset();
+        let copilot = ExternalAgentProfile::copilot_preset();
+        assert_eq!(goose.id.to_string(), "6b57315e-9c13-4e4a-bf4c-e6bc33b10b21");
+        assert_eq!(
+            copilot.id.to_string(),
+            "a14d73cb-951c-48ed-a305-3829750c88da"
+        );
+        assert_ne!(goose.id, copilot.id);
+        assert_eq!(copilot.name, "GitHub Copilot");
+        assert_eq!(copilot.command, PathBuf::from("copilot"));
+        assert_eq!(copilot.args, ["--acp", "--stdio"]);
+        for profile in [goose, copilot] {
+            profile.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn saved_external_profiles_are_never_augmented_with_initial_presets() {
+        let initial = AppConfig::new("/fixture".into());
+        let mut customized = ExternalAgentProfile::copilot_preset();
+        customized.name = "My connection".into();
+        customized.command = "/custom/agent".into();
+        customized.args = vec!["custom-acp".into()];
+        for profiles in [
+            vec![ExternalAgentProfile::goose_preset()],
+            vec![ExternalAgentProfile::copilot_preset()],
+            vec![customized],
+            vec![],
+        ] {
+            let mut saved = initial.clone();
+            saved.external_agents = profiles;
+            let loaded =
+                AppConfig::decode_settings(&serde_json::to_vec(&saved).unwrap(), "/other".into())
+                    .unwrap();
+            assert_eq!(loaded, saved);
+        }
+    }
+
+    #[test]
+    fn only_new_settings_seed_external_profiles_and_legacy_markers_are_inert() {
+        let initial = AppConfig::new("/fixture".into());
+        assert_eq!(
+            initial.external_agents,
+            vec![
+                ExternalAgentProfile::goose_preset(),
+                ExternalAgentProfile::copilot_preset(),
+            ]
+        );
+        for marker in [None, Some(0), Some(1), Some(99)] {
+            for missing in [true, false] {
+                let mut saved = serde_json::to_value(&initial).unwrap();
+                if missing {
+                    saved.as_object_mut().unwrap().remove("external_agents");
+                } else {
+                    saved["external_agents"] = serde_json::json!([]);
+                }
+                if let Some(version) = marker {
+                    saved["external_agent_presets_version"] = version.into();
+                }
+                let loaded = AppConfig::decode_settings(
+                    &serde_json::to_vec(&saved).unwrap(),
+                    "/other".into(),
+                )
+                .unwrap();
+                assert!(loaded.external_agents.is_empty());
+                assert_eq!(loaded.prompt_presets, initial.prompt_presets);
+                let saved_again = serde_json::to_value(&loaded).unwrap();
+                assert!(saved_again.get("external_agent_presets_version").is_none());
+                assert!(AppConfig::decode_settings(
+                    &serde_json::to_vec(&saved_again).unwrap(),
+                    "/other".into()
+                )
+                .unwrap()
+                .external_agents
+                .is_empty());
+            }
+        }
     }
 }

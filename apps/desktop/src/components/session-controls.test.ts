@@ -265,6 +265,7 @@ describe("shared Agent defaults", () => {
     element.selection = {
       stage: "selected",
       candidate: "codex",
+      supports_logout: false,
       auth_methods: [],
       config_options: snapshot().config_options,
       agent_default: "safe",
