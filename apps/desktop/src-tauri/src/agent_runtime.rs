@@ -347,8 +347,7 @@ async fn resolve_external<R: tauri::Runtime>(
         .find(|p| kind == AgentKind::External(p.id))
         .cloned()
     else {
-        let message =
-            "Choose and save the absolute path to your installed External ACP executable in Settings.";
+        let message = "Choose and save your installed External ACP command in Settings.";
         publish_agent_runtime(
             app,
             AgentRuntimeState {
@@ -371,7 +370,8 @@ async fn resolve_external<R: tauri::Runtime>(
             ..Default::default()
         },
     )?;
-    let result = crate::external_agent::resolve(profile).await;
+    let cwd = crate::store::effective_working_directory(&config);
+    let result = crate::external_agent::resolve(profile, &cwd).await;
     match &result {
         Ok(runtime) => {
             publish_ready(app, operation, runtime, None)?;

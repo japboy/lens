@@ -288,7 +288,7 @@ async fn unsupported_logout_does_not_invalidate_external_readiness() {
 }
 
 #[tokio::test]
-async fn missing_external_path_never_installs_a_managed_runtime() {
+async fn missing_external_profile_never_installs_a_managed_runtime() {
     let app = app(crate::test_support::state());
     assert!(agent_runtime::resolve_installed(app.handle(), external())
         .await
@@ -297,11 +297,11 @@ async fn missing_external_path_never_installs_a_managed_runtime() {
     assert!(agent_runtime::resolve(app.handle(), external())
         .await
         .unwrap_err()
-        .contains("absolute path"));
+        .contains("External ACP command"));
     assert!(agent_runtime::resolve_for_session(app.handle(), external())
         .await
         .unwrap_err()
-        .contains("absolute path"));
+        .contains("External ACP command"));
 }
 
 #[tokio::test]

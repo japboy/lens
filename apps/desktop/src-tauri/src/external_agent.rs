@@ -116,8 +116,31 @@ pub(crate) fn resolve_command(
 
 pub(crate) async fn resolve(
     profile: crate::model::ExternalAgentProfile,
+    cwd: &Path,
 ) -> Result<ResolvedAgentRuntime, String> {
     validate_profile(&profile)?;
+    let environment = if profile.command.is_absolute() {
+        std::collections::BTreeMap::new()
+    } else {
+        crate::agent_environment::resolve(
+            cwd,
+            crate::agent_environment::EnvironmentPurpose::Validation,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .values
+    };
+    admit_runtime(profile, &environment, cwd)
+}
+
+fn admit_runtime(
+    profile: crate::model::ExternalAgentProfile,
+    environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    cwd: &Path,
+) -> Result<ResolvedAgentRuntime, String> {
+    resolve_command(&profile.command, environment, cwd)?;
+    // This is installation readiness only. Keep the original command so each
+    // physical connection still acquires and uses its own fresh environment.
     Ok(ResolvedAgentRuntime {
         kind: AgentKind::External(profile.id),
         adapter_name: "external-acp",
@@ -145,7 +168,7 @@ mod tests {
             command: command.clone(),
             args: vec!["--stdio".into(), "space argument".into()],
         };
-        let runtime = resolve(profile.clone()).await.unwrap();
+        let runtime = resolve(profile.clone(), &dir).await.unwrap();
         assert_eq!(runtime.command, command);
         assert_eq!(runtime.args, profile.args);
         assert!(runtime.installation.is_none());
@@ -219,5 +242,30 @@ mod tests {
             root.path()
         )
         .is_err());
+    }
+    #[test]
+    fn runtime_admission_requires_executable_in_resolved_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let command = root.path().join("fixture-agent");
+        let profile = crate::model::ExternalAgentProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "Fixture".into(),
+            command: "fixture-agent".into(),
+            args: vec!["acp".into()],
+        };
+        let environment =
+            std::collections::BTreeMap::from([("PATH".into(), root.path().as_os_str().to_owned())]);
+        assert!(admit_runtime(profile.clone(), &environment, root.path())
+            .unwrap_err()
+            .contains("not found"));
+        std::fs::write(&command, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(admit_runtime(profile.clone(), &environment, root.path()).is_err());
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = admit_runtime(profile.clone(), &environment, root.path()).unwrap();
+        // Preflight never executes the CLI and never freezes its PATH resolution.
+        assert_eq!(runtime.command, profile.command);
+        assert_eq!(runtime.args, profile.args);
     }
 }
