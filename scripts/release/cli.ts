@@ -14,13 +14,8 @@ import {
   RELEASE_WORKFLOW,
   verifyArtifactV2,
 } from "./receipt.ts";
-import {
-  publishDurableRelease,
-  publishReviewedCheckpoint,
-  restoreDurableArtifact,
-} from "./durable.ts";
+import { publishDurableRelease, restoreDurableArtifact } from "./durable.ts";
 import { BUNDLE_NAME, createBundle } from "./recovery-bundle.ts";
-import { verifyReviewedCheckpoint } from "./checkpoint.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const env = (name: string) => {
@@ -137,10 +132,9 @@ if (mode === "pr-title") {
         throw new Error("Original controller predates the admitted build contract");
     },
   };
-  const checkpoint = await verifyReviewedCheckpoint(api, admitted, policy.repository);
-  if (admitted.draft && !checkpoint && process.env.RECOVERY_STATE === "durable")
+  if (admitted.draft && process.env.RECOVERY_STATE === "durable")
     await restoreDurableArtifact(api, directory, admitted, policy);
-  if (admitted.draft && !checkpoint) {
+  if (admitted.draft) {
     const manifest = verifyArtifactV2(
       directory,
       {
@@ -168,22 +162,14 @@ if (mode === "pr-title") {
     )
       throw new Error("Artifact notes differ from admitted source");
   }
-  const result = checkpoint
-    ? await publishReviewedCheckpoint(
-        api,
-        admitted,
-        policy,
-        enabled === "true",
-        process.env.IMMUTABILITY_RESULT === "success",
-      )
-    : await publishDurableRelease(
-        api,
-        directory,
-        admitted,
-        policy,
-        enabled === "true",
-        process.env.IMMUTABILITY_RESULT === "success",
-      );
+  const result = await publishDurableRelease(
+    api,
+    directory,
+    admitted,
+    policy,
+    enabled === "true",
+    process.env.IMMUTABILITY_RESULT === "success",
+  );
   process.stdout.write(`${result}\n`);
 } else {
   throw new Error("Unknown release operation");

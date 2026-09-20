@@ -527,6 +527,16 @@ describe("draft and published finite recovery", () => {
       const count = f.writes.length;
       expect((await resumeRelease(f.api, admitted, "owner/repo")).state).toBe("published");
       expect(await f.publish()).toBe("already-published");
+      expect(
+        await publishDurableRelease(
+          f.api,
+          "no-local-artifact",
+          admitted,
+          f.provenance,
+          false,
+          false,
+        ),
+      ).toBe("already-published");
       expect(f.writes).toHaveLength(count);
     } finally {
       f.close();
