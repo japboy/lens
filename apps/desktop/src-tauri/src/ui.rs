@@ -82,9 +82,14 @@ pub(crate) fn show_settings_recovery<R: tauri::Runtime>(app: &AppHandle<R>) -> t
     .inner_size(640.0, 460.0)
     .min_inner_size(480.0, 360.0)
     .build()?;
+    present_window(&window)
+}
+
+/// Present a requested window consistently, whether newly created, hidden, or minimized.
+fn present_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
+    window.unminimize()?;
     window.show()?;
-    window.set_focus()?;
-    Ok(())
+    window.set_focus()
 }
 
 const SETTINGS_WINDOW_SIZE_POLICY: WindowSizePolicy = WindowSizePolicy {
@@ -949,15 +954,14 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
 
 pub(crate) fn show_history_window<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(LENS_WINDOW_LABEL) {
-        window.show()?;
-        return window.set_focus();
+        return present_window(&window);
     }
     let geometry = primary_screen_overlay_geometry(app)?;
-    overlay_window_builder(app)
+    let window = overlay_window_builder(app)
         .inner_size(geometry.width, geometry.height)
         .position(geometry.x, geometry.y)
         .build()?;
-    Ok(())
+    present_window(&window)
 }
 
 /// Live and restored sessions share one native surface; only placement differs.
@@ -1177,9 +1181,7 @@ fn track_settings_background<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>
 
 pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("about") {
-        window.show().map_err(|error| error.to_string())?;
-        window.unminimize().map_err(|error| error.to_string())?;
-        return window.set_focus().map_err(|error| error.to_string());
+        return present_window(&window).map_err(|error| error.to_string());
     }
     let background = settings_background(app).map_err(|error| error.to_string())?;
     let window = WebviewWindowBuilder::new(app, "about", webview_url(WebviewView::About))
@@ -1193,7 +1195,7 @@ pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .build()
         .map_err(|error| error.to_string())?;
     track_settings_background(&window);
-    Ok(())
+    present_window(&window).map_err(|error| error.to_string())
 }
 
 pub fn show_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -1224,8 +1226,7 @@ fn show_settings_destination<R: tauri::Runtime>(
     destination: Option<SettingsDestination>,
 ) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
-        window.show()?;
-        window.set_focus()?;
+        present_window(&window)?;
         if let Some(destination) = destination {
             window.emit("settings-destination", destination.id())?;
         }
@@ -1263,7 +1264,7 @@ fn show_settings_destination<R: tauri::Runtime>(
         .center()
         .build()?;
     track_settings_background(&window);
-    Ok(())
+    present_window(&window)
 }
 
 pub fn show_lens_window<R: tauri::Runtime>(
@@ -1286,24 +1287,21 @@ pub fn show_lens_window<R: tauri::Runtime>(
             window.set_position(LogicalPosition::new(geometry.x, geometry.y))?;
             placement.record_applied(target_set.selection_id);
             drop(placement);
-            window.show()?;
-            window.set_focus()?;
-            Ok(())
+            present_window(&window)
         }
         (Some(window), LensWindowPlacementDecision::Preserve) => {
             drop(placement);
-            window.show()?;
-            window.set_focus()?;
-            Ok(())
+            present_window(&window)
         }
         (None, LensWindowPlacementDecision::Apply) => {
             let geometry = lens_window_geometry(app, target_set)?;
-            overlay_window_builder(app)
+            let window = overlay_window_builder(app)
                 .inner_size(geometry.width, geometry.height)
                 .position(geometry.x, geometry.y)
                 .build()?;
             placement.record_applied(target_set.selection_id);
-            Ok(())
+            drop(placement);
+            present_window(&window)
         }
         (None, LensWindowPlacementDecision::Preserve) => Err(tauri::Error::Io(
             std::io::Error::other("missing Lens window cannot preserve placement"),
@@ -1352,9 +1350,7 @@ pub async fn show_target_selection_window<R: tauri::Runtime>(
         )
         .await
         .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
-        window.show()?;
-        window.set_focus()?;
-        return Ok(());
+        return present_window(&window);
     }
 
     let window = WebviewWindowBuilder::new(
@@ -1385,7 +1381,8 @@ pub async fn show_target_selection_window<R: tauri::Runtime>(
     .build()?;
     crate::platform::present_window_from_screen_right(&window)
         .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
-    Ok(())
+    // The native entrance owns showing and positioning; focus only after it completes.
+    window.set_focus()
 }
 
 pub async fn dismiss_target_selection_window<R: tauri::Runtime>(
