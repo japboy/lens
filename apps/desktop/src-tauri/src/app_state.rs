@@ -165,7 +165,25 @@ pub struct AgentControl {
     session: Mutex<Option<ActiveAgentSession>>,
 }
 
+/// Clears only this run when its owning future completes or is dropped.
+pub(crate) struct AgentRunLifetime<'a> {
+    control: &'a AgentControl,
+    key: AgentRunKey,
+}
+
+impl Drop for AgentRunLifetime<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.control.finish(self.key) {
+            eprintln!("Unable to finish the dropped Agent run: {error}");
+        }
+    }
+}
+
 impl AgentControl {
+    pub(crate) fn run_lifetime(&self, key: AgentRunKey) -> AgentRunLifetime<'_> {
+        AgentRunLifetime { control: self, key }
+    }
+
     pub(crate) fn has_pending_work(&self) -> Result<bool, String> {
         let active = self
             .active
@@ -1047,6 +1065,24 @@ mod tests {
         assert!(*run.cancellation.borrow());
         assert!(control.has_pending_work().unwrap());
         assert!(control.finish(run.key).unwrap());
+        assert!(!control.has_pending_work().unwrap());
+    }
+
+    #[test]
+    fn dropped_run_lifetime_clears_only_its_own_run() {
+        let control = AgentControl::default();
+        let operation = Uuid::new_v4();
+        let first = control.begin(operation).unwrap();
+        let first_lifetime = control.run_lifetime(first.key);
+        let second = control.begin(operation).unwrap();
+        let second_lifetime = control.run_lifetime(second.key);
+        drop(first_lifetime);
+        assert!(control.has_pending_work().unwrap());
+        assert_eq!(
+            control.active.lock().unwrap().as_ref().unwrap().key,
+            second.key
+        );
+        drop(second_lifetime);
         assert!(!control.has_pending_work().unwrap());
     }
 

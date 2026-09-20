@@ -46,6 +46,7 @@ enum Scenario {
     StopDuringDismiss,
     StopDuringPrompt,
     SwitchDuringPrompt,
+    ConfigFailureDuringPrompt,
     StopDuringExtraction,
 }
 
@@ -482,7 +483,15 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 responder: Responder<SetSessionConfigOptionResponse>,
                                 _| {
                         configure.record(Effect::Configure);
-                        if configure.scenario == Scenario::CandidateSetupFailure {
+                        if configure.scenario == Scenario::CandidateSetupFailure
+                            || (configure.scenario == Scenario::ConfigFailureDuringPrompt
+                                && configure
+                                    .effects
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .any(|effect| matches!(effect, Effect::Prompt(_))))
+                        {
                             return responder.respond_with_error(
                                 agent_client_protocol::Error::invalid_params()
                                     .data("fixture saved settings rejected"),
@@ -520,7 +529,11 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 .filter(|effect| matches!(effect, Effect::Prompt(_)))
                                 .count()
                                 == 1;
-                        if prompt.scenario == Scenario::StopDuringPrompt || first_switch_prompt {
+                        if matches!(
+                            prompt.scenario,
+                            Scenario::StopDuringPrompt | Scenario::ConfigFailureDuringPrompt
+                        ) || first_switch_prompt
+                        {
                             let fixture = prompt.clone();
                             let sender = connection.clone();
                             return connection.spawn(async move {
@@ -1182,6 +1195,60 @@ fn stop_during_preview_dismissal_rejects_confirmation_before_source_work() {
         e,
         Effect::Extract | Effect::Capture | Effect::Observe | Effect::Resolve
     )));
+}
+
+#[test]
+fn failed_config_request_drops_active_prompt_without_leaving_quit_confirmation() {
+    let harness = setup(Scenario::ConfigFailureDuringPrompt);
+    let window = harness.window.clone();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let invocation = std::thread::spawn(move || {
+        sender
+            .send(crate::shell_tests::invoke(
+                &window,
+                "confirm_lens_targets",
+                json!({"operationId":OPERATION}),
+            ))
+            .unwrap();
+    });
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            harness.fixture.prompt_started.notified(),
+        )
+        .await
+        .unwrap();
+    });
+    let state = harness.app.state::<AppState>();
+    assert!(crate::quit::has_pending_work(&state).unwrap());
+    let controls = state.session_controls.lock().unwrap().clone().unwrap();
+    let snapshot = controls.snapshot().unwrap();
+    controls
+        .queue_change(
+            snapshot.instance_id,
+            snapshot.config_revision,
+            "mode".into(),
+            "safe".into(),
+        )
+        .unwrap();
+    // The provider deliberately never finishes the prompt. A real failed ACP
+    // configuration request makes controls.serve win and drop the production actor.
+    assert!(receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .is_err());
+    invocation.join().unwrap();
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while controls.snapshot().unwrap().active {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    assert!(!state.agent_control.has_pending_work().unwrap());
+    assert!(!crate::quit::has_pending_work(&state).unwrap());
 }
 
 #[test]

@@ -1436,6 +1436,8 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     }
                 };
                 let mut run = prepared.run;
+                let state = app.state::<AppState>();
+                let _run_lifetime = state.agent_control.run_lifetime(run.key);
                 let turn = prepared.turn;
                 let initial_streaming = prepared.initial_streaming;
                 cadence.record_start(Instant::now());
@@ -1728,8 +1730,11 @@ pub async fn authenticate_current<R: tauri::Runtime>(
         lens.error = None;
     })?;
 
-    let result =
-        run_authentication(app.clone(), descriptor, method_id, &mut run.cancellation).await;
+    let result = {
+        let state = app.state::<AppState>();
+        let _run_lifetime = state.agent_control.run_lifetime(run.key);
+        run_authentication(app.clone(), descriptor, method_id, &mut run.cancellation).await
+    };
     app.state::<AppState>().agent_control.finish(run.key)?;
 
     match result {
