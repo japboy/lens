@@ -655,3 +655,154 @@ fn same_session_ids_from_different_external_profiles_remain_distinct() {
     assert_ne!(catalog.entries[0].agent, catalog.entries[1].agent);
     assert_eq!(catalog.entries[0].session_id, catalog.entries[1].session_id);
 }
+
+struct DiscoveryHost {
+    resolved: Arc<Mutex<Vec<AgentKind>>>,
+    mutate_profile: bool,
+}
+
+impl crate::agent::AgentHost<MockRuntime> for DiscoveryHost {
+    fn resolve<'a>(
+        &'a self,
+        _: &'a tauri::AppHandle<MockRuntime>,
+        _: AgentKind,
+    ) -> crate::agent::HostFuture<'a, crate::agent_runtime::ResolvedAgentRuntime> {
+        panic!("history must not install an Agent")
+    }
+
+    fn resolve_installed<'a>(
+        &'a self,
+        app: &'a tauri::AppHandle<MockRuntime>,
+        kind: AgentKind,
+    ) -> crate::agent::HostFuture<'a, Option<crate::agent_runtime::ResolvedAgentRuntime>> {
+        self.resolved.lock().unwrap().push(kind);
+        Box::pin(async move {
+            if self.mutate_profile && kind.is_external() {
+                app.state::<AppState>()
+                    .runtime
+                    .write()
+                    .unwrap()
+                    .config
+                    .external_agents[0]
+                    .args
+                    .push("changed".into());
+                Ok(Some(crate::agent_runtime::ResolvedAgentRuntime {
+                    kind,
+                    adapter_name: "fixture",
+                    adapter_version: "1".into(),
+                    command: "/must-not-spawn".into(),
+                    args: vec![],
+                    installation: None,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn connect(
+        &self,
+        _: &crate::agent::AgentDescriptor,
+        _: std::path::PathBuf,
+        _: crate::agent_environment::EnvironmentPurpose,
+    ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+        use agent_client_protocol::{schema::v1::InitializeRequest, Agent, DynConnectTo};
+        let fixture = Agent.builder().on_receive_request(
+            async |_: InitializeRequest,
+                   _: agent_client_protocol::Responder<
+                agent_client_protocol::schema::v1::InitializeResponse,
+            >,
+                   _: agent_client_protocol::ConnectionTo<agent_client_protocol::Client>|
+                   -> Result<(), agent_client_protocol::Error> {
+                panic!("a changed external profile must not be connected")
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        DynConnectTo::new(fixture)
+    }
+}
+
+#[tokio::test]
+async fn history_refresh_only_discovers_successfully_selected_external_agent() {
+    let state = test_support::state();
+    let external = AgentKind::External(state.config().unwrap().external_agents[0].id);
+    let resolved = Arc::new(Mutex::new(Vec::new()));
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(DiscoveryHost {
+            resolved: Arc::clone(&resolved),
+            mutate_profile: false,
+        })),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    for stage in [
+        AgentSelectionStage::Unselected,
+        AgentSelectionStage::Failed,
+        AgentSelectionStage::HistorySelected,
+        AgentSelectionStage::Selected,
+    ] {
+        {
+            let state = app.state::<AppState>();
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.config.agent = external;
+            snapshot.agent_selection.candidate = Some(external);
+            snapshot.agent_selection.stage = stage;
+        }
+        refresh(app.handle().clone()).await.unwrap();
+        let observed = std::mem::take(&mut *resolved.lock().unwrap());
+        assert!(observed.contains(&AgentKind::Claude));
+        assert!(observed.contains(&AgentKind::Codex));
+        assert_eq!(
+            observed.contains(&external),
+            stage == AgentSelectionStage::Selected
+        );
+        assert_eq!(
+            observed.len(),
+            if stage == AgentSelectionStage::Selected {
+                3
+            } else {
+                2
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn unverified_external_history_is_rejected_before_runtime_resolution() {
+    let app = app(test_support::state());
+    let kind = AgentKind::External(app.state::<AppState>().config().unwrap().external_agents[0].id);
+    let error = session_history::list_provider(app.handle(), kind, std::path::Path::new("/tmp"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("Select and verify"));
+}
+
+#[tokio::test]
+async fn external_history_rejects_profile_changes_during_runtime_resolution() {
+    let state = test_support::state();
+    let kind = AgentKind::External(state.config().unwrap().external_agents[0].id);
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.config.agent = kind;
+        snapshot.agent_selection.candidate = Some(kind);
+        snapshot.agent_selection.stage = AgentSelectionStage::Selected;
+    }
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(DiscoveryHost {
+            resolved: Arc::new(Mutex::new(Vec::new())),
+            mutate_profile: true,
+        })),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let error = session_history::list_provider(app.handle(), kind, std::path::Path::new("/tmp"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("selection changed"));
+}

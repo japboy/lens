@@ -468,6 +468,16 @@ pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Re
     crate::ui::sync_history_menu(app)
 }
 
+// External catalog membership is not execution authority. Only a successful
+// selection in this process admits automatic external history discovery.
+fn history_agents(selection: &crate::model::AgentSelectionState) -> Vec<AgentKind> {
+    let mut kinds = vec![AgentKind::Claude, AgentKind::Codex];
+    if let Some(kind @ AgentKind::External(_)) = selection.selected_agent() {
+        kinds.push(kind);
+    }
+    kinds
+}
+
 pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let (generation, cwd) = {
         let state = app.state::<AppState>();
@@ -495,14 +505,8 @@ pub(crate) async fn refresh<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         }
         return Err(error);
     }
-    let mut kinds = vec![AgentKind::Claude, AgentKind::Codex];
-    kinds.extend(
-        app.state::<AppState>()
-            .config()?
-            .external_agents
-            .iter()
-            .map(|p| AgentKind::External(p.id)),
-    );
+    let snapshot = app.state::<AppState>().snapshot()?;
+    let kinds = history_agents(&snapshot.agent_selection);
     let mut pending = tokio::task::JoinSet::new();
     for kind in kinds {
         let app = app.clone();
