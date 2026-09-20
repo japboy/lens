@@ -549,3 +549,86 @@ fn reset_external_agents_save_failure_leaves_runtime_unchanged() {
     );
     std::fs::remove_dir(directory).unwrap();
 }
+
+#[test]
+fn stale_agent_menu_selection_is_rejected_before_selection_or_probe() {
+    for change in ["edit", "delete", "reset"] {
+        let state = test_support::state();
+        let accepted = state.snapshot().unwrap();
+        let candidate = AgentKind::External(accepted.config.external_agents[0].id);
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            match change {
+                "edit" => snapshot.config.external_agents[0]
+                    .args
+                    .push("changed".into()),
+                "delete" => {
+                    snapshot.config.external_agents.remove(0);
+                }
+                "reset" => {
+                    snapshot.config.external_agents = ExternalAgentProfile::bundled_presets();
+                    snapshot.agent_selection = AgentSelectionState::default();
+                }
+                _ => unreachable!(),
+            }
+            snapshot.revision += 1;
+        }
+        let before = state.snapshot().unwrap();
+        // Both the probe and tray implementations panic if the stale request reaches them.
+        let app = app(state);
+        let result = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+            app.handle().clone(),
+            candidate,
+            Some(accepted.revision),
+        ));
+        assert!(
+            result.unwrap_err().contains("selection changed"),
+            "{change}"
+        );
+        assert_eq!(
+            serde_json::to_value(app.state::<AppState>().snapshot().unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap(),
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
+    for reset in [false, true] {
+        let app = crate::configure_shell(
+            tauri::test::mock_builder().manage(test_support::state()),
+            platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+            crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+            crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+        )
+        .build(crate::product_context())
+        .unwrap();
+        let id = Uuid::from_u128(702);
+        let (kind, revision) = crate::commands::save_external_agent_configuration(
+            app.handle(),
+            crate::external_agent::ExternalAgentDraft {
+                id,
+                name: "Saved before later action".into(),
+                command_line: "custom-agent --acp".into(),
+            },
+        )
+        .unwrap();
+        if reset {
+            crate::commands::reset_external_agents(app.handle().clone()).unwrap();
+        } else {
+            crate::commands::delete_external_agent(app.handle().clone(), id).unwrap();
+        }
+        let before = app.state::<AppState>().snapshot().unwrap();
+        let result = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+            app.handle().clone(),
+            kind,
+            Some(revision),
+        ));
+        assert!(result.unwrap_err().contains("selection changed"));
+        assert_eq!(
+            serde_json::to_value(app.state::<AppState>().snapshot().unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+    }
+}

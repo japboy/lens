@@ -371,6 +371,14 @@ pub async fn select_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     candidate: AgentKind,
 ) -> Result<AgentSelectionState, String> {
+    select_agent_guarded(app, candidate, None).await
+}
+
+pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    candidate: AgentKind,
+    expected_revision: Option<u32>,
+) -> Result<AgentSelectionState, String> {
     let operation_id = Uuid::new_v4();
     {
         let state = app.state::<AppState>();
@@ -380,6 +388,14 @@ pub async fn select_agent<R: tauri::Runtime>(
             .lock()
             .map_err(|_| "Session admission is unavailable")?;
         app.state::<AppState>().session_view.ensure_not_loading()?;
+        if expected_revision.is_some_and(|revision| {
+            state
+                .snapshot()
+                .map(|snapshot| snapshot.revision != revision)
+                .unwrap_or(true)
+        }) {
+            return Err("Agent selection changed; choose the Agent again.".into());
+        }
         let current = current_agent_selection(&app)?;
         if current.stage == AgentSelectionStage::SigningOut {
             return Err("wait for the current Agent logout to complete".into());

@@ -143,10 +143,19 @@ pub async fn save_external_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,
 ) -> Result<AgentSelectionState, String> {
+    let (kind, revision) = save_external_agent_configuration(&app, profile)?;
+    agent::select_agent_guarded(app, kind, Some(revision)).await
+}
+
+pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    profile: crate::external_agent::ExternalAgentDraft,
+) -> Result<(AgentKind, u32), String> {
     let profile = profile.parse()?;
     crate::external_agent::validate_profile(&profile)?;
     let kind = AgentKind::External(profile.id);
     let state = app.state::<AppState>();
+    let saved_revision;
     {
         let _admission = state
             .session_view
@@ -170,7 +179,7 @@ pub async fn save_external_agent<R: tauri::Runtime>(
             *existing = profile;
         } else {
             if config.external_agents.len() >= 16 {
-                return Err("At most 16 external Agent profiles are supported.".into());
+                return Err("At most 16 Agent presets are supported.".into());
             }
             config.external_agents.push(profile);
         }
@@ -179,7 +188,7 @@ pub async fn save_external_agent<R: tauri::Runtime>(
         state
             .store
             .save(&config)
-            .map_err(|_| "Unable to save external Agent profile")?;
+            .map_err(|_| "Unable to save Agent preset")?;
         state.agent_control.cancel_active()?;
         snapshot.config = config;
         snapshot.agent_selection = AgentSelectionState {
@@ -187,12 +196,13 @@ pub async fn save_external_agent<R: tauri::Runtime>(
             ..Default::default()
         };
         snapshot.revision = revision;
+        saved_revision = revision;
         drop(snapshot);
-        crate::session_view::invalidate_working_directory(&app)?;
+        crate::session_view::invalidate_working_directory(app)?;
     }
-    crate::session_controls::close_active(&app);
-    emit_app_snapshot(&app, state.snapshot()?, true)?;
-    agent::select_agent(app, kind).await
+    crate::session_controls::close_active(app);
+    emit_app_snapshot(app, state.snapshot()?, true)?;
+    Ok((kind, saved_revision))
 }
 
 #[tauri::command]
@@ -214,13 +224,13 @@ pub fn delete_external_agent<R: tauri::Runtime>(
             .write()
             .map_err(|_| "Application state unavailable")?;
         if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
-            return Err("Wait for Agent logout to complete before deleting profiles.".into());
+            return Err("Wait for Agent logout to complete before deleting Agent presets.".into());
         }
         affected = snapshot.config.agent == AgentKind::External(id)
             || snapshot.agent_selection.candidate == Some(AgentKind::External(id));
         let mut config = snapshot.config.clone();
         if !config.external_agents.iter().any(|p| p.id == id) {
-            return Err("External Agent profile not found.".into());
+            return Err("Agent preset not found.".into());
         }
         config.external_agents.retain(|p| p.id != id);
         config.agent_preferences.external.remove(&id);
@@ -231,7 +241,7 @@ pub fn delete_external_agent<R: tauri::Runtime>(
         state
             .store
             .save(&config)
-            .map_err(|_| "Unable to remove external Agent profile")?;
+            .map_err(|_| "Unable to remove Agent preset")?;
         if affected {
             state.agent_control.cancel_active()?;
         }
@@ -266,7 +276,7 @@ pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<App
             .write()
             .map_err(|_| "Application state unavailable")?;
         if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
-            return Err("Wait for Agent logout to complete before resetting profiles.".into());
+            return Err("Wait for Agent logout to complete before resetting Agent presets.".into());
         }
         affected = snapshot.config.agent.is_external()
             || snapshot
@@ -282,7 +292,7 @@ pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<App
         state
             .store
             .save(&config)
-            .map_err(|_| "Unable to reset external Agent profiles")?;
+            .map_err(|_| "Unable to reset Agent presets")?;
         if affected {
             state.agent_control.cancel_active()?;
         }

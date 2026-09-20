@@ -115,10 +115,8 @@ struct TrayMenuItems<R: tauri::Runtime> {
     history: Submenu<R>,
     history_presentation: Mutex<String>,
     select_target: MenuItem<R>,
-    agent_claude: CheckMenuItem<R>,
-    agent_codex: CheckMenuItem<R>,
-    agent_external: MenuItem<R>,
-    agent_status: MenuItem<R>,
+    agents: Submenu<R>,
+    agent_presentation: Mutex<AgentMenuState>,
     working_directory: MenuItem<R>,
     prompt_presets: Submenu<R>,
     prompt_presentation: Mutex<Vec<PromptPresetMenuItem>>,
@@ -397,7 +395,7 @@ pub(crate) struct TrayMenuPresentation {
     agent_verification_required: bool,
     claude_checked: bool,
     codex_checked: bool,
-    agent_status_text: String,
+    selected_agent: Option<AgentKind>,
     working_directory_text: String,
 }
 
@@ -438,31 +436,177 @@ impl TrayMenuPresentation {
                 == crate::model::AgentSelectionStage::HistorySelected,
             claude_checked: selected == Some(AgentKind::Claude),
             codex_checked: selected == Some(AgentKind::Codex),
-            agent_status_text: match selected {
-                Some(agent) => {
-                    let name = match agent {
-                        AgentKind::External(id) => config
-                            .external_agents
-                            .iter()
-                            .find(|profile| profile.id == id)
-                            .map(|profile| profile.name.as_str())
-                            .unwrap_or("External ACP"),
-                        managed => crate::session_view::agent_label(managed),
-                    };
-                    let suffix = if agent_selection.stage
-                        == crate::model::AgentSelectionStage::HistorySelected
-                    {
-                        " — Verify to Start"
-                    } else {
-                        ""
-                    };
-                    format!("Current Agent: {}{suffix}", menu_safe_path(name))
-                }
-                None => "No Agent selected".into(),
-            },
+            selected_agent: selected,
             working_directory_text: menu_safe_path(&config.working_directory.to_string_lossy()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentMenuEntry {
+    agent: AgentKind,
+    label: String,
+    checked: bool,
+    enabled: bool,
+    profile: Option<crate::model::ExternalAgentProfile>,
+}
+
+#[derive(Default)]
+struct AgentMenuState {
+    generation: Uuid,
+    entries: Vec<AgentMenuEntry>,
+}
+impl AgentMenuState {
+    fn choice(&self, id: &str, current: &[AgentMenuEntry]) -> Option<AgentKind> {
+        let rest = id.strip_prefix("agent_choice:")?;
+        let (generation, index) = rest.split_once(':')?;
+        if Uuid::parse_str(generation).ok()? != self.generation || self.entries != current {
+            return None;
+        }
+        self.entries
+            .get(index.parse::<usize>().ok()?)
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.agent)
+    }
+}
+
+fn agent_menu_entries(config: &AppConfig, view: &TrayMenuPresentation) -> Vec<AgentMenuEntry> {
+    [AgentKind::Claude, AgentKind::Codex]
+        .into_iter()
+        .map(|agent| (agent, None))
+        .chain(
+            config
+                .external_agents
+                .iter()
+                .map(|profile| (AgentKind::External(profile.id), Some(profile.clone()))),
+        )
+        .map(|(agent, profile)| {
+            let checked = match agent {
+                AgentKind::Claude => view.claude_checked,
+                AgentKind::Codex => view.codex_checked,
+                AgentKind::External(_) => view.selected_agent == Some(agent),
+            };
+            let name = profile
+                .as_ref()
+                .map(|profile| profile.name.as_str())
+                .unwrap_or_else(|| crate::session_view::agent_label(agent));
+            let suffix = if checked && view.agent_verification_required {
+                " — Verify to Start"
+            } else {
+                ""
+            };
+            AgentMenuEntry {
+                agent,
+                label: format!("{}{suffix}", menu_safe_path(name)),
+                checked,
+                enabled: view.agent_selection_enabled,
+                profile,
+            }
+        })
+        .collect()
+}
+
+fn select_agent_menu_choice<R: tauri::Runtime>(app: &AppHandle<R>, id: &str) {
+    let chosen = (|| {
+        let snapshot = app.state::<crate::app_state::AppState>().snapshot().ok()?;
+        let view = TrayMenuPresentation::derive(
+            &snapshot.agent_selection,
+            &snapshot.config,
+            &snapshot.lens,
+        );
+        let current = agent_menu_entries(&snapshot.config, &view);
+        app.state::<TrayMenuItems<R>>()
+            .agent_presentation
+            .lock()
+            .ok()?
+            .choice(id, &current)
+            .map(|agent| (agent, snapshot.revision))
+    })();
+    // Native check items toggle before dispatch. Restore authoritative radio state even for stale/no-op clicks.
+    let _ = sync_agent_menu(app);
+    if let Some((agent, revision)) = chosen {
+        select_agent_from_menu(app, agent, revision);
+    }
+}
+
+fn sync_agent_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = (|| -> Result<(), String> {
+            let snapshot = handle.state::<crate::app_state::AppState>().snapshot()?;
+            let view = TrayMenuPresentation::derive(
+                &snapshot.agent_selection,
+                &snapshot.config,
+                &snapshot.lens,
+            );
+            let entries = agent_menu_entries(&snapshot.config, &view);
+            let items = handle.state::<TrayMenuItems<R>>();
+            let mut previous = items
+                .agent_presentation
+                .lock()
+                .map_err(|_| "Agent menu is unavailable")?;
+            let menu = &items.agents;
+            if previous.entries == entries {
+                for (index, item) in menu
+                    .items()
+                    .map_err(|error| error.to_string())?
+                    .iter()
+                    .enumerate()
+                {
+                    if let (Some(check), Some(entry)) =
+                        (item.as_check_menuitem(), entries.get(index))
+                    {
+                        check
+                            .set_checked(entry.checked)
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                return Ok(());
+            }
+            while !menu.items().map_err(|error| error.to_string())?.is_empty() {
+                menu.remove_at(0).map_err(|error| error.to_string())?;
+            }
+            let generation = Uuid::new_v4();
+            for (index, entry) in entries.iter().enumerate() {
+                menu.append(
+                    &CheckMenuItem::with_id(
+                        &handle,
+                        format!("agent_choice:{generation}:{index}"),
+                        &entry.label,
+                        entry.enabled,
+                        entry.checked,
+                        None::<&str>,
+                    )
+                    .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            menu.append(
+                &PredefinedMenuItem::separator(&handle).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            menu.append(
+                &MenuItem::with_id(
+                    &handle,
+                    "manage_agent_presets",
+                    "Manage Presets…",
+                    true,
+                    None::<&str>,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            *previous = AgentMenuState {
+                generation,
+                entries,
+            };
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Unable to update Agent menu: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
 }
 
 pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()> {
@@ -473,24 +617,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         false,
         None::<&str>,
     )?;
-    let use_claude =
-        CheckMenuItem::with_id(app, "agent_claude", "Claude", true, false, None::<&str>)?;
-    let use_codex = CheckMenuItem::with_id(app, "agent_codex", "Codex", true, false, None::<&str>)?;
-    let use_external = MenuItem::with_id(
-        app,
-        "agent_external",
-        "Manage External ACP Profiles…",
-        true,
-        None::<&str>,
-    )?;
-    let agent_label = MenuItem::with_id(app, "agent_label", "AI Agents", false, None::<&str>)?;
-    let agent_status = MenuItem::with_id(
-        app,
-        "agent_status",
-        "No Agent selected",
-        false,
-        None::<&str>,
-    )?;
+    let agents = Submenu::with_id(app, "agents", "Agents", true)?;
     let directory_label = MenuItem::with_id(
         app,
         "directory_label",
@@ -513,26 +640,20 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
     let separator_one = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
     let separator_three = PredefinedMenuItem::separator(app)?;
-    let separator_four = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
         &[
             &select,
             &history,
             &separator_one,
-            &agent_label,
-            &agent_status,
-            &use_claude,
-            &use_codex,
-            &use_external,
-            &separator_two,
             &directory_label,
             &working_directory,
-            &separator_three,
+            &separator_two,
+            &agents,
             &prompt_presets,
             &settings,
             &about,
-            &separator_four,
+            &separator_three,
             &quit,
         ],
     )?;
@@ -581,10 +702,9 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
                 }
             }
             "select_target" => select_lens_target_from_tray(app),
-            "agent_claude" => select_agent_from_menu(app, AgentKind::Claude),
-            "agent_codex" => select_agent_from_menu(app, AgentKind::Codex),
-            "agent_external" => {
-                let _ = show_settings(app);
+            id if id.starts_with("agent_choice:") => select_agent_menu_choice(app, id),
+            "manage_agent_presets" => {
+                let _ = show_settings_destination(app, Some(SettingsDestination::Connection));
             }
             "working_directory" => choose_working_directory(app),
             "settings" => {
@@ -624,10 +744,8 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         history,
         history_presentation: Mutex::new(String::new()),
         select_target: select,
-        agent_claude: use_claude,
-        agent_codex: use_codex,
-        agent_external: use_external,
-        agent_status,
+        agents,
+        agent_presentation: Mutex::new(AgentMenuState::default()),
         working_directory,
         prompt_presets,
         prompt_presentation: Mutex::new(Vec::new()),
@@ -656,54 +774,11 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     fn apply(&self, app: &AppHandle<R>, presentation: TrayMenuPresentation) -> Result<(), String> {
         sync_history_menu(app)?;
         sync_prompt_preset_menu(app)?;
+        sync_agent_menu(app)?;
         let items = app.state::<TrayMenuItems<R>>();
         items
             .select_target
             .set_enabled(presentation.select_target_enabled)
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_claude
-            .set_enabled(presentation.agent_selection_enabled)
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_codex
-            .set_enabled(presentation.agent_selection_enabled)
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_claude
-            .set_checked(presentation.claude_checked)
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_codex
-            .set_checked(presentation.codex_checked)
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_claude
-            .set_text(
-                if presentation.agent_verification_required && presentation.claude_checked {
-                    "Claude — Verify to Start"
-                } else {
-                    "Claude"
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_codex
-            .set_text(
-                if presentation.agent_verification_required && presentation.codex_checked {
-                    "Codex — Verify to Start"
-                } else {
-                    "Codex"
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        items
-            .agent_external
-            .set_enabled(presentation.agent_selection_enabled)
-            .map_err(|e| e.to_string())?;
-        items
-            .agent_status
-            .set_text(presentation.agent_status_text)
             .map_err(|error| error.to_string())?;
         items
             .working_directory
@@ -1004,10 +1079,16 @@ fn select_lens_target_from_tray<R: tauri::Runtime>(app: &AppHandle<R>) {
     });
 }
 
-fn select_agent_from_menu<R: tauri::Runtime>(app: &AppHandle<R>, agent: AgentKind) {
+fn select_agent_from_menu<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    agent: AgentKind,
+    expected_revision: u32,
+) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        match commands::select_agent(handle.clone(), agent).await {
+        match crate::agent::select_agent_guarded(handle.clone(), agent, Some(expected_revision))
+            .await
+        {
             Ok(selection) if selection.selected_agent().is_some() => {}
             Ok(_) => {
                 if let Err(error) =
@@ -1620,17 +1701,12 @@ mod tests {
                 assert_eq!(view.claude_checked, agent == AgentKind::Claude);
                 assert_eq!(view.codex_checked, agent == AgentKind::Codex);
                 assert!(!(view.claude_checked && view.codex_checked));
-                let name = match agent {
-                    AgentKind::Claude => "Claude",
-                    AgentKind::Codex => "Codex",
-                    AgentKind::External(_) => external.name.as_str(),
-                };
-                assert!(view
-                    .agent_status_text
-                    .starts_with(&format!("Current Agent: {name}")));
+                assert_eq!(view.selected_agent, Some(agent));
+                let entries = agent_menu_entries(&config, &view);
+                assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
                 assert_eq!(
-                    view.agent_status_text.ends_with("Verify to Start"),
-                    stage == AgentSelectionStage::HistorySelected
+                    entries.iter().find(|entry| entry.checked).unwrap().agent,
+                    agent
                 );
             }
         }
@@ -1639,8 +1715,65 @@ mod tests {
             &config,
             &LensState::default(),
         );
-        assert_eq!(view.agent_status_text, "No Agent selected");
+        assert_eq!(view.selected_agent, None);
         assert!(!view.claude_checked && !view.codex_checked);
+    }
+
+    #[test]
+    fn agent_menu_preserves_saved_order_and_rejects_stale_or_disabled_choices() {
+        let mut config = AppConfig::new(PathBuf::from("/tmp"));
+        config.external_agents.reverse();
+        config.external_agents[0].name = "Z first".into();
+        config.external_agents[1].name = "A second".into();
+        let selected = AgentKind::External(config.external_agents[1].id);
+        let selection = AgentSelectionState {
+            stage: AgentSelectionStage::Selected,
+            candidate: Some(selected),
+            ..Default::default()
+        };
+        let view = TrayMenuPresentation::derive(&selection, &config, &LensState::default());
+        let entries = agent_menu_entries(&config, &view);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Claude", "Codex", "Z first", "A second"]
+        );
+        assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
+        let generation = Uuid::new_v4();
+        let menu = AgentMenuState {
+            generation,
+            entries: entries.clone(),
+        };
+        let id = format!("agent_choice:{generation}:3");
+        assert_eq!(menu.choice(&id, &entries), Some(selected));
+        assert_eq!(
+            menu.choice(&format!("agent_choice:{}:3", Uuid::new_v4()), &entries),
+            None
+        );
+        assert_eq!(
+            menu.choice(&format!("agent_choice:{generation}:999"), &entries),
+            None
+        );
+        for modification in 0..3 {
+            let mut changed = config.clone();
+            match modification {
+                0 => {
+                    changed.external_agents.remove(1);
+                }
+                1 => changed.external_agents[1].command = "replacement".into(),
+                _ => changed.external_agents[1].args.push("changed".into()),
+            }
+            assert_eq!(menu.choice(&id, &agent_menu_entries(&changed, &view)), None);
+        }
+        let mut disabled = entries;
+        disabled[3].enabled = false;
+        let menu = AgentMenuState {
+            generation,
+            entries: disabled.clone(),
+        };
+        assert_eq!(menu.choice(&id, &disabled), None);
     }
 
     #[test]
@@ -1669,7 +1802,7 @@ mod tests {
                 agent_verification_required: false,
                 claude_checked: false,
                 codex_checked: true,
-                agent_status_text: "Current Agent: Codex".into(),
+                selected_agent: Some(AgentKind::Codex),
                 working_directory_text: "/Users/example/Work".into(),
             }
         );

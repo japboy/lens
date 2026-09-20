@@ -176,7 +176,7 @@ export class LensAgentSettings extends LitElement {
             <option value="codex" .selected=${!this.editingId && this.managedSelection === "codex"}>
               Codex
             </option>
-            ${Object.values(this.drafts).map((profile) => html`<option value=${profile.id} .selected=${profile.id === this.editingId}>${profile.name || "New agent"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}</option>`)}
+            ${Object.values(this.drafts).map((profile) => html`<option value=${profile.id} .selected=${profile.id === this.editingId}>${profile.name || "New preset"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}</option>`)}
           </select></label
         >
         <div class="agent-actions">
@@ -184,7 +184,7 @@ export class LensAgentSettings extends LitElement {
             ?disabled=${Object.keys(this.drafts).length >= 16}
             @click=${() => this.addProfile()}
           >
-            Add agent
+            Add preset
           </button>
           <button @click=${() => this.emit({ type: "reset-agent-presets" })}>
             Reset Agent Presets…
@@ -244,7 +244,7 @@ export class LensAgentSettings extends LitElement {
                       ? html`<button
                           @click=${() => this.emit({ type: "delete-external-agent", id: draft.id })}
                         >
-                          Delete agent
+                          Delete preset
                         </button>`
                       : html`<button
                           @click=${() => {

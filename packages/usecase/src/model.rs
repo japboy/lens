@@ -36,23 +36,23 @@ pub struct ExternalAgentProfile {
 
 impl ExternalAgentProfile {
     pub fn bundled_presets() -> Vec<Self> {
-        vec![Self::goose_preset(), Self::copilot_preset()]
+        vec![Self::copilot_preset(), Self::goose_preset()]
     }
 
-    pub fn goose_preset() -> Self {
-        Self {
-            id: Uuid::from_u128(0x6b57315e9c134e4abf4ce6bc33b10b21),
-            name: "Goose".into(),
-            command: "goose".into(),
-            args: vec!["acp".into()],
-        }
-    }
     pub fn copilot_preset() -> Self {
         Self {
             id: Uuid::from_u128(0xa14d73cb951c48eda3053829750c88da),
             name: "GitHub Copilot".into(),
             command: "copilot".into(),
             args: vec!["--acp".into(), "--stdio".into()],
+        }
+    }
+    pub fn goose_preset() -> Self {
+        Self {
+            id: Uuid::from_u128(0x6b57315e9c134e4abf4ce6bc33b10b21),
+            name: "Goose".into(),
+            command: "goose".into(),
+            args: vec!["acp".into()],
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -1012,6 +1012,10 @@ mod tests {
         customized.command = "/custom/agent".into();
         customized.args = vec!["custom-acp".into()];
         for profiles in [
+            vec![
+                ExternalAgentProfile::goose_preset(),
+                ExternalAgentProfile::copilot_preset(),
+            ],
             vec![ExternalAgentProfile::goose_preset()],
             vec![ExternalAgentProfile::copilot_preset()],
             vec![customized],
@@ -1027,13 +1031,27 @@ mod tests {
     }
 
     #[test]
+    fn explicit_external_reset_restores_the_declared_preset_order() {
+        let mut config = AppConfig::new("/fixture".into());
+        config.external_agents.reverse();
+        config.reset_external_agents();
+        assert_eq!(
+            config.external_agents,
+            vec![
+                ExternalAgentProfile::copilot_preset(),
+                ExternalAgentProfile::goose_preset(),
+            ]
+        );
+    }
+
+    #[test]
     fn only_new_settings_seed_external_profiles_and_legacy_markers_are_inert() {
         let initial = AppConfig::new("/fixture".into());
         assert_eq!(
             initial.external_agents,
             vec![
-                ExternalAgentProfile::goose_preset(),
                 ExternalAgentProfile::copilot_preset(),
+                ExternalAgentProfile::goose_preset(),
             ]
         );
         for marker in [None, Some(0), Some(1), Some(99)] {

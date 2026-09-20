@@ -1370,13 +1370,13 @@ it.each(["cancel", "success", "failure"] as const)(
         snapshot.config = {
           ...snapshot.config,
           external_agents: [
-            { id: "preset-goose", name: "Goose", command: "goose", args: ["acp"] },
             {
               id: "preset-copilot",
               name: "GitHub Copilot",
               command: "copilot",
               args: ["--acp", "--stdio"],
             },
+            { id: "preset-goose", name: "Goose", command: "goose", args: ["acp"] },
           ],
         };
         return snapshot.config;
@@ -1391,7 +1391,7 @@ it.each(["cancel", "success", "failure"] as const)(
         [...editor.querySelectorAll("button")]
           .find((item) => item.textContent?.trim() === label)!
           .click();
-      click("Add agent");
+      click("Add preset");
       await vi.waitFor(() =>
         expect(editor.querySelector('[aria-label="ACP command"]')).not.toBeNull(),
       );
@@ -1417,8 +1417,8 @@ it.each(["cancel", "success", "failure"] as const)(
           [...editor.querySelectorAll("option")].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
-            ? ["Claude", "Codex", "Goose", "GitHub Copilot"]
-            : ["Claude", "Codex", "New agent (unsaved)"],
+            ? ["Claude", "Codex", "GitHub Copilot", "Goose"]
+            : ["Claude", "Codex", "New preset (unsaved)"],
         );
       });
       expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
