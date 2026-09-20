@@ -23,7 +23,7 @@ description = "Verify generated app resources"
 dir = "{{config_root}}"
 run = [
   "node mise-tasks/generate/icons.ts --check",
-  "node apps/desktop/agent-icons/generate.ts --check",
+  "node mise-tasks/generate/agent-icons.ts --check",
 ]
 
 [tasks."check:types"]
