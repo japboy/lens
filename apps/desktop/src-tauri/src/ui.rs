@@ -601,6 +601,25 @@ fn sync_agent_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> 
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+            let icons = entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    (
+                        format!("agent_choice:{generation}:{index}"),
+                        crate::agent_icons::icon_png(history_agent_label(
+                            &snapshot.config,
+                            entry.agent,
+                        )),
+                    )
+                })
+                .collect();
+            let rows = menu_appearance(menu, Vec::new(), &icons, 0)?;
+            handle
+                .state::<crate::platform::Presentation<R>>()
+                .0
+                .menu_presentation(&handle, &items.root, menu, rows)
+                .map_err(|error| error.to_string())?;
             *previous = AgentMenuState {
                 generation,
                 entries,
@@ -814,6 +833,88 @@ impl<R: tauri::Runtime> TrayOutput<R> for NativeTrayOutput {
     }
 }
 
+fn history_agent_label(config: &AppConfig, agent: AgentKind) -> &str {
+    match agent {
+        AgentKind::External(id) => config
+            .external_agents
+            .iter()
+            .find(|preset| preset.id == id)
+            .map(|preset| preset.name.as_str())
+            .unwrap_or("External ACP"),
+        managed => crate::session_view::agent_label(managed),
+    }
+}
+
+// Keep every top-level row for native title/position validation, but only
+// the leading session MenuItems may receive the supplied tooltip metadata.
+fn history_tooltip_rows(
+    items: Vec<(String, bool)>,
+    tooltips: Vec<String>,
+) -> Result<Vec<(String, Option<String>)>, crate::platform::PlatformError> {
+    if tooltips.len() > items.len() {
+        return Err(crate::platform::PlatformError::Operation(
+            "history tooltip count exceeds menu items".into(),
+        ));
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(index, (text, is_session_item))| {
+            let tooltip = tooltips.get(index).cloned();
+            if tooltip.is_some() && !is_session_item {
+                return Err(crate::platform::PlatformError::Operation(
+                    "session tooltip points to a non-session menu item".into(),
+                ));
+            }
+            Ok((text, tooltip))
+        })
+        .collect()
+}
+
+fn menu_appearance<R: tauri::Runtime>(
+    menu: &Submenu<R>,
+    tooltips: Vec<String>,
+    icons: &std::collections::HashMap<String, &'static [u8]>,
+    depth: usize,
+) -> Result<Vec<port_platform::MenuPresentationItem>, String> {
+    if depth > 1 {
+        return Err("Menu appearance exceeds submenu depth".into());
+    }
+    let items = menu.items().map_err(|error| error.to_string())?;
+    let texts = items
+        .iter()
+        .map(|item| {
+            match item {
+                tauri::menu::MenuItemKind::MenuItem(item) => item.text().map(|text| (text, true)),
+                tauri::menu::MenuItemKind::Check(item) => item.text().map(|text| (text, false)),
+                tauri::menu::MenuItemKind::Predefined(item) => {
+                    item.text().map(|text| (text, false))
+                }
+                tauri::menu::MenuItemKind::Submenu(item) => item.text().map(|text| (text, false)),
+                _ => return Err("Unexpected menu item kind".to_string()),
+            }
+            .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let rows = history_tooltip_rows(texts, tooltips).map_err(|error| error.to_string())?;
+    items
+        .iter()
+        .zip(rows)
+        .map(|(item, (title, tooltip))| {
+            let children = item
+                .as_submenu()
+                .map(|submenu| menu_appearance(submenu, Vec::new(), icons, depth + 1))
+                .transpose()?;
+            Ok(port_platform::MenuPresentationItem {
+                title,
+                tooltip,
+                template_icon_png: icons.get(item.id().as_ref()).map(|png| png.to_vec()),
+                children,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     // Mock shells need no native menu. Real menu mutation stays on its owning thread.
     if app.try_state::<TrayMenuItems<R>>().is_none() {
@@ -825,16 +926,14 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
             let app = &handle;
             let state = app.state::<crate::app_state::AppState>();
             let mut catalog = state.session_view.catalog()?;
-            let directory_matches = catalog.cwd == state.config()?.working_directory;
+            let config = state.config()?;
+            let directory_matches = catalog.cwd == config.working_directory;
             if !directory_matches {
                 catalog.entries.clear();
                 catalog.notices.clear();
             }
             let enabled = directory_matches && crate::session_view::history_enabled(app)?;
-            let key = format!(
-                "{}:{}:{enabled}:{directory_matches}",
-                catalog.generation, catalog.loading
-            );
+            let key = format!("{}:{enabled}:{directory_matches}", catalog.generation);
             let items = app.state::<TrayMenuItems<R>>();
             let mut shown = items
                 .history_presentation
@@ -848,6 +947,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 menu.remove_at(0).map_err(|error| error.to_string())?;
             }
             let mut tooltips = Vec::with_capacity(catalog.entries.len());
+            let mut icons = std::collections::HashMap::new();
             for (index, entry) in catalog.entries.iter().enumerate() {
                 let date = entry
                     .updated_at
@@ -863,27 +963,34 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     .unwrap_or_default();
                 let title: String = entry.title.chars().take(72).collect();
                 let label = menu_safe_path(&title);
-                let config = app.state::<crate::app_state::AppState>().config()?;
-                let agent = match entry.agent {
-                    AgentKind::External(id) => config
-                        .external_agents
-                        .iter()
-                        .find(|p| p.id == id)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("External ACP"),
-                    managed => crate::session_view::agent_label(managed),
-                };
-                tooltips.push(if date.is_empty() {
+                let agent = history_agent_label(&config, entry.agent);
+                icons.insert(
+                    format!("session_history:{}:{index}", catalog.generation),
+                    crate::agent_icons::icon_png(agent),
+                );
+                let missing = entry.presence == crate::session_history_store::EntryState::NotSeen;
+                let mut tooltip = if date.is_empty() {
                     agent.to_string()
                 } else {
                     format!("{date} · {agent}")
-                });
+                };
+                if missing {
+                    tooltip.push_str(
+                        " · Not found in the last complete update; open to check availability",
+                    );
+                }
+                tooltips.push(tooltip);
+                let label = if missing {
+                    format!("{label} — Availability unknown")
+                } else {
+                    label
+                };
                 menu.append(
                     &MenuItem::with_id(
                         app,
                         format!("session_history:{}:{index}", catalog.generation),
                         label,
-                        enabled && entry.can_load,
+                        enabled,
                         None::<&str>,
                     )
                     .map_err(|error| error.to_string())?,
@@ -895,11 +1002,7 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                     &MenuItem::with_id(
                         app,
                         "history_empty",
-                        if catalog.loading {
-                            "Loading sessions…"
-                        } else {
-                            "No recent sessions"
-                        },
+                        "No recent sessions",
                         false,
                         None::<&str>,
                     )
@@ -927,20 +1030,17 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 &MenuItem::with_id(
                     app,
                     "refresh_session_history",
-                    if catalog.loading {
-                        "Refreshing…"
-                    } else {
-                        "Refresh Sessions"
-                    },
-                    !catalog.loading,
+                    "Reload Saved Sessions",
+                    true,
                     None::<&str>,
                 )
                 .map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
+            let rows = menu_appearance(menu, tooltips, &icons, 0)?;
             app.state::<crate::platform::Presentation<R>>()
                 .0
-                .history_tooltips(app, &items.root, menu, tooltips)
+                .menu_presentation(app, &items.root, menu, rows)
                 .map_err(|error| error.to_string())?;
             *shown = key;
             Ok(())
@@ -1953,5 +2053,35 @@ mod tests {
             .all(|(enabled, disabled)| {
                 enabled[0..3] == disabled[0..3] && disabled[3] == enabled[3] / 2
             }));
+    }
+}
+
+#[cfg(test)]
+mod history_tooltip_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_history_controls_keep_positions_without_session_tooltips() {
+        let rows = history_tooltip_rows(
+            vec![
+                ("Session".into(), true),
+                ("".into(), false),
+                ("Reload Saved Sessions".into(), true),
+            ],
+            vec!["date · agent".into()],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].1.as_deref(), Some("date · agent"));
+        assert_eq!(rows[2].0, "Reload Saved Sessions");
+        assert!(rows[1..].iter().all(|(_, tooltip)| tooltip.is_none()));
+    }
+
+    #[test]
+    fn misplaced_or_excess_session_tooltips_are_rejected() {
+        assert!(
+            history_tooltip_rows(vec![("Filter".into(), false)], vec!["wrong".into()]).is_err()
+        );
+        assert!(history_tooltip_rows(Vec::new(), vec!["orphan".into()]).is_err());
     }
 }

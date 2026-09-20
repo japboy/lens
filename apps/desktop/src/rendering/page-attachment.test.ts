@@ -1,3 +1,4 @@
+import type { LensSelect } from "../components/lens-select";
 // @vitest-environment jsdom
 import "@lit-labs/ssr-client/lit-element-hydrate-support.js";
 import { ReactiveElement } from "lit";
@@ -42,7 +43,7 @@ describe("independent region activation", () => {
     ];
     const page = installGeneratedPage("about") as AttachmentHost;
     const root = page.view.shadowRoot!;
-    const select = root.querySelector("select")!;
+    const select = root.querySelector<LensSelect>("lens-select")!;
     const region = root.querySelector("lens-license-document");
     await page.attachment.initialize();
     await vi.waitFor(() =>
@@ -53,7 +54,7 @@ describe("independent region activation", () => {
     expect(independent).toHaveBeenCalledTimes(1);
     expect(page.attachment.stage).toBe("active");
     expect(page.view.shadowRoot).toBe(root);
-    expect(root.querySelector("select")).toBe(select);
+    expect(root.querySelector<LensSelect>("lens-select")).toBe(select);
     expect(root.querySelector("lens-license-document")).toBe(region);
     root.querySelector<HTMLButtonElement>("[data-region-error] button")!.click();
     await vi.waitFor(() =>

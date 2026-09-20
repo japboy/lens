@@ -61,30 +61,12 @@ async fn watching_paused_and_progressing_operations_reject_history_before_effect
 }
 
 #[tokio::test]
-async fn stale_catalog_and_unloadable_entries_never_resolve_an_agent() {
+async fn stale_catalog_never_resolves_an_agent() {
     let app = app(test_support::state());
     assert!(open(app.handle().clone(), Uuid::new_v4(), 0)
         .await
         .unwrap_err()
         .contains("changed"));
-    let generation = Uuid::new_v4();
-    *app.state::<AppState>().session_view.catalog.lock().unwrap() = HistoryCatalog {
-        cwd: PathBuf::from("/tmp"),
-        generation,
-        entries: vec![HistoryEntry {
-            agent: AgentKind::Codex,
-            session_id: "foreign-session".into(),
-            cwd: "/tmp".into(),
-            title: "Other app".into(),
-            updated_at: None,
-            can_load: false,
-        }],
-        ..Default::default()
-    };
-    assert!(open(app.handle().clone(), generation, 0)
-        .await
-        .unwrap_err()
-        .contains("cannot load"));
     assert_eq!(
         app.state::<AppState>().session_view.view().unwrap().phase,
         ViewPhase::Idle
@@ -264,6 +246,8 @@ async fn history_loading_blocks_authentication_logout_and_reauthentication_befor
 /// This host admits only installed-runtime resolution and initialize/load. Any
 /// installation, generation or native-source access still fails loudly.
 struct ReplayHost {
+    load_supported: bool,
+    empty_listing: bool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     loaded: Arc<std::sync::atomic::AtomicUsize>,
@@ -305,8 +289,8 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
         use agent_client_protocol::{
             schema::v1::{
                 ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
-                LoadSessionRequest, LoadSessionResponse, SessionNotification, SessionUpdate,
-                TextContent,
+                ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+                SessionInfo, SessionNotification, SessionUpdate, TextContent,
             },
             Agent, Client, ConnectionTo, DynConnectTo, Responder,
         };
@@ -317,16 +301,29 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
         let entered = Arc::clone(&self.entered);
         let release = Arc::clone(&self.release);
         let loaded = Arc::clone(&self.loaded);
+        let listed_title = "Renamed elsewhere".to_string();
+        let empty_listing = self.empty_listing;
+        let load_supported = self.load_supported;
         let fixture = Agent.builder()
             .on_receive_request(
-                async |_request: InitializeRequest,
+                async move |_request: InitializeRequest,
                        responder: Responder<InitializeResponse>,
                        _cx: ConnectionTo<Client>| {
                     responder.respond(serde_json::from_value(serde_json::json!({
                         "protocolVersion": 1,
-                        "agentCapabilities": {"loadSession": true, "sessionCapabilities": {"list": {}}},
+                        "agentCapabilities": {"loadSession": load_supported, "sessionCapabilities": {"list": {}}},
                         "authMethods": []
                     })).unwrap())
+                }, agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: ListSessionsRequest,
+                            responder: Responder<ListSessionsResponse>,
+                            _: ConnectionTo<Client>| {
+                    assert_eq!(request.cwd, Some(PathBuf::from("/tmp")));
+                    responder.respond(ListSessionsResponse::new(if empty_listing { vec![] } else { vec![SessionInfo::new(
+                        "external-codex-session", "/tmp",
+                    ).title(listed_title.clone()).updated_at("2026-09-20T00:00:00Z")] }))
                 }, agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request(
@@ -368,6 +365,24 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
     let state = test_support::state();
     state.runtime.write().unwrap().config.agent = AgentKind::Claude;
     state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
+    let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
+    let store = history_catalog::store(&state).unwrap();
+    for id in ["external-codex-session", "not-returned"] {
+        store
+            .record_local(
+                &source,
+                &StoredEntry {
+                    session_id: id.into(),
+                    cwd: "/tmp".into(),
+                    title: Some("Created outside Lens".into()),
+                    provider_updated_at: Some("2026-09-17T00:00:00Z".into()),
+                    local_activity_at: None,
+                    state: EntryState::LocalOnly,
+                    can_load: Some(true),
+                },
+            )
+            .unwrap();
+    }
     let generation = Uuid::new_v4();
     *state.session_view.catalog.lock().unwrap() = HistoryCatalog {
         cwd: PathBuf::from("/tmp"),
@@ -378,7 +393,10 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
             cwd: "/tmp".into(),
             title: "Created outside Lens".into(),
             updated_at: Some("2026-09-17T00:00:00Z".into()),
-            can_load: true,
+            invocation: history_catalog::source(&state.config().unwrap(), AgentKind::Codex)
+                .unwrap()
+                .invocation,
+            presence: EntryState::Listed,
         }],
         ..Default::default()
     };
@@ -403,6 +421,8 @@ fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
 
 fn replay_host() -> Arc<ReplayHost> {
     Arc::new(ReplayHost {
+        load_supported: true,
+        empty_listing: false,
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
         loaded: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -443,6 +463,27 @@ async fn successful_replay_commits_provider_and_ready_document_only_after_respon
     assert!(!active_session(&state.lens().unwrap()));
     let view = state.session_view.view().unwrap();
     assert_eq!(view.phase, ViewPhase::Ready);
+    assert_eq!(view.title.as_deref(), Some("Renamed elsewhere"));
+    let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
+    let rows = history_catalog::store(&state)
+        .unwrap()
+        .entries(&source, "/tmp")
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.session_id == "external-codex-session")
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Renamed elsewhere")
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.session_id == "not-returned")
+            .unwrap()
+            .state,
+        EntryState::NotSeen
+    );
     assert_eq!(view.session_id.as_deref(), Some("external-codex-session"));
     assert_eq!(host.loaded.load(std::sync::atomic::Ordering::SeqCst), 1);
     let overlay = app
@@ -723,7 +764,7 @@ impl crate::agent::AgentHost<MockRuntime> for DiscoveryHost {
 }
 
 #[tokio::test]
-async fn history_refresh_only_discovers_successfully_selected_external_agent() {
+async fn history_refresh_never_resolves_agents_for_any_selection_stage() {
     let state = test_support::state();
     let external = AgentKind::External(state.config().unwrap().external_agents[0].id);
     let resolved = Arc::new(Mutex::new(Vec::new()));
@@ -753,31 +794,11 @@ async fn history_refresh_only_discovers_successfully_selected_external_agent() {
         }
         refresh(app.handle().clone()).await.unwrap();
         let observed = std::mem::take(&mut *resolved.lock().unwrap());
-        assert!(observed.contains(&AgentKind::Claude));
-        assert!(observed.contains(&AgentKind::Codex));
-        assert_eq!(
-            observed.contains(&external),
-            stage == AgentSelectionStage::Selected
-        );
-        assert_eq!(
-            observed.len(),
-            if stage == AgentSelectionStage::Selected {
-                3
-            } else {
-                2
-            }
+        assert!(
+            observed.is_empty(),
+            "cached refresh unexpectedly resolved {observed:?}"
         );
     }
-}
-
-#[tokio::test]
-async fn unverified_external_history_is_rejected_before_runtime_resolution() {
-    let app = app(test_support::state());
-    let kind = AgentKind::External(app.state::<AppState>().config().unwrap().external_agents[0].id);
-    let error = session_history::list_provider(app.handle(), kind, std::path::Path::new("/tmp"))
-        .await
-        .unwrap_err();
-    assert!(error.contains("Select and verify"));
 }
 
 #[tokio::test]
@@ -801,8 +822,444 @@ async fn external_history_rejects_profile_changes_during_runtime_resolution() {
     )
     .build(crate::product_context())
     .unwrap();
-    let error = session_history::list_provider(app.handle(), kind, std::path::Path::new("/tmp"))
+    let error = session_history::load_synced_provider(
+        app.handle(),
+        kind,
+        &app.state::<AppState>().config().unwrap(),
+        "existing",
+        "/tmp",
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(error.contains("configuration changed"));
+}
+
+fn seed_cached(state: &AppState, agent: AgentKind, id: &str, cwd: &str, time: &str) {
+    let source = history_catalog::source(&state.config().unwrap(), agent).unwrap();
+    history_catalog::store(state)
+        .unwrap()
+        .record_local(
+            &source,
+            &StoredEntry {
+                session_id: id.into(),
+                cwd: cwd.into(),
+                title: Some(id.into()),
+                provider_updated_at: Some(time.into()),
+                local_activity_at: None,
+                state: EntryState::LocalOnly,
+                can_load: None,
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn cached_all_agents_preserve_selection_and_never_connect() {
+    let state = test_support::state();
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
+    let external = AgentKind::External(state.config().unwrap().external_agents[0].id);
+    for agent in [AgentKind::Claude, AgentKind::Codex, external] {
+        seed_cached(&state, agent, "shared-id", "/tmp", "2026-09-20T00:00:00Z");
+    }
+    let app = app(state); // UnusedAgent panics on every attempted Agent effect.
+    let before = app.state::<AppState>().snapshot().unwrap();
+    refresh(app.handle().clone()).await.unwrap();
+    let catalog = app.state::<AppState>().session_view.catalog().unwrap();
+    assert_eq!(catalog.entries.len(), 3);
+    assert!(catalog
+        .entries
+        .iter()
+        .all(|entry| entry.session_id == "shared-id"));
+    let after = app.state::<AppState>().snapshot().unwrap();
+    assert_eq!(after.config, before.config);
+    assert_eq!(after.agent_selection, before.agent_selection);
+    assert_eq!(after.lens, before.lens);
+}
+
+#[test]
+fn cached_directory_filter_precedes_global_top_ten() {
+    let state = test_support::state();
+    for index in 0..12 {
+        seed_cached(
+            &state,
+            AgentKind::Claude,
+            &format!("new-{index}"),
+            "/tmp",
+            "2026-09-20T00:00:00Z",
+        );
+        seed_cached(
+            &state,
+            AgentKind::Codex,
+            &format!("child-{index}"),
+            "/tmp/child",
+            "2026-09-21T00:00:00Z",
+        );
+    }
+    seed_cached(
+        &state,
+        AgentKind::Codex,
+        "older-but-selected",
+        "/tmp",
+        "2026-09-19T00:00:00Z",
+    );
+    let store = history_catalog::store(&state).unwrap();
+    let sources = history_catalog::sources(&state.config().unwrap()).unwrap();
+    let all = cached_catalog(&store, Path::new("/tmp"), sources).unwrap();
+    assert_eq!(all.entries.len(), 10);
+    assert!(all
+        .entries
+        .iter()
+        .all(|entry| entry.agent == AgentKind::Claude));
+}
+
+#[tokio::test]
+async fn edited_or_deleted_presets_reject_cached_open_before_effects() {
+    for delete in [false, true] {
+        let state = test_support::state();
+        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
+        let external = AgentKind::External(state.config().unwrap().external_agents[0].id);
+        seed_cached(&state, external, "saved", "/tmp", "2026-09-20T00:00:00Z");
+        let app = app(state);
+        refresh(app.handle().clone()).await.unwrap();
+        let generation = app
+            .state::<AppState>()
+            .session_view
+            .catalog()
+            .unwrap()
+            .generation;
+        {
+            let state = app.state::<AppState>();
+            let mut snapshot = state.runtime.write().unwrap();
+            if delete {
+                snapshot.config.external_agents.remove(0);
+            } else {
+                snapshot.config.external_agents[0]
+                    .args
+                    .push("changed".into());
+            }
+        }
+        let error = open(app.handle().clone(), generation, 0).await.unwrap_err();
+        assert!(error.contains(if delete {
+            "no longer available"
+        } else {
+            "command changed"
+        }));
+        assert_eq!(
+            app.state::<AppState>().session_view.view().unwrap().phase,
+            ViewPhase::Idle
+        );
+    }
+}
+
+#[test]
+fn live_info_updates_persist_metadata_but_stale_sessions_do_not() {
+    use agent_client_protocol::schema::{v1::SessionInfoUpdate, MaybeUndefined};
+    let state = test_support::state();
+    let operation = Uuid::new_v4();
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.config.working_directory = PathBuf::from("/tmp");
+        snapshot.lens = monitoring(LensMonitoringLifecycle::Watching);
+        snapshot.lens.operation_id = Some(operation);
+    }
+    let app = app(state);
+    start_live(
+        app.handle(),
+        operation,
+        AgentKind::Claude,
+        "live-session".into(),
+    )
+    .unwrap();
+    record_live(
+        app.handle(),
+        "live-session",
+        SessionUpdate::SessionInfoUpdate(
+            SessionInfoUpdate::new()
+                .title("Agent title")
+                .updated_at("2026-09-20T00:00:00Z"),
+        ),
+    )
+    .unwrap();
+    record_live(
+        app.handle(),
+        "different-session",
+        SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Must not replace")),
+    )
+    .unwrap();
+    let state = app.state::<AppState>();
+    let source = history_catalog::source(&state.config().unwrap(), AgentKind::Claude).unwrap();
+    let store = history_catalog::store(&state).unwrap();
+    history_catalog::writer(&state).unwrap().flush().unwrap();
+    let row = store.entries(&source, "/tmp").unwrap().remove(0);
+    assert_eq!(row.title.as_deref(), Some("Agent title"));
+    assert_eq!(
+        row.provider_updated_at.as_deref(),
+        Some("2026-09-20T00:00:00Z")
+    );
+    assert!(row.local_activity_at.is_some());
+    record_live(
+        app.handle(),
+        "live-session",
+        SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(MaybeUndefined::Null)),
+    )
+    .unwrap();
+    history_catalog::writer(&state).unwrap().flush().unwrap();
+    let row = store.entries(&source, "/tmp").unwrap().remove(0);
+    assert_eq!(row.title, None);
+    assert_eq!(
+        row.provider_updated_at.as_deref(),
+        Some("2026-09-20T00:00:00Z")
+    );
+}
+
+#[test]
+fn accepted_metadata_does_not_erase_a_previous_persistence_notice() {
+    let app = app(test_support::state());
+    report_history_write(app.handle(), Err("Metadata was not saved".into()));
+    report_history_write(app.handle(), Ok(()));
+    assert_eq!(
+        app.state::<AppState>()
+            .session_view
+            .storage_notice
+            .lock()
+            .unwrap()
+            .as_deref(),
+        Some("Metadata was not saved")
+    );
+}
+
+#[tokio::test]
+async fn remote_scan_follows_all_previously_queued_live_metadata() {
+    let state = test_support::state();
+    let source = history_catalog::source(&state.config().unwrap(), AgentKind::Claude).unwrap();
+    let writer = history_catalog::writer(&state).unwrap();
+    writer
+        .record_local(
+            source.clone(),
+            StoredEntry {
+                session_id: "queued-session".into(),
+                cwd: "/tmp".into(),
+                title: None,
+                provider_updated_at: None,
+                local_activity_at: Some("2026-09-19T00:00:00Z".into()),
+                state: EntryState::LocalOnly,
+                can_load: None,
+            },
+        )
+        .unwrap();
+    writer
+        .apply_info_patch(
+            source.clone(),
+            "queued-session".into(),
+            "/tmp".into(),
+            InfoPatch {
+                title: Patch::Value("Previous live title".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let app = app(state);
+    // This is the same barrier open awaits before admission and begin_scan.
+    flush_history_writes(app.handle()).await.unwrap();
+    let state = app.state::<AppState>();
+    let store = history_catalog::store(&state).unwrap();
+    assert_eq!(
+        store.entries(&source, "/tmp").unwrap()[0].title.as_deref(),
+        Some("Previous live title")
+    );
+    let token = store.begin_scan(&source, "/tmp").unwrap();
+    store
+        .apply_listing(
+            &token,
+            &[crate::session_history_store::ListedEntry {
+                session_id: "queued-session".into(),
+                title: Some("Fresh remote title".into()),
+                provider_updated_at: Some("2026-09-20T00:00:00Z".into()),
+            }],
+            true,
+            Some(true),
+        )
+        .unwrap();
+    flush_history_writes(app.handle()).await.unwrap();
+    assert_eq!(
+        store.entries(&source, "/tmp").unwrap()[0].title.as_deref(),
+        Some("Fresh remote title")
+    );
+}
+
+#[tokio::test]
+async fn preset_edit_after_admission_never_resolves_replacement_command() {
+    let state = test_support::state();
+    let admitted = state.config().unwrap();
+    let kind = AgentKind::External(admitted.external_agents[0].id);
+    let app = app(state);
+    // Simulate the settings edit after the menu action released admission but
+    // before its provider future is polled. UnusedAgent panics on resolution.
+    app.state::<AppState>()
+        .runtime
+        .write()
+        .unwrap()
+        .config
+        .external_agents[0]
+        .command = "replacement-command".into();
+    let result = session_history::load_synced_provider(
+        app.handle(),
+        kind,
+        &admitted,
+        "existing",
+        admitted.working_directory.to_str().unwrap(),
+    )
+    .await;
+    assert!(matches!(result, Err(error) if error.contains("configuration changed")));
+}
+
+#[tokio::test]
+async fn scan_write_failures_preserve_cached_entries_and_display_notice() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("history.sqlite3");
+    let mut state = test_support::state();
+    state.history_writer.take();
+    state.history_store.take();
+    history_catalog::install(
+        &state,
+        crate::session_history_store::HistoryStore::open(&path).unwrap(),
+    )
+    .unwrap();
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
+    seed_cached(
+        &state,
+        AgentKind::Claude,
+        "retained",
+        "/tmp",
+        "2026-09-20T00:00:00Z",
+    );
+    // Reads remain usable while every scan write deterministically fails.
+    rusqlite::Connection::open(&path).unwrap().execute_batch(
+        "CREATE TRIGGER reject_history_clock BEFORE UPDATE ON history_clock BEGIN SELECT RAISE(ABORT, 'fixture scan write failed'); END;"
+    ).unwrap();
+    let app = app(state);
+    refresh(app.handle().clone()).await.unwrap();
+    let catalog = app.state::<AppState>().session_view.catalog().unwrap();
+    let error = open(app.handle().clone(), catalog.generation, 0)
         .await
         .unwrap_err();
-    assert!(error.contains("selection changed"));
+    assert!(error.contains("fixture scan write failed"));
+    let catalog = app.state::<AppState>().session_view.catalog().unwrap();
+    assert_eq!(catalog.entries.len(), 1);
+    assert_eq!(catalog.entries[0].session_id, "retained");
+    assert!(catalog
+        .notices
+        .iter()
+        .any(|notice| notice.contains("fixture scan write failed")));
+}
+
+#[tokio::test]
+async fn successful_replay_clears_uncertain_availability_after_empty_listing() {
+    let mut host = replay_host();
+    Arc::get_mut(&mut host).unwrap().empty_listing = true;
+    let (app, generation) = replay_app(host.clone());
+    host.release.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        open(app.handle().clone(), generation, 0),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let catalog = app.state::<AppState>().session_view.catalog().unwrap();
+    let opened = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.session_id == "external-codex-session")
+        .unwrap();
+    assert_eq!(opened.presence, EntryState::LocalOnly);
+    assert_eq!(opened.updated_at.as_deref(), Some("2026-09-17T00:00:00Z"));
+    assert_eq!(
+        catalog
+            .entries
+            .iter()
+            .find(|entry| entry.session_id == "not-returned")
+            .unwrap()
+            .presence,
+        EntryState::NotSeen
+    );
+}
+
+#[tokio::test]
+async fn history_runtime_resolution_uses_admitted_profile_across_aba_settings_edits() {
+    use crate::agent::AgentHost;
+    let state = test_support::state();
+    let mut admitted = state.config().unwrap();
+    let profile = &mut admitted.external_agents[0];
+    profile.command = "/bin/echo".into();
+    profile.args = vec!["admitted-a".into()];
+    let kind = AgentKind::External(profile.id);
+    state.runtime.write().unwrap().config = admitted.clone();
+    let app = app(state);
+    let host = crate::agent::DefaultAgentHost;
+    // Create the resolution future from A, then replace settings before polling it.
+    // The production resolver must not recapture B from AppState.
+    let resolving = host.resolve_history(app.handle(), kind, &admitted, Path::new("/tmp"));
+    {
+        let state = app.state::<AppState>();
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.config.external_agents[0].command = "/bin/cat".into();
+        snapshot.config.external_agents[0].args = vec!["replacement-b".into()];
+    }
+    let resolved = resolving.await.unwrap().unwrap();
+    app.state::<AppState>().runtime.write().unwrap().config = admitted.clone();
+    // Both surrounding admission checks would now see A. Verify the actual
+    // descriptor, not just the restored settings, still identifies A.
+    assert_eq!(resolved.kind, kind);
+    assert_eq!(resolved.command, admitted.external_agents[0].command);
+    assert_eq!(resolved.args, admitted.external_agents[0].args);
+    assert!(resolved.installation.is_none());
+}
+
+#[tokio::test]
+async fn cached_negative_load_capability_is_rechecked_on_explicit_open() {
+    for supported in [false, true] {
+        let mut host = replay_host();
+        Arc::get_mut(&mut host).unwrap().load_supported = supported;
+        let (app, _) = replay_app(host.clone());
+        let state = app.state::<AppState>();
+        let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
+        let store = history_catalog::store(&state).unwrap();
+        let token = store.begin_scan(&source, "/tmp").unwrap();
+        store
+            .apply_listing(&token, &[], false, Some(false))
+            .unwrap();
+        refresh(app.handle().clone()).await.unwrap();
+        assert_eq!(host.loaded.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let catalog = state.session_view.catalog().unwrap();
+        let index = catalog
+            .entries
+            .iter()
+            .position(|entry| entry.session_id == "external-codex-session")
+            .unwrap();
+        host.release.notify_one();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open(app.handle().clone(), catalog.generation, index),
+        )
+        .await
+        .unwrap();
+        if supported {
+            result.unwrap();
+        } else {
+            assert!(result
+                .unwrap_err()
+                .contains("does not support ACP session/load"));
+        }
+        assert_eq!(
+            host.loaded.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(supported)
+        );
+        assert!(store
+            .entries(&source, "/tmp")
+            .unwrap()
+            .iter()
+            .all(|entry| entry.can_load == Some(supported)));
+    }
 }

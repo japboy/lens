@@ -1,3 +1,4 @@
+import type { LensSelect } from "./lens-select";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentDefaults, AgentSelectionState } from "../types";
@@ -78,7 +79,7 @@ async function mount(defaults = saved(), state = selection()) {
   return { element, intents };
 }
 function select(element: LensAgentDefaults, label: string) {
-  return element.querySelector<HTMLSelectElement>(`select[aria-label="${label} default"]`)!;
+  return element.querySelector<LensSelect>(`lens-select[label="${label} default"]`)!;
 }
 function click(element: LensAgentDefaults, label: string) {
   const button = [...element.querySelectorAll("button")].find(
@@ -89,8 +90,14 @@ function click(element: LensAgentDefaults, label: string) {
 }
 async function choose(element: LensAgentDefaults, label: string, value: string) {
   const control = select(element, label);
-  control.value = value;
-  control.dispatchEvent(new Event("change"));
+  await control.updateComplete;
+  control.shadowRoot!.querySelector<HTMLButtonElement>("button")!.click();
+  await control.updateComplete;
+  control
+    .shadowRoot!.querySelector<HTMLElement>(
+      `[data-index="${control.options.findIndex((option) => option.value === value)}"]`,
+    )!
+    .click();
   await element.updateComplete;
 }
 function expectSavedDisplay(element: LensAgentDefaults) {
@@ -116,7 +123,7 @@ describe("Model & Behavior selection persistence", () => {
     const defaults = saved();
     defaults.choices.push({ config_id: "provider", value: "stale-provider" });
     const { element, intents } = await mount(defaults, state);
-    expect(element.querySelector('select[data-agent-config-id="provider"]')).toBeNull();
+    expect(element.querySelector('lens-select[data-agent-config-id="provider"]')).toBeNull();
     expect(
       element.querySelector('output[aria-label="Provider managed by external CLI"]')?.textContent,
     ).toBe("Configured provider");
@@ -159,16 +166,20 @@ describe("Model & Behavior selection persistence", () => {
     const { element, intents } = await mount(structuredClone(DEFAULT_AGENT_DEFAULTS));
     for (const label of ["Model", "Reasoning effort", "Mode"]) {
       expect(select(element, label).value).toBe("");
-      expect(select(element, label).selectedOptions[0]?.textContent?.trim()).toBe("Agent default");
+      expect(
+        select(element, label).options.find(
+          (option) => option.value === select(element, label).value,
+        )?.label,
+      ).toBe("Agent default");
     }
-    const other = element.querySelector<HTMLSelectElement>(
-      'select[aria-label="Other requests policy"]',
-    )!;
+    const other = element.querySelector<LensSelect>('lens-select[label="Other requests policy"]')!;
     expect(other.value).toBe("ask");
-    expect(other.closest("label")?.textContent).toContain(
+    expect(other.closest(".settings-field")?.textContent).toContain(
       "Requests without a recognized classification",
     );
-    expect(other.closest("label")?.textContent).toContain("including HTML output publication");
+    expect(other.closest(".settings-field")?.textContent).toContain(
+      "including HTML output publication",
+    );
     other.value = "deny";
     other.dispatchEvent(new Event("change"));
     await element.updateComplete;
@@ -185,7 +196,7 @@ describe("Model & Behavior selection persistence", () => {
     const { element, intents } = await mount();
     const details = element.querySelector<HTMLDetailsElement>("details")!;
     expect(details.open).toBe(false);
-    const policies = details.querySelectorAll<HTMLSelectElement>('select[aria-label$=" policy"]');
+    const policies = details.querySelectorAll<LensSelect>('lens-select[label$=" policy"]');
     expect(policies).toHaveLength(8);
     for (const policy of policies) {
       expect([...policy.options].map((option) => option.value)).toEqual(["ask", "allow", "deny"]);
@@ -252,9 +263,11 @@ describe("Model & Behavior selection persistence", () => {
     await element.updateComplete;
     expectSavedDisplay(element);
     for (const label of ["Model", "Reasoning effort", "Mode"]) {
-      const option = select(element, label).selectedOptions[0]!;
+      const option = select(element, label).options.find(
+        (option) => option.value === select(element, label).value,
+      )!;
       expect(option.disabled).toBe(true);
-      expect(option.textContent).toContain("not in current choices");
+      expect(option.label).toContain("not in current choices");
     }
     expect(intents).toEqual([]);
     click(element, "Save Defaults");
@@ -329,13 +342,39 @@ describe("Model & Behavior selection persistence", () => {
     element.selection = { ...state, modes: [] };
     await element.updateComplete;
     expect(select(element, "Mode").value).toBe("write");
-    expect(select(element, "Mode").selectedOptions[0]?.disabled).toBe(true);
+    expect(
+      select(element, "Mode").options.find(
+        (option) => option.value === select(element, "Mode").value,
+      )?.disabled,
+    ).toBe(true);
     expect(intents).toEqual([]);
     click(element, "Save Defaults");
     expect(intents).toEqual([{ type: "save-defaults", defaults }]);
     await choose(element, "Mode", "");
-    expect(select(element, "Mode").selectedOptions[0]?.textContent).toContain("Agent default");
+    expect(
+      select(element, "Mode").options.find(
+        (option) => option.value === select(element, "Mode").value,
+      )?.label,
+    ).toContain("Agent default");
     click(element, "Save Defaults");
     expect(intents.at(-1)).toMatchObject({ type: "save-defaults", defaults: { choices: [] } });
   });
+});
+
+it("uses the shared control for every default and explicitly disables custom triggers", async () => {
+  const { element, intents } = await mount();
+  expect(element.querySelector("select")).toBeNull();
+  const controls = [...element.querySelectorAll<LensSelect>("lens-select")];
+  expect(controls.length).toBeGreaterThan(8);
+  element.disabled = true;
+  await element.updateComplete;
+  await Promise.all(controls.map((control) => control.updateComplete));
+  expect(
+    controls.every(
+      (control) =>
+        control.disabled &&
+        control.shadowRoot!.querySelector<HTMLButtonElement>("button")!.disabled,
+    ),
+  ).toBe(true);
+  expect(intents).toEqual([]);
 });

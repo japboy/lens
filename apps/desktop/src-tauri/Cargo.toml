@@ -31,6 +31,7 @@ dirs = "=6.0.0"
 flate2 = "=1.1.9"
 libc = "=0.2.189"
 reqwest = { version = "=0.13.4", features = ["json", "stream"] }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true

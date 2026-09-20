@@ -1,6 +1,7 @@
 mod about;
 mod agent;
 mod agent_environment;
+mod agent_icons;
 mod agent_launch;
 mod agent_output;
 mod agent_preferences;
@@ -26,10 +27,13 @@ mod native;
 mod output_mcp;
 #[cfg(target_os = "macos")]
 pub use native::run;
+mod history_catalog;
+mod history_writer;
 mod platform;
 mod session_controls;
 mod session_document;
 mod session_history;
+mod session_history_store;
 mod session_view;
 #[cfg(test)]
 mod shell_tests;
@@ -59,14 +63,7 @@ async fn validate_history_session<R: tauri::Runtime>(
     }
     let catalog = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         session_view::refresh(app.clone()).await?;
-        loop {
-            // Restore may already own refresh; refresh() then returns without joining it.
-            let catalog = app.state::<app_state::AppState>().session_view.catalog()?;
-            if !catalog.loading {
-                return Ok::<_, String>(catalog);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        app.state::<app_state::AppState>().session_view.catalog()
     })
     .await
     .map_err(|_| "Timed out waiting for session history catalog".to_string())??;
@@ -228,6 +225,13 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 }
             };
             let state = app_state::AppState::with_config(services, store, config);
+            let history = app.path().app_data_dir()
+                .map_err(|error| error.to_string())
+                .and_then(|directory| session_history_store::HistoryStore::open(&directory.join("history.sqlite3")))
+                .and_then(|history| history_catalog::install(&state, history));
+            if let Err(error) = history {
+                let _ = state.history_storage_error.set(error);
+            }
             app.manage(state);
             #[cfg(target_os = "macos")]
             native::configure_activation(app, validate_a11y);
@@ -308,7 +312,11 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             }
             tauri::RunEvent::ExitRequested { code: Some(_), .. } | tauri::RunEvent::Exit => {
                 session_controls::close_active(app);
-                let _ = app.state::<app_state::AppState>().agent_control.cancel_active();
+                let state = app.state::<app_state::AppState>();
+                let _ = state.agent_control.cancel_active();
+                if let Some(writer) = state.history_writer.get() {
+                    let _ = writer.flush();
+                }
             }
             #[cfg(debug_assertions)]
             tauri::RunEvent::Ready if validate_target_selection => {

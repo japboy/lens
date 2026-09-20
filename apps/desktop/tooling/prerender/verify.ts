@@ -64,8 +64,13 @@ export function verifyGeneration(directory: string, expectedGeneration?: string)
   for (const [view, file] of Object.entries(PAGE_ENTRIES)) {
     if (!Object.hasOwn(files, file)) throw new Error(`Missing generated entry: ${file}`);
     const html = readFileSync(join(directory, file), "utf8");
+    // Views own one root. The reusable select owns an explicitly admitted nested
+    // root so its control styles and interactive state stay encapsulated.
+    const selectRoots = (
+      html.match(/<lens-select\b[^>]*>\s*<template\b[^>]*shadowrootmode="open"/g) ?? []
+    ).length;
     if (
-      (html.match(/shadowrootmode="open"/g) ?? []).length !== 1 ||
+      (html.match(/shadowrootmode="open"/g) ?? []).length !== 1 + selectRoots ||
       !html.includes(`<lens-${view}-view`) ||
       !html.includes("defer-hydration") ||
       !html.includes("<!--lit-part ") ||

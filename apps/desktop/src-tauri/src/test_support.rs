@@ -59,7 +59,7 @@ impl AccessibilityTrust for UnusedSources {
 
 pub(crate) fn state() -> AppState {
     let source = Arc::new(UnusedSources);
-    AppState::with_config(
+    let state = AppState::with_config(
         platform::Services {
             selection: source.clone(),
             accessibility: source.clone(),
@@ -73,17 +73,23 @@ pub(crate) fn state() -> AppState {
                 .join("settings.json"),
         ),
         AppConfig::new("/fixture".into()),
+    );
+    crate::history_catalog::install(
+        &state,
+        crate::session_history_store::HistoryStore::memory().unwrap(),
     )
+    .unwrap();
+    state
 }
 
 pub(crate) struct UnusedPresentation;
 impl<R: tauri::Runtime> platform::WindowPresentation<R> for UnusedPresentation {
-    fn history_tooltips(
+    fn menu_presentation(
         &self,
         _app: &tauri::AppHandle<R>,
         _root: &tauri::menu::Menu<R>,
         _history: &tauri::menu::Submenu<R>,
-        _tooltips: Vec<String>,
+        _rows: Vec<port_platform::MenuPresentationItem>,
     ) -> Result<(), platform::PlatformError> {
         Ok(())
     }

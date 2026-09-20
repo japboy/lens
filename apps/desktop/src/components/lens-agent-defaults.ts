@@ -1,8 +1,10 @@
+import "./lens-select";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AgentDefaults, AgentSelectionState, ToolPolicies, ToolPolicy } from "../types";
 import { AGENT_INTENT_EVENT, dispatchComponentEvent, type AgentIntent } from "./events";
 import { sameAgent } from "../view-model";
+import { LensSelect, type SelectOption } from "./lens-select";
 import { agentOptionChoices } from "./agent-option-choices";
 
 export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = {
@@ -49,13 +51,6 @@ export class LensAgentDefaults extends LitElement {
       this.draft = this.editableDefaults(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
     }
   }
-  protected updated() {
-    // Native selection must be applied after every dynamic option has been committed.
-    // The draft is authoritative; synchronizing the DOM must not emit an edit.
-    for (const select of this.querySelectorAll<HTMLSelectElement>("select[data-agent-config-id]")) {
-      select.value = this.choiceValue(select.dataset.agentConfigId!);
-    }
-  }
   private choiceValue(configId: string): string {
     return this.draft.choices.find((choice) => choice.config_id === configId)?.value ?? "";
   }
@@ -71,11 +66,11 @@ export class LensAgentDefaults extends LitElement {
     result.choices = result.choices.filter((choice) => !this.externallyManaged(choice.config_id));
     return result;
   }
-  private unlistedChoice(configId: string, values: string[]) {
+  private unlistedChoice(configId: string, values: string[]): SelectOption[] {
     const value = this.choiceValue(configId);
     return value && !values.includes(value)
-      ? html`<option value=${value} disabled>${value} (not in current choices)</option>`
-      : nothing;
+      ? [{ value, label: `${value} (not in current choices)`, disabled: true }]
+      : [];
   }
   protected render() {
     if (this.selection?.stage !== "selected") return nothing;
@@ -100,31 +95,36 @@ export class LensAgentDefaults extends LitElement {
                   ["model", "mode", "thought_level"].includes(option.category ?? ""),
                 )
                 .map((option) => this.renderOption(option))
-            : html`<label
-                >Mode default<select
-                  aria-label="Mode default"
+            : html`<div class="settings-field">
+                <span>Mode default</span>
+                <lens-select
+                  label="Mode default"
                   data-agent-config-id="mode"
-                  @change=${(e: Event) => this.choose("mode", (e.target as HTMLSelectElement).value)}
-                >
-                  <option value="">Agent default</option>
-                  ${this.unlistedChoice(
-                    "mode",
-                    modes.map((mode) => mode.id),
-                  )}
-                  ${modes.map((m) => html`<option value=${m.id}>${m.name}</option>`)}
-                </select></label
-              >`
+                  .value=${this.choiceValue("mode")}
+                  .disabled=${this.disabled}
+                  .options=${[
+                    { value: "", label: "Agent default" },
+                    ...this.unlistedChoice(
+                      "mode",
+                      modes.map((mode) => mode.id),
+                    ),
+                    ...modes.map((mode) => ({ value: mode.id, label: mode.name })),
+                  ]}
+                  @change=${(e: Event) => this.choose("mode", (e.target as LensSelect).value)}
+                ></lens-select>
+              </div>`
         }
         ${
           !options?.some((o) => o.category === "thought_level")
-            ? html`<label class="settings-field"
-                ><span>Reasoning effort</span
-                ><select aria-label="Reasoning effort default" disabled>
-                  <option>Unavailable for the selected model</option></select
-                ><span class="help"
-                  >Choose a model to load its supported reasoning levels.</span
-                ></label
-              >`
+            ? html`<div class="settings-field">
+                <span>Reasoning effort</span
+                ><lens-select
+                  label="Reasoning effort default"
+                  disabled
+                  .options=${[{ value: "", label: "Unavailable for the selected model" }]}
+                ></lens-select
+                ><span class="help">Choose a model to load its supported reasoning levels.</span>
+              </div>`
             : nothing
         }
       </fieldset>
@@ -146,18 +146,21 @@ export class LensAgentDefaults extends LitElement {
           <legend>Permission request response policy</legend>
           ${EFFECTS.map(
             ({ key, label }) =>
-              html`<label class="settings-field"
-                ><span>${label}</span
-                ><select
-                  aria-label=${`${label} policy`}
+              html`<div class="settings-field">
+                <span>${label}</span>
+                <lens-select
+                  label=${`${label} policy`}
+                  .disabled=${this.disabled}
                   .value=${this.draft.tools[key]}
-                  @change=${(e: Event) => this.setPolicy(key, (e.target as HTMLSelectElement).value as ToolPolicy)}
-                >
-                  <option value="ask">Ask each time</option>
-                  <option value="allow">Automatically approve</option>
-                  <option value="deny">Automatically reject</option></select
-                >${key === "other" ? html`<span class="help">Requests without a recognized classification, including HTML output publication.</span>` : nothing}</label
-              >`,
+                  .options=${[
+                    { value: "ask", label: "Ask each time" },
+                    { value: "allow", label: "Automatically approve" },
+                    { value: "deny", label: "Automatically reject" },
+                  ]}
+                  @change=${(e: Event) => this.setPolicy(key, (e.target as LensSelect).value as ToolPolicy)}
+                ></lens-select
+                >${key === "other" ? html`<span class="help">Requests without a recognized classification, including HTML output publication.</span>` : nothing}
+              </div>`,
           )}
         </fieldset>
         <p class="help">
@@ -206,27 +209,27 @@ export class LensAgentDefaults extends LitElement {
         >
       </div>`;
     }
-    return html`<label class="settings-field"
-      ><span>${option.name}</span>
-      <select
-        aria-label=${`${option.name} default`}
+    return html`<div class="settings-field">
+      <span>${option.name}</span>
+      <lens-select
+        label=${`${option.name} default`}
         data-agent-config-id=${option.id}
-        ?disabled=${option.type !== "select"}
-        @change=${(e: Event) => this.choose(option.id, (e.target as HTMLSelectElement).value)}
-      >
-        <option value="">Agent default</option>
-        ${this.unlistedChoice(
-          option.id,
-          (option.options ?? []).flatMap((choice) =>
-            "group" in choice ? choice.options.map((item) => item.value) : [choice.value],
+        .value=${this.choiceValue(option.id)}
+        .disabled=${this.disabled || option.type !== "select"}
+        .options=${[
+          { value: "", label: "Agent default" },
+          ...this.unlistedChoice(
+            option.id,
+            agentOptionChoices(option).map((choice) => choice.value),
           ),
-        )}
-        ${agentOptionChoices(option)}
-      </select>
+          ...agentOptionChoices(option),
+        ]}
+        @change=${(e: Event) => this.choose(option.id, (e.target as LensSelect).value)}
+      ></lens-select>
       <span class="help"
         >${option.description ?? ""}${option.type !== "select" ? " This control type is not supported." : ""}</span
-      ></label
-    >`;
+      >
+    </div>`;
   }
   private choose(configId: string, value: string) {
     if (this.externallyManaged(configId)) return;

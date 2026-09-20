@@ -1,3 +1,4 @@
+import type { LensSelect } from "./lens-select";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import { LensPromptSettings } from "./lens-prompt-settings";
@@ -59,9 +60,15 @@ async function edit(element: LensPromptSettings, selector: string, value: string
   await element.updateComplete;
 }
 async function browse(element: LensPromptSettings, id: string) {
-  const select = element.querySelector<HTMLSelectElement>("#prompt-preset-list")!;
-  select.value = id;
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+  const select = element.querySelector<LensSelect>("#prompt-preset-list")!;
+  await select.updateComplete;
+  select.shadowRoot!.querySelector<HTMLButtonElement>("button")!.click();
+  await select.updateComplete;
+  select
+    .shadowRoot!.querySelector<HTMLElement>(
+      `[data-index="${select.options.findIndex((option) => option.value === id)}"]`,
+    )!
+    .click();
   await element.updateComplete;
 }
 afterEach(() => document.body.replaceChildren());
@@ -81,7 +88,7 @@ describe("prompt preset editing", () => {
     expect(element.querySelector(".prompt-composition")).toBeNull();
     expect(element.querySelector("#prompt-preset-replacement")).toBeNull();
     advanced.open = true;
-    const request = element.querySelector<HTMLSelectElement>("#prompt-request-mode")!;
+    const request = element.querySelector<LensSelect>("#prompt-request-mode")!;
     request.value = "source_checkpoint";
     request.dispatchEvent(new Event("change", { bubbles: true }));
     await element.updateComplete;
@@ -123,9 +130,7 @@ describe("prompt preset editing", () => {
     expect(element.querySelector<HTMLInputElement>("#prompt-preset-name")!.value).toBe(
       "Conceptual",
     );
-    expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe(
-      "conceptual",
-    );
+    expect(element.querySelector<LensSelect>("#prompt-preset-list")!.value).toBe("conceptual");
     expect(element.textContent).not.toContain("Custom draft");
   });
   it("does not roll back a newer snapshot when the restore response arrives late", async () => {
@@ -166,9 +171,7 @@ describe("prompt preset editing", () => {
     expect(element.querySelector<HTMLTextAreaElement>("#prompt-editor")!.value).toBe(
       "My draft. {turn_instruction}",
     );
-    expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe(
-      "conceptual",
-    );
+    expect(element.querySelector<LensSelect>("#prompt-preset-list")!.value).toBe("conceptual");
     await browse(element, "practical");
     await browse(element, "conceptual");
     button(element, "Save Preset").click();
@@ -251,7 +254,7 @@ describe("prompt preset editing", () => {
     next.presets.push({ id: "new-id", name: "New Preset", revision: 1, template });
     element.openCreatedPreset(next, "new-id");
     await element.updateComplete;
-    expect(element.querySelector<HTMLSelectElement>("#prompt-preset-list")!.value).toBe("new-id");
+    expect(element.querySelector<LensSelect>("#prompt-preset-list")!.value).toBe("new-id");
     expect(element.promptPresets?.selected_id).toBe("conceptual");
     await browse(element, "conceptual");
     expect(element.querySelector<HTMLInputElement>("#prompt-preset-name")!.value).toBe(

@@ -1,14 +1,15 @@
-import { html } from "lit";
 import type { SessionConfigOption } from "../types";
+import type { SelectOption } from "./lens-select";
 
-export function agentOptionChoices(option: SessionConfigOption) {
-  return (option.options ?? []).map((choice) =>
+export function agentOptionChoices(option: SessionConfigOption): SelectOption[] {
+  return (option.options ?? []).flatMap((choice) =>
     "group" in choice
-      ? html`<optgroup label=${choice.name}>
-          ${choice.options.map((value) => html`<option value=${value.value} title=${value.description ?? ""}>${value.name}</option>`)}
-        </optgroup>`
-      : html`<option value=${choice.value} title=${choice.description ?? ""}>
-          ${choice.name}
-        </option>`,
+      ? choice.options.map((item) => ({
+          value: item.value,
+          label: item.name,
+          description: item.description,
+          group: choice.name,
+        }))
+      : [{ value: choice.value, label: choice.name, description: choice.description }],
   );
 }
