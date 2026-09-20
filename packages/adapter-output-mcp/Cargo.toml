@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-rmcp = { version = "=3.2.0", default-features = false, features = [
+rmcp = { version = "=3.4.0", default-features = false, features = [
   "server",
   "macros",
   "transport-streamable-http-server",
