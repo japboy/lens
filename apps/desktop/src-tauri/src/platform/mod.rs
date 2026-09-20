@@ -22,6 +22,14 @@ pub struct Services {
 
 /// Tauri-owned presentation effects, separate from portable source capabilities.
 pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
+    fn confirm_destructive_action(
+        &self,
+        app: &tauri::AppHandle<R>,
+        title: &str,
+        message: &str,
+        confirm_label: &str,
+        cancel_label: &str,
+    ) -> Result<bool, PlatformError>;
     fn format_short_datetime(&self, unix_seconds: f64) -> Result<String, PlatformError>;
     fn history_tooltips(
         &self,

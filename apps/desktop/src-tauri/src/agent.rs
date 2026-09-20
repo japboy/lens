@@ -3269,6 +3269,61 @@ mod tests {
         assert!(AgentTransformAdmission::RecoveryCheckpoint.requires_watching());
     }
 
+    #[test]
+    fn quit_work_lease_survives_dequeue_coalescing_and_releases_on_every_completion() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let count = Arc::new(AtomicUsize::new(0));
+        let mailbox = AgentSessionMailbox::new();
+        let (projection, projection_ref) = sample_projection(&sample_input("Queued work"), &[]);
+        let turn = || {
+            let (mut turn, _) =
+                AgentSessionTurn::new(1, projection_ref.clone(), projection.clone());
+            turn.track_work(Arc::clone(&count));
+            turn
+        };
+        mailbox.replace(turn()).unwrap();
+        assert_eq!(count.load(Ordering::Acquire), 1);
+        mailbox.replace(turn()).unwrap();
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "coalesced turn releases its lease"
+        );
+        let in_flight = mailbox.take_pending().unwrap().unwrap();
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "dequeue is not completion"
+        );
+        mailbox.replace(turn()).unwrap();
+        assert_eq!(count.load(Ordering::Acquire), 2);
+        mailbox.close("shutdown").unwrap();
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            1,
+            "cancelled queue releases only queued work"
+        );
+        drop(in_flight);
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "error/drop acknowledges in-flight completion"
+        );
+        assert!(mailbox.replace(turn()).is_err());
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "rejected admission releases its lease"
+        );
+        let complete = turn();
+        complete.complete(Ok(AgentSessionTurnCompletion::Finished));
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            0,
+            "successful completion releases exactly once"
+        );
+    }
+
     #[tokio::test]
     async fn persistent_session_mailbox_keeps_only_the_latest_pending_turn() {
         let mailbox = AgentSessionMailbox::new();

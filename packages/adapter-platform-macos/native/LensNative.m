@@ -69,6 +69,48 @@ char *lens_format_short_datetime(double unix_seconds) {
     }
 }
 
+int32_t lens_confirm_destructive_action(const char *title, const char *message,
+                                      const char *confirmLabel, const char *cancelLabel) {
+    if (![NSThread isMainThread] || !NSApp || !title || !message || !confirmLabel || !cancelLabel) return -1;
+    NSString *heading = [NSString stringWithUTF8String:title];
+    NSString *body = [NSString stringWithUTF8String:message];
+    NSString *confirmText = [NSString stringWithUTF8String:confirmLabel];
+    NSString *cancelText = [NSString stringWithUTF8String:cancelLabel];
+    if (!heading || !body || !confirmText || !cancelText) return -1;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = heading;
+    alert.informativeText = body;
+    alert.alertStyle = NSAlertStyleWarning;
+    NSButton *confirm = [alert addButtonWithTitle:confirmText];
+    NSButton *cancel = [alert addButtonWithTitle:cancelText];
+    confirm.keyEquivalent = @"";
+    cancel.keyEquivalent = @"\r";
+    [alert layout];
+    alert.window.defaultButtonCell = cancel.cell;
+    NSWindow *previousKeyWindow = NSApp.keyWindow;
+    [NSApp activateIgnoringOtherApps:YES];
+    // Giving Cancel the Return equivalent replaces its automatic Escape equivalent.
+    // Restore Escape only within this alert's modal event loop, never as a global shortcut.
+    id escapeMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+        handler:^NSEvent *(NSEvent *event) {
+            if (event.window == alert.window && event.keyCode == 53) {
+                [NSApp stopModalWithCode:NSAlertSecondButtonReturn];
+                return nil;
+            }
+            return event;
+        }];
+    if (!escapeMonitor) return -1;
+    NSModalResponse response = NSModalResponseAbort;
+    @try {
+        response = [alert runModal];
+    } @finally {
+        [NSEvent removeMonitor:escapeMonitor];
+        [alert.window orderOut:nil];
+    }
+    if (previousKeyWindow.visible) [previousKeyWindow makeKeyAndOrderFront:nil];
+    return response == NSAlertFirstButtonReturn ? 1 : 0;
+}
+
 bool lens_window_background_rgba(uint8_t *rgba) {
     if (![NSThread isMainThread] || rgba == NULL || NSApp == nil) {
         return false;

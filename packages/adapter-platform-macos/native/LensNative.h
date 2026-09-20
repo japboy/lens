@@ -26,6 +26,10 @@ char *lens_format_short_datetime(double unix_seconds);
 /* Resolve the current application appearance to four sRGB bytes on the main thread. */
 bool lens_window_background_rgba(uint8_t *rgba);
 
+/* Main-thread modal alert: 1 explicit confirmation, 0 cancellation/dismissal, -1 error. */
+int32_t lens_confirm_destructive_action(const char *title, const char *message,
+                                      const char *confirmLabel, const char *cancelLabel);
+
 bool lens_present_window_from_screen_right(void *windowPointer);
 bool lens_dismiss_window_to_screen_right(
     void *windowPointer,

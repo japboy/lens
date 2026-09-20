@@ -269,6 +269,17 @@ impl Observation for Observer {
 }
 
 impl platform::WindowPresentation<MockRuntime> for Fixture {
+    fn confirm_destructive_action(
+        &self,
+        _: &tauri::AppHandle<MockRuntime>,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<bool, platform::PlatformError> {
+        panic!("unexpected destructive-action confirmation")
+    }
+
     fn history_tooltips(
         &self,
         _app: &tauri::AppHandle<MockRuntime>,

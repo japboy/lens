@@ -25,6 +25,41 @@ fn on_main_thread<R: tauri::Runtime, T: Send + 'static>(
 }
 
 impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresentation {
+    fn confirm_destructive_action(
+        &self,
+        app: &tauri::AppHandle<R>,
+        title: &str,
+        message: &str,
+        confirm_label: &str,
+        cancel_label: &str,
+    ) -> Result<bool, PlatformError> {
+        let (title, message, confirm_label, cancel_label) = (
+            title.to_owned(),
+            message.to_owned(),
+            confirm_label.to_owned(),
+            cancel_label.to_owned(),
+        );
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            // SAFETY: Tauri has initialized NSApplication and dispatches to AppKit.
+            let result = unsafe {
+                presentation::confirm_destructive_action(
+                    &title,
+                    &message,
+                    &confirm_label,
+                    &cancel_label,
+                )
+            };
+            let _ = sender.send(result);
+        })
+        .map_err(|error| {
+            PlatformError::Operation(format!("unable to present confirmation: {error}"))
+        })?;
+        receiver
+            .recv()
+            .map_err(|_| PlatformError::Operation("confirmation dispatch was dropped".into()))?
+    }
+
     fn format_short_datetime(&self, unix_seconds: f64) -> Result<String, PlatformError> {
         presentation::format_short_datetime(unix_seconds)
     }
