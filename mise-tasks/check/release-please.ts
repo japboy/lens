@@ -210,7 +210,7 @@ const require = createRequire(import.meta.url);
   // Exercise the real Manifest path, including JSON config parsing, the empty version
   // manifest, complete initial history, grouping, changelog and manifest updaters.
   assert.equal(config["bootstrap-sha"], undefined);
-  assert.equal(config["pull-request-header"], undefined);
+  assert.equal(config["pull-request-header"], "Next Lens release");
   assert.ok(!config["pull-request-footer"].includes("— Codex"));
   for (const message of ["feat: first supported capability", "docs: maintenance"]) {
     let existing:
@@ -280,6 +280,7 @@ const require = createRequire(import.meta.url);
     assert.equal(proposals.length, message.startsWith("feat:") ? 1 : 0);
     if (proposals.length) {
       const proposal = proposals[0]!;
+      assert.ok(proposal.body.toString().startsWith(`${config["pull-request-header"]}\n`));
       assert.equal(proposal.headRefName, "release-please--branches--main--components--lens");
       assert.equal(proposal.title.toString(), "chore(main): release 0.1.0");
       assert.deepEqual(proposal.labels, ["autorelease: pending"]);
