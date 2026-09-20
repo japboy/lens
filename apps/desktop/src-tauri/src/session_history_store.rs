@@ -279,6 +279,15 @@ impl HistoryStore {
         }
         let agent = agent_key(&token.source)?;
         let next_revision = revision(&tx).map_err(error)?;
+        if let Some(can_load) = can_load {
+            // Initialize advertises a provider capability, including when list is
+            // unsupported or omits a cached session. This is not session activity:
+            // preserve row revisions so metadata and absence guards remain valid.
+            tx.execute(
+                "UPDATE history_entries SET can_load=?4 WHERE agent=?1 AND invocation=?2 AND cwd=?3",
+                params![agent, token.source.invocation, token.cwd, can_load],
+            ).map_err(error)?;
+        }
         for entry in entries {
             tx.execute(
                 "INSERT INTO history_entries (agent, invocation, cwd, session_id, title, provider_updated_at, state, can_load, revision)
@@ -618,6 +627,117 @@ mod tests {
                 notice: Some("unavailable".into())
             }
         );
+    }
+
+    #[test]
+    fn provider_capability_updates_complete_partial_and_empty_cached_listings() {
+        for complete in [false, true] {
+            for can_load in [false, true] {
+                for with_entries in [false, true] {
+                    let store = HistoryStore::memory().unwrap();
+                    for id in ["retained", "returned", "concurrent"] {
+                        let mut entry = local(id);
+                        entry.can_load = Some(!can_load);
+                        store.record_local(&source(), &entry).unwrap();
+                    }
+                    let token = store.begin_scan(&source(), "/work").unwrap();
+                    store
+                        .apply_info_patch(
+                            &source(),
+                            "concurrent",
+                            "/work",
+                            InfoPatch {
+                                title: Patch::Value("New local title".into()),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                    store
+                        .record_local(&source(), &local("created-during-scan"))
+                        .unwrap();
+                    let entries = if with_entries {
+                        vec![listed("returned")]
+                    } else {
+                        vec![]
+                    };
+                    store
+                        .apply_listing(&token, &entries, complete, Some(can_load))
+                        .unwrap();
+                    let rows = store.entries(&source(), "/work").unwrap();
+                    assert_eq!(rows.len(), 4);
+                    assert!(rows.iter().all(|row| row.can_load == Some(can_load)));
+                    let row = |id: &str| rows.iter().find(|row| row.session_id == id).unwrap();
+                    let absent_state = if complete {
+                        EntryState::NotSeen
+                    } else {
+                        EntryState::LocalOnly
+                    };
+                    assert_eq!(row("retained").state, absent_state);
+                    assert_eq!(row("retained").title, local("retained").title);
+                    assert_eq!(row("retained").provider_updated_at, None);
+                    assert_eq!(
+                        row("retained").local_activity_at,
+                        local("retained").local_activity_at
+                    );
+                    assert_eq!(
+                        row("returned").state,
+                        if with_entries {
+                            EntryState::Listed
+                        } else {
+                            absent_state
+                        }
+                    );
+                    assert_eq!(row("concurrent").state, EntryState::LocalOnly);
+                    assert_eq!(row("concurrent").title.as_deref(), Some("New local title"));
+                    assert_eq!(row("concurrent").provider_updated_at, None);
+                    assert_eq!(
+                        row("concurrent").local_activity_at,
+                        local("concurrent").local_activity_at
+                    );
+                    assert_eq!(row("created-during-scan").state, EntryState::LocalOnly);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn provider_capability_respects_scope_current_scan_and_unknown_value() {
+        let store = HistoryStore::memory().unwrap();
+        let base = source();
+        let mut other_invocation = base.clone();
+        other_invocation.invocation = "other".into();
+        let mut other_agent = base.clone();
+        other_agent.agent = AgentKind::Codex;
+        let mut entry = local("one");
+        entry.can_load = Some(true);
+        for scope in [&base, &other_invocation, &other_agent] {
+            store.record_local(scope, &entry).unwrap();
+        }
+        let mut elsewhere = entry.clone();
+        elsewhere.cwd = "/elsewhere".into();
+        store.record_local(&base, &elsewhere).unwrap();
+        let old = store.begin_scan(&base, "/work").unwrap();
+        let current = store.begin_scan(&base, "/work").unwrap();
+        assert!(!store.apply_listing(&old, &[], false, Some(false)).unwrap());
+        assert_eq!(
+            store.entries(&base, "/work").unwrap()[0].can_load,
+            Some(true)
+        );
+        store.apply_listing(&current, &[], false, None).unwrap();
+        assert_eq!(
+            store.entries(&base, "/work").unwrap()[0].can_load,
+            Some(true)
+        );
+        store
+            .apply_listing(&current, &[], false, Some(false))
+            .unwrap();
+        assert_eq!(
+            store.entries(&base, "/work").unwrap()[0].can_load,
+            Some(false)
+        );
+        assert_eq!(store.entries(&other_agent, "/work").unwrap()[0], entry);
+        assert_eq!(store.entries(&other_invocation, "/work").unwrap()[0], entry);
+        assert_eq!(store.entries(&base, "/elsewhere").unwrap()[0], elsewhere);
     }
 
     #[test]
