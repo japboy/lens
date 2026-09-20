@@ -387,3 +387,331 @@ fn preset_ipc_round_trip_uses_catalog_authority_and_rejects_stale_edits() {
         original.prompt_presets.presets[0].template
     );
 }
+
+#[test]
+fn recovery_window_cannot_invoke_normal_commands_without_app_state() {
+    let app = crate::configure_shell(
+        tauri::test::mock_builder(),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let recovery = tauri::WebviewWindowBuilder::new(&app, "settings-recovery", Default::default())
+        .build()
+        .unwrap();
+    for command in [
+        "get_app_snapshot",
+        "set_agent",
+        "update_prompt_presets",
+        "show_settings",
+        "select_lens_target",
+    ] {
+        let error = invoke(&recovery, command, json!({})).unwrap_err();
+        assert!(error
+            .as_str()
+            .unwrap()
+            .contains("unavailable while settings recovery"));
+    }
+    assert!(app.try_state::<AppState>().is_none());
+}
+
+#[test]
+fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_selection() {
+    for (external_selected, external_pending) in [(false, false), (true, false), (false, true)] {
+        let state = test_support::state();
+        let custom_id = Uuid::new_v4();
+        let operation = Uuid::new_v4();
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.config.external_agents[0].command = "/custom/goose".into();
+            snapshot.config.external_agents.push(ExternalAgentProfile {
+                id: custom_id,
+                name: "Custom".into(),
+                command: "custom".into(),
+                args: vec![],
+            });
+            let builtin = snapshot.config.external_agents[0].id;
+            snapshot
+                .config
+                .agent_preferences
+                .external
+                .entry(builtin)
+                .or_default()
+                .tools
+                .read = usecase::agent_preferences::ToolPolicy::Deny;
+            snapshot
+                .config
+                .agent_preferences
+                .external
+                .entry(custom_id)
+                .or_default();
+            snapshot.config.agent = if external_selected {
+                AgentKind::External(custom_id)
+            } else {
+                AgentKind::Codex
+            };
+            snapshot.agent_selection = AgentSelectionState {
+                stage: if external_pending {
+                    AgentSelectionStage::Checking
+                } else {
+                    AgentSelectionStage::Selected
+                },
+                candidate: Some(if external_pending {
+                    AgentKind::External(custom_id)
+                } else {
+                    snapshot.config.agent
+                }),
+                operation_id: Some(operation),
+                ..Default::default()
+            };
+        }
+        let before = state.snapshot().unwrap();
+        let app = crate::configure_shell(
+            tauri::test::mock_builder().manage(state),
+            platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+            crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+            crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+        )
+        .build(crate::product_context())
+        .unwrap();
+        let window = window(&app);
+        let result = invoke(&window, "reset_external_agents", json!({})).unwrap();
+        let after = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(
+            after.config.external_agents,
+            ExternalAgentProfile::bundled_presets()
+        );
+        assert_eq!(result, serde_json::to_value(&after.config).unwrap());
+        assert_eq!(after.config.prompt_presets, before.config.prompt_presets);
+        assert_eq!(
+            after.config.working_directory,
+            before.config.working_directory
+        );
+        assert_eq!(
+            after.config.agent_preferences.claude,
+            before.config.agent_preferences.claude
+        );
+        assert_eq!(
+            after.config.agent_preferences.codex,
+            before.config.agent_preferences.codex
+        );
+        assert!(!after
+            .config
+            .agent_preferences
+            .external
+            .contains_key(&custom_id));
+        assert!(after
+            .config
+            .agent_preferences
+            .external
+            .contains_key(&after.config.external_agents[0].id));
+        assert_eq!(
+            after
+                .config
+                .agent_preferences
+                .external
+                .get(&after.config.external_agents[0].id),
+            before
+                .config
+                .agent_preferences
+                .external
+                .get(&after.config.external_agents[0].id)
+        );
+        if external_selected || external_pending {
+            assert_eq!(after.config.agent, AgentKind::Claude);
+            assert_eq!(after.agent_selection.candidate, Some(AgentKind::Claude));
+            assert_eq!(after.agent_selection.stage, AgentSelectionStage::Unselected);
+            assert_eq!(after.agent_selection.operation_id, None);
+        } else {
+            assert_eq!(after.agent_selection, before.agent_selection);
+            assert_eq!(after.config.agent, AgentKind::Codex);
+        }
+        assert_eq!(app.state::<AppState>().store.load(), after.config);
+    }
+}
+
+#[test]
+fn reset_external_agents_save_failure_leaves_runtime_unchanged() {
+    let mut state = test_support::state();
+    let directory = std::env::temp_dir().join(format!("lens-reset-unwritable-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    state.store = crate::store::ConfigStore::at_path(directory.clone());
+    let before = state.snapshot().unwrap();
+    let app = app(state);
+    let window = window(&app);
+    assert!(invoke(&window, "reset_external_agents", json!({})).is_err());
+    let after = app.state::<AppState>().snapshot().unwrap();
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn stale_agent_menu_selection_is_rejected_before_selection_or_probe() {
+    for change in ["edit", "delete", "reset"] {
+        let state = test_support::state();
+        let accepted = state.snapshot().unwrap();
+        let candidate = AgentKind::External(accepted.config.external_agents[0].id);
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            match change {
+                "edit" => snapshot.config.external_agents[0]
+                    .args
+                    .push("changed".into()),
+                "delete" => {
+                    snapshot.config.external_agents.remove(0);
+                }
+                "reset" => {
+                    snapshot.config.external_agents = ExternalAgentProfile::bundled_presets();
+                    snapshot.agent_selection = AgentSelectionState::default();
+                }
+                _ => unreachable!(),
+            }
+            snapshot.revision += 1;
+        }
+        let before = state.snapshot().unwrap();
+        // Both the probe and tray implementations panic if the stale request reaches them.
+        let app = app(state);
+        let result = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+            app.handle().clone(),
+            candidate,
+            Some(accepted.revision),
+        ));
+        assert!(
+            result.unwrap_err().contains("selection changed"),
+            "{change}"
+        );
+        assert_eq!(
+            serde_json::to_value(app.state::<AppState>().snapshot().unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap(),
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
+    for reset in [false, true] {
+        let app = crate::configure_shell(
+            tauri::test::mock_builder().manage(test_support::state()),
+            platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+            crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+            crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+        )
+        .build(crate::product_context())
+        .unwrap();
+        let id = Uuid::from_u128(702);
+        let (kind, revision) = crate::commands::save_external_agent_configuration(
+            app.handle(),
+            crate::external_agent::ExternalAgentDraft {
+                id,
+                name: "Saved before later action".into(),
+                command_line: "custom-agent --acp".into(),
+            },
+        )
+        .unwrap();
+        if reset {
+            crate::commands::reset_external_agents(app.handle().clone()).unwrap();
+        } else {
+            crate::commands::delete_external_agent(app.handle().clone(), id).unwrap();
+        }
+        let before = app.state::<AppState>().snapshot().unwrap();
+        let result = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+            app.handle().clone(),
+            kind,
+            Some(revision),
+        ));
+        assert!(result.unwrap_err().contains("selection changed"));
+        assert_eq!(
+            serde_json::to_value(app.state::<AppState>().snapshot().unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+    }
+}
+
+#[test]
+fn saved_external_agent_verification_accepts_revision_after_closing_live_controls() {
+    struct ReachedProbe;
+    impl crate::agent::AgentHost<MockRuntime> for ReachedProbe {
+        fn resolve<'a>(
+            &'a self,
+            _: &'a tauri::AppHandle<MockRuntime>,
+            _: AgentKind,
+        ) -> crate::agent::HostFuture<'a, crate::agent_runtime::ResolvedAgentRuntime> {
+            Box::pin(async { Err("synthetic probe reached".into()) })
+        }
+        fn resolve_installed<'a>(
+            &'a self,
+            _: &'a tauri::AppHandle<MockRuntime>,
+            _: AgentKind,
+        ) -> crate::agent::HostFuture<'a, Option<crate::agent_runtime::ResolvedAgentRuntime>>
+        {
+            panic!("unexpected installed lookup")
+        }
+        fn connect(
+            &self,
+            _: &crate::agent::AgentDescriptor,
+            _: std::path::PathBuf,
+            _: crate::agent_environment::EnvironmentPurpose,
+        ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+            panic!("unexpected real ACP connection")
+        }
+    }
+    let operation = Uuid::from_u128(703);
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+    let (controls, _changes) = crate::session_controls::SessionControls::new(
+        operation,
+        "synthetic".into(),
+        "Synthetic Agent".into(),
+        None,
+        None,
+        vec![],
+        receiver,
+    )
+    .unwrap();
+    let state = test_support::state();
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.lens.operation_id = Some(operation);
+        snapshot.lens.session_controls = Some(controls.snapshot().unwrap());
+    }
+    *state.session_controls.lock().unwrap() = Some(controls.clone());
+    let before = state.snapshot().unwrap().revision;
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(ReachedProbe)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let (kind, revision) = crate::commands::save_external_agent_configuration(
+        app.handle(),
+        crate::external_agent::ExternalAgentDraft {
+            id: Uuid::from_u128(704),
+            name: "Synthetic".into(),
+            command_line: "synthetic --acp".into(),
+        },
+    )
+    .unwrap();
+    assert!(!controls.snapshot().unwrap().active);
+    assert!(
+        revision > before + 1,
+        "closing controls publishes an additional revision"
+    );
+    assert_eq!(
+        revision,
+        app.state::<AppState>().snapshot().unwrap().revision
+    );
+    let selection = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+        app.handle().clone(),
+        kind,
+        Some(revision),
+    ))
+    .unwrap();
+    assert_eq!(selection.error.as_deref(), Some("synthetic probe reached"));
+}

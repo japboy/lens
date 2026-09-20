@@ -78,6 +78,10 @@ function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestinati
     case "save-agent-defaults":
       return "session-defaults";
     case "select-agent":
+    case "choose-external-executable":
+    case "save-external-agent":
+    case "delete-external-agent":
+    case "reset-agent-presets":
     case "authenticate-agent-selection":
     case "reauthenticate-agent-selection":
     case "sign-out-agent-selection":

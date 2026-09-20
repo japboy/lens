@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-recovery",
+  "description": "Startup recovery window. Custom commands are additionally restricted by the native startup admission gate.",
+  "windows": ["settings-recovery"],
+  "permissions": ["core:default"]
+}

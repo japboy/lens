@@ -69,12 +69,12 @@ async fn stale_catalog_and_unloadable_entries_never_resolve_an_agent() {
         .contains("changed"));
     let generation = Uuid::new_v4();
     *app.state::<AppState>().session_view.catalog.lock().unwrap() = HistoryCatalog {
-        cwd: PathBuf::from("/fixture"),
+        cwd: PathBuf::from("/tmp"),
         generation,
         entries: vec![HistoryEntry {
             agent: AgentKind::Codex,
             session_id: "foreign-session".into(),
-            cwd: "/fixture".into(),
+            cwd: "/tmp".into(),
             title: "Other app".into(),
             updated_at: None,
             can_load: false,
@@ -149,7 +149,7 @@ fn listing(
 fn entry(id: &str, timestamp: Option<&str>) -> crate::session_history::HistorySessionEntry {
     crate::session_history::HistorySessionEntry {
         session_id: id.into(),
-        cwd: "/fixture".into(),
+        cwd: "/tmp".into(),
         title: Some(id.into()),
         updated_at: timestamp.map(str::to_owned),
     }
@@ -174,7 +174,7 @@ fn compound_identity_top_ten_offsets_and_partial_unknown_are_explicit() {
     partial.complete = false;
     partial.error = Some("page failed".into());
     let catalog = merge_listings(
-        Path::new("/fixture"),
+        Path::new("/tmp"),
         vec![
             (AgentKind::Claude, Ok(partial)),
             (
@@ -289,7 +289,6 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
                 kind,
                 adapter_name: "fixture-codex",
                 adapter_version: "1.0.0".into(),
-                safe_mode_id: "unused",
                 command: "/must-not-spawn".into(),
                 args: vec![],
                 installation: None,
@@ -336,7 +335,7 @@ impl crate::agent::AgentHost<MockRuntime> for ReplayHost {
                             cx: ConnectionTo<Client>| {
                     assert_eq!(request.session_id.to_string(), "external-codex-session");
                     assert_eq!(request.cwd, cwd);
-                    assert_eq!(request.cwd, std::path::PathBuf::from("/fixture"));
+                    assert_eq!(request.cwd, std::path::PathBuf::from("/tmp"));
                     assert!(request.mcp_servers.is_empty());
                     loaded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     cx.send_notification(SessionNotification::new(
@@ -368,15 +367,15 @@ impl crate::ui::TrayOutput<MockRuntime> for ReplayTray {
 fn replay_app(host: Arc<ReplayHost>) -> (tauri::App<MockRuntime>, Uuid) {
     let state = test_support::state();
     state.runtime.write().unwrap().config.agent = AgentKind::Claude;
-    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/fixture");
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/tmp");
     let generation = Uuid::new_v4();
     *state.session_view.catalog.lock().unwrap() = HistoryCatalog {
-        cwd: PathBuf::from("/fixture"),
+        cwd: PathBuf::from("/tmp"),
         generation,
         entries: vec![HistoryEntry {
             agent: AgentKind::Codex,
             session_id: "external-codex-session".into(),
-            cwd: "/fixture".into(),
+            cwd: "/tmp".into(),
             title: "Created outside Lens".into(),
             updated_at: Some("2026-09-17T00:00:00Z".into()),
             can_load: true,
@@ -498,7 +497,7 @@ fn same_provider_history_preserves_selection_identity_and_settings_catalog() {
         candidate: Some(AgentKind::Codex),
         stage: AgentSelectionStage::Selected,
         config_options: Some(vec![]),
-        policy_default: Some("read-only".into()),
+        agent_default: Some("read-only".into()),
         message: Some("Verified".into()),
         ..Default::default()
     };
@@ -511,7 +510,7 @@ fn cross_provider_history_choice_does_not_claim_live_readiness() {
         candidate: Some(AgentKind::Claude),
         stage: AgentSelectionStage::Selected,
         operation_id: Some(Uuid::new_v4()),
-        policy_default: Some("old-policy".into()),
+        agent_default: Some("old-policy".into()),
         ..Default::default()
     };
     let next = selection_after_history(&current, AgentKind::Codex);
@@ -522,7 +521,7 @@ fn cross_provider_history_choice_does_not_claim_live_readiness() {
     assert_eq!(next.selected_agent(), None);
     assert!(!next.can_select_lens_target());
     assert_eq!(next.config_options, None);
-    assert_eq!(next.policy_default, None);
+    assert_eq!(next.agent_default, None);
 }
 
 #[test]
@@ -531,7 +530,7 @@ fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
     for index in 0..20 {
         let mut foreign = entry(&format!("foreign-{index}"), Some("2026-09-18T00:00:00Z"));
         foreign.cwd = if index % 2 == 0 {
-            "/other"
+            "/"
         } else {
             "/fixture/child"
         }
@@ -540,7 +539,7 @@ fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
     }
     entries.push(entry("current", Some("2026-09-17T00:00:00Z")));
     let catalog = merge_listings(
-        Path::new("/fixture"),
+        Path::new("/tmp"),
         vec![
             (AgentKind::Codex, Ok(listing(AgentKind::Codex, entries))),
             (
@@ -553,7 +552,7 @@ fn current_directory_filter_precedes_top_ten_and_excludes_descendants() {
         ],
     );
     assert_eq!(catalog.entries.len(), 2);
-    assert!(catalog.entries.iter().all(|e| e.cwd == "/fixture"));
+    assert!(catalog.entries.iter().all(|e| e.cwd == "/tmp"));
 }
 
 #[tokio::test]
@@ -564,7 +563,7 @@ async fn different_directory_catalog_is_rejected_before_transport() {
         .write()
         .unwrap()
         .config
-        .working_directory = PathBuf::from("/other");
+        .working_directory = PathBuf::from("/");
     assert!(open(app.handle().clone(), generation, 0)
         .await
         .unwrap_err()
@@ -585,7 +584,7 @@ async fn changing_directory_invalidates_late_replay_without_switching_agent() {
         {
             let state = app.state::<AppState>();
             let _guard = state.session_view.admission.lock().unwrap();
-            state.runtime.write().unwrap().config.working_directory = PathBuf::from("/other");
+            state.runtime.write().unwrap().config.working_directory = PathBuf::from("/");
             invalidate_working_directory(app.handle()).unwrap();
         }
         host.release.notify_one();
@@ -600,7 +599,7 @@ async fn changing_directory_invalidates_late_replay_without_switching_agent() {
     assert_eq!(state.config().unwrap().agent, AgentKind::Claude);
     assert_eq!(
         state.config().unwrap().working_directory,
-        PathBuf::from("/other")
+        PathBuf::from("/")
     );
     assert_eq!(state.session_view.view().unwrap().phase, ViewPhase::Idle);
     assert!(state.session_view.catalog().unwrap().entries.is_empty());
@@ -614,7 +613,7 @@ fn directory_change_rejects_late_catalog_even_after_returning_to_original_direct
     let old = state.session_view.catalog().unwrap();
     {
         let _guard = state.session_view.admission.lock().unwrap();
-        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/other");
+        state.runtime.write().unwrap().config.working_directory = PathBuf::from("/");
         invalidate_working_directory(app.handle()).unwrap();
     }
     commit_catalog(app.handle(), old.clone()).unwrap();
@@ -626,4 +625,184 @@ fn directory_change_rejects_late_catalog_even_after_returning_to_original_direct
     }
     commit_catalog(app.handle(), old).unwrap();
     assert!(state.session_view.catalog().unwrap().entries.is_empty());
+}
+
+#[test]
+fn same_session_ids_from_different_external_profiles_remain_distinct() {
+    let listings = [Uuid::from_u128(1), Uuid::from_u128(2)]
+        .into_iter()
+        .map(|id| {
+            let agent = AgentKind::External(id);
+            (
+                agent,
+                Ok(ProviderHistoryListing {
+                    agent,
+                    complete: true,
+                    can_load: true,
+                    error: None,
+                    entries: vec![crate::session_history::HistorySessionEntry {
+                        session_id: "shared-id".into(),
+                        cwd: "/tmp".into(),
+                        title: Some("Same title".into()),
+                        updated_at: Some("2026-09-17T00:00:00Z".into()),
+                    }],
+                }),
+            )
+        })
+        .collect();
+    let catalog = merge_listings(Path::new("/tmp"), listings);
+    assert_eq!(catalog.entries.len(), 2);
+    assert_ne!(catalog.entries[0].agent, catalog.entries[1].agent);
+    assert_eq!(catalog.entries[0].session_id, catalog.entries[1].session_id);
+}
+
+struct DiscoveryHost {
+    resolved: Arc<Mutex<Vec<AgentKind>>>,
+    mutate_profile: bool,
+}
+
+impl crate::agent::AgentHost<MockRuntime> for DiscoveryHost {
+    fn resolve<'a>(
+        &'a self,
+        _: &'a tauri::AppHandle<MockRuntime>,
+        _: AgentKind,
+    ) -> crate::agent::HostFuture<'a, crate::agent_runtime::ResolvedAgentRuntime> {
+        panic!("history must not install an Agent")
+    }
+
+    fn resolve_installed<'a>(
+        &'a self,
+        app: &'a tauri::AppHandle<MockRuntime>,
+        kind: AgentKind,
+    ) -> crate::agent::HostFuture<'a, Option<crate::agent_runtime::ResolvedAgentRuntime>> {
+        self.resolved.lock().unwrap().push(kind);
+        Box::pin(async move {
+            if self.mutate_profile && kind.is_external() {
+                app.state::<AppState>()
+                    .runtime
+                    .write()
+                    .unwrap()
+                    .config
+                    .external_agents[0]
+                    .args
+                    .push("changed".into());
+                Ok(Some(crate::agent_runtime::ResolvedAgentRuntime {
+                    kind,
+                    adapter_name: "fixture",
+                    adapter_version: "1".into(),
+                    command: "/must-not-spawn".into(),
+                    args: vec![],
+                    installation: None,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn connect(
+        &self,
+        _: &crate::agent::AgentDescriptor,
+        _: std::path::PathBuf,
+        _: crate::agent_environment::EnvironmentPurpose,
+    ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+        use agent_client_protocol::{schema::v1::InitializeRequest, Agent, DynConnectTo};
+        let fixture = Agent.builder().on_receive_request(
+            async |_: InitializeRequest,
+                   _: agent_client_protocol::Responder<
+                agent_client_protocol::schema::v1::InitializeResponse,
+            >,
+                   _: agent_client_protocol::ConnectionTo<agent_client_protocol::Client>|
+                   -> Result<(), agent_client_protocol::Error> {
+                panic!("a changed external profile must not be connected")
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        DynConnectTo::new(fixture)
+    }
+}
+
+#[tokio::test]
+async fn history_refresh_only_discovers_successfully_selected_external_agent() {
+    let state = test_support::state();
+    let external = AgentKind::External(state.config().unwrap().external_agents[0].id);
+    let resolved = Arc::new(Mutex::new(Vec::new()));
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(DiscoveryHost {
+            resolved: Arc::clone(&resolved),
+            mutate_profile: false,
+        })),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    for stage in [
+        AgentSelectionStage::Unselected,
+        AgentSelectionStage::Failed,
+        AgentSelectionStage::HistorySelected,
+        AgentSelectionStage::Selected,
+    ] {
+        {
+            let state = app.state::<AppState>();
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.config.agent = external;
+            snapshot.agent_selection.candidate = Some(external);
+            snapshot.agent_selection.stage = stage;
+        }
+        refresh(app.handle().clone()).await.unwrap();
+        let observed = std::mem::take(&mut *resolved.lock().unwrap());
+        assert!(observed.contains(&AgentKind::Claude));
+        assert!(observed.contains(&AgentKind::Codex));
+        assert_eq!(
+            observed.contains(&external),
+            stage == AgentSelectionStage::Selected
+        );
+        assert_eq!(
+            observed.len(),
+            if stage == AgentSelectionStage::Selected {
+                3
+            } else {
+                2
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn unverified_external_history_is_rejected_before_runtime_resolution() {
+    let app = app(test_support::state());
+    let kind = AgentKind::External(app.state::<AppState>().config().unwrap().external_agents[0].id);
+    let error = session_history::list_provider(app.handle(), kind, std::path::Path::new("/tmp"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("Select and verify"));
+}
+
+#[tokio::test]
+async fn external_history_rejects_profile_changes_during_runtime_resolution() {
+    let state = test_support::state();
+    let kind = AgentKind::External(state.config().unwrap().external_agents[0].id);
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.config.agent = kind;
+        snapshot.agent_selection.candidate = Some(kind);
+        snapshot.agent_selection.stage = AgentSelectionStage::Selected;
+    }
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(test_support::UnusedTray)),
+        crate::agent::AgentServices(Arc::new(DiscoveryHost {
+            resolved: Arc::new(Mutex::new(Vec::new())),
+            mutate_profile: true,
+        })),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let error = session_history::list_provider(app.handle(), kind, std::path::Path::new("/tmp"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("selection changed"));
 }

@@ -7,7 +7,9 @@ mod agent_preferences;
 mod agent_runtime;
 mod app_state;
 mod commands;
+mod external_agent;
 mod html_preview;
+mod settings_recovery;
 use usecase::confirm_targets;
 #[cfg(test)]
 mod contract_tests;
@@ -112,42 +114,64 @@ fn configure_shell<R: tauri::Runtime>(
 /// One command registration for native composition and common-shell IPC verification.
 fn command_handler<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![
-        about::get_about_info,
-        about::get_about_documents,
-        about::show_about,
-        commands::get_app_snapshot,
-        session_view::get_session_view,
-        session_view::wire::get_session_block,
-        session_view::close_session_view,
-        commands::get_html_output,
-        commands::set_agent,
-        commands::set_working_directory,
-        commands::set_agent_prompt_template,
-        commands::update_prompt_presets,
-        commands::reset_agent_prompt_template,
-        commands::open_screen_recording_settings,
-        commands::accessibility_permission,
-        commands::request_accessibility_permission,
-        commands::select_lens_target,
-        commands::add_lens_target,
-        commands::remove_lens_target,
-        commands::confirm_lens_targets,
-        commands::retry_lens_transform,
-        commands::pause_lens,
-        commands::resume_lens,
-        commands::stop_lens,
-        commands::authenticate_agent,
-        commands::authenticate_agent_selection,
-        commands::reauthenticate_agent_selection,
-        commands::sign_out_agent_selection,
-        commands::cancel_agent,
-        commands::set_session_option,
-        commands::set_agent_defaults,
-        commands::preview_agent_model,
-        commands::respond_agent_interaction,
-        commands::show_settings,
-    ]
+    let dispatch: Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync> =
+        Box::new(tauri::generate_handler![
+            settings_recovery::get_settings_recovery,
+            settings_recovery::open_recovery_settings_file,
+            settings_recovery::retry_settings_recovery,
+            settings_recovery::restore_recovery_prompt_presets,
+            about::get_about_info,
+            about::get_about_documents,
+            about::show_about,
+            commands::get_app_snapshot,
+            session_view::get_session_view,
+            session_view::wire::get_session_block,
+            session_view::close_session_view,
+            commands::get_html_output,
+            commands::set_agent,
+            commands::save_external_agent,
+            commands::delete_external_agent,
+            commands::reset_external_agents,
+            commands::set_working_directory,
+            commands::set_agent_prompt_template,
+            commands::update_prompt_presets,
+            commands::reset_agent_prompt_template,
+            commands::open_screen_recording_settings,
+            commands::accessibility_permission,
+            commands::request_accessibility_permission,
+            commands::select_lens_target,
+            commands::add_lens_target,
+            commands::remove_lens_target,
+            commands::confirm_lens_targets,
+            commands::retry_lens_transform,
+            commands::pause_lens,
+            commands::resume_lens,
+            commands::stop_lens,
+            commands::authenticate_agent,
+            commands::authenticate_agent_selection,
+            commands::reauthenticate_agent_selection,
+            commands::sign_out_agent_selection,
+            commands::cancel_agent,
+            commands::set_session_option,
+            commands::set_agent_defaults,
+            commands::preview_agent_model,
+            commands::respond_agent_interaction,
+            commands::show_settings,
+        ]);
+    move |invoke: tauri::ipc::Invoke<R>| {
+        let window = invoke.message.webview();
+        let ready = window
+            .app_handle()
+            .try_state::<app_state::AppState>()
+            .is_some();
+        if !settings_recovery::command_allowed(window.label(), ready, invoke.message.command()) {
+            invoke
+                .resolver
+                .reject("This command is unavailable while settings recovery is active.");
+            return true;
+        }
+        dispatch(invoke)
+    }
 }
 
 /// Shared shell implementation. Product entry points still admit only supported native targets.
@@ -190,12 +214,20 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         builder,
         presentation,
         ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
-        agent::AgentServices(std::sync::Arc::new(agent::ManagedAgentHost)),
+        agent::AgentServices(std::sync::Arc::new(agent::DefaultAgentHost)),
     )
         .setup(move |app| {
             let store = store::ConfigStore::new(app)?;
-            let state = app_state::AppState::load(services, store)
-                .map_err(std::io::Error::other)?;
+            let config = match store.try_load() {
+                Ok(config) => config,
+                Err(error) => {
+                    #[cfg(target_os = "macos")]
+                    native::configure_activation(app, true);
+                    settings_recovery::show(app, store, error).map_err(std::io::Error::other)?;
+                    return Ok(());
+                }
+            };
+            let state = app_state::AppState::with_config(services, store, config);
             app.manage(state);
             #[cfg(target_os = "macos")]
             native::configure_activation(app, validate_a11y);
@@ -253,7 +285,11 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         })
         .build(product_context())
         .expect("failed to build Lens")
-        .run(move |app, event| match event {
+        .run(move |app, event| {
+            // Recovery has no AppState; closing its only window exits normally, and debug
+            // Ready handlers must not start agents or access absent runtime state.
+            if app.try_state::<app_state::AppState>().is_none() { return; }
+            match event {
             #[cfg(debug_assertions)]
             tauri::RunEvent::Ready if std::env::var_os("LENS_DEBUG_SETTINGS").is_some() => {
                 if let Err(error) = ui::show_settings(app) {
@@ -295,7 +331,6 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                                 "agent": runtime.kind,
                                 "adapter_name": runtime.adapter_name,
                                 "adapter_version": runtime.adapter_version,
-                                "safe_mode_id": runtime.safe_mode_id,
                             }),
                             0,
                         ),
@@ -485,6 +520,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 api.prevent_exit();
             }
             _ => {}
+            }
         });
 }
 
@@ -842,7 +878,7 @@ fn rich_output_validation_blocks() -> Result<Vec<model::LensOutputBlock>, String
             );
         }
         candidate
-            .record_update(notification.params.update, "read-only")
+            .record_update(notification.params.update)
             .map_err(|error| error.to_string())?;
     }
     if !candidate.has_output() {

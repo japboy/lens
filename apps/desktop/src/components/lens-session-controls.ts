@@ -30,7 +30,8 @@ export class LensSessionControls extends LitElement {
       return html`<section aria-label="Agent session controls" class="session-controls">
         <p>
           ${controls.agent_name} · Mode:
-          <strong>${controls.effective_mode}</strong>${!controls.active ? " · Session ended" : ""}
+          <strong>${controls.effective_mode ?? "Not reported by Agent"}</strong
+          >${!controls.active ? " · Session ended" : ""}
         </p>
         ${controls.notice ? html`<p role="status">${controls.notice}</p>` : nothing}
         ${controls.interactions.map((i) => html`<p>Interaction ${i.sequence}: ${i.status}</p>`)}
@@ -57,64 +58,45 @@ export class LensSessionControls extends LitElement {
             details.kind === "form"
               ? this.form(interaction.id, details.message, details.schema)
               : html` <div class="interaction-body">
-                    <h3>
-                      ${details.kind === "mode_transition" ? "Change session mode?" : details.kind === "url" ? "Open the requested URL?" : details.title}
-                    </h3>
+                    <h3>${details.kind === "url" ? "Open the requested URL?" : details.title}</h3>
                     ${
-                      details.kind === "mode_transition"
-                        ? html`<p>${details.from} → ${details.to}</p>
-                            <p>
-                              This can increase the Agent's authority for this session. Tool
-                              approval remains separate.
-                            </p>`
-                        : details.kind === "url"
-                          ? html`<p>${details.message}</p>
-                              <p class="elicitation-url">${details.url}</p>`
-                          : html`<p>Requested effect: ${details.effect}</p>
-                              <pre>${JSON.stringify(details.arguments, null, 2)}</pre>
-                              <details>
-                                <summary>Request details</summary>
-                                <p>Tool call: ${details.tool_call_id}</p>
-                              </details>`
+                      details.kind === "url"
+                        ? html`<p>${details.message}</p>
+                            <p class="elicitation-url">${details.url}</p>`
+                        : html`<p>Requested effect: ${details.effect}</p>
+                            <pre>${JSON.stringify(details.arguments, null, 2)}</pre>
+                            <details>
+                              <summary>Request details</summary>
+                              <p>Tool call: ${details.tool_call_id}</p>
+                            </details>`
                     }
                   </div>
                   <div class="interaction-actions">
                     ${
-                      details.kind === "mode_transition"
+                      details.kind === "url"
                         ? html` <button
                               @click=${() => this.respond(interaction.id, { action: "decline" })}
                             >
-                              Keep current mode
+                              Decline
                             </button>
                             <button
                               @click=${() => this.respond(interaction.id, { action: "accept" })}
                             >
-                              Confirm mode change
+                              Open URL and continue
                             </button>`
-                        : details.kind === "url"
-                          ? html` <button
-                                @click=${() => this.respond(interaction.id, { action: "decline" })}
-                              >
-                                Decline
-                              </button>
-                              <button
-                                @click=${() => this.respond(interaction.id, { action: "accept" })}
-                              >
-                                Open URL and continue
-                              </button>`
-                          : [...details.options]
-                              .sort(
-                                (a, b) =>
-                                  Number(a.kind === "allow_once") - Number(b.kind === "allow_once"),
-                              )
-                              .map(
-                                (option) =>
-                                  html`<button
-                                    @click=${() => this.respond(interaction.id, { action: "select", option_id: option.optionId })}
-                                  >
-                                    ${option.name}
-                                  </button>`,
-                              )
+                        : [...details.options]
+                            .sort(
+                              (a, b) =>
+                                Number(a.kind === "allow_once") - Number(b.kind === "allow_once"),
+                            )
+                            .map(
+                              (option) =>
+                                html`<button
+                                  @click=${() => this.respond(interaction.id, { action: "select", option_id: option.optionId })}
+                                >
+                                  ${option.name}
+                                </button>`,
+                            )
                     }
                     ${details.kind === "permission" && !details.options.some((o) => o.kind === "reject_once") ? html`<button @click=${() => this.respond(interaction.id, { action: "cancel" })}>Cancel request</button>` : nothing}
                   </div>`

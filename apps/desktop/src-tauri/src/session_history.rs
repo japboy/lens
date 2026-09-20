@@ -15,7 +15,7 @@ use agent_client_protocol::{
     Agent, Client, ConnectionTo, Dispatch, DynConnectTo, Error, Handled,
 };
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::{model::AgentKind, session_document::SessionDocument};
 
@@ -99,9 +99,29 @@ pub async fn list_provider<R: tauri::Runtime>(
     agent: AgentKind,
     cwd: &std::path::Path,
 ) -> Result<ProviderHistoryListing, String> {
+    let admitted_profile = if agent.is_external() {
+        let snapshot = app.state::<crate::app_state::AppState>().snapshot()?;
+        if snapshot.agent_selection.selected_agent() != Some(agent) {
+            return Err(
+                "Select and verify the external Agent before refreshing its history".into(),
+            );
+        }
+        Some(snapshot.config)
+    } else {
+        None
+    };
     // Keep the installed runtime lease alive until its private transport exits.
     let (_descriptor, transport) =
         crate::agent::history_transport(app, agent, cwd.to_path_buf()).await?;
+    if let Some(admitted) = admitted_profile {
+        let snapshot = app.state::<crate::app_state::AppState>().snapshot()?;
+        if snapshot.agent_selection.selected_agent() != Some(agent)
+            || !snapshot.config.same_agent_execution(&admitted, agent)
+            || !snapshot.config.same_execution_config(&admitted)
+        {
+            return Err("Agent selection changed before history discovery".into());
+        }
+    }
     list_transport(transport, agent, cwd.to_path_buf())
         .await
         .map_err(|e| e.to_string())

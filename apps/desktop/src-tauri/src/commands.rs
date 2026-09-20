@@ -139,6 +139,182 @@ pub async fn set_agent<R: tauri::Runtime>(
 }
 
 #[tauri::command]
+pub async fn save_external_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    profile: crate::external_agent::ExternalAgentDraft,
+) -> Result<AgentSelectionState, String> {
+    let (kind, revision) = save_external_agent_configuration(&app, profile)?;
+    agent::select_agent_guarded(app, kind, Some(revision)).await
+}
+
+pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    profile: crate::external_agent::ExternalAgentDraft,
+) -> Result<(AgentKind, u32), String> {
+    let profile = profile.parse()?;
+    crate::external_agent::validate_profile(&profile)?;
+    let kind = AgentKind::External(profile.id);
+    let state = app.state::<AppState>();
+    let saved_revision;
+    {
+        let _admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission is unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
+            return Err("Wait for Agent logout to complete before changing executables.".into());
+        }
+        let mut config = snapshot.config.clone();
+        if let Some(existing) = config
+            .external_agents
+            .iter_mut()
+            .find(|p| p.id == profile.id)
+        {
+            *existing = profile;
+        } else {
+            if config.external_agents.len() >= 16 {
+                return Err("At most 16 Agent presets are supported.".into());
+            }
+            config.external_agents.push(profile);
+        }
+        config.agent = kind;
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to save Agent preset")?;
+        state.agent_control.cancel_active()?;
+        snapshot.config = config;
+        snapshot.agent_selection = AgentSelectionState {
+            candidate: Some(kind),
+            ..Default::default()
+        };
+        snapshot.revision = revision;
+        drop(snapshot);
+        crate::session_view::invalidate_working_directory(app)?;
+        crate::session_controls::close_active(app);
+        saved_revision = state.snapshot()?.revision;
+    }
+    emit_app_snapshot(app, state.snapshot()?, true)?;
+    Ok((kind, saved_revision))
+}
+
+#[tauri::command]
+pub fn delete_external_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    id: Uuid,
+) -> Result<AppConfig, String> {
+    let state = app.state::<AppState>();
+    let affected;
+    {
+        let _admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state unavailable")?;
+        if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
+            return Err("Wait for Agent logout to complete before deleting Agent presets.".into());
+        }
+        affected = snapshot.config.agent == AgentKind::External(id)
+            || snapshot.agent_selection.candidate == Some(AgentKind::External(id));
+        let mut config = snapshot.config.clone();
+        if !config.external_agents.iter().any(|p| p.id == id) {
+            return Err("Agent preset not found.".into());
+        }
+        config.external_agents.retain(|p| p.id != id);
+        config.agent_preferences.external.remove(&id);
+        if config.agent == AgentKind::External(id) {
+            config.agent = AgentKind::Claude;
+        }
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to remove Agent preset")?;
+        if affected {
+            state.agent_control.cancel_active()?;
+        }
+        snapshot.config = config;
+        if affected {
+            snapshot.agent_selection = AgentSelectionState::default();
+        }
+        snapshot.revision = revision;
+        drop(snapshot);
+        crate::session_view::invalidate_working_directory(&app)?;
+    }
+    if affected {
+        crate::session_controls::close_active(&app);
+    }
+    emit_app_snapshot(&app, state.snapshot()?, true)?;
+    state.config()
+}
+
+#[tauri::command]
+pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<AppConfig, String> {
+    let state = app.state::<AppState>();
+    let affected;
+    {
+        let _admission = state
+            .session_view
+            .admission
+            .lock()
+            .map_err(|_| "Session admission unavailable")?;
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state unavailable")?;
+        if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
+            return Err("Wait for Agent logout to complete before resetting Agent presets.".into());
+        }
+        affected = snapshot.config.agent.is_external()
+            || snapshot
+                .agent_selection
+                .candidate
+                .is_some_and(AgentKind::is_external);
+        let mut config = snapshot.config.clone();
+        config.reset_external_agents();
+        if affected {
+            config.agent = AgentKind::Claude;
+        }
+        let revision = next_revision(&snapshot)?;
+        state
+            .store
+            .save(&config)
+            .map_err(|_| "Unable to reset Agent presets")?;
+        if affected {
+            state.agent_control.cancel_active()?;
+        }
+        snapshot.config = config;
+        if affected {
+            snapshot.agent_selection = AgentSelectionState {
+                candidate: Some(AgentKind::Claude),
+                ..Default::default()
+            };
+        }
+        snapshot.revision = revision;
+        drop(snapshot);
+        crate::session_view::invalidate_working_directory(&app)?;
+    }
+    if affected {
+        crate::session_controls::close_active(&app);
+    }
+    emit_app_snapshot(&app, state.snapshot()?, true)?;
+    state.config()
+}
+
+#[tauri::command]
 pub fn set_working_directory<R: tauri::Runtime>(
     path: String,
     app: AppHandle<R>,
@@ -1560,6 +1736,11 @@ pub fn set_session_option<R: tauri::Runtime>(
     value: String,
 ) -> Result<(), String> {
     let controls = crate::session_controls::active_controls(&app, operation_id)?;
+    crate::agent_preferences::validate_config_choice(
+        app.state::<AppState>().config()?.agent,
+        &config_id,
+        controls.snapshot()?.config_options.as_deref(),
+    )?;
     controls.queue_change(instance_id, config_revision, config_id, value)?;
     controls.publish(&app)
 }
@@ -1582,7 +1763,6 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
     app: AppHandle<R>,
     selection_id: Uuid,
     defaults: crate::agent_preferences::AgentDefaults,
-    confirm_privilege: bool,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let expected = state.snapshot()?;
@@ -1590,22 +1770,6 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
         || expected.agent_selection.selected_agent() != Some(expected.config.agent)
     {
         return Err("Agent selection changed".into());
-    }
-    let mode_id = expected
-        .agent_selection
-        .config_options
-        .as_deref()
-        .map(crate::session_controls::mode_option)
-        .transpose()
-        .map_err(|_| "Ambiguous Agent modes")?
-        .flatten()
-        .map(|o| o.id.to_string())
-        .unwrap_or_else(|| "mode".into());
-    let elevated = defaults.choices.iter().any(|c| {
-        c.config_id == mode_id && Some(&c.value) != expected.agent_selection.policy_default.as_ref()
-    });
-    if elevated && !confirm_privilege {
-        return Err("Confirm the shared mode policy before saving".into());
     }
     let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
     // Cancel the old configuration's actor before changing persisted authority.

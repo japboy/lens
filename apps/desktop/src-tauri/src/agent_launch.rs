@@ -322,26 +322,41 @@ pub(crate) fn prepare_external_launch(
     })
 }
 
+pub(crate) fn prepare_working_command(
+    command: &Path,
+    resolved: &mut crate::agent_environment::ResolvedEnvironment,
+    managed: bool,
+) -> Result<PathBuf, String> {
+    if managed {
+        resolved.values.insert("NODE_OPTIONS".into(), "".into());
+        resolved.values.insert("NODE_PATH".into(), "".into());
+        Ok(command.to_path_buf())
+    } else {
+        crate::external_agent::resolve_command(command, &resolved.values, &resolved.cwd)
+    }
+}
+
 struct WorkingTransport {
     command: PathBuf,
     args: Vec<OsString>,
     cwd: PathBuf,
     purpose: crate::agent_environment::EnvironmentPurpose,
+    managed: bool,
 }
 
 impl ConnectTo<Client> for WorkingTransport {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), Error> {
-        let resolved = crate::agent_environment::resolve(&self.cwd, self.purpose)
+        let mut resolved = crate::agent_environment::resolve(&self.cwd, self.purpose)
             .await
             .map_err(|error| Error::internal_error().data(error.to_string()))?;
-        let mut environment = resolved.values;
-        environment.insert(OsString::from("NODE_OPTIONS"), OsString::new());
-        environment.insert(OsString::from("NODE_PATH"), OsString::new());
+        let command = prepare_working_command(&self.command, &mut resolved, self.managed)
+            .map_err(|error| Error::internal_error().data(error))?;
+        let environment = resolved.values;
         LaunchTransport {
             directory_identity: Some((resolved.cwd_device, resolved.cwd_inode)),
             #[cfg(test)]
-            helper_executable: None,
-            command: self.command,
+            helper_executable: crate::agent_environment::test_helper_executable(),
+            command,
             args: self.args,
             cwd: resolved.cwd,
             environment,
@@ -358,12 +373,14 @@ pub(crate) fn working_transport(
     args: Vec<OsString>,
     cwd: PathBuf,
     purpose: crate::agent_environment::EnvironmentPurpose,
+    managed: bool,
 ) -> DynConnectTo<Client> {
     DynConnectTo::new(WorkingTransport {
         command,
         args,
         cwd,
         purpose,
+        managed,
     })
 }
 
@@ -806,6 +823,32 @@ mod tests {
         assert_eq!(
             redact_transport_error(Error::auth_required()).code,
             ErrorCode::AuthRequired
+        );
+    }
+    #[test]
+    fn acp_and_terminal_auth_share_lookup_and_environment_policy() {
+        let values = BTreeMap::from([
+            ("PATH".into(), "/bin:/usr/bin".into()),
+            ("NODE_OPTIONS".into(), "user-owned-value".into()),
+            ("AUTH_OVERLAY".into(), "method-value".into()),
+        ]);
+        let mut external = resolved_for_test(values.clone());
+        let command = prepare_working_command(Path::new("sh"), &mut external, false).unwrap();
+        assert!(command.is_absolute());
+        assert_eq!(external.values, values);
+        assert_eq!(
+            prepare_working_command(&command, &mut external, false).unwrap(),
+            command
+        );
+        let mut managed = resolved_for_test(values);
+        prepare_working_command(Path::new("/managed/node"), &mut managed, true).unwrap();
+        assert_eq!(
+            managed.values.get(OsStr::new("NODE_OPTIONS")),
+            Some(&OsString::new())
+        );
+        assert_eq!(
+            managed.values.get(OsStr::new("AUTH_OVERLAY")),
+            Some(&OsString::from("method-value"))
         );
     }
 }

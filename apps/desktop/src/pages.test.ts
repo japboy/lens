@@ -45,6 +45,7 @@ const snapshot: AppSnapshot = {
   agent_selection: {
     stage: "selected",
     candidate: "codex",
+    supports_logout: false,
     auth_methods: [],
   },
   agent_runtime: {
@@ -236,6 +237,7 @@ async function createPage(view: AppView): Promise<TestPage> {
   const loaders = {
     about: () => import("./pages/about-page"),
     settings: () => import("./pages/settings-page"),
+    "settings-recovery": () => import("./pages/settings-recovery-page"),
     overlay: () => import("./pages/overlay-page"),
     "target-selection": () => import("./pages/target-selection-page"),
   };
@@ -1009,6 +1011,102 @@ describe("Lens Settings", () => {
     }
   });
 
+  it("keeps Goose file browsing local until Save and Verify", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const previousSelection = snapshot.agent_selection;
+    const previousConfig = snapshot.config;
+    snapshot.agent_selection = {
+      stage: "failed",
+      candidate: { external: "profile-1" },
+      supports_logout: false,
+      auth_methods: [],
+      error: "Choose a Goose executable.",
+    };
+    snapshot.config = {
+      ...previousConfig,
+      agent: { external: "profile-1" },
+      external_agents: [{ id: "profile-1", name: "Goose", command: "/saved/goose", args: ["acp"] }],
+    };
+    vi.mocked(open).mockResolvedValue("/chosen directory/goose");
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      const editor = root.querySelector("lens-agent-settings")!;
+      const path = editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
+      path.value = "/draft/goose acp";
+      path.dispatchEvent(new Event("input"));
+      expect(invoke).not.toHaveBeenCalledWith("save_external_agent", expect.anything());
+      [...editor.querySelectorAll("button")]
+        .find((item) => item.textContent?.trim() === "Browse…")!
+        .click();
+      await vi.waitFor(() => expect(path.value).toBe("'/chosen directory/goose' acp"));
+      expect(open).toHaveBeenCalledWith({
+        directory: false,
+        multiple: false,
+        defaultPath: "/draft/goose",
+        title: "Choose ACP Executable",
+      });
+      expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith("save_external_agent", expect.anything());
+      expect(snapshot.config.external_agents![0]!.command).toBe("/saved/goose");
+      [...editor.querySelectorAll("button")]
+        .find((item) => item.textContent?.trim() === "Save and Verify")!
+        .click();
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("save_external_agent", {
+          profile: {
+            id: "profile-1",
+            name: "Goose",
+            command_line: "'/chosen directory/goose' acp",
+          },
+        }),
+      );
+    } finally {
+      snapshot.agent_selection = previousSelection;
+      snapshot.config = previousConfig;
+    }
+  });
+
+  it("saves an advertised Agent mode without a separate privilege confirmation", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const { DEFAULT_AGENT_DEFAULTS } = await import("./components/lens-agent-defaults");
+    const previousSelection = snapshot.agent_selection;
+    snapshot.agent_selection = {
+      ...previousSelection,
+      operation_id: operationId,
+      agent_default: "default",
+      modes: [
+        { id: "default", name: "Default" },
+        { id: "write", name: "Write" },
+      ],
+    };
+    try {
+      const page = await createPage("settings");
+      const defaults = {
+        ...structuredClone(DEFAULT_AGENT_DEFAULTS),
+        choices: [{ config_id: "mode", value: "write" }],
+      };
+      page.querySelector("lens-settings-view")!.dispatchEvent(
+        new CustomEvent("lens-settings-intent", {
+          detail: { type: "save-agent-defaults", defaults },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("set_agent_defaults", {
+          selectionId: operationId,
+          defaults,
+        }),
+      );
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      snapshot.agent_selection = previousSelection;
+    }
+  });
+
   it("uses one System Settings-style navigation authority and one detail destination", async () => {
     const element = await createPage("settings");
     const settingsRoot = viewRoot(element, "lens-settings-view");
@@ -1080,11 +1178,15 @@ describe("Lens Settings", () => {
       const settingsRoot = viewRoot(element, "lens-settings-view");
       await vi.waitFor(() => {
         expect(
-          settingsRoot?.querySelector<HTMLInputElement>('input[value="claude"]'),
+          settingsRoot?.querySelector<HTMLSelectElement>('select[aria-label="Agent"]'),
         ).not.toBeNull();
       });
 
-      settingsRoot?.querySelector<HTMLInputElement>('input[value="claude"]')?.click();
+      const agentMenu = settingsRoot!.querySelector<HTMLSelectElement>(
+        'select[aria-label="Agent"]',
+      )!;
+      agentMenu.value = "claude";
+      agentMenu.dispatchEvent(new Event("change"));
 
       await vi.waitFor(() => {
         const feedback = settingsRoot?.querySelector(
@@ -1215,3 +1317,116 @@ it("correlates notification submissions, rejects duplicate clicks, and permits r
     ).toHaveLength(2),
   );
 });
+
+it("recovery requires explicit prompt-only confirmation and sends the inspected file digest", async () => {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const mocked = vi.mocked(invoke);
+  const previous = mocked.getMockImplementation();
+  mocked.mockImplementation(async (command, ...args) => {
+    if (command === "get_settings_recovery")
+      return {
+        message: "Prompt presets are invalid",
+        settings_path: "/fixture/settings.json",
+        can_restore_prompt_presets: true,
+        digest: "inspected-digest",
+      };
+    if (command === "restore_recovery_prompt_presets") return undefined;
+    return previous?.(command, ...args);
+  });
+  try {
+    const page = await createPage("settings-recovery");
+    const root = viewRoot(page, "lens-settings-recovery-view")!;
+    await vi.waitFor(() => expect(root.textContent).toContain("Restore Default Prompt Presets"));
+    [...root.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Restore Default"))!
+      .click();
+    await vi.waitFor(() => expect(root.textContent).toContain("Other settings will be preserved"));
+    expect(invoke).not.toHaveBeenCalledWith("restore_recovery_prompt_presets", expect.anything());
+    [...root.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Restore Prompt Presets")!
+      .click();
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("restore_recovery_prompt_presets", {
+        expectedDigest: "inspected-digest",
+      }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith("get_app_snapshot");
+  } finally {
+    if (previous) mocked.mockImplementation(previous);
+  }
+});
+
+it.each(["cancel", "success", "failure"] as const)(
+  "Agent Presets reset handles %s without implicitly launching an agent",
+  async (outcome) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    const previousConfig = snapshot.config;
+    vi.mocked(confirm).mockResolvedValue(outcome !== "cancel");
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "reset_external_agents") {
+        if (outcome === "failure") throw new Error("Reset write failed");
+        snapshot.config = {
+          ...snapshot.config,
+          external_agents: [
+            {
+              id: "preset-copilot",
+              name: "GitHub Copilot",
+              command: "copilot",
+              args: ["--acp", "--stdio"],
+            },
+            { id: "preset-goose", name: "Goose", command: "goose", args: ["acp"] },
+          ],
+        };
+        return snapshot.config;
+      }
+      return original(command);
+    });
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      const editor = root.querySelector("lens-agent-settings")!;
+      const click = (label: string) =>
+        [...editor.querySelectorAll("button")]
+          .find((item) => item.textContent?.trim() === label)!
+          .click();
+      click("Add preset");
+      await vi.waitFor(() =>
+        expect(editor.querySelector('[aria-label="ACP command"]')).not.toBeNull(),
+      );
+      const input = editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
+      input.value = "unsaved-agent --stdio";
+      input.dispatchEvent(new Event("input"));
+      click("Reset Agent Presets…");
+      await vi.waitFor(() =>
+        expect(confirm).toHaveBeenCalledWith(expect.stringContaining("unsaved drafts"), {
+          title: "Reset Agent Presets",
+          kind: "warning",
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(
+          vi.mocked(invoke).mock.calls.filter(([name]) => name === "reset_external_agents"),
+        ).toHaveLength(outcome === "cancel" ? 0 : 1);
+        expect(
+          editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')?.value ?? null,
+        ).toBe(outcome === "success" ? null : "unsaved-agent --stdio");
+        expect(root.textContent?.includes("Reset write failed")).toBe(outcome === "failure");
+        expect(
+          [...editor.querySelectorAll("option")].map((option) => option.textContent?.trim()),
+        ).toEqual(
+          outcome === "success"
+            ? ["Claude", "Codex", "GitHub Copilot", "Goose"]
+            : ["Claude", "Codex", "New preset (unsaved)"],
+        );
+      });
+      expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith("save_external_agent", expect.anything());
+    } finally {
+      snapshot.config = previousConfig;
+      vi.mocked(invoke).mockImplementation(original);
+      vi.mocked(confirm).mockReset();
+    }
+  },
+);

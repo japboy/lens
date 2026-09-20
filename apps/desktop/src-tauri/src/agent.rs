@@ -28,7 +28,7 @@ use agent_client_protocol::{
             CancelNotification, ClientCapabilities, ContentBlock, EmbeddedResource,
             EmbeddedResourceResource, ImageContent, Implementation, InitializeRequest,
             LogoutRequest, PromptCapabilities, PromptRequest, RequestPermissionRequest,
-            SessionModeId, SessionNotification, StopReason, TextContent, TextResourceContents,
+            SessionNotification, StopReason, TextContent, TextResourceContents,
         },
         ProtocolVersion,
     },
@@ -127,7 +127,6 @@ struct AgentSessionMetadata<'a> {
     auth_methods: &'a [AgentAuthMethod],
     agent_info: Option<&'a (String, String)>,
     session_id: &'a str,
-    safe_mode_id: &'a str,
 }
 
 struct AgentTurnExecution<'a, R: tauri::Runtime> {
@@ -153,7 +152,6 @@ pub(crate) struct AgentDescriptor {
     kind: AgentKind,
     adapter_name: &'static str,
     adapter_version: String,
-    safe_mode_id: &'static str,
     command: PathBuf,
     args: Vec<String>,
     installation: Option<Arc<agent_runtime::RuntimeInstallation>>,
@@ -200,9 +198,9 @@ pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
 
 pub(crate) struct AgentServices<R: tauri::Runtime>(pub Arc<dyn AgentHost<R>>);
 
-pub(crate) struct ManagedAgentHost;
+pub(crate) struct DefaultAgentHost;
 
-impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
+impl<R: tauri::Runtime> AgentHost<R> for DefaultAgentHost {
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -253,6 +251,7 @@ impl<R: tauri::Runtime> AgentHost<R> for ManagedAgentHost {
                 .collect(),
             cwd,
             purpose,
+            !descriptor.kind.is_external(),
         )
     }
 }
@@ -333,7 +332,6 @@ impl AgentDescriptor {
             kind: runtime.kind,
             adapter_name: runtime.adapter_name,
             adapter_version: runtime.adapter_version,
-            safe_mode_id: runtime.safe_mode_id,
             command: runtime.command,
             args: runtime.args,
             installation: runtime.installation,
@@ -345,7 +343,6 @@ impl AgentDescriptor {
             kind: self.kind,
             adapter_name: self.adapter_name,
             adapter_version: self.adapter_version.clone(),
-            safe_mode_id: self.safe_mode_id,
             command: self.command.clone(),
             args: self.args.clone(),
             installation: self.installation.clone(),
@@ -374,6 +371,14 @@ pub async fn select_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     candidate: AgentKind,
 ) -> Result<AgentSelectionState, String> {
+    select_agent_guarded(app, candidate, None).await
+}
+
+pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    candidate: AgentKind,
+    expected_revision: Option<u32>,
+) -> Result<AgentSelectionState, String> {
     let operation_id = Uuid::new_v4();
     {
         let state = app.state::<AppState>();
@@ -383,6 +388,14 @@ pub async fn select_agent<R: tauri::Runtime>(
             .lock()
             .map_err(|_| "Session admission is unavailable")?;
         app.state::<AppState>().session_view.ensure_not_loading()?;
+        if expected_revision.is_some_and(|revision| {
+            state
+                .snapshot()
+                .map(|snapshot| snapshot.revision != revision)
+                .unwrap_or(true)
+        }) {
+            return Err("Agent selection changed; choose the Agent again.".into());
+        }
         let current = current_agent_selection(&app)?;
         if current.stage == AgentSelectionStage::SigningOut {
             return Err("wait for the current Agent logout to complete".into());
@@ -408,6 +421,7 @@ pub async fn select_agent<R: tauri::Runtime>(
         )?;
     }
 
+    let expected_config = app.state::<AppState>().config()?;
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
@@ -419,7 +433,7 @@ pub async fn select_agent<R: tauri::Runtime>(
             return current_agent_selection(&app);
         }
     };
-    finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
+    finish_agent_selection_probe(app, operation_id, candidate, descriptor, expected_config).await
 }
 
 pub async fn restore_agent_selection<R: tauri::Runtime>(
@@ -438,15 +452,20 @@ pub async fn restore_agent_selection<R: tauri::Runtime>(
         },
     )?;
 
+    let expected_config = app.state::<AppState>().config()?;
     let descriptor = match AgentDescriptor::resolve_installed(&app, candidate).await {
         Ok(Some(descriptor)) => descriptor,
         Ok(None) => {
             update_agent_selection(&app, operation_id, |selection| {
                 selection.stage = AgentSelectionStage::Unselected;
-                selection.message = Some(format!(
-                    "{} will be downloaded when selected.",
-                    agent_display_name(candidate)
-                ));
+                selection.message = Some(if candidate.is_external() {
+                    "Choose and save your external ACP executable in Settings.".into()
+                } else {
+                    format!(
+                        "{} will be downloaded when selected.",
+                        agent_display_name(candidate)
+                    )
+                });
                 selection.error = None;
             })?;
             return current_agent_selection(&app);
@@ -466,7 +485,7 @@ pub async fn restore_agent_selection<R: tauri::Runtime>(
             agent_display_name(candidate)
         ));
     })?;
-    finish_agent_selection_probe(app, operation_id, candidate, descriptor).await
+    finish_agent_selection_probe(app, operation_id, candidate, descriptor, expected_config).await
 }
 
 async fn finish_agent_selection_probe<R: tauri::Runtime>(
@@ -474,12 +493,32 @@ async fn finish_agent_selection_probe<R: tauri::Runtime>(
     operation_id: Uuid,
     candidate: AgentKind,
     descriptor: AgentDescriptor,
+    expected_config: AppConfig,
 ) -> Result<AgentSelectionState, String> {
-    let working_directory = app.state::<AppState>().config()?.working_directory;
-    match probe_agent_authentication(app.clone(), operation_id, descriptor, working_directory).await
-    {
+    let working_directory = crate::store::effective_working_directory(&expected_config);
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        probe_agent_authentication(
+            app.clone(),
+            operation_id,
+            descriptor,
+            working_directory.clone(),
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| Err(state_error("Agent readiness verification timed out".into())));
+    let result = result.and_then(|()| {
+        if crate::store::effective_working_directory(&expected_config) != working_directory {
+            Err(state_error(
+                "Working Directory availability changed during verification. Verify again.".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    match result {
         Ok(()) => {
-            complete_agent_selection(&app, operation_id, candidate)?;
+            complete_agent_selection(&app, operation_id, candidate, &expected_config)?;
         }
         Err(error) if error.code == ErrorCode::AuthRequired => {
             update_agent_selection(&app, operation_id, |selection| {
@@ -495,7 +534,11 @@ async fn finish_agent_selection_probe<R: tauri::Runtime>(
             update_agent_selection(&app, operation_id, |selection| {
                 selection.stage = AgentSelectionStage::Failed;
                 selection.message = None;
-                selection.error = Some(error.to_string());
+                selection.error = Some(if candidate.is_external() {
+                    format!("External ACP is not ready. Configure the external Agent CLI, then verify again. {error}")
+                } else {
+                    error.to_string()
+                });
             })?;
         }
     }
@@ -610,6 +653,9 @@ async fn logout_selection<R: tauri::Runtime>(
         let snapshot = current_agent_selection(&app)?;
         if snapshot.stage != AgentSelectionStage::Selected {
             return Err("only an authenticated selected Agent can be signed out".into());
+        }
+        if !snapshot.supports_logout {
+            return Err("The selected Agent does not advertise ACP logout support.".into());
         }
         let candidate = snapshot
             .selected_agent()
@@ -759,6 +805,11 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
         .name("lens-agent-selection")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
             let initialize = initialize(&connection).await?;
+            if initialize.protocol_version != ProtocolVersion::V1 {
+                return Err(state_error("Agent returned an unsupported ACP protocol version".into()));
+            }
+            crate::output_mcp::require_http(&initialize.agent_capabilities.mcp_capabilities)?;
+            let supports_logout = initialize.agent_capabilities.auth.logout.is_some();
             let auth_methods = initialize
                 .auth_methods
                 .iter()
@@ -766,6 +817,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .collect::<Vec<_>>();
             update_agent_selection(&app, operation_id, |selection| {
                 selection.auth_methods = auth_methods;
+                selection.supports_logout = supports_logout;
             })
             .map_err(state_error)?;
             if claude_authenticated == Some(false) {
@@ -788,7 +840,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .cloned().collect::<Vec<_>>();
             if !model_choices.is_empty() {
                 let model_defaults = crate::agent_preferences::AgentDefaults { choices: model_choices, ..Default::default() };
-                if let Ok((resolved, _)) = session_controls::apply_defaults(&connection, session.session_id(), options.clone(), session.modes(), &model_defaults, descriptor.safe_mode_id).await {
+                if let Ok((resolved, _)) = session_controls::apply_defaults(&connection, session.session_id(), options.clone(), session.modes(), &model_defaults).await {
                     options = resolved;
                 }
             }
@@ -798,7 +850,7 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                     .modes()
                     .map(|m| m.available_modes.clone())
                     .unwrap_or_default();
-                selection.policy_default = Some(descriptor.safe_mode_id.into());
+                selection.agent_default = session_controls::advertised_mode(session.config_options(), session.modes()).ok().flatten();
             })
             .map_err(state_error)?;
             Ok(())
@@ -867,6 +919,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation_id: Uuid,
     candidate: AgentKind,
+    expected_config: &AppConfig,
 ) -> Result<bool, String> {
     let state = app.state::<AppState>();
     let (snapshot, persistence_error) = {
@@ -877,6 +930,21 @@ fn complete_agent_selection<R: tauri::Runtime>(
         if snapshot.agent_selection.operation_id != Some(operation_id)
             || snapshot.agent_selection.candidate != Some(candidate)
         {
+            return Ok(false);
+        }
+        if !snapshot.config.same_execution_config(expected_config)
+            || !snapshot
+                .config
+                .same_agent_execution(expected_config, candidate)
+        {
+            snapshot.agent_selection.stage = AgentSelectionStage::Failed;
+            snapshot.agent_selection.error =
+                Some("Agent settings changed during verification. Verify the Agent again.".into());
+            snapshot.agent_selection.message = None;
+            snapshot.revision = next_revision(&snapshot)?;
+            let stale = snapshot.clone();
+            drop(snapshot);
+            emit_app_snapshot(app, stale, true)?;
             return Ok(false);
         }
         let mut next_config = snapshot.config.clone();
@@ -895,7 +963,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
             snapshot.config = next_config;
             snapshot.agent_selection.stage = AgentSelectionStage::Selected;
             snapshot.agent_selection.message = Some(format!(
-                "{} is authenticated and selected.",
+                "{} is ready and selected.",
                 agent_display_name(candidate)
             ));
             snapshot.agent_selection.error = None;
@@ -919,14 +987,19 @@ fn current_agent_selection<R: tauri::Runtime>(
 fn confirm_agent_selection_after_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     agent: AgentKind,
+    expected_config: &AppConfig,
 ) -> Result<(), String> {
-    let selection = current_agent_selection(app)?;
+    let snapshot = app.state::<AppState>().snapshot()?;
+    if !snapshot.config.same_execution_config(expected_config) {
+        return Err("Agent settings changed before session readiness was confirmed".into());
+    }
+    let selection = snapshot.agent_selection;
     if selection.selected_agent() == Some(agent) {
         return Ok(());
     }
     if selection.candidate == Some(agent) {
         if let Some(operation_id) = selection.operation_id {
-            complete_agent_selection(app, operation_id, agent)?;
+            complete_agent_selection(app, operation_id, agent, expected_config)?;
         }
     }
     Ok(())
@@ -963,6 +1036,7 @@ fn agent_display_name(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Claude => "Claude",
         AgentKind::Codex => "Codex",
+        AgentKind::External(_) => "External ACP",
     }
 }
 
@@ -1052,6 +1126,9 @@ async fn submit_current_projection<R: tauri::Runtime>(
             AgentSessionIdentity {
                 operation_id: input.operation_id,
                 context_id: input.context_id,
+                effective_working_directory: crate::store::effective_working_directory(
+                    &input.config,
+                ),
                 config: input.config,
             },
             input.context_revision,
@@ -1226,7 +1303,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
     let process = transport(
         &app,
         &descriptor,
-        identity.config.working_directory.clone(),
+        identity.effective_working_directory.clone(),
         EnvironmentPurpose::Session,
     );
     agent_client_protocol::Client
@@ -1263,7 +1340,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             let mut session = tokio::select! {
                 result = connection
                     .build_session_from(crate::output_mcp::session_request(
-                        &identity.config.working_directory,
+                        &identity.effective_working_directory,
                         &publisher,
                     ))
                     .block_task()
@@ -1273,30 +1350,31 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     return Err(Error::request_cancelled());
                 }
             };
+            crate::output_mcp::require_no_publisher_failure(initialize.agent_info.as_ref().map(|info| info.name.as_str()), session.meta())?;
             let session_id = session.session_id().clone();
             crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
-            if let Err(error) = session_controls::require_safe_mode(
-                session.config_options(), session.modes(), descriptor.safe_mode_id,
-            ) {
-                *startup = SessionStartup::Incompatible;
-                return Err(error);
-            }
+            let agent_default = session_controls::advertised_mode(session.config_options(), session.modes())?;
             let defaults = identity.config.agent_preferences.get(identity.config.agent);
+            crate::agent_preferences::validate_defaults(identity.config.agent, defaults, session.config_options()).map_err(state_error)?;
             let setup = session_controls::apply_defaults(
                 &connection, &session_id, session.config_options().map(<[_]>::to_vec),
-                session.modes(), defaults, descriptor.safe_mode_id,
+                session.modes(), defaults,
             );
             let (initial_options, effective_mode) = tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(30), setup) => result.map_err(|_| state_error("Agent settings setup timed out".into()))??,
                 _ = shutdown.changed() => return Err(Error::request_cancelled()),
             };
-            let safe_mode_id = SessionModeId::new(effective_mode.clone());
             let (controls, control_requests) = SessionControls::new(
                 identity.operation_id, session_id.to_string(), descriptor.adapter_name.into(),
-                descriptor.safe_mode_id.into(), initial_options.clone(),
+                agent_default, initial_options.clone(),
                 session.modes().map(|m| m.available_modes.clone()).unwrap_or_default(), shutdown.clone(),
             )?;
-            controls.set_initial_authority(effective_mode, defaults.tools.clone())?;
+            let mode_key = initial_options.as_deref().map(session_controls::mode_option).transpose()?.flatten()
+                .map(|o| o.id.to_string()).or_else(|| initial_options.is_none().then(|| "mode".into()));
+            let origin = if defaults.choices.iter().any(|c| Some(&c.config_id) == mode_key.as_ref()) {
+                session_controls::ModeOrigin::User
+            } else { session_controls::ModeOrigin::AgentDefault };
+            controls.set_initial_authority(effective_mode.clone(), origin, defaults.tools.clone())?;
             if let Some(options) = initial_options { controls.replace_options(options)?; }
             controls.install(&app, &identity.config).map_err(state_error)?;
             let _control_lifetime = session_controls::ControlLifetime { app: app.clone(), controls: Arc::clone(&controls) };
@@ -1305,17 +1383,15 @@ async fn run_persistent_session<R: tauri::Runtime>(
             }
             app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
             *startup = SessionStartup::Ready;
-            confirm_agent_selection_after_session(&app, identity.config.agent)
+            confirm_agent_selection_after_session(&app, identity.config.agent, &identity.config)
                 .map_err(state_error)?;
 
             let session_id_text = session_id.to_string();
-            let safe_mode_id_text = safe_mode_id.to_string();
             let session_metadata = AgentSessionMetadata {
                 descriptor: &descriptor,
                 auth_methods: &auth_methods,
                 agent_info: agent_info.as_ref(),
                 session_id: &session_id_text,
-                safe_mode_id: &safe_mode_id_text,
             };
             let mut applied_projection = None;
             let mut cadence = AgentTurnCadence::default();
@@ -1465,6 +1541,8 @@ fn agent_session_identity_is_current<R: tauri::Runtime>(
 ) -> Result<bool, String> {
     let snapshot = app.state::<AppState>().snapshot()?;
     Ok(snapshot.config.same_execution_config(&identity.config)
+        && crate::store::effective_working_directory(&snapshot.config)
+            == identity.effective_working_directory
         && snapshot.agent_selection.selected_agent() == Some(identity.config.agent)
         && snapshot.lens.operation_id == Some(identity.operation_id)
         && snapshot
@@ -1542,7 +1620,10 @@ fn prepare_agent_turn<R: tauri::Runtime>(
             }
             let mut run = metadata.descriptor.run_state(run_id);
             run.session_id = Some(metadata.session_id.into());
-            run.session_mode_id = Some(metadata.safe_mode_id.into());
+            run.session_mode_id = lens
+                .session_controls
+                .as_ref()
+                .and_then(|controls| controls.effective_mode.clone());
             run.auth_methods = metadata.auth_methods.to_vec();
             if let Some((name, version)) = metadata.agent_info {
                 run.adapter_name = name.clone();
@@ -2153,11 +2234,8 @@ async fn run_authentication<R: tauri::Runtime>(
     if *cancellation.borrow() {
         return Err(Error::request_cancelled());
     }
-    let cwd = app
-        .state::<AppState>()
-        .config()
-        .map_err(state_error)?
-        .working_directory;
+    let saved_config = app.state::<AppState>().config().map_err(state_error)?;
+    let cwd = crate::store::effective_working_directory(&saved_config);
     let process = transport(
         &app,
         &descriptor,
@@ -2245,32 +2323,6 @@ fn auth_method_model(method: &AuthMethod) -> AgentAuthMethod {
     }
 }
 
-#[cfg(test)]
-fn required_safe_mode(
-    adapter_name: &str,
-    safe_mode_id: &str,
-    modes: Option<&agent_client_protocol::schema::v1::SessionModeState>,
-) -> Result<SessionModeId, Error> {
-    let modes = modes.ok_or_else(|| {
-        Error::invalid_params().data(format!(
-            "{adapter_name} did not advertise ACP session modes; refusing to send a prompt"
-        ))
-    })?;
-    modes
-        .available_modes
-        .iter()
-        .find(|mode| mode.id.to_string() == safe_mode_id)
-        .map(|mode| mode.id.clone())
-        .ok_or_else(|| {
-            Error::invalid_params().data(format!(
-                "{adapter_name} did not advertise required safe mode {safe_mode_id}; refusing to send a prompt"
-            ))
-        })
-}
-
-// Consume session notifications and requests through the same ActiveSession queue.
-// Global request handlers can overtake a queued tool update and lose its correlation.
-// Reserve responders here in receipt order; their connection-scoped waits never block this queue.
 pub(crate) async fn record_control_update<R: tauri::Runtime>(
     app: &AppHandle<R>,
     controls: &Arc<SessionControls>,
@@ -2299,8 +2351,7 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
                 _ => {}
             }
             if let Some(candidate) = candidate.as_mut() {
-                let effective = controls.snapshot().map_err(state_error)?.effective_mode;
-                changed = candidate.record_update(notification.update, &effective)?;
+                changed = candidate.record_update(notification.update)?;
             }
             controls.publish(app).map_err(state_error)?;
             Ok(())
@@ -2325,12 +2376,11 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
 async fn record_agent_output(
     dispatch: Dispatch,
     candidate: &mut AgentOutputCandidate,
-    safe_mode_id: &str,
 ) -> Result<bool, Error> {
     let mut changed = false;
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
-            changed = candidate.record_update(notification.update, safe_mode_id)?;
+            changed = candidate.record_update(notification.update)?;
             Ok(())
         })
         .await
@@ -2383,10 +2433,13 @@ async fn launch_terminal_auth<R: tauri::Runtime>(
         }
         resolved.values.insert(name.into(), value.into());
     }
-    resolved.values.insert("NODE_OPTIONS".into(), "".into());
-    resolved.values.insert("NODE_PATH".into(), "".into());
+    let command = crate::agent_launch::prepare_working_command(
+        &descriptor.command,
+        &mut resolved,
+        !descriptor.kind.is_external(),
+    )?;
     let launch = crate::agent_launch::prepare_external_launch(
-        descriptor.command.clone(),
+        command,
         descriptor
             .args
             .iter()
@@ -2559,6 +2612,7 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
     config: &AppConfig,
     defaults: &crate::agent_preferences::AgentDefaults,
 ) -> Result<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>, String> {
+    let working_directory = crate::store::effective_working_directory(config);
     let descriptor = AgentDescriptor::resolve(app, config.agent).await?;
     let result = agent_client_protocol::Client
         .builder()
@@ -2567,23 +2621,28 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
             transport(
                 app,
                 &descriptor,
-                config.working_directory.clone(),
+                working_directory.clone(),
                 EnvironmentPurpose::Validation,
             ),
             async |connection: ConnectionTo<Agent>| {
                 initialize(&connection).await?;
                 let session = connection
-                    .build_session(&config.working_directory)
+                    .build_session(&working_directory)
                     .block_task()
                     .start_session()
                     .await?;
+                crate::agent_preferences::validate_defaults(
+                    config.agent,
+                    defaults,
+                    session.config_options(),
+                )
+                .map_err(state_error)?;
                 let (options, _) = session_controls::apply_defaults(
                     &connection,
                     session.session_id(),
                     session.config_options().map(<[_]>::to_vec),
                     session.modes(),
                     defaults,
-                    descriptor.safe_mode_id,
                 )
                 .await?;
                 Ok(options)
@@ -2608,7 +2667,6 @@ mod tests {
         model::{Bounds, ExtractionQuality, SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
-    use agent_client_protocol::schema::v1::{SessionMode, SessionModeState};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
         use adapter_output_mcp::HttpPublisher;
@@ -2725,7 +2783,7 @@ mod tests {
         .await;
     }
 
-    fn sample_input(source_text: &str) -> LensInput {
+    pub(super) fn sample_input(source_text: &str) -> LensInput {
         LensInput {
             schema_version: LENS_INPUT_SCHEMA_VERSION,
             context_id: Uuid::nil(),
@@ -2823,7 +2881,7 @@ mod tests {
         .expect("sample target set")
     }
 
-    fn sample_projection(
+    pub(super) fn sample_projection(
         input: &LensInput,
         media: &[LensMediaPayload],
     ) -> (LensAgentProjection, ProjectionRef) {
@@ -2867,7 +2925,7 @@ mod tests {
             .projection_ref(std::num::NonZeroU64::new(revision).expect("test revision is non-zero"))
     }
 
-    fn sample_context(revision: u64) -> LensContext {
+    pub(super) fn sample_context(revision: u64) -> LensContext {
         LensContext {
             schema_version: LENS_CONTEXT_SCHEMA_VERSION,
             context_id: Uuid::nil(),
@@ -2886,7 +2944,6 @@ mod tests {
             adapter_name: "@agentclientprotocol/codex-acp",
             adapter_version: "1.6.2".into(),
             installation: None,
-            safe_mode_id: "read-only",
             command: PathBuf::from("/managed/node"),
             args: vec![],
         };
@@ -3292,28 +3349,21 @@ mod tests {
         };
         let mut candidate = AgentOutputCandidate::default();
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new("New ")))
-                        .message_id("new"),
-                ),
-                "read-only",
-            )
+            .record_update(SessionUpdate::AgentMessageChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new("New "))).message_id("new"),
+            ))
             .expect("first update");
         candidate
-            .record_update(
-                SessionUpdate::AgentMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new("representation")))
-                        .message_id("new"),
-                ),
-                "read-only",
-            )
+            .record_update(SessionUpdate::AgentMessageChunk(
+                ContentChunk::new(ContentBlock::Text(TextContent::new("representation")))
+                    .message_id("new"),
+            ))
             .expect("second update");
 
         candidate.record_update(serde_json::from_value(serde_json::json!({
             "sessionUpdate": "tool_call_update", "toolCallId": "generated-image", "status": "completed",
             "content": [{"type":"content", "content":{"type":"image", "mimeType":"image/png", "data":"aW1hZ2U="}}]
-        })).unwrap(), "read-only").unwrap();
+        })).unwrap()).unwrap();
         assert_eq!(lens.representation, Some(old_representation));
         assert!(lens.output_blocks.is_empty());
         finish_prompt_response(
@@ -3661,28 +3711,6 @@ mod tests {
         assert_eq!(lens.error, None);
     }
 
-    #[test]
-    fn required_safe_mode_is_selected_only_when_explicitly_advertised() {
-        let modes = SessionModeState::new(
-            "agent",
-            vec![
-                SessionMode::new("agent", "Agent"),
-                SessionMode::new("read-only", "Read-only"),
-            ],
-        );
-
-        assert_eq!(
-            required_safe_mode("@agentclientprotocol/codex-acp", "read-only", Some(&modes))
-                .expect("advertised safe mode")
-                .to_string(),
-            "read-only"
-        );
-        assert!(
-            required_safe_mode("@agentclientprotocol/codex-acp", "plan", Some(&modes)).is_err()
-        );
-        assert!(required_safe_mode("@agentclientprotocol/codex-acp", "read-only", None).is_err());
-    }
-
     #[tokio::test]
     async fn queued_session_update_precedes_ready_prompt_response() {
         let event = next_prompt_event(
@@ -3708,7 +3736,7 @@ mod tests {
                 &notification["params"],
             )
             .unwrap();
-            record_agent_output(Dispatch::Notification(message), &mut candidate, "read-only")
+            record_agent_output(Dispatch::Notification(message), &mut candidate)
                 .await
                 .unwrap();
         }
@@ -3726,3 +3754,7 @@ mod tests {
             .contains("Revised prompt"));
     }
 }
+
+#[cfg(test)]
+#[path = "external_agent_tests.rs"]
+mod external_tests;

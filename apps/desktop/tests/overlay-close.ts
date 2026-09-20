@@ -52,7 +52,12 @@ const snapshot: AppSnapshot = {
       ],
     },
   },
-  agent_selection: { stage: "selected", candidate: "codex", auth_methods: [] },
+  agent_selection: {
+    stage: "selected",
+    candidate: "codex",
+    supports_logout: false,
+    auth_methods: [],
+  },
   agent_runtime: { stage: "ready", agent: "codex", downloaded_bytes: 0 },
   lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
 };

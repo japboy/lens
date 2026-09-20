@@ -57,11 +57,13 @@ body {
 }
 
 html[data-platform][data-view="settings"] body,
-html[data-platform][data-view="about"] body {
+html[data-platform][data-view="about"] body,
+html[data-platform][data-view="settings-recovery"] body {
   background: var(--settings-backdrop);
 }
 
 lens-about-page,
+lens-settings-recovery-page,
 lens-settings-page,
 lens-overlay-page,
 lens-target-selection-page {

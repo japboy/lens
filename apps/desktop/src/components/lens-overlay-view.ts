@@ -25,6 +25,7 @@ import {
 import { sharedIconStyles } from "../styles/icon-styles";
 import { mathStyles } from "../styles/math-styles";
 import {
+  sameAgent,
   lensLiveStatus,
   lensOutputPresentation,
   lensProgressSnackbar,
@@ -1657,7 +1658,7 @@ export class LensOverlayView extends LitElement {
       if (
         !isHistoryView(previous) ||
         previous?.session_id !== this.sessionView?.session_id ||
-        previous?.agent !== this.sessionView?.agent
+        !sameAgent(previous?.agent, this.sessionView?.agent)
       )
         this.activeTab = "interpretation";
     }

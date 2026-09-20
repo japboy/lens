@@ -461,11 +461,6 @@ pub struct LensPromptMaterial {
 }
 
 impl AppState {
-    pub fn load(platform: crate::platform::Services, store: ConfigStore) -> Result<Self, String> {
-        let config = store.try_load()?;
-        Ok(Self::with_config(platform, store, config))
-    }
-
     pub(crate) fn with_config(
         platform: crate::platform::Services,
         store: ConfigStore,

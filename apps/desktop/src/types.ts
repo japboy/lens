@@ -1,4 +1,16 @@
-export type AgentKind = "claude" | "codex";
+export type ManagedAgentKind = "claude" | "codex";
+export type AgentKind = ManagedAgentKind | { external: string };
+export interface ExternalAgentDraft {
+  id: string;
+  name: string;
+  command_line: string;
+}
+export interface ExternalAgentProfile {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+}
 export type AgentSelectionStage =
   | "unselected"
   | "checking"
@@ -67,7 +79,10 @@ export type PromptPresetChange =
   | { type: "reset_all"; expected_catalog_revision: number };
 
 export interface AppConfig {
-  agent_preferences?: { claude: AgentDefaults; codex: AgentDefaults };
+  agent_preferences?: Partial<Record<ManagedAgentKind, AgentDefaults>> & {
+    external?: Record<string, AgentDefaults>;
+  };
+  external_agents?: ExternalAgentProfile[];
   agent: AgentKind;
   working_directory: string;
   agent_prompt_template: AgentPromptTemplate;
@@ -334,9 +349,10 @@ export interface AgentAuthMethod {
 }
 
 export interface AgentSelectionState {
+  supports_logout: boolean;
   config_options?: SessionConfigOption[];
   modes?: SessionMode[];
-  policy_default?: string;
+  agent_default?: string | null;
   operation_id?: string;
   stage: AgentSelectionStage;
   candidate?: AgentKind;
@@ -492,6 +508,7 @@ export interface ToolPolicies {
   delete: ToolPolicy;
   move: ToolPolicy;
   execute: ToolPolicy;
+  other: ToolPolicy;
 }
 export interface AgentDefaults {
   choices: { config_id: string; value: string }[];
@@ -509,7 +526,6 @@ export interface AgentInteraction {
   details?:
     | { kind: "form"; message: string; schema: ElicitationSchema }
     | { kind: "url"; message: string; elicitation_id: string; url: string }
-    | { kind: "mode_transition"; from: string; to: string }
     | {
         kind: "permission";
         tool_call_id: string;
@@ -529,11 +545,11 @@ export interface AgentSessionControlState {
   notice?: string;
   config_options?: SessionConfigOption[];
   modes: SessionMode[];
-  effective_mode: string;
-  configured_mode?: string;
-  configured_origin?: "policy" | "user" | "agent";
-  last_mode_origin?: "policy" | "user" | "agent";
-  policy_default: string;
+  effective_mode: string | null;
+  configured_mode: string | null;
+  configured_origin?: "agent_default" | "user" | "agent";
+  last_mode_origin?: "agent_default" | "user" | "agent";
+  agent_default: string | null;
   change?: {
     config_id: string;
     value: string;

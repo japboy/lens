@@ -2,6 +2,7 @@
 export const PAGE_ENTRIES = {
   about: "about.html",
   settings: "settings.html",
+  "settings-recovery": "settings-recovery.html",
   overlay: "overlay.html",
   "target-selection": "target-selection.html",
 } as const;

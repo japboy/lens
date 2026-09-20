@@ -1,4 +1,5 @@
 import { initialSettingsState } from "../rendering/initial-state";
+import { agentLabel, agentDefaults } from "../view-model";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -268,6 +269,24 @@ export class LensSettingsView extends LitElement {
         gap: 6px;
       }
 
+      .external-executable-settings {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .external-executable-settings .settings-field {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .external-executable-field {
+        box-sizing: border-box;
+        min-width: 0;
+        width: 100%;
+      }
+
       .directory-row,
       .permission-row {
         display: flex;
@@ -291,7 +310,7 @@ export class LensSettingsView extends LitElement {
 
       :host([data-platform="macos"])
         .settings-shell
-        :is(.directory-field, .prompt-editor, .prompt-preset-field) {
+        :is(.directory-field, .external-executable-field, .prompt-editor, .prompt-preset-field) {
         appearance: none;
         border: 1px solid ButtonBorder;
         border-radius: 5px;
@@ -302,7 +321,12 @@ export class LensSettingsView extends LitElement {
 
       :host([data-platform="macos"])
         .settings-shell
-        :is(.directory-field, .prompt-editor, .prompt-preset-field):focus-visible {
+        :is(
+          .directory-field,
+          .external-executable-field,
+          .prompt-editor,
+          .prompt-preset-field
+        ):focus-visible {
         border-color: var(--settings-focus-ring);
         outline: 3px solid var(--settings-focus-ring);
         outline-offset: 1px;
@@ -310,7 +334,12 @@ export class LensSettingsView extends LitElement {
 
       :host([data-platform="macos"])
         .settings-shell
-        :is(.directory-field, .prompt-editor, .prompt-preset-field):disabled {
+        :is(
+          .directory-field,
+          .external-executable-field,
+          .prompt-editor,
+          .prompt-preset-field
+        ):disabled {
         border-color: color-mix(in srgb, ButtonBorder 65%, transparent);
         color: GrayText;
         background: color-mix(in srgb, Field 72%, Canvas);
@@ -318,7 +347,9 @@ export class LensSettingsView extends LitElement {
         cursor: default;
       }
 
-      :host([data-platform="macos"]) .settings-shell :is(.directory-field, .prompt-preset-field) {
+      :host([data-platform="macos"])
+        .settings-shell
+        :is(.directory-field, .external-executable-field, .prompt-preset-field) {
         min-height: 24px;
         padding: 3px 7px;
         line-height: 16px;
@@ -709,7 +740,7 @@ export class LensSettingsView extends LitElement {
 
         :host([data-platform="macos"])
           .settings-shell
-          :is(.directory-field, .prompt-editor, .prompt-preset-field) {
+          :is(.directory-field, .external-executable-field, .prompt-editor, .prompt-preset-field) {
           border-width: 2px;
           border-color: CanvasText;
           box-shadow: none;
@@ -717,7 +748,12 @@ export class LensSettingsView extends LitElement {
 
         :host([data-platform="macos"])
           .settings-shell
-          :is(.directory-field, .prompt-editor, .prompt-preset-field):focus-visible {
+          :is(
+            .directory-field,
+            .external-executable-field,
+            .prompt-editor,
+            .prompt-preset-field
+          ):focus-visible {
           border-color: AccentColor;
           outline-width: 4px;
         }
@@ -857,6 +893,7 @@ export class LensSettingsView extends LitElement {
                 <lens-agent-settings
                   .selection=${model?.agentSelection}
                   .runtime=${model?.agentRuntime}
+                  .profiles=${model?.config?.external_agents ?? []}
                   .disabled=${!this.active || !model || model.pending}
                 ></lens-agent-settings>
               </section>
@@ -891,8 +928,8 @@ export class LensSettingsView extends LitElement {
                 <h1>Session Defaults</h1>
                 <p>
                   ${
-                    model?.agentSelection?.stage === "selected"
-                      ? `Choose settings for new sessions with ${model.config?.agent === "claude" ? "Claude" : "Codex"}.`
+                    model?.agentSelection?.stage === "selected" && model.agentSelection.candidate
+                      ? `Choose settings for new sessions with ${agentLabel(model.agentSelection.candidate, model.config?.external_agents)}.`
                       : "Choose settings for new sessions with the connected Agent."
                   }
                 </p>
@@ -918,7 +955,7 @@ export class LensSettingsView extends LitElement {
               <div data-region-error="agent-defaults"></div>
               <lens-agent-defaults
                 .selection=${model?.agentSelection}
-                .defaults=${model?.config?.agent_preferences?.[model?.config.agent]}
+                .defaults=${agentDefaults(model?.config)}
                 .disabled=${!this.active || !model || model.pending}
               ></lens-agent-defaults>
             </div>
@@ -1030,6 +1067,11 @@ export class LensSettingsView extends LitElement {
     event.stopPropagation();
     const intent: SettingsIntent = (() => {
       switch (event.detail.type) {
+        case "choose-external-executable":
+        case "save-external-agent":
+        case "delete-external-agent":
+        case "reset-agent-presets":
+          return event.detail;
         case "preview-model":
           return {
             type: "preview-agent-model",

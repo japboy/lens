@@ -21,6 +21,7 @@ pub struct ToolPolicies {
     pub delete: ToolPolicy,
     pub r#move: ToolPolicy,
     pub execute: ToolPolicy,
+    pub other: ToolPolicy,
 }
 impl Default for ToolPolicies {
     fn default() -> Self {
@@ -32,6 +33,7 @@ impl Default for ToolPolicies {
             delete: ToolPolicy::Deny,
             r#move: ToolPolicy::Deny,
             execute: ToolPolicy::Deny,
+            other: ToolPolicy::Ask,
         }
     }
 }
@@ -51,18 +53,27 @@ pub struct AgentDefaults {
 pub struct AgentPreferences {
     pub claude: AgentDefaults,
     pub codex: AgentDefaults,
+    pub external: std::collections::BTreeMap<uuid::Uuid, AgentDefaults>,
 }
 impl AgentPreferences {
     pub fn get(&self, kind: AgentKind) -> &AgentDefaults {
         match kind {
             AgentKind::Claude => &self.claude,
             AgentKind::Codex => &self.codex,
+            AgentKind::External(id) => self.external.get(&id).unwrap_or_else(|| {
+                static DEFAULT: std::sync::LazyLock<AgentDefaults> =
+                    std::sync::LazyLock::new(AgentDefaults::default);
+                &DEFAULT
+            }),
         }
     }
     pub fn set(&mut self, kind: AgentKind, defaults: AgentDefaults) {
         match kind {
             AgentKind::Claude => self.claude = defaults,
             AgentKind::Codex => self.codex = defaults,
+            AgentKind::External(id) => {
+                self.external.insert(id, defaults);
+            }
         }
     }
 }
@@ -94,5 +105,12 @@ mod tests {
         assert_eq!(restored.claude.tools.execute, ToolPolicy::Allow);
         assert_eq!(restored.codex.tools.execute, ToolPolicy::Deny);
         assert!(serde_json::from_str::<ToolPolicies>(r#"{"read":"allow_always"}"#).is_err());
+    }
+    #[test]
+    fn existing_tool_policies_without_other_default_to_ask() {
+        let policies: ToolPolicies =
+            serde_json::from_value(serde_json::json!({"execute":"deny"})).unwrap();
+        assert_eq!(policies.other, ToolPolicy::Ask);
+        assert_eq!(policies.execute, ToolPolicy::Deny);
     }
 }

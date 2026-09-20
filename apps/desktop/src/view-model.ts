@@ -1,6 +1,9 @@
 import type {
   AgentAuthMethod,
   AgentKind,
+  AppConfig,
+  ExternalAgentProfile,
+  ManagedAgentKind,
   AgentRuntimeStage,
   AgentSelectionStage,
   AgentSelectionState,
@@ -11,6 +14,26 @@ import type {
   LensStage,
   LensState,
 } from "./types";
+
+export const AGENT_LABEL: Record<ManagedAgentKind, string> = {
+  claude: "Claude",
+  codex: "Codex",
+};
+
+export function sameAgent(a: AgentKind | undefined, b: AgentKind | undefined): boolean {
+  return typeof a === "object" && typeof b === "object" ? a.external === b.external : a === b;
+}
+export function agentLabel(agent: AgentKind, profiles: ExternalAgentProfile[] = []): string {
+  return typeof agent === "string"
+    ? AGENT_LABEL[agent]
+    : (profiles.find((p) => p.id === agent.external)?.name ?? "External ACP connection");
+}
+export function agentDefaults(config: Pick<AppConfig, "agent" | "agent_preferences"> | undefined) {
+  if (!config) return undefined;
+  return typeof config.agent === "string"
+    ? config.agent_preferences?.[config.agent]
+    : config.agent_preferences?.external?.[config.agent.external];
+}
 
 export const AGENT_RUNTIME_LABEL: Record<AgentRuntimeStage, string> = {
   not_installed: "Agent runtime is not installed",

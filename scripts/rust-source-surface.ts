@@ -123,12 +123,19 @@ export function rustDeclarationSurface(source: string): string {
   return JSON.stringify(items(0, tokens.length));
 }
 
-const COMMON_CONDITIONS = new Set(["test", "debug_assertions", "all(test,debug_assertions)"]);
+const COMMON_CONDITIONS = new Set([
+  "test",
+  "debug_assertions",
+  "all(test,debug_assertions)",
+  "any(test,debug_assertions)",
+]);
 const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
   "apps/desktop/src-tauri/src/lib.rs": [
     '#[cfg(target_os = "macos")] mod native;',
     '#[cfg(target_os = "macos")] pub use native::run;',
     '#[cfg(target_os = "macos")] native::configure_activation(app, validate_a11y);',
+    // Startup recovery owns a foreground window before the normal runtime exists.
+    '#[cfg(target_os = "macos")] native::configure_activation(app, true);',
   ],
   "apps/desktop/src-tauri/src/main.rs": [
     '#[cfg(target_os = "macos")] fn main() { if let Some(status) = lens_lib::internal_process_exit() { std::process::exit(status); } lens_lib::run(); }',

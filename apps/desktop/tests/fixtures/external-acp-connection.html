@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>External ACP connection fixture</title>
+    <style>
+      body { margin: 0; font: 14px system-ui; }
+      #fixture-controls { padding: 8px 16px; border-bottom: 1px solid GrayText; }
+      lens-settings-view { display: block; height: calc(100vh - 46px); }
+    </style>
+  </head>
+  <body>
+    <div id="fixture-controls">
+      <label>Fixture state <select id="scenario">
+        <option value="unset">Not configured</option>
+        <option value="failed">Verification failed</option>
+        <option value="saved">Saved and verified</option>
+        <option value="pending">Verification pending</option>
+      </select></label>
+      <span>No native commands or Agent processes run in this fixture.</span>
+    </div>
+    <lens-settings-view data-platform="macos"></lens-settings-view>
+    <script type="module">
+      import "/src/components/lens-settings-view.ts";
+      import "/src/components/lens-agent-settings.ts";
+      import "/src/components/lens-agent-defaults.ts";
+      import { parseExternalAgentCommand } from "/src/external-agent-command.ts";
+      const view = document.querySelector("lens-settings-view");
+      const scenario = document.querySelector("#scenario");
+      window.fixtureIntents = [];
+      view.active = true;
+      view.snapshotStatus = { stage: "ready" };
+      function renderScenario() {
+        const value = scenario.value;
+        const saved = value !== "unset";
+        view.model = {
+          platform: "macos",
+          config: { agent: saved ? {external:"11111111-1111-4111-8111-111111111111"} : "claude", external_agents: saved ? [{id:"11111111-1111-4111-8111-111111111111",name:"Local ACP",command:"/Applications/Goose Tools/goose",args:["acp"]},{id:"22222222-2222-4222-8222-222222222222",name:"Local ACP",command:"/opt/local/bin/another-agent",args:["--acp", ""]}] : [], working_directory: "/tmp" },
+          agentSelection: {
+            stage: value === "saved" ? "selected" : value === "pending" ? "checking" : "failed",
+            candidate: saved ? {external:"11111111-1111-4111-8111-111111111111"} : "claude", supports_logout: false, auth_methods: [],
+            config_options: [
+              { id: "provider", name: "Provider", type: "select", currentValue: "chatgpt_codex", options: [{ value: "chatgpt_codex", name: "ChatGPT Codex" }] },
+              { id: "model", name: "Model", category: "model", type: "select", currentValue: "gpt-5.5", options: [{ value: "gpt-5.5", name: "GPT-5.5" }] },
+            ],
+            error: value === "unset" ? "Add an external ACP connection to configure an executable." : value === "failed" ? "The external agent is not configured. Configure it with its CLI, then verify again." : undefined,
+          },
+          agentRuntime: { stage: value === "pending" ? "verifying" : "ready", agent: saved ? {external:"11111111-1111-4111-8111-111111111111"} : "claude", downloaded_bytes: 0, message: "External agents are installed and updated outside Lens." },
+          permission: { stage: "allowed" }, pending: value === "pending",
+          promptSynchronization: "preserve-local-draft", lensStageLabel: "Idle", feedback: { stage: "none" },
+        };
+      }
+      scenario.addEventListener("change", renderScenario);
+      view.addEventListener("lens-settings-intent", event => {
+        window.fixtureIntents.push(event.detail);
+        if (event.detail.type === "save-external-agent") {
+          const input = event.detail.profile;
+          const profile = {id:input.id,name:input.name,...parseExternalAgentCommand(input.command_line)};
+          const profiles = view.model.config.external_agents.filter(p => p.id !== profile.id);
+          view.model = {...view.model,config:{...view.model.config,external_agents:[...profiles,profile],agent:{external:profile.id}},agentSelection:{...view.model.agentSelection,candidate:{external:profile.id},stage:"selected",error:undefined}};
+        }
+        if (event.detail.type === "delete-external-agent") {
+          view.model = {...view.model,config:{...view.model.config,external_agents:view.model.config.external_agents.filter(p=>p.id!==event.detail.id),agent:"claude"},agentSelection:{...view.model.agentSelection,candidate:"claude",stage:"unselected",error:undefined}};
+        }
+        if (event.detail.type === "select-agent") {
+          view.model = { ...view.model, config: { ...view.model.config, agent: event.detail.agent }, agentSelection: { ...view.model.agentSelection, candidate: event.detail.agent, stage: "history_selected", error: undefined } };
+        }
+      });
+      scenario.value = new URLSearchParams(location.search).get("scenario") ?? "unset";
+      renderScenario();
+    </script>
+  </body>
+</html>

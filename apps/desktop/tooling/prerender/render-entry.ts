@@ -6,7 +6,12 @@ import "../../src/components/lens-settings-view";
 import "../../src/components/lens-overlay-view";
 import "../../src/components/lens-target-selection-view";
 
+import "../../src/components/lens-settings-recovery-view";
+
 const templates = {
+  "settings-recovery": html`<lens-settings-recovery-view
+    defer-hydration
+  ></lens-settings-recovery-view>`,
   about: html`<lens-about-view defer-hydration></lens-about-view>`,
   settings: html`<lens-settings-view defer-hydration></lens-settings-view>`,
   overlay: html`<lens-overlay-view defer-hydration></lens-overlay-view>`,

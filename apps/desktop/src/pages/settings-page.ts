@@ -12,7 +12,8 @@ import { platformFromSearch } from "../presentation-context";
 import { LensSettingsView } from "../components/lens-settings-view";
 import type { SettingsIntent } from "../components/events";
 import { AccessibilityPermissionController } from "../application/accessibility-permission-controller";
-import { selectedAgent } from "../view-model";
+import { agentLabel, selectedAgent } from "../view-model";
+import type { LensAgentSettings } from "../components/lens-agent-settings";
 
 @customElement("lens-settings-page")
 export class SettingsPage extends ReactiveElement {
@@ -138,6 +139,36 @@ export class SettingsPage extends ReactiveElement {
       return;
     const identity: CommandIdentity = { scope: "settings", type: intent.type };
     switch (intent.type) {
+      case "choose-external-executable": {
+        const editor =
+          this.view.shadowRoot?.querySelector<LensAgentSettings>("lens-agent-settings");
+        if (!editor) return;
+        await this.commands.run(identity, async () => {
+          const selected = await this.port.chooseExternalExecutable(intent.defaultPath);
+          if (selected) editor.acceptExternalExecutable(selected, intent.draftRevision);
+        });
+        return;
+      }
+      case "save-external-agent":
+        await this.commands.run(identity, () => this.port.saveExternalAgent(intent.profile));
+        return;
+      case "reset-agent-presets": {
+        const approved = await this.port.confirmAction(
+          "Restore the external agent presets to GitHub Copilot and Goose? Added presets, saved command/name edits and unsaved drafts will be removed. Defaults for restored agents, Claude/Codex, prompts and the working directory will be preserved. Any selected external agent will be disconnected; select an agent again to verify its connection.",
+          "Reset Agent Presets",
+        );
+        if (!approved) return;
+        await this.commands.run(identity, async () => {
+          const config = await this.port.resetExternalAgents();
+          const editor =
+            this.view.shadowRoot?.querySelector<LensAgentSettings>("lens-agent-settings");
+          editor?.acceptResetPresets(config.external_agents ?? [], config.agent);
+        });
+        return;
+      }
+      case "delete-external-agent":
+        await this.commands.run(identity, () => this.port.deleteExternalAgent(intent.id));
+        return;
       case "update-prompt-presets": {
         const change = intent.change;
         if (change.type === "delete" || change.type === "reset_all") {
@@ -190,19 +221,9 @@ export class SettingsPage extends ReactiveElement {
         const snapshot = this.snapshots.snapshot;
         const selection = snapshot?.agent_selection;
         if (!selection?.operation_id) return;
-        const modeId = selection.config_options?.find((o) => o.category === "mode")?.id ?? "mode";
-        const mode = intent.defaults.choices.find((c) => c.config_id === modeId)?.value;
-        const elevated = Boolean(mode && mode !== selection.policy_default);
-        const approved =
-          !elevated ||
-          (await this.port.confirmAction(
-            `Use mode ${mode} for all new sessions of this Agent? It may allow changes or commands. Tool approval policies remain separate.`,
-            "Save Shared Agent Mode",
-          ));
-        if (!approved) return;
         await this.commands.run(
           identity,
-          () => this.port.setAgentDefaults(selection.operation_id!, intent.defaults, elevated),
+          () => this.port.setAgentDefaults(selection.operation_id!, intent.defaults),
           "Shared Agent settings saved.",
         );
         return;
@@ -220,7 +241,8 @@ export class SettingsPage extends ReactiveElement {
           ? selectedAgent(this.snapshots.snapshot.agent_selection)
           : undefined;
         if (!agent) return;
-        const label = agent === "claude" ? "Claude" : "Codex";
+        if (!this.snapshots.snapshot?.agent_selection.supports_logout) return;
+        const label = agentLabel(agent, this.snapshots.snapshot?.config.external_agents);
         const approved = await this.port.confirmAction(
           `Reauthentication signs out of ${label} first. Continue?`,
           `Reauthenticate ${label}`,
@@ -234,7 +256,8 @@ export class SettingsPage extends ReactiveElement {
           ? selectedAgent(this.snapshots.snapshot.agent_selection)
           : undefined;
         if (!agent) return;
-        const label = agent === "claude" ? "Claude" : "Codex";
+        if (!this.snapshots.snapshot?.agent_selection.supports_logout) return;
+        const label = agentLabel(agent, this.snapshots.snapshot?.config.external_agents);
         const approved = await this.port.confirmAction(
           `Sign out of ${label}? This changes the authentication used by its existing CLI.`,
           `Sign Out of ${label}`,

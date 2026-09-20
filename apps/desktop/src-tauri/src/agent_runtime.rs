@@ -50,7 +50,6 @@ pub struct ResolvedAgentRuntime {
     pub kind: AgentKind,
     pub adapter_name: &'static str,
     pub adapter_version: String,
-    pub safe_mode_id: &'static str,
     pub command: PathBuf,
     pub args: Vec<String>,
     pub(crate) installation: Option<std::sync::Arc<RuntimeInstallation>>,
@@ -84,26 +83,26 @@ struct Provider {
     kind: AgentKind,
     registry_id: &'static str,
     adapter_name: &'static str,
-    safe_mode_id: &'static str,
     bin_name: &'static str,
 }
-fn provider(kind: AgentKind) -> Provider {
-    match kind {
+fn provider(kind: AgentKind) -> Result<Provider, String> {
+    Ok(match kind {
         AgentKind::Claude => Provider {
             kind,
             registry_id: "claude-acp",
             adapter_name: "@agentclientprotocol/claude-agent-acp",
-            safe_mode_id: "plan",
             bin_name: "claude-agent-acp",
         },
         AgentKind::Codex => Provider {
             kind,
             registry_id: "codex-acp",
             adapter_name: "@agentclientprotocol/codex-acp",
-            safe_mode_id: "read-only",
             bin_name: "codex-acp",
         },
-    }
+        AgentKind::External(_) => {
+            return Err("External ACP is externally managed and has no managed distribution".into())
+        }
+    })
 }
 #[derive(Debug, Deserialize)]
 struct RegistryIndex {
@@ -170,21 +169,21 @@ struct Selector {
     #[serde(default)]
     rejected_version: Option<String>,
 }
-fn provider_root(root: &Path, kind: AgentKind) -> PathBuf {
-    root.join("agents").join(provider(kind).registry_id)
+fn provider_root(root: &Path, kind: AgentKind) -> Result<PathBuf, String> {
+    Ok(root.join("agents").join(provider(kind)?.registry_id))
 }
 fn install_root(root: &Path, kind: AgentKind, id: &str) -> Result<PathBuf, String> {
     if let Some(version) = id.strip_prefix("legacy:") {
         if !valid_version(version) {
             return Err("invalid legacy installation identity".into());
         }
-        return Ok(provider_root(root, kind).join(version));
+        return Ok(provider_root(root, kind)?.join(version));
     }
     Uuid::parse_str(id).map_err(|_| "invalid managed installation identity".to_string())?;
-    Ok(provider_root(root, kind).join("installs").join(id))
+    Ok(provider_root(root, kind)?.join("installs").join(id))
 }
 fn read_selector(root: &Path, kind: AgentKind) -> Result<Selector, String> {
-    let path = provider_root(root, kind).join("selector.json");
+    let path = provider_root(root, kind)?.join("selector.json");
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -203,7 +202,7 @@ fn read_selector(root: &Path, kind: AgentKind) -> Result<Selector, String> {
     Ok(selector)
 }
 fn write_selector(root: &Path, kind: AgentKind, selector: &Selector) -> Result<(), String> {
-    let dir = provider_root(root, kind);
+    let dir = provider_root(root, kind)?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join(format!(".selector-{}.json", Uuid::new_v4()));
     let result = (|| {
@@ -227,7 +226,7 @@ fn prune_installations(root: &Path, kind: AgentKind) -> Result<(), String> {
         .current
         .as_deref()
         .is_some_and(|id| Uuid::parse_str(id).is_ok());
-    let provider = provider_root(root, kind);
+    let provider = provider_root(root, kind)?;
     let mut entries = Vec::new();
     for dir in [&provider, &provider.join("installs")] {
         if !dir.is_dir() {
@@ -336,22 +335,97 @@ pub(crate) async fn reject_candidate(
     }
 }
 
+async fn resolve_external<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+) -> Result<ResolvedAgentRuntime, String> {
+    let operation = Uuid::new_v4();
+    let config = app.state::<AppState>().config()?;
+    let Some(profile) = config
+        .external_agents
+        .iter()
+        .find(|p| kind == AgentKind::External(p.id))
+        .cloned()
+    else {
+        let message = "Choose and save your installed External ACP command in Settings.";
+        publish_agent_runtime(
+            app,
+            AgentRuntimeState {
+                operation_id: Some(operation),
+                agent: Some(kind),
+                stage: AgentRuntimeStage::NotInstalled,
+                message: Some(message.into()),
+                ..Default::default()
+            },
+        )?;
+        return Err(message.into());
+    };
+    publish_agent_runtime(
+        app,
+        AgentRuntimeState {
+            operation_id: Some(operation),
+            agent: Some(kind),
+            stage: AgentRuntimeStage::Verifying,
+            message: Some("Checking the user-owned External ACP executable…".into()),
+            ..Default::default()
+        },
+    )?;
+    let cwd = crate::store::effective_working_directory(&config);
+    let result = crate::external_agent::resolve(profile, &cwd).await;
+    match &result {
+        Ok(runtime) => {
+            publish_ready(app, operation, runtime, None)?;
+            update_agent_runtime(app, operation, |state| {
+                state.message = Some(
+                    "Using your installed External ACP executable; Lens does not update it.".into(),
+                );
+            })?;
+        }
+        Err(error) => {
+            update_agent_runtime(app, operation, |state| {
+                state.stage = AgentRuntimeStage::Failed;
+                state.error = Some(error.clone());
+                state.message = None;
+            })?;
+        }
+    }
+    result
+}
+
 pub async fn resolve<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
 ) -> Result<ResolvedAgentRuntime, String> {
+    if kind.is_external() {
+        return resolve_external(app, kind).await;
+    }
     resolve_available(app, kind, false).await
 }
 pub async fn resolve_for_session<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
 ) -> Result<ResolvedAgentRuntime, String> {
+    if kind.is_external() {
+        return resolve_external(app, kind).await;
+    }
     resolve_available(app, kind, true).await
 }
 pub async fn resolve_installed<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
 ) -> Result<Option<ResolvedAgentRuntime>, String> {
+    if kind.is_external() {
+        if !app
+            .state::<AppState>()
+            .config()?
+            .external_agents
+            .iter()
+            .any(|p| kind == AgentKind::External(p.id))
+        {
+            return Ok(None);
+        }
+        return resolve_external(app, kind).await.map(Some);
+    }
     let state = app.state::<AppState>();
     let _guard = state.agent_runtime_install.lock().await;
     let operation = Uuid::new_v4();
@@ -534,8 +608,11 @@ fn publish_ready<R: tauri::Runtime>(
 ) -> Result<(), String> {
     update_agent_runtime(app, operation, |state| {
         state.stage = AgentRuntimeStage::Ready;
-        state.version = Some(runtime.adapter_version.clone());
+        state.version = (!runtime.kind.is_external()).then(|| runtime.adapter_version.clone());
         state.message = Some(match &failure {
+            None if runtime.kind.is_external() => {
+                "External ACP executable is available; connection verification is required.".into()
+            }
             Some(error) => format!(
                 "Update failed; continuing with verified {} {}: {error}",
                 display_name(runtime.kind),
@@ -649,7 +726,7 @@ fn validate_registry_entry(bytes: &[u8], kind: AgentKind) -> Result<String, Stri
     if registry.version != REGISTRY_SCHEMA_VERSION {
         return Err("unsupported ACP Registry schema".into());
     }
-    let provider = provider(kind);
+    let provider = provider(kind)?;
     let mut entries = registry
         .agents
         .into_iter()
@@ -701,8 +778,8 @@ fn manifest(kind: AgentKind, version: &str) -> Result<Vec<u8>, String> {
         return Err("invalid exact Adapter version".into());
     }
     serde_json::to_vec_pretty(&serde_json::json!({
-        "name": format!("lens-managed-{}", provider(kind).registry_id), "private": true,
-        "dependencies": { provider(kind).adapter_name: version },
+        "name": format!("lens-managed-{}", provider(kind)?.registry_id), "private": true,
+        "dependencies": { provider(kind)?.adapter_name: version },
         "engines": { "node": NODE_VERSION }, "packageManager": format!("pnpm@{PNPM_VERSION}")
     }))
     .map_err(|error| error.to_string())
@@ -712,7 +789,7 @@ fn read_record(path: &Path, kind: AgentKind) -> Result<InstallRecord, String> {
         &fs::read(path.join("lens-runtime.json")).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let provider = provider(kind);
+    let provider = provider(kind)?;
     if ![5, AGENT_INSTALL_RECORD_VERSION].contains(&record.schema_version)
         || record.registry_id != provider.registry_id
         || record.adapter_name != provider.adapter_name
@@ -787,7 +864,7 @@ async fn verify_runtime_paths(
     version: &str,
 ) -> Result<ResolvedAgentRuntime, String> {
     verify_node_runtime(node_root).await?;
-    let policy = provider(kind);
+    let policy = provider(kind)?;
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
     let adapter = package_directory(agent_root, agent_root, policy.adapter_name)?;
     let package = package_json(&adapter)?;
@@ -830,6 +907,9 @@ async fn verify_runtime_paths(
                 ),
             ]
         }
+        AgentKind::External(_) => {
+            return Err("External ACP has no managed native dependencies".into())
+        }
     };
     for (path, team, identifier) in paths {
         let path = canonical_managed_file(agent_root, &path, "Agent native executable")?;
@@ -838,6 +918,7 @@ async fn verify_runtime_paths(
     let expected = match kind {
         AgentKind::Claude => version.to_owned(),
         AgentKind::Codex => format!("{} {version}", policy.adapter_name),
+        AgentKind::External(_) => return Err("External ACP has no managed adapter".into()),
     };
     verify_version_command(
         &node,
@@ -850,7 +931,6 @@ async fn verify_runtime_paths(
         kind: policy.kind,
         adapter_name: policy.adapter_name,
         adapter_version: version.into(),
-        safe_mode_id: policy.safe_mode_id,
         command: node,
         args: vec![entrypoint.to_string_lossy().into_owned()],
         installation: None,
@@ -890,7 +970,7 @@ async fn migrate_legacy(root: &Path, kind: AgentKind) -> Result<(), String> {
     if selector.current.is_some() || selector.candidate.is_some() {
         return Ok(());
     }
-    let dir = provider_root(root, kind);
+    let dir = provider_root(root, kind)?;
     if !dir.is_dir() {
         return Ok(());
     }
@@ -1413,7 +1493,7 @@ fn resolved_candidate_manifest(
 ) -> Result<(String, Vec<u8>), String> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    let version = value["dependencies"][provider(kind).adapter_name]
+    let version = value["dependencies"][provider(kind)?.adapter_name]
         .as_str()
         .filter(|version| request.accepts(version))
         .ok_or("resolved Agent version is not an exact permitted registry candidate")?
@@ -1483,9 +1563,10 @@ async fn install_requested_candidate<R: tauri::Runtime>(
     fs::write(staging.join("blank-user-npmrc"), []).map_err(|error| error.to_string())?;
     fs::write(staging.join("blank-global-npmrc"), []).map_err(|error| error.to_string())?;
     let result = async {
+        let managed_provider = provider(kind)?;
         let specification = selector
             .as_ref()
-            .map(|selector| format!("{}@{selector}", provider(kind).adapter_name));
+            .map(|selector| format!("{}@{selector}", managed_provider.adapter_name));
         let mode = specification.as_deref().map_or(
             PnpmInstallMode::ResolveExact,
             PnpmInstallMode::ResolveEligible,
@@ -1531,7 +1612,7 @@ async fn install_requested_candidate<R: tauri::Runtime>(
             );
         }
         verify_runtime_paths(node, &agent, kind, &version).await?;
-        let policy = provider(kind);
+        let policy = provider(kind)?;
         let record = InstallRecord {
             schema_version: AGENT_INSTALL_RECORD_VERSION,
             registry_id: policy.registry_id.into(),
@@ -1888,6 +1969,7 @@ fn display_name(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "Claude Agent",
         AgentKind::Codex => "Codex",
+        AgentKind::External(_) => "External ACP",
     }
 }
 #[cfg(test)]
@@ -1914,12 +1996,11 @@ mod tests {
         root
     }
     fn runtime(root: &Path, kind: AgentKind, id: &str) -> ResolvedAgentRuntime {
-        let policy = provider(kind);
+        let policy = provider(kind).unwrap();
         ResolvedAgentRuntime {
             kind,
             adapter_name: policy.adapter_name,
             adapter_version: "1.2.3".into(),
-            safe_mode_id: policy.safe_mode_id,
             command: PathBuf::new(),
             args: vec![],
             installation: Some(acquire_lease(root, kind, id).unwrap()),
@@ -2193,8 +2274,8 @@ mod tests {
         fs::write(root.join("pnpm-workspace.yaml"), AGENT_WORKSPACE).unwrap();
         let mut record = InstallRecord {
             schema_version: 5,
-            registry_id: provider(kind).registry_id.into(),
-            adapter_name: provider(kind).adapter_name.into(),
+            registry_id: provider(kind).unwrap().registry_id.into(),
+            adapter_name: provider(kind).unwrap().adapter_name.into(),
             adapter_version: "1.2.3".into(),
             node_version: NODE_VERSION.into(),
             node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
@@ -2258,7 +2339,7 @@ mod tests {
                 .unwrap()
                 .starts_with("lens-"));
             let json = package_json(&root).unwrap();
-            let version = json["dependencies"][provider(kind).adapter_name]
+            let version = json["dependencies"][provider(kind).unwrap().adapter_name]
                 .as_str()
                 .unwrap();
             verify_runtime_paths(&node, &root, kind, version)
@@ -2268,9 +2349,9 @@ mod tests {
             let node_path = node_install_root(&migration);
             fs::create_dir_all(node_path.parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(&node, &node_path).unwrap();
-            let legacy = provider_root(&migration, kind).join(version);
+            let legacy = provider_root(&migration, kind).unwrap().join(version);
             copy_fixture(&root, &legacy);
-            let policy = provider(kind);
+            let policy = provider(kind).unwrap();
             let record = InstallRecord {
                 schema_version: 5,
                 registry_id: policy.registry_id.into(),
@@ -2403,7 +2484,8 @@ mod tests {
         );
         for version in ["1.12.0", "^1.10.0", "latest", "npm:other@1.10.0"] {
             let mut value: serde_json::Value = serde_json::from_slice(&selected).unwrap();
-            value["dependencies"][provider(AgentKind::Codex).adapter_name] = version.into();
+            value["dependencies"][provider(AgentKind::Codex).unwrap().adapter_name] =
+                version.into();
             assert!(resolved_candidate_manifest(
                 &serde_json::to_vec(&value).unwrap(),
                 AgentKind::Codex,
@@ -2595,5 +2677,11 @@ mod tests {
                 assert_eq!(read_selector(&root, kind).unwrap().current, Some(id));
             }
         }
+    }
+    #[test]
+    fn external_has_no_managed_distribution_or_installation_root() {
+        assert!(provider(AgentKind::External(Uuid::nil())).is_err());
+        assert!(provider_root(Path::new("/unused"), AgentKind::External(Uuid::nil())).is_err());
+        assert!(manifest(AgentKind::External(Uuid::nil()), "1.51.0").is_err());
     }
 }

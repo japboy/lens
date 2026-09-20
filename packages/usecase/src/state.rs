@@ -14,6 +14,7 @@ pub struct AgentRunKey {
 pub struct AgentSessionIdentity {
     pub operation_id: Uuid,
     pub context_id: Uuid,
+    pub effective_working_directory: std::path::PathBuf,
     pub config: AppConfig,
 }
 
@@ -21,6 +22,7 @@ impl AgentSessionIdentity {
     pub fn admits_reuse(&self, requested: &Self, mailbox_closed: bool) -> bool {
         self.operation_id == requested.operation_id
             && self.context_id == requested.context_id
+            && self.effective_working_directory == requested.effective_working_directory
             && self.config.same_execution_config(&requested.config)
             && !mailbox_closed
     }
@@ -406,16 +408,18 @@ mod tests {
         let identity = AgentSessionIdentity {
             operation_id: Uuid::from_u128(1),
             context_id: Uuid::from_u128(2),
+            effective_working_directory: "/fixture".into(),
             config: AppConfig::new("/fixture".into()),
         };
         assert!(identity.admits_reuse(&identity, false));
         assert!(!identity.admits_reuse(&identity, true));
-        for axis in 0..3 {
+        for axis in 0..4 {
             let mut changed = identity.clone();
             match axis {
                 0 => changed.operation_id = Uuid::from_u128(3),
                 1 => changed.context_id = Uuid::from_u128(3),
                 2 => changed.config.working_directory = "/changed".into(),
+                3 => changed.effective_working_directory = "/other-effective".into(),
                 _ => unreachable!(),
             }
             assert!(!identity.admits_reuse(&changed, false));
