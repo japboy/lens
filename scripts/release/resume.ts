@@ -1,6 +1,5 @@
 import type { GitHub, Request } from "./github.ts";
 import { BUNDLE_NAME } from "./recovery-bundle.ts";
-import { verifyReviewedCheckpoint } from "./checkpoint.ts";
 import { pages } from "./github.ts";
 import { releaseByTag } from "./admission.ts";
 import type { AdmittedRelease } from "./admission.ts";
@@ -194,7 +193,6 @@ export type ResumeState =
   | { state: "build" }
   | { state: "reuse"; artifactId: string; runId: string }
   | { state: "durable" }
-  | { state: "checkpoint" }
   | { state: "published"; receipt: ReleaseReceipt }
   | { state: "legacy-published" };
 
@@ -216,7 +214,6 @@ export async function resumeRelease(
   const bundles = assets.filter((asset) => asset.name === BUNDLE_NAME);
   if (bundles.length > 1) throw new Error("Duplicate recovery bundle");
   if (bundles.length === 1) return { state: "durable" };
-  if (await verifyReviewedCheckpoint(api, admitted, repository)) return { state: "checkpoint" };
   const artifacts = (await artifactList(api.request, admitted.tag)).filter(
     (item) => item.name === `release-${admitted.tag}` && !item.expired,
   );

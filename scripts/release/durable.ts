@@ -28,7 +28,6 @@ import {
   MAX_BUNDLE_BYTES,
 } from "./recovery-bundle.ts";
 import { verifyBundleAttestation } from "./attestation.ts";
-import { verifyReviewedCheckpoint } from "./checkpoint.ts";
 import { sha256 } from "./artifact.ts";
 
 export type DurablePolicy = ProvenancePolicy & {
@@ -181,34 +180,6 @@ export async function publishDurableRelease(
     throw new Error("Repository release immutability must be verified before publication");
   await readmit(admitted, policy);
   await api.request(`/releases/${release.id}`, "PATCH", { draft: false, make_latest: "true" });
-  await verifyPublishedRelease(api, admitted, policy.repository);
-  return "published";
-}
-export async function publishReviewedCheckpoint(
-  api: GitHub,
-  admitted: AdmittedRelease,
-  policy: DurablePolicy,
-  enabled: boolean,
-  immutable: boolean,
-): Promise<"draft" | "published" | "already-published"> {
-  await readmit(admitted, policy);
-  if (!(await verifyReviewedCheckpoint(api, admitted, policy.repository)))
-    throw new Error("No reviewed recovery checkpoint");
-  const release = await releaseByTag(api.request, admitted.tag);
-  if (!release.draft) {
-    await verifyPublishedRelease(api, admitted, policy.repository);
-    return "already-published";
-  }
-  if (!enabled) return "draft";
-  if (!immutable)
-    throw new Error("Repository release immutability must be verified before publication");
-  await readmit(admitted, policy);
-  if (!(await verifyReviewedCheckpoint(api, admitted, policy.repository)))
-    throw new Error("Checkpoint disappeared");
-  await api.request(`/releases/${admitted.releaseId}`, "PATCH", {
-    draft: false,
-    make_latest: "true",
-  });
   await verifyPublishedRelease(api, admitted, policy.repository);
   return "published";
 }
