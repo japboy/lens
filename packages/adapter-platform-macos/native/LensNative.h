@@ -14,7 +14,7 @@ typedef void (*LensWindowTransitionCallback)(bool completed, void *context);
 typedef void (*LensWindowObservationCallback)(const char *json, void *context);
 
 /* Main-thread borrowed NSStatusItem. Validates all titles/count before setting any tooltip. */
-bool lens_set_menu_tooltips(void *statusItemPointer, size_t submenuIndex,
+bool lens_set_menu_presentation(void *statusItemPointer, size_t submenuIndex,
                             const char *submenuTitle, const char *itemsJSON);
 
 bool lens_accessibility_is_trusted(void);

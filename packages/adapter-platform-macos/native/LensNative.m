@@ -25,8 +25,57 @@ static void LensPerformOnMainThread(dispatch_block_t block) {
     dispatch_async(dispatch_get_main_queue(), block);
 }
 
-bool lens_set_menu_tooltips(void *statusItemPointer, size_t submenuIndex,
-                            const char *submenuTitle, const char *itemsJSON) {
+// Validate and decode the complete tree before mutating any attached menu item.
+static NSArray *LensPrepareMenuPresentation(NSMenu *menu, id values, NSUInteger depth,
+                                           NSUInteger *count, NSMutableDictionary *images) {
+    if (depth > 1 || ![values isKindOfClass:NSArray.class] ||
+        [values count] != (NSUInteger)menu.numberOfItems || *count + [values count] > 128) return nil;
+    *count += [values count];
+    NSMutableArray *prepared = [NSMutableArray arrayWithCapacity:[values count]];
+    for (NSUInteger index = 0; index < [values count]; index++) {
+        id value = values[index];
+        if (![value isKindOfClass:NSDictionary.class]) return nil;
+        NSMenuItem *item = [menu itemAtIndex:(NSInteger)index];
+        id title = value[@"title"], tooltip = value[@"tooltip"];
+        id png = value[@"icon"], children = value[@"children"];
+        if (![title isKindOfClass:NSString.class] || ![item.title isEqualToString:title] ||
+            (tooltip != NSNull.null && ![tooltip isKindOfClass:NSString.class])) return nil;
+        NSImage *image = nil;
+        if (png != NSNull.null) {
+            if (![png isKindOfClass:NSString.class] || [png length] > 87384) return nil;
+            image = images[png];
+            if (!image) {
+                NSData *data = [[NSData alloc] initWithBase64EncodedString:png options:0];
+                image = data ? [[NSImage alloc] initWithData:data] : nil;
+                if (!image || image.size.width <= 0 || image.size.height <= 0) return nil;
+                image.size = NSMakeSize(18.0 * image.size.width / image.size.height, 18.0);
+                image.template = YES;
+                images[png] = image;
+            }
+        }
+        id preparedChildren = NSNull.null;
+        if (children != NSNull.null) {
+            if (!item.submenu) return nil;
+            preparedChildren = LensPrepareMenuPresentation(item.submenu, children, depth + 1, count, images);
+            if (!preparedChildren) return nil;
+        } else if (item.submenu) return nil;
+        [prepared addObject:@{@"tooltip": tooltip, @"image": (id)image ?: NSNull.null, @"children": preparedChildren}];
+    }
+    return prepared;
+}
+
+static void LensApplyMenuPresentation(NSMenu *menu, NSArray *values) {
+    for (NSUInteger index = 0; index < values.count; index++) {
+        NSMenuItem *item = [menu itemAtIndex:(NSInteger)index];
+        NSDictionary *value = values[index];
+        item.toolTip = value[@"tooltip"] == NSNull.null ? nil : value[@"tooltip"];
+        item.image = value[@"image"] == NSNull.null ? nil : value[@"image"];
+        if (value[@"children"] != NSNull.null) LensApplyMenuPresentation(item.submenu, value[@"children"]);
+    }
+}
+
+bool lens_set_menu_presentation(void *statusItemPointer, size_t submenuIndex,
+                               const char *submenuTitle, const char *itemsJSON) {
     if (![NSThread isMainThread] || !statusItemPointer || !submenuTitle || !itemsJSON) return false;
     NSStatusItem *statusItem = (__bridge NSStatusItem *)statusItemPointer;
     NSMenu *root = statusItem.menu;
@@ -37,22 +86,10 @@ bool lens_set_menu_tooltips(void *statusItemPointer, size_t submenuIndex,
     NSData *data = [[NSString stringWithUTF8String:itemsJSON] dataUsingEncoding:NSUTF8StringEncoding];
     if (!data) return false;
     id values = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    NSMenu *menu = parent.submenu;
-    if (![values isKindOfClass:NSArray.class] || [values count] != (NSUInteger)menu.numberOfItems) return false;
-    // Check the whole attached menu before any mutation; duplicate titles retain ordinal identity.
-    for (NSUInteger index = 0; index < [values count]; index++) {
-        id value = values[index];
-        if (![value isKindOfClass:NSDictionary.class]) return false;
-        id title = value[@"title"];
-        id tooltip = value[@"tooltip"];
-        if (![title isKindOfClass:NSString.class] ||
-            ![[menu itemAtIndex:(NSInteger)index].title isEqualToString:title] ||
-            (tooltip != NSNull.null && ![tooltip isKindOfClass:NSString.class])) return false;
-    }
-    for (NSUInteger index = 0; index < [values count]; index++) {
-        id tooltip = values[index][@"tooltip"];
-        [menu itemAtIndex:(NSInteger)index].toolTip = tooltip == NSNull.null ? nil : tooltip;
-    }
+    NSUInteger count = 0;
+    NSArray *prepared = LensPrepareMenuPresentation(parent.submenu, values, 0, &count, [NSMutableDictionary dictionary]);
+    if (!prepared) return false;
+    LensApplyMenuPresentation(parent.submenu, prepared);
     return true;
 }
 

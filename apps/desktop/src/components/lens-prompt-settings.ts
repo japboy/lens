@@ -1,3 +1,5 @@
+import "./lens-select";
+import { LensSelect } from "./lens-select";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
@@ -125,13 +127,14 @@ export class LensPromptSettings extends LitElement {
             <summary>Advanced Prompt Settings</summary>
             <label class="prompt-request-mode" for="prompt-request-mode">
               <span>Request type</span>
-              <select
+              <lens-select
                 id="prompt-request-mode"
+                label="Request type"
                 .value=${this.requestMode}
+                .disabled=${this.disabled}
+                .options=${REQUEST_PROMPT_SECTIONS.map(({ key, title }) => ({ value: key, label: title }))}
                 @change=${this.changeRequestMode}
-              >
-                ${REQUEST_PROMPT_SECTIONS.map(({ key, title }) => html`<option value=${key}>${title}</option>`)}
-              </select>
+              ></lens-select>
             </label>
             ${this.renderEditor(template, this.requestMode, { ...promptSectionDescriptor(this.requestMode), title: "Request instructions" }, errors[this.requestMode], true)}
           </details>
@@ -346,7 +349,7 @@ export class LensPromptSettings extends LitElement {
         name: this.draftName,
       });
     else this.retainedDrafts.delete(this.editingId);
-    const id = (event.currentTarget as HTMLSelectElement).value;
+    const id = (event.currentTarget as LensSelect).value;
     this.loadPreset(id);
     const retained = this.retainedDrafts.get(id);
     if (retained) {
@@ -409,16 +412,28 @@ export class LensPromptSettings extends LitElement {
         </div>
         <label
           >Preset to edit
-          <select
+          <lens-select
             id="prompt-preset-list"
+            label="Preset to edit"
             .value=${this.editingId}
+            .disabled=${this.disabled}
+            .options=${[
+              ...(!preset && !this.retainedDrafts.has(this.editingId)
+                ? [{ value: this.editingId, label: "Deleted preset (unsaved draft)" }]
+                : []),
+              ...[...this.retainedDrafts.entries()]
+                .filter(([id]) => !collection.presets.some((item) => item.id === id))
+                .map(([id, retained]) => ({
+                  value: id,
+                  label: `${retained.name} · Deleted, unsaved draft`,
+                })),
+              ...collection.presets.map((item) => ({
+                value: item.id,
+                label: `${item.name}${item.id === collection.selected_id ? " · In use" : ""}`,
+              })),
+            ]}
             @change=${this.changePreset}
-            ?disabled=${this.disabled}
-          >
-            ${!preset && !this.retainedDrafts.has(this.editingId) ? html`<option value=${this.editingId} .selected=${true}>Deleted preset (unsaved draft)</option>` : nothing}
-            ${[...this.retainedDrafts.entries()].filter(([id]) => !collection.presets.some((item) => item.id === id)).map(([id, retained]) => html`<option value=${id} .selected=${id === this.editingId}>${retained.name} · Deleted, unsaved draft</option>`)}
-            ${collection.presets.map((item) => html`<option value=${item.id} .selected=${item.id === this.editingId}>${item.name}${item.id === collection.selected_id ? " · In use" : ""}</option>`)}
-          </select>
+          ></lens-select>
         </label>
         <label
           >Name
@@ -505,7 +520,7 @@ export class LensPromptSettings extends LitElement {
   }
 
   private changeRequestMode = (event: Event): void => {
-    this.requestMode = (event.currentTarget as HTMLSelectElement).value as AgentPromptPreviewMode;
+    this.requestMode = (event.currentTarget as LensSelect).value as AgentPromptPreviewMode;
     this.variableAnnouncement = "";
   };
 

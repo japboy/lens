@@ -31,12 +31,12 @@ pub trait WindowPresentation<R: tauri::Runtime>: Send + Sync {
         cancel_label: &str,
     ) -> Result<bool, PlatformError>;
     fn format_short_datetime(&self, unix_seconds: f64) -> Result<String, PlatformError>;
-    fn history_tooltips(
+    fn menu_presentation(
         &self,
         app: &tauri::AppHandle<R>,
         root: &tauri::menu::Menu<R>,
         history: &tauri::menu::Submenu<R>,
-        tooltips: Vec<String>,
+        rows: Vec<port_platform::MenuPresentationItem>,
     ) -> Result<(), PlatformError>;
     fn settings_background(
         &self,

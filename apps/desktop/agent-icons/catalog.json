@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "assets": {
+    "claude": "brands/claude.svg",
+    "openai": "brands/openai.svg",
+    "copilot": "brands/copilot.svg",
+    "robot": "solid/robot.svg"
+  },
+  "rules": [
+    {
+      "containsAny": ["claude", "anthropic"],
+      "icon": "claude"
+    },
+    {
+      "containsAny": ["codex", "openai"],
+      "icon": "openai"
+    },
+    {
+      "containsAny": ["copilot", "github"],
+      "icon": "copilot"
+    }
+  ],
+  "fallback": "robot"
+}

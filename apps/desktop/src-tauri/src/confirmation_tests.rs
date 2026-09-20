@@ -281,12 +281,12 @@ impl platform::WindowPresentation<MockRuntime> for Fixture {
         panic!("unexpected destructive-action confirmation")
     }
 
-    fn history_tooltips(
+    fn menu_presentation(
         &self,
         _app: &tauri::AppHandle<MockRuntime>,
         _root: &tauri::menu::Menu<MockRuntime>,
         _history: &tauri::menu::Submenu<MockRuntime>,
-        _tooltips: Vec<String>,
+        _rows: Vec<port_platform::MenuPresentationItem>,
     ) -> Result<(), platform::PlatformError> {
         Ok(())
     }

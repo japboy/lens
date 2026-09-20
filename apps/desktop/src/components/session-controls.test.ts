@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AgentSessionControlState } from "../types";
+import type { LensSelect } from "./lens-select";
 import type { LensSessionControls } from "./lens-session-controls";
 import type { LensAgentDefaults } from "./lens-agent-defaults";
 import type { OverlayIntent, AgentIntent } from "./events";
@@ -52,7 +53,17 @@ async function mount(controls: AgentSessionControlState) {
     : "diagnostics";
   document.body.append(element);
   await element.updateComplete;
+  await Promise.all(
+    [...element.querySelectorAll<LensSelect>("lens-select")].map((select) => select.updateComplete),
+  );
   return element;
+}
+function selectByLabel(element: HTMLElement, label: string): LensSelect {
+  const select = [...element.querySelectorAll<LensSelect>("lens-select")].find(
+    (item) => item.label === label,
+  );
+  expect(select).toBeTruthy();
+  return select!;
 }
 function click(element: HTMLElement, label: string) {
   const button = [...element.querySelectorAll("button")].find(
@@ -210,7 +221,9 @@ describe("session control boundary", () => {
     );
     const count = element.querySelector<HTMLInputElement>('input[name="count"]')!;
     count.value = "2";
-    element.querySelector<HTMLSelectElement>('select[name="enabled"]')!.value = "false";
+    const enabled = element.querySelector<LensSelect>('lens-select[name="enabled"]')!;
+    enabled.value = "false";
+    await enabled.updateComplete;
     element
       .querySelector("form")!
       .dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
@@ -222,6 +235,82 @@ describe("session control boundary", () => {
         response: { action: "submit", content: { count: 2, enabled: false } },
       },
     ]);
+  });
+  it("preserves required multiple choices, defaults and drafts across retries", async () => {
+    const controls = snapshot();
+    controls.interactions = [
+      {
+        id: "choices",
+        sequence: 1,
+        status: "pending",
+        details: {
+          kind: "form",
+          message: "Pick capabilities",
+          schema: {
+            type: "object",
+            required: ["capabilities", "confirm"],
+            properties: {
+              capabilities: {
+                type: "array",
+                title: "Capabilities",
+                items: { enum: ["read", "write"] },
+                default: ["read"],
+              },
+              confirm: { type: "boolean" },
+              optional: { type: "string", enum: ["extra"] },
+            },
+          },
+        },
+      },
+    ];
+    const element = await mount(controls);
+    const intents: OverlayIntent[] = [];
+    element.addEventListener("lens-overlay-intent", (event) =>
+      intents.push((event as CustomEvent<OverlayIntent>).detail),
+    );
+    const form = element.querySelector("form")!;
+    const submit = () =>
+      form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+    const capabilities = selectByLabel(element, "Capabilities (required)");
+    expect(capabilities.values).toEqual(["read"]);
+    expect(capabilities.formEntries()).toEqual([["capabilities", "read"]]);
+    expect(element.querySelector("select")).toBeNull();
+    submit();
+    expect(intents).toEqual([]);
+    const confirm = selectByLabel(element, "confirm (required)");
+    await confirm.updateComplete;
+    expect(confirm.shadowRoot!.querySelector('[aria-invalid="true"]')).not.toBeNull();
+    confirm.value = "false";
+    confirm.dispatchEvent(new Event("change"));
+    capabilities.values = ["read", "write"];
+    capabilities.dispatchEvent(new Event("change"));
+    await Promise.all([confirm.updateComplete, capabilities.updateComplete]);
+    element.controls = structuredClone(controls);
+    await element.updateComplete;
+    await Promise.all([confirm.updateComplete, capabilities.updateComplete]);
+    expect(capabilities.values).toEqual(["read", "write"]);
+    expect(confirm.value).toBe("false");
+    submit();
+    expect(intents).toEqual([
+      {
+        type: "respond-interaction",
+        instanceId: "instance",
+        interactionId: "choices",
+        response: {
+          action: "submit",
+          content: { capabilities: ["read", "write"], confirm: false },
+        },
+      },
+    ]);
+    element.submission = { instanceId: "instance", interactionId: "choices", stage: "sending" };
+    await element.updateComplete;
+    await capabilities.updateComplete;
+    expect(capabilities.disabled).toBe(true);
+    element.submission = { ...element.submission, stage: "failed", message: "Retry" };
+    await element.updateComplete;
+    await capabilities.updateComplete;
+    expect(capabilities.values).toEqual(["read", "write"]);
+    expect(capabilities.disabled).toBe(false);
   });
   it("displays the complete URL and emits consent only on activation", async () => {
     const controls = snapshot();
@@ -276,17 +365,12 @@ describe("shared Agent defaults", () => {
     element.addEventListener("lens-agent-intent", (event) =>
       intents.push((event as CustomEvent<AgentIntent>).detail),
     );
-    const model = element.querySelector<HTMLSelectElement>(
-      'select[aria-label="Agent Model default"]',
-    )!;
+    const model = selectByLabel(element, "Agent Model default");
     expect(model.value).toBe("");
     model.value = "first";
     model.dispatchEvent(new Event("change"));
     await element.updateComplete;
-    expect(
-      element.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort default"]')
-        ?.disabled,
-    ).toBe(true);
+    expect(selectByLabel(element, "Reasoning effort default")?.disabled).toBe(true);
     element.selection = {
       ...element.selection,
       config_options: [
@@ -305,23 +389,15 @@ describe("shared Agent defaults", () => {
       ],
     };
     await element.updateComplete;
-    const reasoning = element.querySelector<HTMLSelectElement>(
-      'select[aria-label="Reasoning effort default"]',
-    )!;
+    const reasoning = selectByLabel(element, "Reasoning effort default");
     expect(reasoning.disabled).toBe(false);
     reasoning.value = "high";
     reasoning.dispatchEvent(new Event("change"));
     await element.updateComplete;
-    const policy = element.querySelector<HTMLSelectElement>(
-      'select[aria-label="Read files or data policy"]',
-    )!;
+    const policy = selectByLabel(element, "Read files or data policy");
     expect(element.textContent).toContain("Permission request response policy");
     expect(element.textContent).toContain("Operations without a request follow the Agent");
-    expect(Array.from(policy.options).map((option) => option.value)).toEqual([
-      "ask",
-      "allow",
-      "deny",
-    ]);
+    expect(policy.options.map((option) => option.value)).toEqual(["ask", "allow", "deny"]);
     policy.value = "allow";
     policy.dispatchEvent(new Event("change"));
     await element.updateComplete;

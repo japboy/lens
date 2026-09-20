@@ -489,6 +489,9 @@ impl LensMediaStore {
 }
 
 pub struct AppState {
+    pub(crate) history_store: std::sync::OnceLock<Arc<crate::session_history_store::HistoryStore>>,
+    pub(crate) history_storage_error: std::sync::OnceLock<String>,
+    pub(crate) history_writer: std::sync::OnceLock<crate::history_writer::HistoryWriter>,
     pub(crate) session_view: crate::session_view::SessionViewStore,
     pub platform: crate::platform::Services,
     pub session_controls: Mutex<Option<Arc<crate::session_controls::SessionControls>>>,
@@ -519,6 +522,9 @@ impl AppState {
     ) -> Self {
         Self {
             session_view: crate::session_view::SessionViewStore::default(),
+            history_store: std::sync::OnceLock::new(),
+            history_storage_error: std::sync::OnceLock::new(),
+            history_writer: std::sync::OnceLock::new(),
             platform,
             runtime: RwLock::new(AppSnapshot::new(config)),
             session_controls: Mutex::new(None),

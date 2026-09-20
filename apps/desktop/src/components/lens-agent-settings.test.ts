@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { LensSelect } from "./lens-select";
 import { afterEach, expect, it } from "vitest";
 import { LensAgentSettings } from "./lens-agent-settings";
 import type { AgentIntent } from "./events";
@@ -21,6 +22,7 @@ async function mount(stage: AgentSelectionState["stage"] = "selected") {
   );
   document.body.append(element);
   await element.updateComplete;
+  await element.querySelector<LensSelect>("lens-select")?.updateComplete;
   return { element, intents };
 }
 function button(element: LensAgentSettings, text: string) {
@@ -37,9 +39,13 @@ async function edit(element: LensAgentSettings, value: string) {
   await element.updateComplete;
 }
 async function choose(element: LensAgentSettings, value: string) {
-  const select = element.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!;
-  select.value = value;
-  select.dispatchEvent(new Event("change"));
+  const select = element.querySelector<LensSelect>("lens-select")!;
+  await select.updateComplete;
+  select.shadowRoot!.querySelector<HTMLButtonElement>("button")!.click();
+  await select.updateComplete;
+  const index = select.options.findIndex((option) => option.value === value);
+  select.shadowRoot!.querySelector<HTMLElement>(`[data-index="${index}"]`)!.click();
+  await select.updateComplete;
   await element.updateComplete;
 }
 function browse(element: LensAgentSettings, intents: AgentIntent[]) {
@@ -51,7 +57,7 @@ function browse(element: LensAgentSettings, intents: AgentIntent[]) {
 
 it("uses one Agent menu and keeps managed agents non-deletable", async () => {
   const { element } = await mount();
-  expect(element.querySelectorAll("select")).toHaveLength(1);
+  expect(element.querySelectorAll("lens-select")).toHaveLength(1);
   expect(element.querySelector('input[type="radio"]')).toBeNull();
   expect(command(element).value).toBe("goose acp");
   expect(button(element, "Delete preset")).toBeDefined();
@@ -65,9 +71,7 @@ it.each(["failed", "history_selected", "unselected"] as const)(
   "shows the external candidate at %s without claiming readiness",
   async (stage) => {
     const { element } = await mount(stage);
-    expect(element.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!.value).toBe(
-      "profile-1",
-    );
+    expect(element.querySelector<LensSelect>("lens-select")!.value).toBe("profile-1");
     expect(element.querySelector(".status-ok")).toBeNull();
     expect(command(element)).not.toBeNull();
   },
@@ -150,9 +154,11 @@ it("adds stable UUID drafts, separates duplicate names, and deletes by ID", asyn
   ];
   await element.updateComplete;
   expect(
-    [...element.querySelectorAll("option")].filter((option) =>
-      option.textContent?.includes("Goose"),
-    ),
+    [
+      ...element
+        .querySelector<LensSelect>("lens-select")!
+        .shadowRoot!.querySelectorAll('[role="option"]'),
+    ].filter((option) => option.textContent?.includes("Goose")),
   ).toHaveLength(2);
   button(element, "Delete preset").click();
   expect(intents.at(-1)).toEqual({ type: "delete-external-agent", id });
@@ -212,9 +218,9 @@ it("renders both first-run external presets with managed agents in the single se
   );
   document.body.append(element);
   await element.updateComplete;
-  expect(element.querySelectorAll("select")).toHaveLength(1);
-  const selector = element.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!;
-  expect([...selector.options].map((option) => option.textContent?.trim())).toEqual([
+  expect(element.querySelectorAll("lens-select")).toHaveLength(1);
+  const selector = element.querySelector<LensSelect>("lens-select")!;
+  expect(selector.options.map((option) => option.label)).toEqual([
     "Claude",
     "Codex",
     "GitHub Copilot",
@@ -242,8 +248,12 @@ it("resets saved edits and unsaved drafts only after acceptance and invalidates 
   element.acceptResetPresets(element.profiles, "claude");
   await element.updateComplete;
   expect(element.acceptExternalExecutable("/late/agent", revision)).toBe(false);
-  expect(element.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!.value).toBe("claude");
-  expect(element.querySelectorAll("option")).toHaveLength(3);
+  expect(element.querySelector<LensSelect>("lens-select")!.value).toBe("claude");
+  expect(
+    element
+      .querySelector<LensSelect>("lens-select")!
+      .shadowRoot!.querySelectorAll('[role="option"]'),
+  ).toHaveLength(3);
   expect(intents).toHaveLength(count);
   await choose(element, "profile-1");
   expect(command(element).value).toBe("goose acp");
@@ -268,7 +278,7 @@ it("returns to the authoritative external choice after discarding a new draft wi
   await edit(element, "another-agent");
   button(element, "Discard draft").click();
   await element.updateComplete;
-  expect(element.querySelector<HTMLSelectElement>('[aria-label="Agent"]')!.value).toBe("profile-1");
+  expect(element.querySelector<LensSelect>("lens-select")!.value).toBe("profile-1");
   expect(command(element).value).toBe("goose acp --saved-profile-draft");
   expect(intents).toEqual([]);
 });

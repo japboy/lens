@@ -1,3 +1,5 @@
+import "./lens-select";
+import type { LensSelect } from "./lens-select";
 import { keyed } from "lit/directives/keyed.js";
 import type { InteractionSubmission } from "../application/view-models";
 import { LitElement, html, nothing } from "lit";
@@ -15,6 +17,8 @@ export class LensSessionControls extends LitElement {
   @property({ attribute: false }) controls: AgentSessionControlState | undefined;
   @property() presentation: "diagnostics" | "interaction" = "diagnostics";
   @property({ attribute: false }) submission: InteractionSubmission | undefined;
+  private formIdentity = "";
+  private readonly selectionDrafts = new Map<string, string[]>();
   protected createRenderRoot() {
     return this;
   }
@@ -56,7 +60,7 @@ export class LensSessionControls extends LitElement {
         <fieldset ?disabled=${busy}>
           ${
             details.kind === "form"
-              ? this.form(interaction.id, details.message, details.schema)
+              ? this.form(interaction.id, details.message, details.schema, busy)
               : html` <div class="interaction-body">
                     <h3>${details.kind === "url" ? "Open the requested URL?" : details.title}</h3>
                     ${
@@ -108,13 +112,18 @@ export class LensSessionControls extends LitElement {
       </section>`,
     );
   }
-  private form(id: string, message: string, schema: ElicitationSchema) {
+  private form(id: string, message: string, schema: ElicitationSchema, busy: boolean) {
+    const identity = `${this.controls?.instance_id}:${id}`;
+    if (identity !== this.formIdentity) {
+      this.formIdentity = identity;
+      this.selectionDrafts.clear();
+    }
     return html`<form @submit=${(event: SubmitEvent) => this.submitForm(event, id, schema)}>
       <div class="interaction-body">
         <h3>${schema.title ?? "Agent input requested"}</h3>
         <p>${message}</p>
         <p>${schema.description ?? ""}</p>
-        ${Object.entries(schema.properties).map(([name, field]) => html`<label class="session-form-field"><span>${field.title ?? name}${schema.required?.includes(name) ? " (required)" : ""}</span>${this.formField(name, field, schema.required?.includes(name) ?? false)}<span class="help">${field.description ?? ""}</span></label>`)}
+        ${Object.entries(schema.properties).map(([name, field]) => html`<label class="session-form-field"><span>${field.title ?? name}${schema.required?.includes(name) ? " (required)" : ""}</span>${this.formField(name, field, schema.required?.includes(name) ?? false, busy)}<span class="help">${field.description ?? ""}</span></label>`)}
       </div>
       <div class="interaction-actions">
         <button type="button" @click=${() => this.respond(id, { action: "decline" })}>
@@ -124,20 +133,47 @@ export class LensSessionControls extends LitElement {
       </div>
     </form>`;
   }
-  private formField(name: string, field: ElicitationField, required: boolean) {
+  private formField(name: string, field: ElicitationField, required: boolean, busy: boolean) {
     const values = field.type === "array" ? field.items : field;
-    const choices = values?.oneOf ?? values?.enum?.map((value) => ({ const: value, title: value }));
-    if (choices)
-      return html`<select name=${name} ?multiple=${field.type === "array"} ?required=${required}>
-        <option value="">Choose…</option>
-        ${choices.map((c) => html`<option value=${c.const}>${c.title}</option>`)}
-      </select>`;
-    if (field.type === "boolean")
-      return html`<select name=${name} ?required=${required}>
-        <option value="">Choose…</option>
-        <option value="true">Yes</option>
-        <option value="false">No</option>
-      </select>`;
+    const choices =
+      field.type === "boolean"
+        ? [
+            { const: "true", title: "Yes" },
+            { const: "false", title: "No" },
+          ]
+        : (values?.oneOf ?? values?.enum?.map((value) => ({ const: value, title: value })));
+    if (choices) {
+      const multiple = field.type === "array";
+      if (!this.selectionDrafts.has(name)) {
+        const defaults = Array.isArray(field.default)
+          ? field.default
+          : field.default === undefined
+            ? []
+            : [String(field.default)];
+        this.selectionDrafts.set(
+          name,
+          defaults.filter((value) => choices.some((choice) => choice.const === value)),
+        );
+      }
+      const draft = this.selectionDrafts.get(name)!;
+      return html`<lens-select
+        name=${name}
+        .label=${`${field.title ?? name}${required ? " (required)" : ""}`}
+        .multiple=${multiple}
+        .required=${required}
+        .disabled=${busy}
+        .value=${draft[0] ?? ""}
+        .values=${draft}
+        .options=${[
+          ...(multiple ? [] : [{ value: "", label: "Choose…" }]),
+          ...choices.map((choice) => ({ value: choice.const, label: choice.title })),
+        ]}
+        @change=${(event: Event) => {
+          const select = event.currentTarget as LensSelect;
+          this.selectionDrafts.set(name, multiple ? [...select.values] : [select.value]);
+        }}
+      ></lens-select>`;
+    }
     if (field.type === "number" || field.type === "integer")
       return html`<input
         name=${name}
@@ -160,7 +196,13 @@ export class LensSessionControls extends LitElement {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
     if (!form.reportValidity()) return;
+    for (const select of form.querySelectorAll<LensSelect>("lens-select")) {
+      if (!select.reportValidity()) return;
+    }
     const values = new FormData(form);
+    for (const select of form.querySelectorAll<LensSelect>("lens-select")) {
+      for (const [name, value] of select.formEntries()) values.append(name, value);
+    }
     const content: Record<string, string | number | boolean | string[]> = {};
     for (const [name, field] of Object.entries(schema.properties)) {
       const value = values.get(name);

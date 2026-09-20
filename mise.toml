@@ -21,7 +21,10 @@ run = "hk check --all"
 [tasks."check:icons"]
 description = "Verify generated app resources"
 dir = "{{config_root}}"
-run = "node mise-tasks/generate/icons.ts --check"
+run = [
+  "node mise-tasks/generate/icons.ts --check",
+  "node mise-tasks/generate/agent-icons.ts --check",
+]
 
 [tasks."check:types"]
 description = "Check repository and desktop TypeScript"

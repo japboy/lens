@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Claude",
+    "icon": "claude"
+  },
+  {
+    "name": "My CLAUDE Agent",
+    "icon": "claude"
+  },
+  {
+    "name": "Codex",
+    "icon": "openai"
+  },
+  {
+    "name": "OpenAI local",
+    "icon": "openai"
+  },
+  {
+    "name": "GitHub Copilot",
+    "icon": "copilot"
+  },
+  {
+    "name": "Goose",
+    "icon": "robot"
+  },
+  {
+    "name": "",
+    "icon": "robot"
+  },
+  {
+    "name": "copilot Claude codex",
+    "icon": "claude"
+  },
+  {
+    "name": "Copilot OPENAI",
+    "icon": "openai"
+  },
+  {
+    "name": "ＣＬＡＵＤＥ",
+    "icon": "robot"
+  },
+  {
+    "name": "CLaUdE",
+    "icon": "claude"
+  },
+  {
+    "name": "cLaUKde",
+    "icon": "robot"
+  },
+  {
+    "name": "anthropic",
+    "icon": "claude"
+  },
+  {
+    "name": "My AnThRoPiC Agent",
+    "icon": "claude"
+  },
+  {
+    "name": "github",
+    "icon": "copilot"
+  },
+  {
+    "name": "My GiTHuB Agent",
+    "icon": "copilot"
+  },
+  {
+    "name": "github anthropic",
+    "icon": "claude"
+  },
+  {
+    "name": "GitHub OpenAI",
+    "icon": "openai"
+  }
+]

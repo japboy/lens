@@ -14,6 +14,16 @@ pub type PlatformFuture<'a, T> =
 
 use thiserror::Error;
 
+/// Owned menu appearance, independent of application identities and native objects.
+/// Children describe a submenu; None describes an ordinary item or separator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuPresentationItem {
+    pub title: String,
+    pub tooltip: Option<String>,
+    pub template_icon_png: Option<Vec<u8>>,
+    pub children: Option<Vec<MenuPresentationItem>>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ImageCaptureLimits {
     pub max_long_edge: u32,

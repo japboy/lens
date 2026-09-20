@@ -58,6 +58,7 @@ export const MEMBERS: readonly Member[] = [
         "flate2",
         "libc",
         "reqwest",
+        "rusqlite",
         "serde",
         "serde_json",
         "serde_json_canonicalizer",

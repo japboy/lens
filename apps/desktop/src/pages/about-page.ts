@@ -13,7 +13,7 @@ export class AboutPage extends ReactiveElement {
     this,
     () => this.view,
     () => {
-      this.view.adoptNativeSelection();
+      this.view.adoptDocumentSelection();
       if (this.documents.stage !== "ready") void this.loadDocuments(this.generation);
     },
     [
