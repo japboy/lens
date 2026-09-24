@@ -199,6 +199,111 @@ export class LensAgentSettings extends LitElement {
             }}
           ></lens-select>
         </div>
+        ${
+          !this.editingId
+            ? html`<div class="agent-actions managed-agent-actions">
+                  <button ?disabled=${controlsDisabled} @click=${() => this.requestManagedUpdate()}>
+                    Install or update
+                  </button>
+                </div>
+                <p class="help">
+                  Check the ACP Registry and install or update ${agentLabel(this.managedSelection)}.
+                  Existing sessions keep their current version.
+                </p>`
+            : nothing
+        }
+      </fieldset>
+      <p class="help">The ACP agent, not Lens, manages authentication credentials.</p>
+      ${
+        displayedRuntime || this.updatePending
+          ? html`<div class="runtime-status" aria-live="polite">
+              <output
+                class=${displayedRuntime?.stage === "failed" && !this.updatePending ? "status-warning" : "runtime-message"}
+              >
+                ${
+                  this.updatePending &&
+                  (!displayedRuntime || !isAgentRuntimeActive(displayedRuntime.stage))
+                    ? `Checking ${agentLabel(this.updateAgent ?? this.managedSelection)} for updates…`
+                    : (displayedRuntime?.error ??
+                      displayedRuntime?.message ??
+                      (displayedRuntime ? AGENT_RUNTIME_LABEL[displayedRuntime.stage] : nothing))
+                }
+              </output>
+              ${
+                displayedRuntime?.stage === "downloading"
+                  ? total === undefined
+                    ? html`<progress aria-label="Agent runtime download progress"></progress>`
+                    : html`<progress
+                        aria-label="Agent runtime download progress"
+                        .value=${displayedRuntime.downloaded_bytes}
+                        max=${total}
+                      ></progress>`
+                  : nothing
+              }
+            </div>`
+          : nothing
+      }
+      <output
+        class="selection-status ${this.selection.stage === "selected" ? "status-ok" : "status-warning"}"
+      >
+        ${this.selection.error ?? this.selection.message ?? AGENT_SELECTION_LABEL[this.selection.stage]}
+      </output>
+      ${
+        this.selection.stage === "authentication_required" && !externalSelected
+          ? html`<div class="agent-actions" aria-label="Agent authentication">
+              ${
+                methods.length
+                  ? methods.map(
+                      (method) => html`
+                        <button
+                          ?disabled=${this.disabled}
+                          @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
+                        >
+                          Authenticate with ${method.name}…
+                        </button>
+                      `,
+                    )
+                  : html`<p>Authenticate with this Agent's existing CLI, then select it again.</p>`
+              }
+            </div>`
+          : nothing
+      }
+      ${
+        !this.editingId &&
+        ["unselected", "failed", "authentication_required", "history_selected"].includes(
+          this.selection.stage,
+        )
+          ? html`<div class="agent-actions">
+              <button
+                ?disabled=${controlsDisabled}
+                @click=${() => this.emit({ type: "select", agent: this.managedSelection })}
+              >
+                Verify connection
+              </button>
+            </div>`
+          : nothing
+      }
+      ${
+        selected && this.selection.supports_logout
+          ? html`<div class="agent-actions" aria-label="${selectedLabel} authentication management">
+              <button
+                ?disabled=${this.disabled}
+                @click=${() => this.emit({ type: "reauthenticate" })}
+              >
+                Reauthenticate…
+              </button>
+              <button ?disabled=${this.disabled} @click=${() => this.emit({ type: "sign-out" })}>
+                Sign Out…
+              </button>
+            </div>`
+          : nothing
+      }
+      <fieldset class="agent-preset-settings" ?disabled=${controlsDisabled}>
+        <legend>Agent Presets</legend>
+        <p class="help">
+          Add and manage connections to external ACP Agents. Install and update their CLIs
+          separately.
+        </p>
         <div class="agent-actions">
           <button
             ?disabled=${Object.keys(this.drafts).length >= 16}
@@ -285,115 +390,16 @@ export class LensAgentSettings extends LitElement {
             : nothing
         }
         <p class="help">
-          Install, update and configure external agents with their own CLI. Editing and browsing do
-          not start a process. Save and Verify saves the connection and starts its ACP executable to
-          verify it.
+          Editing and browsing do not start a process. Save and Verify saves the connection and
+          starts its ACP executable to verify it.
         </p>
       </fieldset>
-      <div class="agent-actions" aria-label="Managed Agent updates">
-        <button ?disabled=${controlsDisabled} @click=${() => this.requestManagedUpdate("claude")}>
-          Install or Update Claude
-        </button>
-        <button ?disabled=${controlsDisabled} @click=${() => this.requestManagedUpdate("codex")}>
-          Install or Update Codex
-        </button>
-      </div>
-      <p class="help">
-        Check the ACP Registry and install or update a managed Agent without changing the selected
-        Agent. Existing sessions keep their current version.
-      </p>
-      <p class="help">The ACP agent, not Lens, manages authentication credentials.</p>
-      ${
-        displayedRuntime || this.updatePending
-          ? html`<div class="runtime-status" aria-live="polite">
-              <output
-                class=${displayedRuntime?.stage === "failed" && !this.updatePending ? "status-warning" : "runtime-message"}
-              >
-                ${
-                  this.updatePending &&
-                  (!displayedRuntime || !isAgentRuntimeActive(displayedRuntime.stage))
-                    ? `Checking ${agentLabel(this.updateAgent ?? this.managedSelection)} for updates…`
-                    : (displayedRuntime?.error ??
-                      displayedRuntime?.message ??
-                      (displayedRuntime ? AGENT_RUNTIME_LABEL[displayedRuntime.stage] : nothing))
-                }
-              </output>
-              ${
-                displayedRuntime?.stage === "downloading"
-                  ? total === undefined
-                    ? html`<progress aria-label="Agent runtime download progress"></progress>`
-                    : html`<progress
-                        aria-label="Agent runtime download progress"
-                        .value=${displayedRuntime.downloaded_bytes}
-                        max=${total}
-                      ></progress>`
-                  : nothing
-              }
-            </div>`
-          : nothing
-      }
-      <output class=${this.selection.stage === "selected" ? "status-ok" : "status-warning"}>
-        ${
-          this.selection.error ??
-          this.selection.message ??
-          AGENT_SELECTION_LABEL[this.selection.stage]
-        }
-      </output>
-      ${
-        this.selection.stage === "authentication_required" && !externalSelected
-          ? html`<div class="agent-actions" aria-label="Agent authentication">
-              ${
-                methods.length
-                  ? methods.map(
-                      (method) => html`
-                        <button
-                          ?disabled=${this.disabled}
-                          @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
-                        >
-                          Authenticate with ${method.name}…
-                        </button>
-                      `,
-                    )
-                  : html`<p>Authenticate with this Agent's existing CLI, then select it again.</p>`
-              }
-            </div>`
-          : nothing
-      }
-      ${
-        !this.editingId &&
-        ["unselected", "failed", "authentication_required", "history_selected"].includes(
-          this.selection.stage,
-        )
-          ? html`<div class="agent-actions">
-              <button
-                ?disabled=${controlsDisabled}
-                @click=${() => this.emit({ type: "select", agent: this.managedSelection })}
-              >
-                Verify connection
-              </button>
-            </div>`
-          : nothing
-      }
-      ${
-        selected && this.selection.supports_logout
-          ? html`<div class="agent-actions" aria-label="${selectedLabel} authentication management">
-              <button
-                ?disabled=${this.disabled}
-                @click=${() => this.emit({ type: "reauthenticate" })}
-              >
-                Reauthenticate…
-              </button>
-              <button ?disabled=${this.disabled} @click=${() => this.emit({ type: "sign-out" })}>
-                Sign Out…
-              </button>
-            </div>`
-          : nothing
-      }
     `;
   }
 
-  private requestManagedUpdate(agent: ManagedAgentKind): void {
-    this.emit({ type: "update-managed-agent", agent });
+  private requestManagedUpdate(): void {
+    if (this.editingId) return;
+    this.emit({ type: "update-managed-agent", agent: this.managedSelection });
   }
 
   private editCommand(value: string): void {

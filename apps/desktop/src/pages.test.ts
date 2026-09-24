@@ -1014,7 +1014,7 @@ describe("Lens Settings", () => {
     }
   });
 
-  it("updates nonselected Codex without selecting it and keeps pending progress targeted", async () => {
+  it("updates the displayed Claude without changing its selection and keeps progress targeted", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const mockedInvoke = vi.mocked(invoke);
     const previousImplementation = mockedInvoke.getMockImplementation();
@@ -1042,30 +1042,31 @@ describe("Lens Settings", () => {
         expect(root.querySelector("lens-agent-settings")?.querySelector("button")).not.toBeNull(),
       );
       const editor = root.querySelector("lens-agent-settings")!;
-      const codexUpdate = [...editor.querySelectorAll("button")].find(
-        (item) => item.textContent?.trim() === "Install or Update Codex",
+      const managedUpdate = [...editor.querySelectorAll("button")].find(
+        (item) => item.textContent?.trim() === "Install or update",
       )!;
-      codexUpdate.click();
+      expect(editor.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+      managedUpdate.click();
       await vi.waitFor(() =>
-        expect(invoke).toHaveBeenCalledWith("update_managed_agent", { agent: "codex" }),
+        expect(invoke).toHaveBeenCalledWith("update_managed_agent", { agent: "claude" }),
       );
       expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
       expect(snapshot.agent_selection.candidate).toBe("claude");
       await vi.waitFor(() =>
         expect(editor.querySelector(".runtime-status")?.textContent).toContain(
-          "Checking Codex for updates…",
+          "Checking Claude for updates…",
         ),
       );
       finishUpdate({
-        agent: "codex",
+        agent: "claude",
         stage: "ready",
         downloaded_bytes: 0,
-        message: "Installed Codex.",
+        message: "Installed Claude.",
       });
       await vi.waitFor(() =>
         expect(
           root.querySelector(".settings-context-feedback[role='status']")?.textContent,
-        ).toContain("Installed Codex."),
+        ).toContain("Installed Claude."),
       );
       expect(snapshot.agent_selection.candidate).toBe("claude");
     } finally {

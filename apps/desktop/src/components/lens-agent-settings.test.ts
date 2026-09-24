@@ -67,7 +67,7 @@ it("uses one Agent menu and keeps managed agents non-deletable", async () => {
   await choose(element, "codex");
   expect(button(element, "Delete preset")).toBeUndefined();
 });
-it("keeps external ACP runtime status visible alongside separate managed update actions", async () => {
+it("keeps external ACP runtime status visible above preset management", async () => {
   const { element } = await mount();
   element.runtime = {
     agent: { external: "profile-1" },
@@ -76,23 +76,39 @@ it("keeps external ACP runtime status visible alongside separate managed update 
     message: "Checking user-owned executable…",
   };
   await element.updateComplete;
-  expect(button(element, "Install or Update Claude")).toBeDefined();
-  expect(button(element, "Install or Update Codex")).toBeDefined();
-  expect(element.querySelector(".runtime-status")?.textContent).toContain(
-    "Checking user-owned executable…",
+  expect(button(element, "Install or update")).toBeUndefined();
+  const presets = element.querySelector<HTMLElement>(".agent-preset-settings")!;
+  expect(presets.querySelector("legend")?.textContent).toBe("Agent Presets");
+  expect(presets.textContent).toContain("external ACP Agents");
+  expect(button(element, "Add preset").closest(".agent-preset-settings")).toBe(presets);
+  expect(button(element, "Reset Agent Presets…").closest(".agent-preset-settings")).toBe(presets);
+  const runtimeStatus = element.querySelector(".runtime-status")!;
+  expect(runtimeStatus.textContent).toContain("Checking user-owned executable…");
+  expect(runtimeStatus.compareDocumentPosition(presets) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+    Node.DOCUMENT_POSITION_FOLLOWING,
   );
 });
 
-it("updates nonselected Codex without switching active Claude and shows Codex progress", async () => {
+it("updates the managed Agent shown in the selector and preserves progress", async () => {
   const { element, intents } = await mount();
   element.selection = { ...element.selection!, candidate: "claude" };
   element.runtime = { agent: "claude", stage: "ready", downloaded_bytes: 0 };
   await element.updateComplete;
   expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
-  button(element, "Install or Update Codex").click();
-  expect(intents).toEqual([{ type: "update-managed-agent", agent: "codex" }]);
+  expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+  button(element, "Install or update").click();
+  expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "claude" });
   expect(element.selection.candidate).toBe("claude");
-  expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
+
+  await choose(element, "codex");
+  expect(intents.at(-1)).toEqual({ type: "select", agent: "codex" });
+  element.selection = { ...element.selection!, candidate: "codex" };
+  element.runtime = { agent: "codex", stage: "ready", downloaded_bytes: 0 };
+  await element.updateComplete;
+  expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("codex");
+  expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+  button(element, "Install or update").click();
+  expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "codex" });
   element.updatePending = true;
   element.updateAgent = "codex";
   await element.updateComplete;
@@ -107,8 +123,7 @@ it("updates nonselected Codex without switching active Claude and shows Codex pr
     message: "Downloading Codex…",
   };
   await element.updateComplete;
-  expect(button(element, "Install or Update Claude").disabled).toBe(true);
-  expect(button(element, "Install or Update Codex").disabled).toBe(true);
+  expect(button(element, "Install or update").disabled).toBe(true);
   expect(element.querySelector(".runtime-status")?.textContent).toContain("Downloading Codex…");
   expect(element.querySelector("progress")?.getAttribute("max")).toBe("10");
   element.updatePending = false;
@@ -119,14 +134,26 @@ it("updates nonselected Codex without switching active Claude and shows Codex pr
     message: "Installed Codex",
   };
   await element.updateComplete;
-  expect(element.querySelector(".runtime-status")).toBeNull();
-  expect(element.selection.candidate).toBe("claude");
+  expect(element.querySelector(".runtime-status")?.textContent).toContain("Installed Codex");
+  expect(element.selection.candidate).toBe("codex");
+});
+
+it("keeps Add preset available while Claude is displayed", async () => {
+  const { element } = await mount();
+  element.selection = { ...element.selection!, candidate: "claude" };
+  await element.updateComplete;
+  expect(button(element, "Install or update")).toBeDefined();
+  button(element, "Add preset").click();
+  await element.updateComplete;
+  expect(button(element, "Install or update")).toBeUndefined();
+  expect(command(element)).toBeDefined();
+  expect(button(element, "Reset Agent Presets…")).toBeDefined();
 });
 
 it("restores an in-flight Codex update from parent properties after remount", async () => {
   const { element } = await mount();
-  element.selection = { ...element.selection!, candidate: "claude" };
-  element.runtime = { agent: "claude", stage: "ready", downloaded_bytes: 0 };
+  element.selection = { ...element.selection!, candidate: "codex" };
+  element.runtime = { agent: "codex", stage: "ready", downloaded_bytes: 0 };
   element.updatePending = true;
   element.updateAgent = "codex";
   await element.updateComplete;

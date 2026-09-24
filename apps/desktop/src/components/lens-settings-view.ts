@@ -275,10 +275,35 @@ export class LensSettingsView extends LitElement {
         margin-top: 16px;
       }
 
-      .external-executable-settings .settings-field {
+      .external-executable-settings .settings-field,
+      .agent-preset-settings .settings-field {
         display: grid;
         gap: 6px;
         min-width: 0;
+      }
+
+      .agent-preset-settings {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+
+      .agent-preset-settings legend {
+        padding: 0;
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      .agent-preset-settings > .help {
+        margin: 0;
+      }
+
+      .agent-preset-settings > .agent-actions {
+        justify-content: flex-start;
+        margin-top: 0;
       }
 
       .external-executable-field {
