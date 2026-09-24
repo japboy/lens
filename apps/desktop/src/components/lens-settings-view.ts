@@ -893,6 +893,8 @@ export class LensSettingsView extends LitElement {
                 <lens-agent-settings
                   .selection=${model?.agentSelection}
                   .runtime=${model?.agentRuntime}
+                  .updatePending=${model?.updatePending ?? false}
+                  .updateAgent=${model?.updateAgent}
                   .profiles=${model?.config?.external_agents ?? []}
                   .disabled=${!this.active || !model || model.pending}
                 ></lens-agent-settings>
@@ -1082,6 +1084,8 @@ export class LensSettingsView extends LitElement {
           return { type: "save-agent-defaults", defaults: event.detail.defaults };
         case "select":
           return { type: "select-agent", agent: event.detail.agent };
+        case "update-managed-agent":
+          return event.detail;
         case "authenticate":
           return {
             type: "authenticate-agent-selection",

@@ -5,6 +5,7 @@ import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
   AgentKind,
+  ManagedAgentKind,
   ExternalAgentProfile,
   AgentRuntimeState,
   AgentSelectionState,
@@ -31,8 +32,14 @@ export class LensAgentSettings extends LitElement {
   @property({ type: Boolean })
   disabled = false;
 
+  @property({ type: Boolean })
+  updatePending = false;
+
+  @property({ attribute: false })
+  updateAgent: ManagedAgentKind | undefined;
+
   @property({ attribute: false }) profiles: ExternalAgentProfile[] = [];
-  @state() private managedSelection: "claude" | "codex" = "claude";
+  @state() private managedSelection: ManagedAgentKind = "claude";
   @state() private editingId: string | undefined;
   @state() private commandDrafts: Record<string, string> = {};
   @state() private drafts: Record<string, ExternalAgentProfile> = {};
@@ -150,7 +157,17 @@ export class LensAgentSettings extends LitElement {
     const externalSelected = typeof this.selection.candidate === "object";
     const draft = this.editingId ? this.drafts[this.editingId] : undefined;
     const saved = this.profiles.find((p) => p.id === this.editingId);
-    const total = this.runtime.total_bytes;
+    const runtimeForEditor = this.editingId
+      ? typeof this.runtime.agent === "object" && this.runtime.agent.external === this.editingId
+        ? this.runtime
+        : undefined
+      : this.runtime.agent === this.managedSelection
+        ? this.runtime
+        : undefined;
+    const updateRuntime =
+      this.updatePending && this.runtime.agent === this.updateAgent ? this.runtime : undefined;
+    const displayedRuntime = this.updatePending ? updateRuntime : runtimeForEditor;
+    const total = displayedRuntime?.total_bytes;
 
     return html`
       <fieldset class="external-executable-settings" ?disabled=${controlsDisabled}>
@@ -273,23 +290,48 @@ export class LensAgentSettings extends LitElement {
           verify it.
         </p>
       </fieldset>
-      <p class="help">The ACP agent, not Lens, manages authentication credentials.</p>
-      <div class="runtime-status" aria-live="polite">
-        <output class=${this.runtime.stage === "failed" ? "status-warning" : "runtime-message"}>
-          ${this.runtime.error ?? this.runtime.message ?? AGENT_RUNTIME_LABEL[this.runtime.stage]}
-        </output>
-        ${
-          this.runtime.stage === "downloading"
-            ? total === undefined
-              ? html`<progress aria-label="Agent runtime download progress"></progress>`
-              : html`<progress
-                  aria-label="Agent runtime download progress"
-                  .value=${this.runtime.downloaded_bytes}
-                  max=${total}
-                ></progress>`
-            : nothing
-        }
+      <div class="agent-actions" aria-label="Managed Agent updates">
+        <button ?disabled=${controlsDisabled} @click=${() => this.requestManagedUpdate("claude")}>
+          Install or Update Claude
+        </button>
+        <button ?disabled=${controlsDisabled} @click=${() => this.requestManagedUpdate("codex")}>
+          Install or Update Codex
+        </button>
       </div>
+      <p class="help">
+        Check the ACP Registry and install or update a managed Agent without changing the selected
+        Agent. Existing sessions keep their current version.
+      </p>
+      <p class="help">The ACP agent, not Lens, manages authentication credentials.</p>
+      ${
+        displayedRuntime || this.updatePending
+          ? html`<div class="runtime-status" aria-live="polite">
+              <output
+                class=${displayedRuntime?.stage === "failed" && !this.updatePending ? "status-warning" : "runtime-message"}
+              >
+                ${
+                  this.updatePending &&
+                  (!displayedRuntime || !isAgentRuntimeActive(displayedRuntime.stage))
+                    ? `Checking ${agentLabel(this.updateAgent ?? this.managedSelection)} for updates…`
+                    : (displayedRuntime?.error ??
+                      displayedRuntime?.message ??
+                      (displayedRuntime ? AGENT_RUNTIME_LABEL[displayedRuntime.stage] : nothing))
+                }
+              </output>
+              ${
+                displayedRuntime?.stage === "downloading"
+                  ? total === undefined
+                    ? html`<progress aria-label="Agent runtime download progress"></progress>`
+                    : html`<progress
+                        aria-label="Agent runtime download progress"
+                        .value=${displayedRuntime.downloaded_bytes}
+                        max=${total}
+                      ></progress>`
+                  : nothing
+              }
+            </div>`
+          : nothing
+      }
       <output class=${this.selection.stage === "selected" ? "status-ok" : "status-warning"}>
         ${
           this.selection.error ??
@@ -348,6 +390,10 @@ export class LensAgentSettings extends LitElement {
           : nothing
       }
     `;
+  }
+
+  private requestManagedUpdate(agent: ManagedAgentKind): void {
+    this.emit({ type: "update-managed-agent", agent });
   }
 
   private editCommand(value: string): void {

@@ -137,7 +137,10 @@ export class SettingsPage extends ReactiveElement {
       intent.type !== "open-screen-recording-settings"
     )
       return;
-    const identity: CommandIdentity = { scope: "settings", type: intent.type };
+    const identity: CommandIdentity =
+      intent.type === "update-managed-agent"
+        ? { scope: "settings", type: intent.type, agent: intent.agent }
+        : { scope: "settings", type: intent.type };
     switch (intent.type) {
       case "choose-external-executable": {
         const editor =
@@ -230,6 +233,12 @@ export class SettingsPage extends ReactiveElement {
       }
       case "select-agent":
         await this.commands.run(identity, () => this.port.setAgent(intent.agent));
+        return;
+      case "update-managed-agent":
+        await this.commands.run(identity, async () => {
+          const runtime = await this.port.updateManagedAgent(intent.agent);
+          return runtime.message ?? `${agentLabel(intent.agent)} is up to date.`;
+        });
         return;
       case "authenticate-agent-selection":
         await this.commands.run(identity, () =>

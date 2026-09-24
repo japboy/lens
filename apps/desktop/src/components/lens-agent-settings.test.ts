@@ -67,6 +67,83 @@ it("uses one Agent menu and keeps managed agents non-deletable", async () => {
   await choose(element, "codex");
   expect(button(element, "Delete preset")).toBeUndefined();
 });
+it("keeps external ACP runtime status visible alongside separate managed update actions", async () => {
+  const { element } = await mount();
+  element.runtime = {
+    agent: { external: "profile-1" },
+    stage: "verifying",
+    downloaded_bytes: 0,
+    message: "Checking user-owned executable…",
+  };
+  await element.updateComplete;
+  expect(button(element, "Install or Update Claude")).toBeDefined();
+  expect(button(element, "Install or Update Codex")).toBeDefined();
+  expect(element.querySelector(".runtime-status")?.textContent).toContain(
+    "Checking user-owned executable…",
+  );
+});
+
+it("updates nonselected Codex without switching active Claude and shows Codex progress", async () => {
+  const { element, intents } = await mount();
+  element.selection = { ...element.selection!, candidate: "claude" };
+  element.runtime = { agent: "claude", stage: "ready", downloaded_bytes: 0 };
+  await element.updateComplete;
+  expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
+  button(element, "Install or Update Codex").click();
+  expect(intents).toEqual([{ type: "update-managed-agent", agent: "codex" }]);
+  expect(element.selection.candidate).toBe("claude");
+  expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
+  element.updatePending = true;
+  element.updateAgent = "codex";
+  await element.updateComplete;
+  expect(element.querySelector(".runtime-status")?.textContent).toContain(
+    "Checking Codex for updates…",
+  );
+  element.runtime = {
+    agent: "codex",
+    stage: "downloading",
+    downloaded_bytes: 5,
+    total_bytes: 10,
+    message: "Downloading Codex…",
+  };
+  await element.updateComplete;
+  expect(button(element, "Install or Update Claude").disabled).toBe(true);
+  expect(button(element, "Install or Update Codex").disabled).toBe(true);
+  expect(element.querySelector(".runtime-status")?.textContent).toContain("Downloading Codex…");
+  expect(element.querySelector("progress")?.getAttribute("max")).toBe("10");
+  element.updatePending = false;
+  element.runtime = {
+    agent: "codex",
+    stage: "ready",
+    downloaded_bytes: 0,
+    message: "Installed Codex",
+  };
+  await element.updateComplete;
+  expect(element.querySelector(".runtime-status")).toBeNull();
+  expect(element.selection.candidate).toBe("claude");
+});
+
+it("restores an in-flight Codex update from parent properties after remount", async () => {
+  const { element } = await mount();
+  element.selection = { ...element.selection!, candidate: "claude" };
+  element.runtime = { agent: "claude", stage: "ready", downloaded_bytes: 0 };
+  element.updatePending = true;
+  element.updateAgent = "codex";
+  await element.updateComplete;
+  element.remove();
+  const replacement = new LensAgentSettings();
+  replacement.selection = element.selection;
+  replacement.runtime = element.runtime;
+  replacement.profiles = element.profiles;
+  replacement.updatePending = element.updatePending;
+  replacement.updateAgent = element.updateAgent;
+  document.body.append(replacement);
+  await replacement.updateComplete;
+  expect(replacement.querySelector(".runtime-status")?.textContent).toContain(
+    "Checking Codex for updates…",
+  );
+});
+
 it.each(["failed", "history_selected", "unselected"] as const)(
   "shows the external candidate at %s without claiming readiness",
   async (stage) => {

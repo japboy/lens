@@ -1014,6 +1014,67 @@ describe("Lens Settings", () => {
     }
   });
 
+  it("updates nonselected Codex without selecting it and keeps pending progress targeted", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockedInvoke = vi.mocked(invoke);
+    const previousImplementation = mockedInvoke.getMockImplementation();
+    const previousSelection = snapshot.agent_selection;
+    const previousConfig = snapshot.config;
+    snapshot.agent_selection = {
+      stage: "selected",
+      candidate: "claude",
+      supports_logout: false,
+      auth_methods: [],
+    };
+    snapshot.config = { ...previousConfig, agent: "claude" };
+    let finishUpdate!: (value: unknown) => void;
+    mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+      if (command === "update_managed_agent")
+        return await new Promise<unknown>((resolve) => {
+          finishUpdate = resolve;
+        });
+      return previousImplementation?.(command, ...arguments_);
+    });
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      await vi.waitFor(() =>
+        expect(root.querySelector("lens-agent-settings")?.querySelector("button")).not.toBeNull(),
+      );
+      const editor = root.querySelector("lens-agent-settings")!;
+      const codexUpdate = [...editor.querySelectorAll("button")].find(
+        (item) => item.textContent?.trim() === "Install or Update Codex",
+      )!;
+      codexUpdate.click();
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("update_managed_agent", { agent: "codex" }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+      expect(snapshot.agent_selection.candidate).toBe("claude");
+      await vi.waitFor(() =>
+        expect(editor.querySelector(".runtime-status")?.textContent).toContain(
+          "Checking Codex for updates…",
+        ),
+      );
+      finishUpdate({
+        agent: "codex",
+        stage: "ready",
+        downloaded_bytes: 0,
+        message: "Installed Codex.",
+      });
+      await vi.waitFor(() =>
+        expect(
+          root.querySelector(".settings-context-feedback[role='status']")?.textContent,
+        ).toContain("Installed Codex."),
+      );
+      expect(snapshot.agent_selection.candidate).toBe("claude");
+    } finally {
+      snapshot.agent_selection = previousSelection;
+      snapshot.config = previousConfig;
+      if (previousImplementation) mockedInvoke.mockImplementation(previousImplementation);
+    }
+  });
+
   it("keeps Goose file browsing local until Save and Verify", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { open } = await import("@tauri-apps/plugin-dialog");
