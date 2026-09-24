@@ -30,7 +30,11 @@ export class LensSettingsView extends LitElement {
     viewHostStyles,
     controlStyles,
     css`
-      lens-agent-settings,
+      lens-agent-settings {
+        display: block;
+        min-width: 0;
+      }
+
       lens-prompt-settings {
         display: contents;
       }
@@ -272,7 +276,6 @@ export class LensSettingsView extends LitElement {
       .external-executable-settings {
         display: grid;
         gap: 12px;
-        margin-top: 16px;
       }
 
       .external-executable-settings .settings-field,
@@ -286,15 +289,7 @@ export class LensSettingsView extends LitElement {
         display: grid;
         gap: 10px;
         min-width: 0;
-        margin-top: 16px;
-        padding-top: 14px;
-        border-top: 1px solid var(--settings-group-border);
-      }
-
-      .agent-preset-settings legend {
-        padding: 0;
-        font-size: 14px;
-        font-weight: 650;
+        margin-top: 12px;
       }
 
       .agent-preset-settings > .help {
@@ -304,6 +299,12 @@ export class LensSettingsView extends LitElement {
       .agent-preset-settings > .agent-actions {
         justify-content: flex-start;
         margin-top: 0;
+      }
+
+      .agent-reset-actions {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--settings-group-border);
       }
 
       .external-executable-field {
@@ -912,18 +913,22 @@ export class LensSettingsView extends LitElement {
             ${renderSettingsFeedback(generalFeedback)}
 
             <div class="settings-detail-groups">
-              <section class="settings-group" aria-labelledby="agent-heading">
-                <h2 id="agent-heading">AI Agent</h2>
-                <div data-region-error="agent"></div>
-                <lens-agent-settings
-                  .selection=${model?.agentSelection}
-                  .runtime=${model?.agentRuntime}
-                  .updatePending=${model?.updatePending ?? false}
-                  .updateAgent=${model?.updateAgent}
-                  .profiles=${model?.config?.external_agents ?? []}
-                  .disabled=${!this.active || !model || model.pending}
-                ></lens-agent-settings>
-              </section>
+              <div data-region-error="agent"></div>
+              ${
+                !model?.agentSelection || !model?.agentRuntime
+                  ? html`<section class="settings-group" aria-labelledby="agent-heading">
+                      <h2 id="agent-heading">Agent</h2>
+                    </section>`
+                  : nothing
+              }
+              <lens-agent-settings
+                .selection=${model?.agentSelection}
+                .runtime=${model?.agentRuntime}
+                .updatePending=${model?.updatePending ?? false}
+                .updateAgent=${model?.updateAgent}
+                .profiles=${model?.config?.external_agents ?? []}
+                .disabled=${!this.active || !model || model.pending}
+              ></lens-agent-settings>
               <section class="settings-group" aria-labelledby="cwd-heading">
                 <h2 id="cwd-heading">Working Directory</h2>
                 <div class="directory-row">

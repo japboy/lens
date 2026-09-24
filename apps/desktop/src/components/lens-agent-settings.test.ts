@@ -67,7 +67,7 @@ it("uses one Agent menu and keeps managed agents non-deletable", async () => {
   await choose(element, "codex");
   expect(button(element, "Delete preset")).toBeUndefined();
 });
-it("keeps external ACP runtime status visible above preset management", async () => {
+it("keeps external ACP editing and runtime status in one Agent card", async () => {
   const { element } = await mount();
   element.runtime = {
     agent: { external: "profile-1" },
@@ -77,16 +77,34 @@ it("keeps external ACP runtime status visible above preset management", async ()
   };
   await element.updateComplete;
   expect(button(element, "Install or update")).toBeUndefined();
+  const cards = element.querySelectorAll<HTMLElement>(":scope > .settings-group");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]?.querySelector("h2")?.textContent).toBe("Agent");
   const presets = element.querySelector<HTMLElement>(".agent-preset-settings")!;
-  expect(presets.querySelector("legend")?.textContent).toBe("Agent Presets");
-  expect(presets.textContent).toContain("external ACP Agents");
-  expect(button(element, "Add preset").closest(".agent-preset-settings")).toBe(presets);
-  expect(button(element, "Reset Agent Presets…").closest(".agent-preset-settings")).toBe(presets);
+  expect(presets.closest(".settings-group")).toBe(cards[0]);
+  expect(presets.querySelector("legend")?.classList.contains("visually-hidden")).toBe(true);
+  expect(button(element, "Add preset").closest(".preset-add-actions")).not.toBeNull();
+  expect(button(element, "Add preset").closest(".settings-group")).toBe(cards[0]);
+  expect(button(element, "Reset Agent Presets…").closest(".agent-reset-actions")).not.toBeNull();
+  expect(button(element, "Reset Agent Presets…").closest(".settings-group")).toBe(cards[0]);
   const runtimeStatus = element.querySelector(".runtime-status")!;
+  expect(runtimeStatus.closest(".settings-group")).toBe(cards[0]);
   expect(runtimeStatus.textContent).toContain("Checking user-owned executable…");
   expect(runtimeStatus.compareDocumentPosition(presets) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING,
   );
+  expect(
+    runtimeStatus.compareDocumentPosition(button(element, "Reset Agent Presets…")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
+it("keeps the Agent selector accessible without a duplicate visible label", async () => {
+  const { element } = await mount();
+  const select = element.querySelector<LensSelect>("lens-select")!;
+  expect(select.label).toBe("Agent");
+  expect(select.shadowRoot?.querySelector("button")?.getAttribute("aria-label")).toBe("Agent");
+  expect(select.parentElement?.querySelector("span")).toBeNull();
 });
 
 it("updates the managed Agent shown in the selector and preserves progress", async () => {
@@ -96,6 +114,10 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   await element.updateComplete;
   expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
   expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+  expect(
+    button(element, "Install or update").compareDocumentPosition(button(element, "Add preset")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   button(element, "Install or update").click();
   expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "claude" });
   expect(element.selection.candidate).toBe("claude");
@@ -272,6 +294,7 @@ it("disables editing while pending and uses advertised logout capability", async
   element.disabled = true;
   await element.updateComplete;
   expect(command(element).closest("fieldset")!.disabled).toBe(true);
+  expect(button(element, "Reset Agent Presets…").disabled).toBe(true);
   element.disabled = false;
   element.selection = { ...element.selection!, supports_logout: true };
   await element.updateComplete;

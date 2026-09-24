@@ -267,7 +267,11 @@ describe("progressive DSD resources", () => {
     try {
       const page = await createPage("settings");
       const root = viewRoot(page, "lens-settings-view")!;
-      expect(root.querySelector("#agent-heading")?.textContent).toBe("AI Agent");
+      expect(root.querySelector('[data-region-error="agent"]')).not.toBeNull();
+      const agentSettings = root.querySelector("lens-agent-settings")!;
+      expect(root.querySelector("#agent-heading")?.textContent).toBe("Agent");
+      expect(agentSettings.querySelector("#agent-heading")).toBeNull();
+      expect(agentSettings.querySelector("#agent-presets-heading")).toBeNull();
       expect(root.querySelector(".settings-sidebar-status-value")?.textContent?.trim()).toBe("");
       await vi.waitFor(() =>
         expect(root.querySelector(".permission-row output")?.textContent).toContain("Allowed"),
@@ -1042,6 +1046,15 @@ describe("Lens Settings", () => {
         expect(root.querySelector("lens-agent-settings")?.querySelector("button")).not.toBeNull(),
       );
       const editor = root.querySelector("lens-agent-settings")!;
+      expect(editor.querySelectorAll("section.settings-group")).toHaveLength(1);
+      expect(editor.querySelector("#agent-presets-heading")).toBeNull();
+      expect(editor.querySelector(".agent-preset-settings")).toBeNull();
+      expect(editor.querySelector(".preset-add-actions")?.closest(".settings-group")).toBe(
+        editor.querySelector("#agent-heading")?.closest(".settings-group"),
+      );
+      expect(root.querySelector("#cwd-heading")?.closest(".settings-group")).not.toBe(
+        editor.querySelector("#agent-heading")?.closest(".settings-group"),
+      );
       const managedUpdate = [...editor.querySelectorAll("button")].find(
         (item) => item.textContent?.trim() === "Install or update",
       )!;
