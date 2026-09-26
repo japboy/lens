@@ -29,10 +29,10 @@ on:
         description: Same-workflow frontend artifact bound to the tested SHA.
         type: string
         default: ""
-      save_cache:
-        description: Save a trusted default-branch Rust dependency cache after verification.
-        required: true
-        type: boolean
+      cache_policy:
+        description: "Cache authority: read-only, pull-request, or main-seed."
+        type: string
+        default: read-only
 
     outputs:
       artifact_id:
@@ -50,13 +50,42 @@ jobs:
     outputs:
       artifact_id: ${{ steps.release-artifact.outputs.artifact-id }}
     steps:
+      - name: Admit Rust cache authority
+        id: cache-policy
+        env:
+          POLICY: ${{ inputs.cache_policy }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          save=false
+          case "$POLICY" in
+            read-only) ;;
+            pull-request)
+              test "$EVENT" = pull_request
+              [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+              test "$REF" = "refs/pull/$PR_NUMBER/merge"
+              test -z "$SOURCE_SHA$TAG"
+              save=true
+              ;;
+            main-seed)
+              test "$REF" = refs/heads/main
+              case "$EVENT" in push | workflow_dispatch) ;; *) exit 1 ;; esac
+              test -z "$SOURCE_SHA$TAG"
+              save=true
+              ;;
+            *) exit 1 ;;
+          esac
+          echo "save=$save" >> "$GITHUB_OUTPUT"
       - name: Validate native verification mode
         env:
           MODE: ${{ inputs.verification_mode }}
           TAG: ${{ inputs.release_tag }}
           ARTIFACT: ${{ inputs.frontend_artifact }}
           SEED: ${{ inputs.seed_bundle_cache }}
-          SAVE: ${{ inputs.save_cache }}
+          POLICY: ${{ inputs.cache_policy }}
           REF: ${{ github.ref }}
         run: |
           case "$MODE" in
@@ -65,9 +94,9 @@ jobs:
             *) exit 1 ;;
           esac
           if test -n "$TAG"; then test "$MODE" = dmg; fi
-          if test "$SAVE" = true; then test "$SEED" = true; fi
+          if test "$POLICY" = main-seed; then test "$SEED" = true; fi
           if test "$SEED" = true; then
-            test "$REF:$SAVE:$MODE" = refs/heads/main:true:code
+            test "$REF:$POLICY:$MODE" = refs/heads/main:main-seed:code
             test -n "$ARTIFACT"
             test -z "$TAG"
           fi
@@ -88,7 +117,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          SAVE_CACHE: ${{ inputs.save_cache }}
+          CACHE_POLICY: ${{ inputs.cache_policy }}
           SEED_BUNDLE_CACHE: ${{ inputs.seed_bundle_cache }}
         run: |
           node --input-type=module <<'NODE'
@@ -110,7 +139,7 @@ jobs:
             generation = "current";
           } else if (!modern.some(Boolean) && legacy.every(Boolean) &&
             process.env.RELEASE_TAG && /^[a-f0-9]{40}$/.test(process.env.SOURCE_SHA ?? "") &&
-            process.env.SAVE_CACHE === "false" && process.env.SEED_BUNDLE_CACHE === "false") {
+            process.env.CACHE_POLICY === "read-only" && process.env.SEED_BUNDLE_CACHE === "false") {
             generation = "legacy";
           } else {
             throw new Error("Incomplete or unauthorized verification source capability");
@@ -124,11 +153,12 @@ jobs:
         run: node scripts/macos-build-contract.ts
 
       - name: Restore Rust dependency artifacts
+        id: rust-cache
         if: steps.source.outputs.generation == 'current'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: lens-v3-rust
-          shared-key: macos-aarch64-apple-darwin-code-and-bundle-v1-${{ steps.contract.outputs.cache_key }}
+          shared-key: macos-aarch64-apple-darwin-${{ (inputs.seed_bundle_cache || inputs.verification_mode != 'code') && 'code-and-bundle-v1' || 'code-v1' }}-${{ steps.contract.outputs.cache_key }}
           env-vars: MACOSX_DEPLOYMENT_TARGET
           workspaces: . -> target
           cache-targets: true
@@ -136,7 +166,24 @@ jobs:
           cache-on-failure: false
           cache-all-crates: false
           cache-workspace-crates: false
-          save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}
+          save-if: ${{ steps.cache-policy.outputs.save == 'true' }}
+
+      # Exact caches are immutable. Code-only runs must not occupy the complete
+      # packaged-build key; a read-only fallback reuses the other coverage on a miss.
+      - name: Restore compatible dependencies from the other build coverage
+        if: steps.source.outputs.generation == 'current' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: lens-v3-rust
+          shared-key: macos-aarch64-apple-darwin-${{ (inputs.seed_bundle_cache || inputs.verification_mode != 'code') && 'code-v1' || 'code-and-bundle-v1' }}-${{ steps.contract.outputs.cache_key }}
+          env-vars: MACOSX_DEPLOYMENT_TARGET
+          workspaces: . -> target
+          cache-targets: true
+          cache-bin: false
+          cache-on-failure: false
+          cache-all-crates: false
+          cache-workspace-crates: false
+          save-if: false
 
       - name: Run native verification without JavaScript dependencies
         env:

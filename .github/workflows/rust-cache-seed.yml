@@ -83,7 +83,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && !inputs.shared_rust
     uses: ./.github/workflows/macos-verification.yml
     with:
-      save_cache: true
+      cache_policy: main-seed
       seed_bundle_cache: true
       frontend_artifact: cache-frontend-${{ github.sha }}
 
@@ -92,7 +92,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && !inputs.shared_rust
     uses: ./.github/workflows/shared-rust-verification.yml
     with:
-      save_cache: true
+      cache_policy: main-seed
       frontend_artifact: cache-frontend-${{ github.sha }}
 
   reject-untrusted-cache-seed:

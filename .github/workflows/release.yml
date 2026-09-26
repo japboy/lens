@@ -102,7 +102,7 @@ jobs:
       release_tag: ${{ inputs.tag }}
       source_sha: ${{ needs.preflight.outputs.source_sha }}
       frontend_artifact: ${{ needs.portable.outputs.frontend_artifact }}
-      save_cache: false
+      cache_policy: read-only
 
   native:
     needs: [preflight, portable]
@@ -116,7 +116,7 @@ jobs:
       controller_sha: ${{ inputs.controller_sha }}
       release_tag: ${{ inputs.tag }}
       previous_tag: ${{ needs.preflight.outputs.previous_tag }}
-      save_cache: false
+      cache_policy: read-only
 
   publication-policy:
     needs: preflight

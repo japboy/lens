@@ -15,10 +15,10 @@ on:
         description: Same-workflow frontend artifact; empty only for standalone verification.
         type: string
         default: ""
-      save_cache:
-        description: Save dependency artifacts only from trusted main.
-        type: boolean
-        default: false
+      cache_policy:
+        description: "Cache authority: read-only, pull-request, or main-seed."
+        type: string
+        default: read-only
 
 permissions:
   contents: read
@@ -32,6 +32,35 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
     steps:
+      - name: Admit Rust cache authority
+        id: cache-policy
+        env:
+          POLICY: ${{ inputs.cache_policy }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          save=false
+          case "$POLICY" in
+            read-only) ;;
+            pull-request)
+              test "$EVENT" = pull_request
+              [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+              test "$REF" = "refs/pull/$PR_NUMBER/merge"
+              test -z "$SOURCE_SHA$TAG"
+              save=true
+              ;;
+            main-seed)
+              test "$REF" = refs/heads/main
+              case "$EVENT" in push | workflow_dispatch) ;; *) exit 1 ;; esac
+              test -z "$SOURCE_SHA$TAG"
+              save=true
+              ;;
+            *) exit 1 ;;
+          esac
+          echo "save=$save" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -49,7 +78,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
-          SAVE_CACHE: ${{ inputs.save_cache }}
+          CACHE_POLICY: ${{ inputs.cache_policy }}
           SEED_BUNDLE_CACHE: "false"
         run: |
           node --input-type=module <<'NODE'
@@ -71,7 +100,7 @@ jobs:
             generation = "current";
           } else if (!modern.some(Boolean) && legacy.every(Boolean) &&
             process.env.RELEASE_TAG && /^[a-f0-9]{40}$/.test(process.env.SOURCE_SHA ?? "") &&
-            process.env.SAVE_CACHE === "false" && process.env.SEED_BUNDLE_CACHE === "false") {
+            process.env.CACHE_POLICY === "read-only" && process.env.SEED_BUNDLE_CACHE === "false") {
             generation = "legacy";
           } else {
             throw new Error("Incomplete or unauthorized verification source capability");
@@ -114,7 +143,7 @@ jobs:
           cache-on-failure: false
           cache-all-crates: false
           cache-workspace-crates: false
-          save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}
+          save-if: ${{ steps.cache-policy.outputs.save == 'true' }}
 
       - name: Verify normal common code, tests and native-feature compatibility
         env:

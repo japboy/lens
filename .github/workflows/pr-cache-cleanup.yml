@@ -1,0 +1,134 @@
+name: PR Cache Cleanup
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_run:
+    workflows: [Code Quality]
+    types: [completed]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+# Independent of verification: an open PR completion must not replace a pending
+# verification run. The completed event also removes caches saved after closure.
+concurrency:
+  group: pr-cache-cleanup-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # No checkout, downloaded artifacts, restored caches or PR code execution.
+      - name: Delete only closed pull request merge-ref caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const repository = process.env.GH_REPO;
+          const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+          const require = (condition, message) => {
+            if (!condition) throw new Error(message);
+          };
+          require(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository), 'Invalid repository');
+          require(event.repository?.full_name === repository && positiveInteger(event.repository.id),
+            'Event repository does not match the controller repository');
+          const api = (...args) => execFileSync('gh', ['api', ...args], { encoding: 'utf8' });
+          const read = (endpoint) => JSON.parse(api('--method', 'GET', endpoint));
+
+          let candidates;
+          let fallbackHead;
+          switch (process.env.GITHUB_EVENT_NAME) {
+            case 'pull_request_target':
+              require(event.action === 'closed', 'Expected a closed pull request event');
+              candidates = [event.pull_request];
+              break;
+            case 'workflow_run':
+              require(event.action === 'completed' && event.workflow_run?.name === 'Code Quality'
+                && event.workflow_run.event === 'pull_request', 'Unexpected workflow completion');
+              candidates = event.workflow_run.pull_requests;
+              require(Array.isArray(candidates), 'Invalid workflow pull request associations');
+              if (candidates.length === 0) {
+                const sha = event.workflow_run.head_sha;
+                require(typeof sha === 'string' && /^[0-9a-f]{40}$/.test(sha), 'Invalid run head SHA');
+                // Closed PRs can disappear from workflow_run.pull_requests. The commit
+                // association API supplies server-owned PR identities without branch guessing.
+                const pages = JSON.parse(api('--method', 'GET',
+                  `repos/${repository}/commits/${sha}/pulls`,
+                  '--field', 'per_page=100', '--paginate', '--slurp'));
+                require(Array.isArray(pages) && pages.every(Array.isArray),
+                  'Invalid commit pull request associations');
+                candidates = pages.flat();
+                if (candidates.length === 0) {
+                  const head = event.workflow_run.head_repository;
+                  const branch = event.workflow_run.head_branch;
+                  require(positiveInteger(head?.id) && typeof head.owner?.login === 'string'
+                    && /^[A-Za-z0-9-]+$/.test(head.owner.login)
+                    && typeof branch === 'string' && branch.length > 0
+                    && !/[\x00-\x1f\x7f]/.test(branch), 'Invalid run head identity');
+                  // Commit associations omit unmerged closed PRs. A head filter only
+                  // locates candidates: repository ID, exact run SHA and branch must
+                  // all match, so reused branches and other forks confer no authority.
+                  const headPages = JSON.parse(api('--method', 'GET', `repos/${repository}/pulls`,
+                    '--field', 'state=all', '--raw-field', `head=${head.owner.login}:${branch}`,
+                    '--field', 'per_page=100', '--paginate', '--slurp'));
+                  require(Array.isArray(headPages) && headPages.every(Array.isArray),
+                    'Invalid head pull request response');
+                  fallbackHead = { repositoryId: head.id, sha, branch };
+                  candidates = headPages.flat().filter((pr) => pr?.base?.repo?.id === event.repository.id
+                    && pr.head?.repo?.id === head.id && pr.head.sha === sha && pr.head.ref === branch);
+                }
+              }
+              require(candidates.length > 0,
+                'Completed PR workflow has no pull request association; refusing to infer a ref');
+              break;
+            default:
+              throw new Error('Unsupported cache cleanup event');
+          }
+          // Validate the complete association set before requesting or deleting caches.
+          require(candidates.every((pr) => positiveInteger(pr?.number)
+            && pr.base?.repo?.id === event.repository.id), 'Invalid pull request association');
+          const numbers = [...new Set(candidates.map((pr) => pr.number))];
+          const caches = [];
+          for (const number of numbers) {
+            const pr = read(`repos/${repository}/pulls/${number}`);
+            require(pr.number === number && pr.base?.repo?.id === event.repository.id
+              && ['open', 'closed'].includes(pr.state), 'Invalid current pull request state');
+            require(!fallbackHead || (pr.head?.repo?.id === fallbackHead.repositoryId
+              && pr.head.sha === fallbackHead.sha && pr.head.ref === fallbackHead.branch),
+              'Pull request head changed after exact run association');
+            if (pr.state !== 'closed') continue;
+            const ref = `refs/pull/${number}/merge`;
+            const pages = JSON.parse(api('--method', 'GET', `repos/${repository}/actions/caches`,
+              '--field', `ref=${ref}`, '--field', 'per_page=100', '--paginate', '--slurp'));
+            require(Array.isArray(pages) && pages.length > 0, 'Invalid cache pagination response');
+            for (const page of pages) {
+              require(Array.isArray(page.actions_caches), 'Invalid cache response');
+              for (const cache of page.actions_caches) {
+                require(positiveInteger(cache.id) && cache.ref === ref,
+                  'Cache response escaped the requested pull request merge ref');
+                caches.push(cache.id);
+              }
+            }
+          }
+          for (const id of new Set(caches)) {
+            try {
+              api('--method', 'DELETE', `repos/${repository}/actions/caches/${id}`, '--include');
+            } catch (error) {
+              // Concurrent close/completion cleanups can remove the same ID. Accept
+              // only an actual HTTP 404 status; permission/network/server errors fail.
+              if (typeof error.stdout !== 'string' || !/^HTTP\/[0-9.]+ 404(?:[ \r\n]|$)/.test(error.stdout)) {
+                throw error;
+              }
+            }
+          }
+          console.log(`Deleted ${new Set(caches).size} closed pull request caches`);
+          NODE

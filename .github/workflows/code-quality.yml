@@ -96,7 +96,7 @@ jobs:
     uses: ./.github/workflows/shared-rust-verification.yml
     with:
       frontend_artifact: frontend-${{ github.sha }}
-      save_cache: false
+      cache_policy: pull-request
 
   macos-verification:
     name: macOS verification
@@ -104,7 +104,7 @@ jobs:
     if: contains(fromJSON('["code","app","dmg"]'), needs.repository-verification.outputs.macos)
     uses: ./.github/workflows/macos-verification.yml
     with:
-      save_cache: false
+      cache_policy: pull-request
       verification_mode: ${{ needs.repository-verification.outputs.macos }}
       frontend_artifact: frontend-${{ github.sha }}
 

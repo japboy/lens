@@ -140,8 +140,129 @@ describe("actual workflow admission", () => {
     expect(frontend.steps[upload].with.name).toBe("frontend-${{ github.sha }}");
   });
 
+  it("admits PR merge-ref writes and trusted main seeding while releases stay read-only", () => {
+    const admission = nativeSteps.find((step: { id?: string }) => step.id === "cache-policy");
+    const linuxSteps = parse(linux).jobs["shared-rust-verification"].steps;
+    expect(linuxSteps.find((step: { id?: string }) => step.id === "cache-policy").run).toBe(
+      admission.run,
+    );
+    const directory = mkdtempSync(join(tmpdir(), "lens-cache-authority-"));
+    const output = join(directory, "output");
+    const run = (overrides: Record<string, string>) => {
+      writeFileSync(output, "");
+      const result = spawnSync("bash", ["-e", "-c", admission.run], {
+        env: {
+          ...process.env,
+          POLICY: "read-only",
+          EVENT: "pull_request",
+          REF: "refs/pull/129/merge",
+          PR_NUMBER: "129",
+          SOURCE_SHA: "",
+          TAG: "",
+          GITHUB_OUTPUT: output,
+          ...overrides,
+        },
+        encoding: "utf8",
+      });
+      return { status: result.status, output: readFileSync(output, "utf8") };
+    };
+    try {
+      expect(run({})).toEqual({ status: 0, output: "save=false\n" });
+      expect(run({ POLICY: "pull-request" })).toEqual({ status: 0, output: "save=true\n" });
+      for (const event of ["push", "workflow_dispatch"])
+        expect(run({ POLICY: "main-seed", EVENT: event, REF: "refs/heads/main" })).toEqual({
+          status: 0,
+          output: "save=true\n",
+        });
+      expect(
+        run({ EVENT: "workflow_dispatch", TAG: "v1.0.0", SOURCE_SHA: "a".repeat(40) }),
+      ).toEqual({ status: 0, output: "save=false\n" });
+      for (const policy of ["", "true", "main", "unknown"])
+        expect(run({ POLICY: policy }).status).not.toBe(0);
+      const invalidPrInputs: Record<string, string>[] = [
+        { EVENT: "pull_request_target" },
+        { EVENT: "push" },
+        { EVENT: "workflow_dispatch" },
+        { REF: "refs/heads/main" },
+        { REF: "refs/pull/130/merge" },
+        { REF: "refs/pull/129/head" },
+        { PR_NUMBER: "" },
+        { PR_NUMBER: "0" },
+        { PR_NUMBER: "129x" },
+        { SOURCE_SHA: "a".repeat(40) },
+        { TAG: "v1.0.0" },
+      ];
+      for (const invalid of invalidPrInputs)
+        expect(run({ POLICY: "pull-request", ...invalid }).status).not.toBe(0);
+      const invalidSeedInputs: Record<string, string>[] = [
+        { REF: "refs/heads/feature" },
+        { EVENT: "pull_request" },
+        { EVENT: "pull_request_target" },
+        { SOURCE_SHA: "a".repeat(40) },
+        { TAG: "v1.0.0" },
+      ];
+      for (const invalid of invalidSeedInputs)
+        expect(
+          run({ POLICY: "main-seed", REF: "refs/heads/main", EVENT: "push", ...invalid }).status,
+        ).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    for (const steps of [nativeSteps, linuxSteps]) {
+      expect(steps[0].id).toBe("cache-policy");
+      for (const cache of steps.filter((step: { uses?: string }) =>
+        step.uses?.startsWith("Swatinem/rust-cache@"),
+      )) {
+        expect(cache.with["cache-on-failure"]).toBe(false);
+        expect(cache.with["cache-workspace-crates"]).toBe(false);
+      }
+    }
+  });
+
+  it("separates immutable cache coverage and restores the other graph only on a miss", () => {
+    const caches = nativeSteps.filter((step: { uses?: string }) =>
+      step.uses?.startsWith("Swatinem/rust-cache@"),
+    );
+    expect(caches).toHaveLength(2);
+    const [primary, fallback] = caches;
+    expect(primary.id).toBe("rust-cache");
+    expect(fallback.if).toBe(
+      "steps.source.outputs.generation == 'current' && steps.rust-cache.outputs.cache-hit != 'true'",
+    );
+    expect(primary.with["save-if"]).toBe("${{ steps.cache-policy.outputs.save == 'true' }}");
+    expect(fallback.with["save-if"]).toBe(false);
+    expect(fallback.with["shared-key"]).toBe(
+      "macos-aarch64-apple-darwin-${{ (inputs.seed_bundle_cache || inputs.verification_mode != 'code') && 'code-v1' || 'code-and-bundle-v1' }}-${{ steps.contract.outputs.cache_key }}",
+    );
+    expect(fallback.with.key).toBeUndefined();
+    for (const property of [
+      "prefix-key",
+      "env-vars",
+      "workspaces",
+      "cache-targets",
+      "cache-bin",
+      "cache-on-failure",
+      "cache-all-crates",
+      "cache-workspace-crates",
+    ])
+      expect(fallback.with[property]).toEqual(primary.with[property]);
+    expect(nativeSteps.indexOf(fallback)).toBeLessThan(
+      nativeSteps.findIndex(
+        (step: { name?: string }) =>
+          step.name === "Run native verification without JavaScript dependencies",
+      ),
+    );
+    // No commit/PR component: GitHub scopes saved caches to the merge ref.
+    for (const cache of caches) {
+      expect(cache.with["shared-key"]).not.toContain("github.sha");
+      expect(cache.with["shared-key"]).not.toContain("pull_request.number");
+    }
+  });
+
   it("enforces modes and trusted seed capability using the actual admission shell", () => {
-    const admission = nativeSteps[0].run;
+    const admission = nativeSteps.find(
+      (step: { name?: string }) => step.name === "Validate native verification mode",
+    ).run;
     const run = (overrides: Record<string, string>) =>
       spawnSync("bash", ["-e", "-c", admission], {
         env: {
@@ -150,14 +271,14 @@ describe("actual workflow admission", () => {
           ARTIFACT: "",
           TAG: "",
           SEED: "false",
-          SAVE: "false",
+          POLICY: "read-only",
           REF: "refs/pull/1/merge",
           ...overrides,
         },
         encoding: "utf8",
       }).status;
     expect(run({})).toBe(0);
-    expect(run({ SAVE: "true", REF: "refs/heads/main" })).not.toBe(0);
+    expect(run({ POLICY: "main-seed", REF: "refs/heads/main" })).not.toBe(0);
     for (const mode of ["app", "dmg"]) {
       expect(run({ MODE: mode, ARTIFACT: "frontend-sha" })).toBe(0);
       expect(run({ MODE: mode })).not.toBe(0);
@@ -169,13 +290,13 @@ describe("actual workflow admission", () => {
       expect(run({ MODE: mode, TAG: "v1.0.0", ARTIFACT: "frontend-sha" })).not.toBe(0);
     const seedInput = {
       SEED: "true",
-      SAVE: "true",
+      POLICY: "main-seed",
       REF: "refs/heads/main",
       ARTIFACT: "frontend-sha",
     };
     expect(run(seedInput)).toBe(0);
     const invalidSeeds: Record<string, string>[] = [
-      { SAVE: "false" },
+      { POLICY: "read-only" },
       { REF: "refs/pull/1/merge" },
       { ARTIFACT: "" },
       { MODE: "app" },
@@ -200,7 +321,7 @@ describe("actual workflow admission", () => {
     const releaseEnv = {
       RELEASE_TAG: "v1.0.0",
       SOURCE_SHA: "a".repeat(40),
-      SAVE_CACHE: "false",
+      CACHE_POLICY: "read-only",
       SEED_BUNDLE_CACHE: "false",
     };
     function admit(
@@ -270,7 +391,7 @@ describe("actual workflow admission", () => {
       { RELEASE_TAG: "" },
       { SOURCE_SHA: "" },
       { SOURCE_SHA: "main" },
-      { SAVE_CACHE: "true" },
+      { CACHE_POLICY: "pull-request" },
       { SEED_BUNDLE_CACHE: "true" },
     ];
     for (const invalid of invalidEnvironments)
@@ -311,12 +432,14 @@ describe("actual workflow admission", () => {
 
   it("keys and seeds complete trusted cache contracts before restoring", () => {
     for (const workflow of [linux, native]) {
-      expect(workflow).toContain(
-        "save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}",
-      );
+      expect(workflow).toContain("save-if: ${{ steps.cache-policy.outputs.save == 'true' }}");
       expect(workflow).toContain("cache-workspace-crates: false");
     }
-    expect(quality.match(/save_cache: false/gu)).toHaveLength(2);
+    expect(quality.match(/cache_policy: pull-request/gu)).toHaveLength(2);
+    expect(
+      readFileSync(".github/workflows/release.yml", "utf8").match(/cache_policy: read-only/gu),
+    ).toHaveLength(2);
+    expect(seed.match(/cache_policy: main-seed/gu)).toHaveLength(2);
     // The pinned action ignores `key` whenever `shared-key` is set:
     // https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/config.ts#L69-L86
     // Contract digests must therefore be part of the actual shared key.
@@ -330,7 +453,7 @@ describe("actual workflow admission", () => {
       "common-x86_64-unknown-linux-gnu-${{ hashFiles('mise.lock', 'Cargo.toml') }}",
     );
     expect(nativeCache["shared-key"]).toBe(
-      "macos-aarch64-apple-darwin-code-and-bundle-v1-${{ steps.contract.outputs.cache_key }}",
+      "macos-aarch64-apple-darwin-${{ (inputs.seed_bundle_cache || inputs.verification_mode != 'code') && 'code-and-bundle-v1' || 'code-v1' }}-${{ steps.contract.outputs.cache_key }}",
     );
     expect(linuxCache.key).toBeUndefined();
     expect(nativeCache.key).toBeUndefined();
