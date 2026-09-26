@@ -1,8 +1,8 @@
 //! History admission and display ownership, independent of live execution authority.
 use crate::{
-    app_state::{emit_app_snapshot, next_revision, AppState},
+    app_state::AppState,
     history_catalog,
-    model::{AgentKind, AgentSelectionStage, AgentSelectionState, LensStage, LensState},
+    model::{AgentKind, AgentSelectionStage, LensStage, LensState},
     session_document::SessionDocument,
     session_history,
     session_history_store::{EntryState, HistorySource, InfoPatch, Patch, StoredEntry},
@@ -818,7 +818,7 @@ pub(crate) async fn open<R: Runtime>(
     let result = tokio::task::spawn_blocking(move || {
         let state = handle.state::<AppState>();
         let _guard = state.session_view.admission.lock().map_err(lock_error)?;
-        let mut snapshot = state.runtime.write().map_err(lock_error)?;
+        let snapshot = state.runtime.read().map_err(lock_error)?;
         let mut view = state.session_view.inner.lock().map_err(lock_error)?;
         if view.generation != generation || view.phase != ViewPhase::Loading {
             return Ok(None);
@@ -869,28 +869,15 @@ pub(crate) async fn open<R: Runtime>(
         view.title = current_entry
             .and_then(|item| item.title)
             .or_else(|| Some("Untitled session".into()));
-        let mut selected = snapshot.config.clone();
-        selected.agent = entry.agent;
-        let revision = next_revision(&snapshot)?;
-        state
-            .store
-            .save(&selected)
-            .map_err(|error| error.to_string())?;
-        snapshot.config = selected;
-        snapshot.agent_selection = selection_after_history(&snapshot.agent_selection, entry.agent);
-        snapshot.revision = revision;
         view.document = Some(document);
         view.phase = ViewPhase::Ready;
         view.revision += 1;
-        Ok(Some(snapshot.clone()))
+        Ok(Some(()))
     })
     .await
     .map_err(|_| "History synchronization task failed")?;
     match result {
-        Ok(Some(snapshot)) => {
-            emit_app_snapshot(&app, snapshot, true)?;
-            emit(&app)?;
-        }
+        Ok(Some(())) => emit(&app)?,
         Ok(None) => {}
         Err(error) => {
             fail(&app, generation, error.clone())?;
@@ -899,22 +886,6 @@ pub(crate) async fn open<R: Runtime>(
         }
     }
     refresh(app).await
-}
-
-fn selection_after_history(current: &AgentSelectionState, agent: AgentKind) -> AgentSelectionState {
-    if current.selected_agent() == Some(agent) {
-        return current.clone();
-    }
-    AgentSelectionState {
-        candidate: Some(agent),
-        stage: AgentSelectionStage::HistorySelected,
-        operation_id: Some(Uuid::new_v4()),
-        message: Some(format!(
-            "{} chosen from session history. Select this Agent to verify live readiness.",
-            agent_label(agent)
-        )),
-        ..Default::default()
-    }
 }
 
 fn fail<R: Runtime>(app: &AppHandle<R>, generation: Uuid, error: String) -> Result<(), String> {

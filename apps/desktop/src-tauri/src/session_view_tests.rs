@@ -430,15 +430,39 @@ fn replay_host() -> Arc<ReplayHost> {
 }
 
 #[tokio::test]
-async fn successful_replay_commits_provider_and_ready_document_only_after_response() {
+async fn successful_replay_preserves_execution_selection_and_settings() {
+    for agent in [None, Some(AgentKind::Claude), Some(AgentKind::Codex)] {
+        replay_preserving_selection(agent).await;
+    }
+}
+
+async fn replay_preserving_selection(agent: Option<AgentKind>) {
     let host = replay_host();
     let (app, catalog) = replay_app(host.clone());
+    {
+        let state = app.state::<AppState>();
+        let mut snapshot = state.runtime.write().unwrap();
+        if let Some(agent) = agent {
+            snapshot.config.agent = agent;
+            snapshot.agent_selection = AgentSelectionState {
+                operation_id: Some(Uuid::new_v4()),
+                candidate: Some(agent),
+                stage: AgentSelectionStage::Selected,
+                config_options: Some(vec![]),
+                agent_default: Some("read-only".into()),
+                message: Some("Verified".into()),
+                ..Default::default()
+            };
+        }
+        state.store.save(&snapshot.config).unwrap();
+    }
+    let original_snapshot = app.state::<AppState>().snapshot().unwrap();
     let original_lens = app.state::<AppState>().lens().unwrap();
     let opening = open(app.handle().clone(), catalog, 0);
     let inspect_loading = async {
         host.entered.notified().await;
         let state = app.state::<AppState>();
-        assert_eq!(state.config().unwrap().agent, AgentKind::Claude);
+        assert_eq!(state.snapshot().unwrap(), original_snapshot);
         let view = state.session_view.view().unwrap();
         assert_eq!(view.phase, ViewPhase::Loading);
         assert!(view.document.is_none());
@@ -452,17 +476,13 @@ async fn successful_replay_commits_provider_and_ready_document_only_after_respon
     .unwrap();
     result.unwrap();
     let state = app.state::<AppState>();
-    assert_eq!(state.config().unwrap().agent, AgentKind::Codex);
-    assert_eq!(state.store.load().agent, AgentKind::Codex);
-    assert_eq!(
-        state.agent_selection().unwrap().stage,
-        AgentSelectionStage::HistorySelected
-    );
-    assert!(!state.agent_selection().unwrap().can_select_lens_target());
+    assert_eq!(state.snapshot().unwrap(), original_snapshot);
+    assert_eq!(state.store.load(), original_snapshot.config);
     assert_eq!(state.lens().unwrap(), original_lens);
     assert!(!active_session(&state.lens().unwrap()));
     let view = state.session_view.view().unwrap();
     assert_eq!(view.phase, ViewPhase::Ready);
+    assert_eq!(view.agent, Some(AgentKind::Codex));
     assert_eq!(view.title.as_deref(), Some("Renamed elsewhere"));
     let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
     let rows = history_catalog::store(&state)
@@ -509,6 +529,11 @@ async fn successful_replay_commits_provider_and_ready_document_only_after_respon
 async fn closing_loading_history_invalidates_late_success_without_selecting_provider() {
     let host = replay_host();
     let (app, catalog) = replay_app(host.clone());
+    let original_snapshot = app.state::<AppState>().snapshot().unwrap();
+    app.state::<AppState>()
+        .store
+        .save(&original_snapshot.config)
+        .unwrap();
     let original_lens = app.state::<AppState>().lens().unwrap();
     let opening = open(app.handle().clone(), catalog, 0);
     let close_loading = async {
@@ -530,46 +555,14 @@ async fn closing_loading_history_invalidates_late_success_without_selecting_prov
     .unwrap();
     result.unwrap();
     let state = app.state::<AppState>();
+    assert_eq!(state.snapshot().unwrap(), original_snapshot);
+    assert_eq!(state.store.load(), original_snapshot.config);
     assert_eq!(state.config().unwrap().agent, AgentKind::Claude);
     assert_eq!(state.lens().unwrap(), original_lens);
     let view = state.session_view.view().unwrap();
     assert_eq!(view.phase, ViewPhase::Idle);
     assert!(view.document.is_none());
     assert_eq!(host.loaded.load(std::sync::atomic::Ordering::SeqCst), 1);
-}
-
-#[test]
-fn same_provider_history_preserves_selection_identity_and_settings_catalog() {
-    let current = AgentSelectionState {
-        operation_id: Some(Uuid::new_v4()),
-        candidate: Some(AgentKind::Codex),
-        stage: AgentSelectionStage::Selected,
-        config_options: Some(vec![]),
-        agent_default: Some("read-only".into()),
-        message: Some("Verified".into()),
-        ..Default::default()
-    };
-    assert_eq!(selection_after_history(&current, AgentKind::Codex), current);
-}
-
-#[test]
-fn cross_provider_history_choice_does_not_claim_live_readiness() {
-    let current = AgentSelectionState {
-        candidate: Some(AgentKind::Claude),
-        stage: AgentSelectionStage::Selected,
-        operation_id: Some(Uuid::new_v4()),
-        agent_default: Some("old-policy".into()),
-        ..Default::default()
-    };
-    let next = selection_after_history(&current, AgentKind::Codex);
-    assert_eq!(next.stage, AgentSelectionStage::HistorySelected);
-    assert_eq!(next.candidate, Some(AgentKind::Codex));
-    assert!(next.operation_id.is_some());
-    assert_ne!(next.operation_id, current.operation_id);
-    assert_eq!(next.selected_agent(), None);
-    assert!(!next.can_select_lens_target());
-    assert_eq!(next.config_options, None);
-    assert_eq!(next.agent_default, None);
 }
 
 #[test]
@@ -789,7 +782,6 @@ async fn history_refresh_never_resolves_agents_for_any_selection_stage() {
     for stage in [
         AgentSelectionStage::Unselected,
         AgentSelectionStage::Failed,
-        AgentSelectionStage::HistorySelected,
         AgentSelectionStage::Selected,
     ] {
         {
@@ -1231,6 +1223,8 @@ async fn cached_negative_load_capability_is_rechecked_on_explicit_open() {
         Arc::get_mut(&mut host).unwrap().load_supported = supported;
         let (app, _) = replay_app(host.clone());
         let state = app.state::<AppState>();
+        let original_snapshot = state.snapshot().unwrap();
+        state.store.save(&original_snapshot.config).unwrap();
         let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
         let store = history_catalog::store(&state).unwrap();
         let token = store.begin_scan(&source, "/tmp").unwrap();
@@ -1259,6 +1253,8 @@ async fn cached_negative_load_capability_is_rechecked_on_explicit_open() {
                 .unwrap_err()
                 .contains("does not support ACP session/load"));
         }
+        assert_eq!(state.snapshot().unwrap(), original_snapshot);
+        assert_eq!(state.store.load(), original_snapshot.config);
         assert_eq!(
             host.loaded.load(std::sync::atomic::Ordering::SeqCst),
             usize::from(supported)

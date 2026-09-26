@@ -64,7 +64,7 @@
           view.model = {...view.model,config:{...view.model.config,external_agents:view.model.config.external_agents.filter(p=>p.id!==event.detail.id),agent:"claude"},agentSelection:{...view.model.agentSelection,candidate:"claude",stage:"unselected",error:undefined}};
         }
         if (event.detail.type === "select-agent") {
-          view.model = { ...view.model, config: { ...view.model.config, agent: event.detail.agent }, agentSelection: { ...view.model.agentSelection, candidate: event.detail.agent, stage: "history_selected", error: undefined } };
+          view.model = { ...view.model, config: { ...view.model.config, agent: event.detail.agent }, agentSelection: { ...view.model.agentSelection, candidate: event.detail.agent, stage: "unselected", error: undefined } };
         }
       });
       scenario.value = new URLSearchParams(location.search).get("scenario") ?? "unset";

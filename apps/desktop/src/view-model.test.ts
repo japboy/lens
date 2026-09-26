@@ -84,7 +84,6 @@ describe("Lens view model", () => {
       "authenticating",
       "signing_out",
       "selected",
-      "history_selected",
       "failed",
     ];
 

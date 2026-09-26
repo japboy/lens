@@ -411,10 +411,7 @@ export class LensAgentSettings extends LitElement {
           : nothing
       }
       ${
-        !draft &&
-        ["unselected", "failed", "authentication_required", "history_selected"].includes(
-          this.selection.stage,
-        )
+        !draft && ["unselected", "failed", "authentication_required"].includes(this.selection.stage)
           ? html`<div class="agent-actions">
               <button
                 ?disabled=${controlsDisabled}
