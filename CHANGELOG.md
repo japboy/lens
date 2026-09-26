@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.7.0](https://github.com/japboy/lens/compare/v0.6.0...v0.7.0) (2026-09-26)
+
+
+### Features
+
+* **acp:** add manual updates and refine agent settings ([#113](https://github.com/japboy/lens/issues/113)) ([10378a6](https://github.com/japboy/lens/commit/10378a627f6a6dd767e07288acac03b98f83f090))
+* **overlay:** retain session response history ([#130](https://github.com/japboy/lens/issues/130)) ([604760b](https://github.com/japboy/lens/commit/604760b8cef4d1c408256e94794ed4290a6e7a4c))
+
+
+### Bug Fixes
+
+* **agent:** finalize session execution state ([#127](https://github.com/japboy/lens/issues/127)) ([f8b98f2](https://github.com/japboy/lens/commit/f8b98f2b1a36ca896359b66e2d89159d5ba4de72))
+* **agents:** detach environment resolver from tty ([#132](https://github.com/japboy/lens/issues/132)) ([d188e78](https://github.com/japboy/lens/commit/d188e78867ce44148e08c35af562e03c47d09eff))
+* **agents:** refresh defaults after adapter updates ([#134](https://github.com/japboy/lens/issues/134)) ([8b5f9d8](https://github.com/japboy/lens/commit/8b5f9d8d6d23273c667850014bda79a9c23c6145))
+* **ci:** skip verification for closed pull requests ([#135](https://github.com/japboy/lens/issues/135)) ([9334f94](https://github.com/japboy/lens/commit/9334f9489a4337a83f9bb831a727e95084b11fb6))
+* **deps:** centralize the reqwest version ([#128](https://github.com/japboy/lens/issues/128)) ([7bbcc19](https://github.com/japboy/lens/commit/7bbcc19712d40b51b7e825bae9f860f925237bbb))
+* **history:** preserve the selected agent ([#133](https://github.com/japboy/lens/issues/133)) ([0024ebe](https://github.com/japboy/lens/commit/0024ebef512e4f950cc47918f5f17f6fafe98143))
+* **macos:** reject mismatched singleton windows ([#124](https://github.com/japboy/lens/issues/124)) ([90f1bb1](https://github.com/japboy/lens/commit/90f1bb1924d0901e8c24241867c2e6e9af9afb96)), closes [#114](https://github.com/japboy/lens/issues/114)
+* **release:** simplify artifact lifecycle ([#125](https://github.com/japboy/lens/issues/125)) ([ed68f0d](https://github.com/japboy/lens/commit/ed68f0d21fba27a1178d9ac1691f938d2e57b18b)), closes [#116](https://github.com/japboy/lens/issues/116) [#117](https://github.com/japboy/lens/issues/117) [#118](https://github.com/japboy/lens/issues/118)
+* **runtime:** clean up cancelled staging ([#126](https://github.com/japboy/lens/issues/126)) ([e03ce6c](https://github.com/japboy/lens/commit/e03ce6c38e74a80fc43c2742481e3224d60bdb8b)), closes [#115](https://github.com/japboy/lens/issues/115)
+* **ui:** align macOS controls with system colors ([#136](https://github.com/japboy/lens/issues/136)) ([794b1ed](https://github.com/japboy/lens/commit/794b1edc54fdedb7421cc4c91920e62bdcaa46a8))
+
 ## [0.6.0](https://github.com/japboy/lens/compare/v0.5.0...v0.6.0) (2026-09-20)
 
 
