@@ -91,6 +91,7 @@ description = "Run native workspace tests after compilation and lint"
 dir = "{{config_root}}"
 depends = ["rust:clippy"]
 run = [
+  "node scripts/test-native-window-resolver.ts",
   "node scripts/run-workspace-variant.ts macos-test",
   "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
   "cargo test --locked -p adapter-output-mcp --test http --target aarch64-apple-darwin",
