@@ -540,7 +540,7 @@ pub struct LensRepresentation {
     pub context_revision: u64,
     pub projection: ProjectionRef,
     pub run_id: Uuid,
-    pub output_blocks: Vec<LensOutputBlock>,
+    pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -605,6 +605,8 @@ pub struct LensState {
     #[serde(default)]
     pub representation: Option<LensRepresentation>,
     #[serde(default)]
+    pub response_history: crate::response_history::LensResponseHistory,
+    #[serde(default)]
     pub pending_representation: Option<LensPendingRepresentation>,
     #[serde(default)]
     pub live: Option<LensLiveState>,
@@ -632,6 +634,7 @@ impl Default for LensState {
             projection: None,
             output_blocks: Vec::new(),
             representation: None,
+            response_history: Default::default(),
             pending_representation: None,
             live: None,
             agent: None,

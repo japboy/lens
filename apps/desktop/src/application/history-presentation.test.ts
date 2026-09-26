@@ -34,8 +34,16 @@ describe("history answer presentation", () => {
       "saved",
     );
     expect(result.presentation.published).toBeUndefined();
-    expect(result.presentation.blocks.map((block) => block.type)).toEqual(["html", "markdown"]);
-    expect(result.htmlContent).toMatchObject({ status: "ready", content: "new html" });
+    expect(result.presentation.blocks.map((block) => block.type)).toEqual([
+      "html",
+      "html",
+      "markdown",
+    ]);
+    expect([...result.htmlContents.values()]).toEqual([
+      expect.objectContaining({ status: "ready", content: "old html" }),
+      expect.objectContaining({ status: "ready", content: "new html" }),
+    ]);
+    expect(result.htmlContent).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain("diagnostic");
     expect(JSON.stringify(result)).not.toContain("failed html");
   });

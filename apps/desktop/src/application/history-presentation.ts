@@ -1,19 +1,21 @@
+import { composeOutputMedia } from "../output-media";
 import type { SessionDocument } from "./session-document";
 import type { HtmlOutputContent } from "./html-output-controller";
 import type { LensOutputBlock } from "../types";
 import type { LensOutputPresentation } from "../view-model";
 
-/** Render the backend-selected history result without selecting a turn again. */
+/** Inline legacy/fixture adapter; native replay uses deferred response manifests. */
 export function historyPresentation(
   document: SessionDocument | undefined,
   identity: string,
 ): {
   presentation: LensOutputPresentation;
   htmlContent?: HtmlOutputContent;
+  htmlContents: ReadonlyMap<string, HtmlOutputContent>;
 } {
   const entries = document?.entries ?? [];
   const blocks: LensOutputBlock[] = [];
-  let htmlContent: HtmlOutputContent | undefined;
+  const contents = new Map<string, HtmlOutputContent>();
   for (const entry of entries) {
     if (entry.kind === "tool" && entry.status !== "completed") continue;
     if (entry.kind === "message" && entry.role !== "assistant") continue;
@@ -24,9 +26,6 @@ export function historyPresentation(
       if (block.type === "deferred") return;
       if (block.type === "html") {
         const resourceId = `${identity}:${entry.id}:${index}`;
-        // The normal media presenter supports one HTML artifact: retain the latest.
-        for (let i = blocks.length - 1; i >= 0; i--)
-          if (blocks[i]?.type === "html") blocks.splice(i, 1);
         blocks.push({
           type: "html",
           resource_id: resourceId,
@@ -34,19 +33,27 @@ export function historyPresentation(
           uri: `urn:lens:history:${encodeURIComponent(resourceId)}`,
           byte_length: new TextEncoder().encode(block.text).length,
         });
-        htmlContent = { resourceId, status: "ready", content: block.text };
+        contents.set(resourceId, { resourceId, status: "ready", content: block.text });
       } else if (entry.kind === "message" || block.type === "image") {
         blocks.push(block);
       }
     });
   }
+  const presentation: LensOutputPresentation = {
+    identity,
+    artifactIdentity: identity,
+    blocks,
+    mode: blocks.length ? "settled" : "empty",
+  };
+  const htmlContents = new Map<string, HtmlOutputContent>();
+  for (const media of composeOutputMedia(presentation).media) {
+    if (media.kind !== "html") continue;
+    const content = contents.get(media.resourceId);
+    if (content) htmlContents.set(media.id, content);
+  }
   return {
-    presentation: {
-      identity,
-      artifactIdentity: identity,
-      blocks,
-      mode: blocks.length ? "settled" : "empty",
-    },
-    htmlContent,
+    presentation,
+    htmlContents,
+    htmlContent: contents.size === 1 ? contents.values().next().value : undefined,
   };
 }

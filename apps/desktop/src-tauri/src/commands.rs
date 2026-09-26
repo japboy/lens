@@ -101,14 +101,7 @@ fn html_output(
     representation_id: Uuid,
     resource_id: &str,
 ) -> Result<String, String> {
-    let representation = lens
-        .representation
-        .as_ref()
-        .filter(|representation| {
-            lens.operation_id == Some(operation_id)
-                && representation.representation_id == representation_id
-        })
-        .ok_or("HTML output representation is no longer available")?;
+    let representation = response_representation(lens, operation_id, representation_id)?;
     representation
         .output_blocks
         .iter()
@@ -121,6 +114,51 @@ fn html_output(
             _ => None,
         })
         .ok_or_else(|| "HTML output resource is no longer available".into())
+}
+
+fn response_representation(
+    lens: &LensState,
+    operation_id: Uuid,
+    representation_id: Uuid,
+) -> Result<&crate::model::LensRepresentation, String> {
+    if lens.operation_id != Some(operation_id) {
+        return Err("Response operation is no longer available".into());
+    }
+    lens.response_history
+        .representation(representation_id)
+        .or_else(|| {
+            lens.representation
+                .as_ref()
+                .filter(|response| response.representation_id == representation_id)
+        })
+        .ok_or_else(|| "Response is no longer available".into())
+}
+
+#[tauri::command]
+pub fn get_response_block<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    state: State<'_, AppState>,
+    operation_id: Uuid,
+    representation_id: Uuid,
+    block_index: usize,
+) -> Result<crate::model::LensOutputBlock, String> {
+    if webview.label() != "lens-overlay" {
+        return Err("Response output is only available to the Lens overlay".into());
+    }
+    response_block(&state.lens()?, operation_id, representation_id, block_index)
+}
+
+fn response_block(
+    lens: &LensState,
+    operation_id: Uuid,
+    representation_id: Uuid,
+    block_index: usize,
+) -> Result<crate::model::LensOutputBlock, String> {
+    response_representation(lens, operation_id, representation_id)?
+        .output_blocks
+        .get(block_index)
+        .cloned()
+        .ok_or_else(|| "Response block is no longer available".into())
 }
 
 pub async fn select_agent<R: tauri::Runtime>(
@@ -749,6 +787,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         projection: projection_ref,
         output_blocks: Vec::new(),
         representation: None,
+        response_history: Default::default(),
         pending_representation: None,
         live,
         agent: None,

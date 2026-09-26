@@ -135,6 +135,27 @@ fn lock_error<T>(_: T) -> String {
 }
 
 impl SessionViewStore {
+    /// Isolated debug-only replay fixture; the ordinary history loader never uses this.
+    #[cfg(debug_assertions)]
+    pub fn install_validation_document(&self, document: SessionDocument) -> Result<(), String> {
+        let mut view = self.inner.lock().map_err(lock_error)?;
+        let revision = view
+            .revision
+            .checked_add(1)
+            .ok_or("Session revision exhausted")?;
+        *view = SessionView {
+            revision,
+            phase: ViewPhase::Ready,
+            agent: Some(AgentKind::Claude),
+            session_id: Some("synthetic-response-history".into()),
+            title: Some("Synthetic response history".into()),
+            generation: Uuid::new_v4(),
+            document: Some(document),
+            ..Default::default()
+        };
+        Ok(())
+    }
+
     pub fn phase(&self) -> Result<ViewPhase, String> {
         self.inner.lock().map(|view| view.phase).map_err(lock_error)
     }

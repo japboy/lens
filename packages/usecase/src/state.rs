@@ -853,7 +853,8 @@ mod tests {
             output_blocks: vec![crate::model::LensOutputBlock::Markdown {
                 message_id: None,
                 text: "Settled representation".into(),
-            }],
+            }]
+            .into(),
         }
     }
 
@@ -940,6 +941,15 @@ mod tests {
         let config = AppConfig::new("/A".into());
         let mut snapshot = AppSnapshot::new(config.clone());
         snapshot.lens = canonical_state(1);
+        snapshot
+            .lens
+            .response_history
+            .append(
+                snapshot.lens.representation.clone().unwrap(),
+                Some("retained-session".into()),
+            )
+            .unwrap();
+        let retained_history = snapshot.lens.response_history.clone();
         snapshot.lens.stage = LensStage::Transforming;
         let key = AgentRunKey {
             operation_id: snapshot.lens.operation_id.unwrap(),
@@ -966,6 +976,7 @@ mod tests {
         snapshot.config = config.clone();
         assert!(!agent_run_has_authority(&snapshot, key, &config));
         assert_eq!(snapshot.lens.stage, LensStage::Failed);
+        assert_eq!(snapshot.lens.response_history, retained_history);
     }
 
     #[test]

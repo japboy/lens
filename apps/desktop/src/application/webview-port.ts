@@ -7,6 +7,7 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AppConfig,
+  LensOutputBlock,
   PromptPresetChange,
   AgentKind,
   ManagedAgentKind,
@@ -46,6 +47,11 @@ export interface WebviewPort {
   subscribeToSettingsDestination(
     listener: (destination: SettingsDestination) => void,
   ): Promise<Unlisten>;
+  getResponseBlock(
+    operationId: string,
+    representationId: string,
+    blockIndex: number,
+  ): Promise<LensOutputBlock>;
   getHtmlOutput(operationId: string, representationId: string, resourceId: string): Promise<string>;
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
@@ -111,6 +117,8 @@ export const tauriWebviewPort: WebviewPort = {
       );
       if (destination) listener(destination);
     }),
+  getResponseBlock: (operationId, representationId, blockIndex) =>
+    invoke<LensOutputBlock>("get_response_block", { operationId, representationId, blockIndex }),
   getHtmlOutput: (operationId, representationId, resourceId) =>
     invoke<string>("get_html_output", { operationId, representationId, resourceId }),
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),

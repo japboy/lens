@@ -2,6 +2,7 @@
 use super::*;
 use crate::session_document::{DocumentBlock, DocumentEntry, MessageRole};
 use serde::{Deserialize, Serialize};
+use usecase::response_history::LensResponseBlockDescriptor;
 
 #[derive(Clone, Serialize)]
 pub(crate) struct WireView {
@@ -13,7 +14,7 @@ pub(crate) struct WireView {
     title: Option<String>,
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    document: Option<SessionDocument>,
+    interpretation: Option<HistoryInterpretation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     conversation: Option<Manifest>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -29,6 +30,40 @@ struct Patch {
     base_revision: u64,
     index: usize,
     entry: serde_json::Value,
+}
+
+#[derive(Clone, Serialize)]
+struct HistoryInterpretation {
+    responses: Vec<HistoryResponse>,
+}
+
+#[derive(Clone, Serialize)]
+struct HistoryResponse {
+    response_id: String,
+    sequence: usize,
+    blocks: Vec<HistoryBlock>,
+}
+
+#[derive(Clone, Serialize)]
+struct HistoryBlock {
+    #[serde(flatten)]
+    descriptor: LensResponseBlockDescriptor,
+    // Exact reference into the unchanged Conversation document, not the filtered index.
+    source: serde_json::Value,
+}
+
+fn deferred_block(
+    entry: &DocumentEntry,
+    revision: u64,
+    index: usize,
+    kind: &str,
+    length: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type":"deferred", "entry_id":entry_id(entry), "block_index":index,
+        "content_type":kind, "byte_length":length, "revision":revision,
+        "append_only": matches!(entry, DocumentEntry::Message { .. }) && kind == "markdown"
+    })
 }
 
 fn entry_id(entry: &DocumentEntry) -> &str {
@@ -51,13 +86,7 @@ fn block_kind_length(block: &DocumentBlock) -> (&'static str, usize) {
 }
 fn manifest_entry(entry: &DocumentEntry, revision: u64) -> serde_json::Value {
     let id = entry_id(entry);
-    let deferred = |index, kind, length| {
-        serde_json::json!({
-            "type":"deferred", "entry_id":id, "block_index":index,
-            "content_type":kind, "byte_length":length, "revision":revision,
-            "append_only": matches!(entry, DocumentEntry::Message { .. }) && kind == "markdown"
-        })
-    };
+    let deferred = |index, kind, length| deferred_block(entry, revision, index, kind, length);
     let mut content: Vec<_> = blocks(entry)
         .iter()
         .enumerate()
@@ -84,60 +113,114 @@ fn manifest_entry(entry: &DocumentEntry, revision: u64) -> serde_json::Value {
     }
 }
 
-/// Select the update containing the latest successful media result. A replay does
-/// not attest prompt completion: later prompts, progress, or unsuccessful calls
-/// must not hide that result. Text-only histories keep their last-answer behavior.
-fn history_answer_entries(document: &SessionDocument) -> &[DocumentEntry] {
-    let is_user = |entry: &DocumentEntry| {
-        matches!(
+/// Replayed messages have no Lens commit receipt. Present every assistant answer
+/// and completed tool artifact, grouped at user-message boundaries, without inventing
+/// live run/projection provenance or copying content into the wire snapshot.
+fn history_interpretation(view: &SessionView, document: &SessionDocument) -> HistoryInterpretation {
+    let mut responses = Vec::new();
+    let mut current: Option<HistoryResponse> = None;
+    for (entry_index, entry) in document.entries.iter().enumerate() {
+        if matches!(
             entry,
             DocumentEntry::Message {
                 role: MessageRole::User,
                 ..
             }
-        )
-    };
-    let has_media = |blocks: &[DocumentBlock]| {
-        blocks.iter().any(|block| {
-            matches!(
-                block,
-                DocumentBlock::Html { .. } | DocumentBlock::Image { .. }
-            )
-        })
-    };
-    let latest_media = document.entries.iter().rposition(|entry| match entry {
-        DocumentEntry::Message {
-            role: MessageRole::Assistant,
-            blocks,
-            ..
-        } => has_media(blocks),
-        DocumentEntry::Message {
-            role: MessageRole::User,
-            ..
-        } => false,
-        DocumentEntry::Tool {
-            status,
-            blocks,
-            accepted_html,
-            ..
-        } => {
-            *status == agent_client_protocol::schema::v1::ToolCallStatus::Completed
-                && (accepted_html.is_some() || has_media(blocks))
+        ) {
+            if let Some(response) = current.take() {
+                responses.push(response);
+            }
+            continue;
         }
-    });
-    let end = latest_media
-        .and_then(|index| {
-            document.entries[index + 1..]
-                .iter()
-                .position(is_user)
-                .map(|offset| index + 1 + offset)
-        })
-        .unwrap_or(document.entries.len());
-    let start = document.entries[..end]
-        .iter()
-        .rposition(is_user)
-        .map_or(0, |index| index + 1);
-    &document.entries[start..end]
+        let assistant = matches!(
+            entry,
+            DocumentEntry::Message {
+                role: MessageRole::Assistant,
+                ..
+            }
+        );
+        if !assistant
+            && !matches!(
+                entry,
+                DocumentEntry::Tool {
+                    status: agent_client_protocol::schema::v1::ToolCallStatus::Completed,
+                    ..
+                }
+            )
+        {
+            continue;
+        }
+        let revision = view
+            .entry_revisions
+            .get(entry_index)
+            .copied()
+            .unwrap_or(view.revision);
+        let mut push =
+            |source_index: usize, kind: &str, byte_length: usize, block: Option<&DocumentBlock>| {
+                let response = current.get_or_insert_with(|| {
+                    let sequence = responses.len() + 1;
+                    HistoryResponse {
+                        response_id: format!("history:{}:{sequence}", view.generation),
+                        sequence,
+                        blocks: Vec::new(),
+                    }
+                });
+                let block_index = response.blocks.len();
+                let descriptor = match block {
+                    Some(DocumentBlock::Markdown { .. }) => LensResponseBlockDescriptor::Markdown {
+                        block_index,
+                        byte_length,
+                    },
+                    Some(DocumentBlock::Image { mime_type, .. }) => {
+                        LensResponseBlockDescriptor::Image {
+                            block_index,
+                            byte_length,
+                            mime_type: mime_type.clone(),
+                        }
+                    }
+                    Some(DocumentBlock::Unsupported { content_type }) => {
+                        LensResponseBlockDescriptor::Unsupported {
+                            block_index,
+                            content_type: content_type.clone(),
+                        }
+                    }
+                    Some(DocumentBlock::Html { .. }) | None => LensResponseBlockDescriptor::Html {
+                        block_index,
+                        byte_length,
+                        mime_type: "text/html".into(),
+                        resource_id: format!("{}:{block_index}", response.response_id),
+                        uri: format!("urn:lens:{}:{block_index}", response.response_id),
+                    },
+                };
+                response.blocks.push(HistoryBlock {
+                    descriptor,
+                    source: deferred_block(entry, revision, source_index, kind, byte_length),
+                });
+            };
+        for (source_index, block) in blocks(entry).iter().enumerate() {
+            if assistant
+                || matches!(
+                    block,
+                    DocumentBlock::Image { .. } | DocumentBlock::Html { .. }
+                )
+            {
+                let (kind, length) = block_kind_length(block);
+                push(source_index, kind, length, Some(block));
+            }
+        }
+        if let DocumentEntry::Tool {
+            accepted_html: Some(html),
+            blocks,
+            ..
+        } = entry
+        {
+            push(blocks.len(), "html", html.len(), None);
+        }
+    }
+    if let Some(response) = current {
+        responses.push(response);
+    }
+    HistoryInterpretation { responses }
 }
 
 impl SessionView {
@@ -171,49 +254,10 @@ impl SessionView {
         } else {
             None
         };
-        // Interpretation receives one selected update; Conversation retains every entry.
-        let document = if self.phase == ViewPhase::Ready {
-            self.document.as_ref().map(|doc| {
-                let mut projection = SessionDocument::default();
-                projection.entries = history_answer_entries(doc)
-                    .iter()
-                    .filter_map(|entry| match entry {
-                        DocumentEntry::Message {
-                            role: MessageRole::Assistant,
-                            ..
-                        } => Some(entry.clone()),
-                        DocumentEntry::Tool {
-                            id,
-                            title,
-                            status,
-                            blocks,
-                            accepted_html,
-                        } if *status
-                            == agent_client_protocol::schema::v1::ToolCallStatus::Completed =>
-                        {
-                            Some(DocumentEntry::Tool {
-                                id: id.clone(),
-                                title: title.clone(),
-                                status: *status,
-                                blocks: blocks
-                                    .iter()
-                                    .filter(|block| {
-                                        matches!(
-                                            block,
-                                            DocumentBlock::Html { .. }
-                                                | DocumentBlock::Image { .. }
-                                        )
-                                    })
-                                    .cloned()
-                                    .collect(),
-                                accepted_html: accepted_html.clone(),
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                projection
-            })
+        let interpretation = if self.phase == ViewPhase::Ready {
+            self.document
+                .as_ref()
+                .map(|document| history_interpretation(self, document))
         } else {
             None
         };
@@ -225,7 +269,7 @@ impl SessionView {
             session_id: self.session_id.clone(),
             title: self.title.clone(),
             error: self.error.clone(),
-            document,
+            interpretation,
             conversation,
             patch,
         }
@@ -405,219 +449,178 @@ mod tests {
         }
     }
 
-    #[test]
-    fn history_retains_successful_output_across_unpublished_updates() {
-        let original = vec![
-            message("u0", MessageRole::User, "initial"),
-            publication("p0", ToolCallStatus::Completed, Some("<p>first</p>")),
-            message("a0", MessageRole::Assistant, "first narrative"),
-        ];
-        let expected = history_view(original.clone())
-            .wire(None)
-            .document
-            .unwrap()
-            .entries;
-        for status in [
-            None,
-            Some(ToolCallStatus::Pending),
-            Some(ToolCallStatus::InProgress),
-            Some(ToolCallStatus::Failed),
-            Some(ToolCallStatus::Completed),
-        ] {
-            let mut entries = original.clone();
-            entries.push(message("u1", MessageRole::User, "update"));
-            entries.push(message("a1", MessageRole::Assistant, "working on update"));
-            if let Some(status) = status {
-                entries.push(publication("p1", status, None));
-            }
-            entries.push(message("u2", MessageRole::User, "another update"));
-            let count = entries.len();
-            let wire = history_view(entries).wire(None);
-            assert_eq!(wire.document.unwrap().entries, expected);
-            assert_eq!(wire.conversation.unwrap().entries.len(), count);
-        }
+    fn interpretation(view: &SessionView) -> serde_json::Value {
+        serde_json::to_value(view.wire(None)).unwrap()["interpretation"].clone()
     }
 
     #[test]
-    fn history_selects_new_success_without_mixing_update_narratives() {
-        let wire = history_view(vec![
+    fn history_retains_all_turns_including_text_only_updates_between_media() {
+        let view = history_view(vec![
             message("u0", MessageRole::User, "initial"),
             publication("p0", ToolCallStatus::Completed, Some("<p>first</p>")),
             message("a0", MessageRole::Assistant, "first narrative"),
             message("u1", MessageRole::User, "update"),
-            publication("p1", ToolCallStatus::Completed, Some("<p>second</p>")),
-            message("a1", MessageRole::Assistant, "second narrative"),
-            publication("pending-after-success", ToolCallStatus::Pending, None),
-            message("u2", MessageRole::User, "pending"),
-        ])
-        .wire(None);
+            message("a1", MessageRole::Assistant, "second text-only narrative"),
+            message("u2", MessageRole::User, "update again"),
+            publication("p2", ToolCallStatus::Completed, Some("<p>third</p>")),
+            message("a2", MessageRole::Assistant, "third narrative"),
+        ]);
+        let result = interpretation(&view);
+        let responses = result["responses"].as_array().unwrap();
+        assert_eq!(responses.len(), 3);
         assert_eq!(
-            wire.document.unwrap().entries,
-            vec![
-                publication("p1", ToolCallStatus::Completed, Some("<p>second</p>")),
-                message("a1", MessageRole::Assistant, "second narrative"),
-            ]
+            responses
+                .iter()
+                .map(|r| r["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
         );
-    }
-
-    #[test]
-    fn history_retains_assistant_media_from_replayed_chunks() {
-        use agent_client_protocol::schema::v1::{
-            ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent,
-            SessionUpdate, TextContent, TextResourceContents,
-        };
-        let html = ContentBlock::Resource(EmbeddedResource::new(
-            EmbeddedResourceResource::TextResourceContents(
-                TextResourceContents::new("<p>Synthetic result</p>", "urn:test:retained-html")
-                    .mime_type("text/html"),
-            ),
-        ));
-        let image = ContentBlock::Image(ImageContent::new("c3ludGhldGlj", "image/png"));
-        for media in [html, image] {
-            let mut document = SessionDocument::default();
-            document
-                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(
-                    ContentBlock::Text(TextContent::new("initial")),
-                )))
-                .unwrap();
-            document
-                .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                    media.clone(),
-                )))
-                .unwrap();
-            let expected = document.entries[1..].to_vec();
-            // User-supplied media must not replace the preceding assistant result.
-            document
-                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(media)))
-                .unwrap();
-            document
-                .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                    ContentBlock::Text(TextContent::new("working on the update")),
-                )))
-                .unwrap();
-            let retained = history_view(document.entries.clone()).wire(None);
-            assert_eq!(retained.document.unwrap().entries, expected);
-            document
-                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(
-                    ContentBlock::Text(TextContent::new("another pending update")),
-                )))
-                .unwrap();
-            let count = document.entries.len();
-            let wire = history_view(document.entries).wire(None);
-            assert_eq!(wire.document.unwrap().entries, expected);
-            assert_eq!(wire.conversation.unwrap().entries.len(), count);
+        assert_eq!(responses[0]["blocks"].as_array().unwrap().len(), 2);
+        assert_eq!(responses[1]["blocks"][0]["source"]["entry_id"], "a1");
+        assert_eq!(responses[2]["blocks"][0]["source"]["entry_id"], "p2");
+        assert_ne!(
+            responses[0]["blocks"][0]["resource_id"],
+            responses[2]["blocks"][0]["resource_id"]
+        );
+        assert_eq!(view.wire(None).conversation.unwrap().entries.len(), 8);
+        for response in responses {
+            assert!(response.get("run_id").is_none());
+            assert!(response.get("projection").is_none());
         }
     }
 
     #[test]
-    fn history_does_not_replace_assistant_media_with_unsuccessful_tool_media() {
-        let output = DocumentEntry::Message {
-            id: "assistant-media".into(),
-            role: MessageRole::Assistant,
-            blocks: vec![DocumentBlock::Html {
-                text: "<p>retained result</p>".into(),
-            }],
-        };
+    fn history_keeps_assistant_messages_without_claiming_prompt_completion() {
+        for status in [
+            ToolCallStatus::Pending,
+            ToolCallStatus::InProgress,
+            ToolCallStatus::Failed,
+            ToolCallStatus::Completed,
+        ] {
+            let view = history_view(vec![
+                message("u0", MessageRole::User, "initial"),
+                publication("p0", ToolCallStatus::Completed, Some("<p>first</p>")),
+                message("a0", MessageRole::Assistant, "first narrative"),
+                message("u1", MessageRole::User, "update"),
+                message("a1", MessageRole::Assistant, "replayed assistant text"),
+                publication("p1", status, None),
+                message("u2", MessageRole::User, "unanswered"),
+            ]);
+            let result = interpretation(&view);
+            assert_eq!(result["responses"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                result["responses"][1]["blocks"].as_array().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                result["responses"][1]["blocks"][0]["source"]["entry_id"],
+                "a1"
+            );
+        }
+    }
+
+    #[test]
+    fn history_artifact_references_preserve_original_indices_and_revisions() {
+        let mut view = fixture();
+        view.phase = ViewPhase::Ready;
+        let wire = serde_json::to_value(view.wire(None)).unwrap();
+        let response = &wire["interpretation"]["responses"][0];
+        assert_eq!(response["blocks"].as_array().unwrap().len(), 3);
+        // Tool prose at source index 0 is not Interpretation content. The image is
+        // response index 1/source index 1, and accepted HTML follows all tool blocks.
+        let image = &response["blocks"][1];
+        let html = &response["blocks"][2];
+        assert_eq!(
+            image["source"],
+            wire["conversation"]["entries"][1]["blocks"][1]
+        );
+        assert_eq!(
+            html["source"],
+            wire["conversation"]["entries"][1]["blocks"][2]
+        );
+        assert_eq!(image["mime_type"], "image/png");
+        assert_eq!(html["source"]["revision"], 7);
+        let fetched = read_block(&view, request(&view, "tool:1", 2, 7, 0)).unwrap();
+        assert!(
+            matches!(fetched.block, DocumentBlock::Html { text } if text.contains("private HTML"))
+        );
+        let serialized = wire.to_string();
+        assert!(wire.get("document").is_none());
+        for body in ["replacement body", "private-image-data", "private HTML"] {
+            assert!(!serialized.contains(body));
+        }
+    }
+
+    #[test]
+    fn history_excludes_user_media_and_unsuccessful_tool_artifacts() {
         for status in [
             ToolCallStatus::Pending,
             ToolCallStatus::InProgress,
             ToolCallStatus::Failed,
         ] {
-            let wire = history_view(vec![
-                output.clone(),
-                message("u1", MessageRole::User, "update"),
+            let mut user = message("u1", MessageRole::User, "question");
+            if let DocumentEntry::Message { blocks, .. } = &mut user {
+                blocks.push(DocumentBlock::Html {
+                    text: "private user media".into(),
+                });
+            }
+            let view = history_view(vec![
+                message("a0", MessageRole::Assistant, "earlier text answer"),
+                user,
                 DocumentEntry::Tool {
-                    id: "unsuccessful-media".into(),
-                    title: "Synthetic media".into(),
+                    id: "failed-media".into(),
+                    title: "Tool".into(),
                     status,
                     blocks: vec![DocumentBlock::Image {
                         mime_type: "image/png".into(),
                         data: "c3ludGhldGlj".into(),
                     }],
-                    accepted_html: None,
+                    accepted_html: Some("must not be admitted".into()),
                 },
-            ])
-            .wire(None);
-            assert_eq!(wire.document.unwrap().entries, vec![output.clone()]);
+                DocumentEntry::Message {
+                    id: "assistant-media".into(),
+                    role: MessageRole::Assistant,
+                    blocks: vec![DocumentBlock::Html {
+                        text: "assistant HTML".into(),
+                    }],
+                },
+            ]);
+            let result = interpretation(&view);
+            assert_eq!(result["responses"].as_array().unwrap().len(), 2);
+            assert_eq!(result["responses"][0]["blocks"][0]["type"], "markdown");
+            assert_eq!(
+                result["responses"][1]["blocks"].as_array().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                result["responses"][1]["blocks"][0]["source"]["entry_id"],
+                "assistant-media"
+            );
         }
     }
 
     #[test]
-    fn history_selects_new_assistant_media_without_mixing_updates() {
-        let output = DocumentEntry::Message {
-            id: "new-media".into(),
-            role: MessageRole::Assistant,
-            blocks: vec![DocumentBlock::Html {
-                text: "<p>new assistant result</p>".into(),
-            }],
-        };
-        let narrative = message("a1", MessageRole::Assistant, "new narrative");
-        let wire = history_view(vec![
-            message("u0", MessageRole::User, "initial"),
-            publication("p0", ToolCallStatus::Completed, Some("<p>old result</p>")),
-            message("a0", MessageRole::Assistant, "old narrative"),
-            message("u1", MessageRole::User, "update"),
-            output.clone(),
-            narrative.clone(),
-            message("u2", MessageRole::User, "pending"),
-        ])
-        .wire(None);
-        assert_eq!(wire.document.unwrap().entries, vec![output, narrative]);
-    }
-
-    #[test]
-    fn history_retains_legacy_media_and_preserves_assistant_only_selection() {
-        for block in [
-            DocumentBlock::Html {
-                text: "<p>legacy</p>".into(),
-            },
-            DocumentBlock::Image {
-                mime_type: "image/png".into(),
-                data: "synthetic".into(),
-            },
-        ] {
-            let output = DocumentEntry::Tool {
-                id: "media".into(),
-                title: "media".into(),
-                status: ToolCallStatus::Completed,
-                blocks: vec![block],
-                accepted_html: None,
-            };
-            let wire = history_view(vec![
-                output.clone(),
-                message("u", MessageRole::User, "pending"),
-            ])
-            .wire(None);
-            assert_eq!(wire.document.unwrap().entries, vec![output]);
-        }
-        let answer = message("a", MessageRole::Assistant, "text answer");
-        let wire = history_view(vec![
-            answer.clone(),
-            message("u", MessageRole::User, "pending"),
-        ])
-        .wire(None);
-        assert!(wire.document.unwrap().entries.is_empty());
-        let latest = message("latest", MessageRole::Assistant, "new text answer");
+    fn history_manifest_size_does_not_scale_with_retained_body_bytes() {
+        let view = history_view(vec![
+            message("a0", MessageRole::Assistant, &"a".repeat(1024 * 1024)),
+            message("u1", MessageRole::User, "follow-up"),
+            message("a1", MessageRole::Assistant, &"b".repeat(1024 * 1024)),
+        ]);
+        let wire = serde_json::to_vec(&view.wire(None)).unwrap();
+        assert!(wire.len() < 4096);
         assert_eq!(
-            history_view(vec![
-                answer,
-                message("u", MessageRole::User, "question"),
-                latest.clone()
-            ])
-            .wire(None)
-            .document
-            .unwrap()
-            .entries,
-            vec![latest]
+            interpretation(&view)["responses"].as_array().unwrap().len(),
+            2
         );
+        let block = read_block(&view, request(&view, "a0", 0, view.revision, 0)).unwrap();
         assert!(
-            history_view(vec![message("u", MessageRole::User, "unanswered")])
-                .wire(None)
-                .document
-                .unwrap()
-                .entries
-                .is_empty()
+            matches!(block.block, DocumentBlock::Markdown { text } if text.len() == 1024 * 1024)
         );
+        let empty = history_view(vec![message("u0", MessageRole::User, "unanswered")]);
+        assert!(interpretation(&empty)["responses"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

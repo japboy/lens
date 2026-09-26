@@ -33,6 +33,8 @@ mod platform;
 mod quit;
 #[cfg(debug_assertions)]
 mod quit_validation;
+#[cfg(debug_assertions)]
+mod response_history_validation;
 mod session_controls;
 mod session_document;
 mod session_history;
@@ -134,6 +136,7 @@ fn command_handler<R: tauri::Runtime>(
             session_view::wire::get_session_block,
             session_view::close_session_view,
             commands::get_html_output,
+            commands::get_response_block,
             commands::set_agent,
             commands::update_managed_agent,
             commands::save_external_agent,
@@ -801,6 +804,12 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
         output_blocks: rich_output_validation_blocks()?,
         ..model::LensState::default()
     };
+    if std::env::var("LENS_VALIDATE_RICH_OUTPUT").as_deref() == Ok("history") {
+        return response_history_validation::run(app, completed_state, target_set);
+    }
+    if std::env::var("LENS_VALIDATE_RICH_OUTPUT").as_deref() == Ok("history-replay") {
+        return response_history_validation::run_replay(app, target_set);
+    }
     let mut progress_state = completed_state.clone();
     progress_state.stage = model::LensStage::Transforming;
     app_state::publish_lens_state(&app, progress_state)?;

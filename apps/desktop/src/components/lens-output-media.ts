@@ -3,6 +3,11 @@ import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import { keyed } from "lit/directives/keyed.js";
 import { prepareHtmlPreview } from "../html-output";
+import {
+  OUTPUT_MEDIA_DEMAND_EVENT,
+  dispatchComponentEvent,
+  type OutputMediaDemand,
+} from "./events";
 import type {
   PresentedOutputImage,
   PresentedOutputHtml,
@@ -43,7 +48,7 @@ interface LoadedImage {
 
 @customElement("lens-output-media")
 export class LensOutputMedia extends LitElement {
-  private preparedHtml: PreparedHtml | undefined;
+  private preparedHtml = new Map<string, PreparedHtml>();
   private static nextId = 0;
   private readonly detailsId = `lens-output-media-details-${++LensOutputMedia.nextId}`;
 
@@ -53,8 +58,29 @@ export class LensOutputMedia extends LitElement {
   @property({ attribute: false })
   htmlContent: HtmlOutputContent | undefined;
 
+  /** Response-scoped media IDs prevent equal resource IDs from sharing bodies. */
+  @property({ attribute: false })
+  htmlContents: ReadonlyMap<string, HtmlOutputContent> | undefined;
+
+  @property({ attribute: false })
+  mediaErrors: ReadonlyMap<string, string> = new Map();
+
+  /** One parent-owned Notification presentation, mounted only inside fullscreen. */
+  @property({ attribute: false })
+  notificationContent: unknown;
+
+  private presentationIdentity: string | undefined;
+  private navigationRevision = 0;
+  private navigation:
+    | { media: PresentedOutputMedia; resolve: (value: boolean) => void }
+    | undefined;
+  private fullscreenExit:
+    | { promise: Promise<boolean>; resolve: (value: boolean) => void }
+    | undefined;
+  private requestedMediaIdentity: string | undefined;
+
   @state()
-  private renderedHtml: { resourceId: string; content: string } | undefined;
+  private renderedHtml = new Map<string, { resourceId: string; content: string }>();
 
   @state()
   private selectedId: string | undefined;
@@ -74,6 +100,7 @@ export class LensOutputMedia extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.ownerDocument.addEventListener("fullscreenchange", this.handleFullscreenChange);
+    if (this.hasUpdated) this.requestUpdate();
   }
 
   private resizeObserver: ResizeObserver | undefined;
@@ -85,33 +112,52 @@ export class LensOutputMedia extends LitElement {
   }
 
   protected willUpdate(changed: PropertyValues<this>): void {
-    this.prepareHtml();
-    if (!changed.has("media")) return;
-    const previous = changed.get("media") ?? [];
-    if (
-      this.media.length === previous.length &&
-      this.media.every((item, index) => this.sameMedia(item, previous[index]))
-    )
-      return;
-    const retained = this.media.find((item) => item.id === this.selectedId);
-    const oldSelected = previous.find((item) => item.id === this.selectedId);
-    if (!retained || !this.sameMedia(retained, oldSelected)) {
-      this.closeExpanded();
-      this.selectedId = this.media[0]?.id;
-      this.overlay = "none";
-      this.fullscreenError = "";
+    if (changed.has("media")) {
+      const previous = changed.get("media") ?? [];
+      const retained = this.media.find((item) => item.id === this.selectedId);
+      const oldSelected = previous.find((item) => item.id === this.selectedId);
+      if (!retained || !this.sameMedia(retained, oldSelected)) {
+        this.closeExpanded();
+        this.selectedId = this.media[0]?.id;
+        this.overlay = "none";
+        this.fullscreenError = "";
+      }
+      this.loadedImages = new Map(
+        this.media.flatMap((item) => {
+          if (item.kind !== "image") return [];
+          const loaded = this.loadedImages.get(item.id);
+          return loaded && loaded.source === item.source ? [[item.id, loaded] as const] : [];
+        }),
+      );
+      this.alignAfterUpdate =
+        this.media.length !== previous.length ||
+        this.media.some((item, index) => !this.sameMedia(item, previous[index]));
     }
-    this.loadedImages = new Map(
-      this.media.flatMap((item) => {
-        if (item.kind !== "image") return [];
-        const loaded = this.loadedImages.get(item.id);
-        return loaded?.source === item.source ? [[item.id, loaded] as const] : [];
-      }),
-    );
-    this.alignAfterUpdate = true;
+    this.prepareHtml();
+  }
+
+  /** Bound body demand and HTML preparation to the selection and its neighbors. */
+  private get mountedMedia(): readonly PresentedOutputMedia[] {
+    const selected = this.selectedIndex;
+    return this.media.slice(Math.max(0, selected - 1), selected + 2);
+  }
+
+  private contentFor(item: PresentedOutputHtml): HtmlOutputContent | undefined {
+    const content = this.htmlContents
+      ? this.htmlContents.get(item.id)
+      : this.media.filter((media) => media.kind === "html").length === 1
+        ? this.htmlContent
+        : undefined;
+    return content?.resourceId === item.resourceId ? content : undefined;
   }
 
   protected updated(): void {
+    const ids = this.mountedMedia.map((item) => item.id);
+    const identity = JSON.stringify(ids);
+    if (identity !== this.requestedMediaIdentity) {
+      this.requestedMediaIdentity = identity;
+      dispatchComponentEvent<OutputMediaDemand>(this, OUTPUT_MEDIA_DEMAND_EVENT, { mediaIds: ids });
+    }
     const rail = this.querySelector<HTMLElement>(".output-media-rail");
     if (rail && !this.resizeObserver && typeof ResizeObserver !== "undefined") {
       this.resizeObserver = new ResizeObserver(() => this.alignSelection());
@@ -121,15 +167,32 @@ export class LensOutputMedia extends LitElement {
       this.alignAfterUpdate = false;
       this.alignSelection();
     }
+    const presentation = {
+      selectedMediaId: this.media[this.selectedIndex]?.id,
+      fullscreen: this.fullscreen.status !== "idle",
+    };
+    const presentationIdentity = JSON.stringify(presentation);
+    if (presentationIdentity !== this.presentationIdentity) {
+      this.presentationIdentity = presentationIdentity;
+      dispatchComponentEvent(this, "lens-media-presentation", presentation);
+    }
+    this.completeNavigation();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.navigationRevision;
+    this.navigation?.resolve(false);
+    this.navigation = undefined;
+    this.fullscreenExit?.resolve(false);
+    this.fullscreenExit = undefined;
+    this.presentationIdentity = undefined;
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
     if (this.scrollFrame !== undefined) cancelAnimationFrame(this.scrollFrame);
     this.ownerDocument.removeEventListener("fullscreenchange", this.handleFullscreenChange);
     this.closeExpanded();
+    this.requestedMediaIdentity = undefined;
   }
 
   private get selectedIndex(): number {
@@ -140,51 +203,61 @@ export class LensOutputMedia extends LitElement {
   }
 
   private imageState(item: PresentedOutputImage): ImageLoadState {
+    if (this.mediaErrors.has(item.id)) return { status: "failed" };
     const loaded = this.loadedImages.get(item.id);
-    return loaded?.source === item.source ? loaded.state : { status: "loading" };
+    return loaded && loaded.source === item.source ? loaded.state : { status: "loading" };
   }
 
   private sameMedia(item: PresentedOutputMedia, previous?: PresentedOutputMedia): boolean {
     if (!previous || item.id !== previous.id || item.kind !== previous.kind) return false;
     return item.kind === "image"
-      ? previous.kind === "image" && item.source === previous.source
+      ? previous.kind === "image" &&
+          (!item.source || !previous.source || item.source === previous.source)
       : previous.kind === "html" && item.resourceId === previous.resourceId;
   }
 
   private htmlState(item: PresentedOutputHtml): "loading" | "ready" | "failed" {
-    const content = this.htmlContent;
+    const content = this.contentFor(item);
     if (content?.resourceId !== item.resourceId) return "loading";
     if (content.status !== "ready") return content.status;
-    if (this.preparedHtml?.id === item.id && this.preparedHtml.status === "failed") return "failed";
-    const rendered = this.renderedHtml;
+    if (this.preparedHtml.get(item.id)?.status === "failed") return "failed";
+    const rendered = this.renderedHtml.get(item.id);
     return rendered?.resourceId === item.resourceId && rendered.content === content.content
       ? "ready"
       : "loading";
   }
 
   private prepareHtml(): void {
-    const item = this.media.find((media) => media.kind === "html");
-    const content = this.htmlContent;
-    if (!item || content?.resourceId !== item.resourceId || content.status !== "ready") {
-      this.preparedHtml = undefined;
-      this.renderedHtml = undefined;
-      return;
+    const mounted = this.mountedMedia;
+    const retained = new Set(mounted.map((item) => item.id));
+    for (const id of this.preparedHtml.keys()) if (!retained.has(id)) this.preparedHtml.delete(id);
+    for (const id of this.renderedHtml.keys()) {
+      if (id !== this.media[this.selectedIndex]?.id) this.renderedHtml.delete(id);
     }
-    if (this.preparedHtml?.id === item.id && this.preparedHtml.content === content.content) return;
-    this.renderedHtml = undefined;
-    const identity = { id: item.id, resourceId: item.resourceId, content: content.content };
-    try {
-      this.preparedHtml = {
-        ...identity,
-        status: "ready",
-        preview: prepareHtmlPreview(content.content),
-      };
-    } catch (error) {
-      this.preparedHtml = {
-        ...identity,
-        status: "failed",
-        message: error instanceof Error ? error.message : "HTML could not be displayed.",
-      };
+    for (const item of mounted) {
+      if (item.kind !== "html") continue;
+      const content = this.contentFor(item);
+      if (content?.status !== "ready") {
+        this.preparedHtml.delete(item.id);
+        this.renderedHtml.delete(item.id);
+        continue;
+      }
+      if (this.preparedHtml.get(item.id)?.content === content.content) continue;
+      this.renderedHtml.delete(item.id);
+      const identity = { id: item.id, resourceId: item.resourceId, content: content.content };
+      try {
+        this.preparedHtml.set(item.id, {
+          ...identity,
+          status: "ready",
+          preview: prepareHtmlPreview(content.content),
+        });
+      } catch (error) {
+        this.preparedHtml.set(item.id, {
+          ...identity,
+          status: "failed",
+          message: error instanceof Error ? error.message : "HTML could not be displayed.",
+        });
+      }
     }
   }
 
@@ -192,6 +265,7 @@ export class LensOutputMedia extends LitElement {
     const item = this.media[this.selectedIndex];
     if (!item) return nothing;
     const count = this.media.length;
+    const prepared = this.preparedHtml.get(item.id);
     const ordinal = this.selectedIndex + 1;
     const loaded = item.kind === "image" ? this.imageState(item) : undefined;
     const ready =
@@ -326,10 +400,8 @@ export class LensOutputMedia extends LitElement {
               }
             </dl>
             ${
-              item.kind === "html" &&
-              this.preparedHtml?.id === item.id &&
-              this.preparedHtml.status === "ready"
-                ? html`${this.preparedHtml.preview.notices.map((notice) => html`<p>${notice}</p>`)}`
+              item.kind === "html" && prepared?.status === "ready"
+                ? html`${prepared.preview.notices.map((notice) => html`<p>${notice}</p>`)}`
                 : nothing
             }
           </section>
@@ -354,8 +426,9 @@ export class LensOutputMedia extends LitElement {
               <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
           </header>
+          ${this.fullscreen.status !== "idle" && this.fullscreen.session.media.kind === "image" ? this.notificationContent : nothing}
           ${this.fullscreenError ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
-          ${expandedMedia.kind === "image" ? html`<img src=${expandedMedia.source} alt="Agent image ${ordinal} of ${count}" />` : nothing}
+          ${expandedMedia.kind === "image" && expandedMedia.source ? html`<img src=${expandedMedia.source} alt="Agent image ${ordinal} of ${count}" />` : nothing}
         </div>
       </section>
     `;
@@ -363,6 +436,7 @@ export class LensOutputMedia extends LitElement {
 
   private renderSlide(item: PresentedOutputMedia, index: number) {
     if (item.kind === "html") return this.renderHtmlSlide(item, index);
+    const mounted = Math.abs(index - this.selectedIndex) <= 1;
     const loaded = this.imageState(item);
     return html`<figure
       class="output-media-slide"
@@ -372,19 +446,23 @@ export class LensOutputMedia extends LitElement {
       ?inert=${index !== this.selectedIndex}
       data-load-state=${loaded.status}
     >
-      <img
-        src=${item.source}
-        alt="Agent image ${index + 1} of ${this.media.length}"
-        loading=${index === this.selectedIndex ? "eager" : "lazy"}
-        decoding="async"
-        draggable="false"
-        @load=${(event: Event) => this.handleImageLoad(item, event)}
-        @error=${(event: Event) => this.handleImageError(item, event)}
-      />
       ${
-        loaded.status !== "ready"
+        mounted && item.source
+          ? html`<img
+              src=${item.source}
+              alt="Agent image ${index + 1} of ${this.media.length}"
+              loading=${index === this.selectedIndex ? "eager" : "lazy"}
+              decoding="async"
+              draggable="false"
+              @load=${(event: Event) => this.handleImageLoad(item, event)}
+              @error=${(event: Event) => this.handleImageError(item, event)}
+            />`
+          : nothing
+      }
+      ${
+        mounted && loaded.status !== "ready"
           ? html`<p class="output-media-state" role="status">
-              ${loaded.status === "failed" ? "Unable to display this image." : "Loading image…"}
+              ${loaded.status === "failed" ? (this.mediaErrors.get(item.id) ?? "Unable to display this image.") : "Loading image…"}
             </p>`
           : nothing
       }
@@ -392,8 +470,9 @@ export class LensOutputMedia extends LitElement {
   }
 
   private renderHtmlSlide(item: PresentedOutputHtml, index: number) {
-    const content = this.htmlContent?.resourceId === item.resourceId ? this.htmlContent : undefined;
-    const prepared = this.preparedHtml?.id === item.id ? this.preparedHtml : undefined;
+    const content = this.contentFor(item);
+    const prepared = this.preparedHtml.get(item.id);
+    const selected = index === this.selectedIndex;
     const message =
       content?.status === "failed"
         ? content.message
@@ -424,9 +503,12 @@ export class LensOutputMedia extends LitElement {
             <i class="fa-solid fa-xmark" aria-hidden="true"></i>
           </button>
         </header>
+        ${selected && this.fullscreen.status !== "idle" && this.fullscreen.session.media.kind === "html" ? this.notificationContent : nothing}
         ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
         ${
-          prepared?.status === "ready"
+          // WebKit can retain stale iframe hit-testing after an inert ancestor is
+          // re-enabled. Only create an iframe under the selected, interactive slide.
+          selected && prepared?.status === "ready"
             ? keyed(
                 prepared,
                 html`<iframe
@@ -440,16 +522,19 @@ export class LensOutputMedia extends LitElement {
               )
             : nothing
         }
-        ${message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
+        ${selected && message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
       </div>
     </section>`;
   }
 
   private handleHtmlLoad(prepared: PreparedHtml, event: Event): void {
     const frame = event.currentTarget as HTMLIFrameElement;
-    const content = this.htmlContent;
+    const item = this.media.find(
+      (media): media is PresentedOutputHtml => media.kind === "html" && media.id === prepared.id,
+    );
+    const content = item ? this.contentFor(item) : undefined;
     if (
-      prepared !== this.preparedHtml ||
+      prepared !== this.preparedHtml.get(prepared.id) ||
       prepared.status !== "ready" ||
       !frame.isConnected ||
       !this.contains(frame) ||
@@ -459,15 +544,20 @@ export class LensOutputMedia extends LitElement {
       content.content !== prepared.content
     )
       return;
-    this.renderedHtml = {
+    this.renderedHtml = new Map(this.renderedHtml).set(prepared.id, {
       resourceId: content.resourceId,
       content: content.content,
-    };
+    });
   }
 
   private handleImageLoad(item: PresentedOutputImage, event: Event): void {
     const image = event.currentTarget as HTMLImageElement;
-    if (image.currentSrc && image.currentSrc !== item.source) return;
+    if (
+      !item.source ||
+      !image.isConnected ||
+      (image.currentSrc && image.currentSrc !== item.source)
+    )
+      return;
     if (!this.media.some((current) => this.sameMedia(current, item))) return;
     const state: ImageLoadState =
       image.naturalWidth > 0 && image.naturalHeight > 0
@@ -478,12 +568,73 @@ export class LensOutputMedia extends LitElement {
 
   private handleImageError(item: PresentedOutputImage, event: Event): void {
     const image = event.currentTarget as HTMLImageElement;
-    if (image.getAttribute("src") !== item.source) return;
+    if (!item.source || !image.isConnected || image.getAttribute("src") !== item.source) return;
     if (!this.media.some((current) => this.sameMedia(current, item))) return;
     this.loadedImages = new Map(this.loadedImages).set(item.id, {
       source: item.source,
       state: { status: "failed" },
     });
+  }
+
+  /** Explicit navigation only; body demand and ordinary arrivals never acknowledge it. */
+  async presentMedia(mediaId: string): Promise<boolean> {
+    const revision = ++this.navigationRevision;
+    this.navigation?.resolve(false);
+    this.navigation = undefined;
+    const media = this.media.find((item) => item.id === mediaId);
+    if (!media || !this.isConnected || !(await this.exitFullscreen())) return false;
+    if (
+      revision !== this.navigationRevision ||
+      !this.isConnected ||
+      !this.media.some((item) => this.sameMedia(item, media))
+    )
+      return false;
+    return new Promise<boolean>((resolve) => {
+      this.navigation = { media, resolve };
+      this.selectedId = mediaId;
+      this.overlay = "none";
+      this.alignAfterUpdate = true;
+      this.requestUpdate();
+    });
+  }
+
+  /** Wait for owned fullscreen to leave before a parent navigates to narrative. */
+  exitFullscreen(): Promise<boolean> {
+    if (!this.isConnected) return Promise.resolve(false);
+    if (this.fullscreen.status === "idle") return Promise.resolve(true);
+    if (this.fullscreenExit) return this.fullscreenExit.promise;
+    let resolve!: (value: boolean) => void;
+    const promise = new Promise<boolean>((done) => {
+      resolve = done;
+    });
+    this.fullscreenExit = { promise, resolve };
+    this.closeExpanded();
+    return promise;
+  }
+
+  private completeNavigation(): void {
+    const pending = this.navigation;
+    if (!pending) return;
+    const item = this.media[this.selectedIndex];
+    const state =
+      item?.kind === "image"
+        ? this.imageState(item).status
+        : item?.kind === "html"
+          ? this.htmlState(item)
+          : "failed";
+    if (!item || !this.sameMedia(item, pending.media) || state === "failed") {
+      this.navigation = undefined;
+      pending.resolve(false);
+    } else if (state === "ready" && this.fullscreen.status === "idle") {
+      const rail = this.querySelector<HTMLElement>(".output-media-rail");
+      if (
+        !rail ||
+        Math.abs((this.slideOffsets(rail)[this.selectedIndex] ?? 0) - rail.scrollLeft) > 2
+      )
+        return;
+      this.navigation = undefined;
+      pending.resolve(true);
+    }
   }
 
   private select(index: number): void {
@@ -501,16 +652,27 @@ export class LensOutputMedia extends LitElement {
     });
     const rail = this.querySelector<HTMLElement>(".output-media-rail");
     rail?.scrollTo({
-      left: this.selectedIndex * rail.clientWidth,
+      left: this.slideOffsets(rail)[this.selectedIndex] ?? 0,
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
         ? "instant"
         : "smooth",
     });
   }
 
+  /** DOM geometry retains subpixel positions; clientWidth rounds each slide's width. */
+  private slideOffsets(rail: HTMLElement): number[] {
+    const frame = rail.getBoundingClientRect();
+    return [...rail.children].map((slide, index) => {
+      const bounds = slide.getBoundingClientRect();
+      return bounds.width > 0
+        ? rail.scrollLeft + bounds.left - frame.left - rail.clientLeft
+        : index * rail.clientWidth;
+    });
+  }
+
   private alignSelection(): void {
     const rail = this.querySelector<HTMLElement>(".output-media-rail");
-    if (rail) rail.scrollLeft = this.selectedIndex * rail.clientWidth;
+    if (rail) rail.scrollLeft = this.slideOffsets(rail)[this.selectedIndex] ?? 0;
   }
 
   private handleScroll = (): void => {
@@ -522,8 +684,15 @@ export class LensOutputMedia extends LitElement {
       if (this.fullscreen.status !== "idle") return;
       const rail = this.querySelector<HTMLElement>(".output-media-rail");
       if (!rail?.clientWidth) return;
-      const index = Math.round(rail.scrollLeft / rail.clientWidth);
-      if (Math.abs(rail.scrollLeft - index * rail.clientWidth) > 1) return;
+      const offsets = this.slideOffsets(rail);
+      let index = 0;
+      for (let candidate = 1; candidate < offsets.length; candidate++) {
+        if (
+          Math.abs(offsets[candidate]! - rail.scrollLeft) <
+          Math.abs(offsets[index]! - rail.scrollLeft)
+        )
+          index = candidate;
+      }
       const next = this.media[index];
       if (next && next.id !== this.selectedId) {
         this.selectedId = next.id;
@@ -584,6 +753,8 @@ export class LensOutputMedia extends LitElement {
     if (this.fullscreen.status === "idle" || this.fullscreen.session !== session) return;
     if (this.scrollFrame !== undefined) cancelAnimationFrame(this.scrollFrame);
     this.fullscreen = { status: "idle" };
+    this.fullscreenExit?.resolve(this.isConnected);
+    this.fullscreenExit = undefined;
     if (this.isConnected) {
       void this.updateComplete.then(() => {
         if (this.isConnected && this.fullscreen.status === "idle") {
@@ -600,7 +771,9 @@ export class LensOutputMedia extends LitElement {
     const media = this.media[this.selectedIndex];
     const element =
       media?.kind === "html"
-        ? this.querySelector<HTMLElement>(".output-media-html-content")
+        ? this.querySelector<HTMLElement>(
+            '.output-media-html-slide[aria-hidden="false"] .output-media-html-content',
+          )
         : this.querySelector<HTMLElement>(".output-media-expanded");
     if (
       !element ||
@@ -689,6 +862,8 @@ export class LensOutputMedia extends LitElement {
         if (this.ownsFullscreen(session)) {
           this.fullscreen = { status: "active", session };
           this.fullscreenError = "Unable to leave fullscreen. Press Escape or try again.";
+          this.fullscreenExit?.resolve(false);
+          this.fullscreenExit = undefined;
         } else {
           this.finishFullscreen(session);
         }
@@ -696,17 +871,49 @@ export class LensOutputMedia extends LitElement {
     );
   };
 
+  /** Traverse the rendered tree so form controls inside open shadow roots remain reachable. */
+  private fullscreenTabStops(root: HTMLElement): HTMLElement[] {
+    const controls: HTMLElement[] = [];
+    const visit = (element: Element): void => {
+      if (!(element instanceof HTMLElement)) return;
+      const style = this.ownerDocument.defaultView?.getComputedStyle(element);
+      if (
+        element.matches('[hidden], [inert], [aria-hidden="true"]') ||
+        style?.display === "none" ||
+        style?.visibility === "hidden"
+      )
+        return;
+      if (element.tabIndex >= 0 && !element.matches(":disabled")) controls.push(element);
+      const children =
+        element instanceof HTMLSlotElement
+          ? element.assignedElements({ flatten: true })
+          : [...(element.shadowRoot?.children ?? element.children)];
+      for (const child of children) visit(child);
+    };
+    for (const child of root.children) visit(child);
+    return controls;
+  }
+
   private handleExpandedKeyDown = (event: KeyboardEvent): void => {
     if (this.fullscreen.status === "idle") return;
     event.stopPropagation();
+    if (event.defaultPrevented) return;
     if (event.key === "Escape") {
       event.preventDefault();
       this.closeExpanded();
     } else if (event.key === "Tab" && this.fullscreen.session.media.kind === "image") {
       event.preventDefault();
-      this.fullscreen.session.element
-        .querySelector<HTMLButtonElement>("button")
-        ?.focus({ preventScroll: true });
+      const controls = this.fullscreenTabStops(this.fullscreen.session.element);
+      // composedPath starts at the actual control, unlike retargeted activeElement.
+      const active = event.composedPath()[0];
+      const index = controls.findIndex((control) => control === active);
+      const next =
+        index < 0
+          ? event.shiftKey
+            ? controls.length - 1
+            : 0
+          : (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+      controls[next]?.focus({ preventScroll: true });
     }
   };
 }

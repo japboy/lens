@@ -6,6 +6,7 @@ import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
+import { ResponseHistoryController } from "../application/response-history-controller";
 import { HtmlOutputController } from "../application/html-output-controller";
 import type { CommandIdentity } from "../application/command-state";
 import { overlayViewModel } from "../application/view-models";
@@ -21,6 +22,11 @@ export class OverlayPage extends ReactiveElement {
   private readonly sessionView = new SessionViewController(this, this.port);
   private readonly snapshots = new AppSnapshotController(this, this.port);
   private readonly commands = new CommandController(this);
+  private readonly responseHistory = new ResponseHistoryController(
+    this,
+    this.port,
+    this.sessionView.loadBlock,
+  );
   private readonly htmlOutput = new HtmlOutputController(this, this.port);
   private readonly platform = platformFromSearch(window.location.search);
   @state() private interactionSubmission: InteractionSubmission | undefined;
@@ -89,8 +95,19 @@ export class OverlayPage extends ReactiveElement {
     const snapshot = this.snapshots.snapshot;
     view.sessionView = this.sessionView.view;
     view.loadSessionBlock = this.sessionView.loadBlock;
+    if (isHistoryView(this.sessionView.view))
+      this.responseHistory.synchronizeHistory(this.sessionView.view);
+    else this.responseHistory.synchronize(this.sessionView.view ? snapshot?.lens : undefined);
+    view.responseHistory = this.responseHistory.presentation;
+    view.loadResponseBlock = this.responseHistory.loadBlock;
+    view.requestResponseMedia = this.responseHistory.requestMedia;
+    view.retryResponseMedia = this.retryResponseMedia;
     this.htmlOutput.synchronize(
-      !this.sessionView.view || isHistoryView(this.sessionView.view) ? undefined : snapshot?.lens,
+      !this.sessionView.view ||
+        isHistoryView(this.sessionView.view) ||
+        snapshot?.lens.response_history
+        ? undefined
+        : snapshot?.lens,
     );
     view.htmlContent = this.htmlOutput.content;
     view.dataset.platform = this.platform;
@@ -107,6 +124,12 @@ export class OverlayPage extends ReactiveElement {
         }
       : undefined;
   }
+
+  private readonly retryResponseMedia = async (id: string): Promise<void> => {
+    await this.responseHistory.retryMedia(id);
+    await this.updateComplete;
+    await this.view.updateComplete;
+  };
 
   private handleOverlayIntent = async (event: CustomEvent<OverlayIntent>): Promise<void> => {
     event.stopPropagation();

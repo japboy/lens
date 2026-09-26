@@ -15,5 +15,6 @@ pub mod model;
 pub mod observation;
 pub mod platform;
 pub mod prompt_presets;
+pub mod response_history;
 pub mod session_controls;
 pub mod state;
