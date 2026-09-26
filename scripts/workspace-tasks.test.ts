@@ -79,7 +79,7 @@ describe("repository task ownership", () => {
   it("owns commands only in mise and keeps verification free of freshness skips", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     expect(manifest.scripts).toBeUndefined();
-    expect(tasks).toHaveLength(40);
+    expect(tasks).toHaveLength(45);
     expect(new Set(tasks.map((task) => task.name)).size).toBe(tasks.length);
     for (const task of tasks) {
       expect(task.source).toBe(
@@ -139,7 +139,7 @@ describe("repository task ownership", () => {
   });
 
   it("runs native verification independently of JavaScript installation", () => {
-    const result = replay("verify:native");
+    const result = replay("verify:macos");
     expect(result).toMatchObject({ status: 0 });
     expect(result.completed.toSorted()).toEqual(
       [
@@ -202,7 +202,8 @@ describe("repository task ownership", () => {
       "check:quality",
       "check:boundaries",
       "check:icons",
-      "check:types",
+      "check:types:repository",
+      "check:types:frontend",
       "frontend:build",
       "test:repository",
       "test:frontend",
@@ -211,6 +212,36 @@ describe("repository task ownership", () => {
       expect(result.completed.indexOf(leaf)).toBeLessThan(rust);
     }
     expect(new Set(result.completed).size).toBe(result.completed.length);
+  });
+
+  it("gives repository and frontend verification distinct executable owners", () => {
+    const repository = replay("verify:repository");
+    const frontend = replay("verify:frontend");
+    const portable = replay("verify:portable");
+    for (const result of [repository, frontend, portable]) expect(result.status).toBe(0);
+    expect(repository.completed).toContain("check:types:repository");
+    expect(repository.completed).toContain("test:repository");
+    expect(frontend.completed.toSorted()).toEqual(
+      ["check:types:frontend", "frontend:build", "test:frontend"].toSorted(),
+    );
+    expect(repository.completed.filter((name) => frontend.completed.includes(name))).toEqual([]);
+    expect(portable.completed.toSorted()).toEqual(
+      [...repository.completed, ...frontend.completed].toSorted(),
+    );
+    expect(tasks.find((task) => task.name === "check:types:repository")!.run).toEqual([
+      "pnpm exec tsc --build tsconfig.node.json",
+    ]);
+    expect(tasks.find((task) => task.name === "check:types:frontend")!.run).toEqual([
+      "pnpm exec tsc --build apps/desktop",
+    ]);
+  });
+
+  it("keeps the build-only seed independent of frontend installation and packaging", () => {
+    const result = replay("build:macos-bundle");
+    expect(result).toMatchObject({ status: 0, completed: ["build:macos-bundle"] });
+    expect(tasks.find((task) => task.name === "build:macos-bundle")!.run).toEqual([
+      "node scripts/macos-bundle-build.ts",
+    ]);
   });
 
   it("never starts the native writer after a portable prerequisite failure", () => {
@@ -223,7 +254,7 @@ describe("repository task ownership", () => {
   });
 
   it("does not continue to lint or test after normal Cargo checking fails", () => {
-    const result = replay("verify:native", "check:rust");
+    const result = replay("verify:macos", "check:rust");
     expect(result.status).not.toBe(0);
     expect(result.completed).toContain("check:rust");
     expect(result.completed).not.toContain("rust:clippy");

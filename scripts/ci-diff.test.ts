@@ -62,10 +62,17 @@ describe("actual tested Git snapshot classification", () => {
       const base = git(["rev-parse", "HEAD"]);
       write("packages/usecase/src/state.rs", "pub fn value() -> u8 { 2 }\n");
       const head = commit(git);
-      expect(planGitChanges(root, base, head)).toEqual({
+      expect(planGitChanges(root, base, head)).toMatchObject({
         base,
         head,
-        plan: "portable-rust",
+        requirements: { sharedRust: true, macos: "none" },
+        reasons: [
+          {
+            path: "packages/usecase/src/state.rs",
+            ruleId: "shared-rust-body",
+            requirements: { sharedRust: true, macos: "none" },
+          },
+        ],
         paths: ["packages/usecase/src/state.rs"],
       });
       expect(git(["status", "--porcelain"])).toBe("");
@@ -83,7 +90,7 @@ describe("actual tested Git snapshot classification", () => {
       );
       const head = commit(git);
       expect(planGitChanges(root, base, head)).toMatchObject({
-        plan: "native-bundle",
+        requirements: { sharedRust: true, macos: "app" },
         paths: [
           "apps/desktop/public/fixture.png",
           "packages/adapter-platform-macos/native/fixture.dat",
@@ -117,6 +124,9 @@ describe("actual tested Git snapshot classification", () => {
   it("requires native verification for a valid empty diff", () =>
     fixture((root, git) => {
       const head = git(["rev-parse", "HEAD"]);
-      expect(planGitChanges(root, head, head).plan).toBe("full");
+      expect(planGitChanges(root, head, head).requirements).toEqual({
+        sharedRust: true,
+        macos: "dmg",
+      });
     }));
 });
