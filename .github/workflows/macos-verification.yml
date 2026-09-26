@@ -128,8 +128,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: lens-v3-rust
-          shared-key: macos-aarch64-apple-darwin-code-and-bundle-v1
-          key: ${{ steps.contract.outputs.cache_key }}
+          shared-key: macos-aarch64-apple-darwin-code-and-bundle-v1-${{ steps.contract.outputs.cache_key }}
           env-vars: MACOSX_DEPLOYMENT_TARGET
           workspaces: . -> target
           cache-targets: true

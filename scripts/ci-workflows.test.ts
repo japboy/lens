@@ -317,10 +317,23 @@ describe("actual workflow admission", () => {
       expect(workflow).toContain("cache-workspace-crates: false");
     }
     expect(quality.match(/save_cache: false/gu)).toHaveLength(2);
-    expect(linux).toContain("shared-key: common-x86_64-unknown-linux-gnu");
-    expect(linux).toContain("hashFiles('mise.lock', 'Cargo.toml')");
-    expect(native).toContain("shared-key: macos-aarch64-apple-darwin-code-and-bundle-v1");
-    expect(native).toContain("key: ${{ steps.contract.outputs.cache_key }}");
+    // The pinned action ignores `key` whenever `shared-key` is set:
+    // https://github.com/Swatinem/rust-cache/blob/6323deb102c322ba6fcbdcafc7e3dddab59af2b6/src/config.ts#L69-L86
+    // Contract digests must therefore be part of the actual shared key.
+    const linuxCache = parse(linux).jobs["shared-rust-verification"].steps.find(
+      (step: { uses?: string }) => step.uses?.startsWith("Swatinem/rust-cache@"),
+    ).with;
+    const nativeCache = nativeSteps.find((step: { uses?: string }) =>
+      step.uses?.startsWith("Swatinem/rust-cache@"),
+    ).with;
+    expect(linuxCache["shared-key"]).toBe(
+      "common-x86_64-unknown-linux-gnu-${{ hashFiles('mise.lock', 'Cargo.toml') }}",
+    );
+    expect(nativeCache["shared-key"]).toBe(
+      "macos-aarch64-apple-darwin-code-and-bundle-v1-${{ steps.contract.outputs.cache_key }}",
+    );
+    expect(linuxCache.key).toBeUndefined();
+    expect(nativeCache.key).toBeUndefined();
     expect(native).toContain("env-vars: MACOSX_DEPLOYMENT_TARGET");
     expect(native.indexOf("node scripts/macos-build-contract.ts")).toBeLessThan(
       native.indexOf("uses: Swatinem/rust-cache@"),

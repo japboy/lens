@@ -107,8 +107,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: lens-v3-rust
-          shared-key: common-x86_64-unknown-linux-gnu
-          key: ${{ hashFiles('mise.lock', 'Cargo.toml') }}
+          shared-key: common-x86_64-unknown-linux-gnu-${{ hashFiles('mise.lock', 'Cargo.toml') }}
           workspaces: . -> target
           cache-targets: true
           cache-bin: false
