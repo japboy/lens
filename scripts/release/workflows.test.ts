@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { planChanges } from "../ci-plan.ts";
@@ -8,6 +8,58 @@ const cli = readFileSync("scripts/release/cli.ts", "utf8");
 const native = readFileSync(".github/workflows/macos-verification.yml", "utf8");
 
 describe("release workflow authority and recovery", () => {
+  it("limits every intermediate artifact to one day and preserves recovery originals for 30 days", () => {
+    type WorkflowJob = {
+      steps?: { uses?: string; with?: Record<string, unknown> }[];
+    };
+    const uploads = readdirSync(".github/workflows")
+      .filter((file) => /\.ya?ml$/u.test(file))
+      .sort()
+      .flatMap((file) => {
+        const workflow = parse(readFileSync(`.github/workflows/${file}`, "utf8")) as {
+          jobs: Record<string, WorkflowJob>;
+        };
+        return Object.values(workflow.jobs).flatMap((job) =>
+          (job.steps ?? [])
+            .filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
+            .map((step) => ({
+              workflow: file,
+              name: step.with?.name,
+              retentionDays: step.with?.["retention-days"],
+            })),
+        );
+      });
+    // Exhaustive ownership makes new uploads require an explicit retention decision.
+    // Missing retention-days must not silently inherit the repository default.
+    expect(uploads).toEqual([
+      {
+        workflow: "code-quality.yml",
+        name: "frontend-${{ github.sha }}",
+        retentionDays: 1,
+      },
+      {
+        workflow: "macos-verification.yml",
+        name: "release-candidate-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        retentionDays: 1,
+      },
+      {
+        workflow: "release.yml",
+        name: "release-frontend-${{ github.run_id }}-${{ github.run_attempt }}",
+        retentionDays: 1,
+      },
+      {
+        workflow: "release.yml",
+        name: "release-${{ inputs.tag }}",
+        retentionDays: 30,
+      },
+      {
+        workflow: "rust-cache-seed.yml",
+        name: "cache-frontend-${{ github.sha }}",
+        retentionDays: 1,
+      },
+    ]);
+  });
+
   it("routes release publication through the durable publisher", () => {
     const steps = parse(release).jobs.publish.steps as { run?: string }[];
     expect(steps.some((step) => step.run === "node scripts/release/cli.ts publish")).toBe(true);

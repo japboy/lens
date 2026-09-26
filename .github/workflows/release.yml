@@ -91,7 +91,7 @@ jobs:
             target/ci/frontend-manifest.json
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
   common:
     needs: [preflight, portable]

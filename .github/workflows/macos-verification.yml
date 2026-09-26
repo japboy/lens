@@ -195,4 +195,4 @@ jobs:
           name: release-candidate-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/release-artifact
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
