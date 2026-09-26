@@ -438,6 +438,39 @@ export interface LensRepresentation {
   output_blocks: LensOutputBlock[];
 }
 
+/** Body-free committed responses, owned by one live operation. */
+export type LensResponseBlockDescriptor =
+  | { type: "markdown"; block_index: number; byte_length: number }
+  | { type: "image"; block_index: number; mime_type: string; byte_length: number }
+  | {
+      type: "html";
+      block_index: number;
+      mime_type: "text/html";
+      resource_id: string;
+      uri: string;
+      byte_length: number;
+    }
+  | { type: "unsupported"; block_index: number; content_type: string };
+
+export interface LensResponseManifest {
+  sequence: number;
+  representation_id: string;
+  run_id: string;
+  acp_session_id?: string | null;
+  prompt_execution_revision: number;
+  context_id: string;
+  context_revision: number;
+  projection: ProjectionRef;
+  block_count: number;
+  retained_bytes: number;
+  blocks: LensResponseBlockDescriptor[];
+}
+export interface LensResponseHistory {
+  responses: LensResponseManifest[];
+  retained_bytes: number;
+  capacity_reached: boolean;
+}
+
 export type LensLiveLifecycle = "watching" | "paused" | "stopped";
 export type LensLiveHealth = "healthy" | "degraded" | "unavailable";
 export type LensLiveFreshness = "none" | "checking" | "current" | "stale" | "unverified";
@@ -463,6 +496,7 @@ export interface LensState {
   input?: LensInput;
   projection?: ProjectionRef;
   representation?: LensRepresentation;
+  response_history?: LensResponseHistory;
   live?: LensLiveState;
   output_blocks: LensOutputBlock[];
   agent?: AgentRunState;

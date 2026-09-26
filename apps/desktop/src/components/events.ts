@@ -14,6 +14,10 @@ export const SETTINGS_INTENT_EVENT = "lens-settings-intent";
 export const TARGET_REMOVE_EVENT = "lens-target-remove";
 export const TARGET_SELECTION_INTENT_EVENT = "lens-target-selection-intent";
 export const AGENT_OUTPUT_INTENT_EVENT = "lens-agent-output-intent";
+export const OUTPUT_MEDIA_DEMAND_EVENT = "lens-output-media-demand";
+export interface OutputMediaDemand {
+  readonly mediaIds: readonly string[];
+}
 export const OVERLAY_INTENT_EVENT = "lens-overlay-intent";
 
 export type AgentIntent =
@@ -86,6 +90,11 @@ export type OverlayIntent =
   | { type: "open-external-url"; url: string }
   | { type: "report-error"; message: string };
 
+export interface MediaPresentation {
+  selectedMediaId?: string;
+  fullscreen: boolean;
+}
+
 export function dispatchComponentEvent<T>(target: EventTarget, type: string, detail: T): boolean {
   return target.dispatchEvent(
     new CustomEvent<T>(type, {
@@ -99,6 +108,8 @@ export function dispatchComponentEvent<T>(target: EventTarget, type: string, det
 /** Semantic events emitted by the independent window views. */
 declare global {
   interface HTMLElementEventMap {
+    "lens-output-media-demand": CustomEvent<OutputMediaDemand>;
+    "lens-media-presentation": CustomEvent<MediaPresentation>;
     "lens-settings-intent": CustomEvent<SettingsIntent>;
     "lens-overlay-intent": CustomEvent<OverlayIntent>;
     "lens-target-selection-intent": CustomEvent<TargetSelectionIntent>;

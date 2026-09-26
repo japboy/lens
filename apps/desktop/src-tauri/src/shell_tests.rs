@@ -70,7 +70,8 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
                 uri: "urn:fixture".into(),
                 byte_length: 14,
                 text: "<p>private</p>".into(),
-            }],
+            }]
+            .into(),
         }),
         ..LensState::default()
     };
@@ -119,6 +120,103 @@ fn about_ipc_embeds_exact_documents_and_window_is_reused() {
     crate::ui::show_about(app.handle()).unwrap();
     assert_eq!(app.webview_windows().len(), 2);
     assert!(app.get_webview_window(settings.label()).is_some());
+}
+
+#[test]
+fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
+    let state = test_support::state();
+    let operation = Uuid::from_u128(701);
+    let old = LensRepresentation {
+        prompt_execution_revision: 1,
+        representation_id: Uuid::from_u128(702),
+        context_id: Uuid::nil(),
+        context_revision: 1,
+        projection: crate::live_sync::ProjectionRef::new(
+            std::num::NonZeroU64::new(1).unwrap(),
+            "0".repeat(64).parse().unwrap(),
+        ),
+        run_id: Uuid::from_u128(703),
+        output_blocks: vec![
+            LensOutputBlock::Markdown {
+                message_id: None,
+                text: "old private markdown".into(),
+            },
+            LensOutputBlock::Html {
+                message_id: None,
+                resource_id: "old-html".into(),
+                mime_type: "text/html".into(),
+                uri: "urn:old-html".into(),
+                byte_length: 18,
+                text: "<p>old private</p>".into(),
+            },
+        ]
+        .into(),
+    };
+    let latest = LensRepresentation {
+        representation_id: Uuid::from_u128(704),
+        run_id: Uuid::from_u128(705),
+        output_blocks: vec![LensOutputBlock::Markdown {
+            message_id: None,
+            text: "current markdown".into(),
+        }]
+        .into(),
+        ..old.clone()
+    };
+    let mut lens = LensState {
+        operation_id: Some(operation),
+        representation: Some(latest.clone()),
+        ..LensState::default()
+    };
+    lens.response_history
+        .append(old.clone(), Some("session-a".into()))
+        .unwrap();
+    lens.response_history
+        .append(latest, Some("session-a".into()))
+        .unwrap();
+    state.runtime.write().unwrap().lens = lens;
+    let app = app(state);
+    let settings = window(&app);
+    let overlay = tauri::WebviewWindowBuilder::new(&app, "lens-overlay", Default::default())
+        .build()
+        .unwrap();
+    let block_args =
+        json!({"operationId":operation,"representationId":old.representation_id,"blockIndex":0});
+    assert!(invoke(&settings, "get_response_block", block_args.clone()).is_err());
+    assert_eq!(
+        invoke(&overlay, "get_response_block", block_args.clone()).unwrap()["text"],
+        "old private markdown"
+    );
+    let mut html_block_args = block_args.clone();
+    html_block_args["blockIndex"] = json!(1);
+    let html_descriptor = invoke(&overlay, "get_response_block", html_block_args).unwrap();
+    assert_eq!(html_descriptor["type"], "html");
+    assert!(html_descriptor.get("text").is_none());
+    let html_args = json!({"operationId":operation,"representationId":old.representation_id,"resourceId":"old-html"});
+    assert_eq!(
+        invoke(&overlay, "get_html_output", html_args.clone()).unwrap(),
+        json!("<p>old private</p>")
+    );
+    let snapshot = invoke(&overlay, "get_app_snapshot", json!({})).unwrap();
+    assert_eq!(
+        snapshot["lens"]["response_history"]["responses"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(!snapshot.to_string().contains("old private"));
+    for (field, value) in [
+        ("operationId", json!(Uuid::from_u128(999))),
+        ("representationId", json!(Uuid::from_u128(999))),
+        ("blockIndex", json!(999)),
+    ] {
+        let mut wrong = block_args.clone();
+        wrong[field] = value;
+        assert!(invoke(&overlay, "get_response_block", wrong).is_err());
+    }
+    app.state::<AppState>().runtime.write().unwrap().lens = LensState::default();
+    assert!(invoke(&overlay, "get_response_block", block_args).is_err());
+    assert!(invoke(&overlay, "get_html_output", html_args).is_err());
 }
 
 #[test]

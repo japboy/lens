@@ -492,10 +492,17 @@ async fn successful_replay_commits_provider_and_ready_document_only_after_respon
     let rendered =
         crate::shell_tests::invoke(&overlay, "get_session_view", serde_json::json!({})).unwrap();
     assert_eq!(rendered["phase"], "ready");
-    assert_eq!(
-        rendered["document"]["entries"][0]["blocks"][0]["text"],
-        "Replayed external session"
-    );
+    assert!(rendered.get("document").is_none());
+    assert!(!rendered.to_string().contains("Replayed external session"));
+    let mut request = rendered["interpretation"]["responses"][0]["blocks"][0]["source"].clone();
+    request["generation"] = rendered["generation"].clone();
+    let body = crate::shell_tests::invoke(
+        &overlay,
+        "get_session_block",
+        serde_json::json!({ "request": request }),
+    )
+    .unwrap();
+    assert_eq!(body["block"]["text"], "Replayed external session");
 }
 
 #[tokio::test]

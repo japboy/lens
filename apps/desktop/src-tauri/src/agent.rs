@@ -2005,6 +2005,9 @@ fn current_transform_input<R: tauri::Runtime>(
     if !admission.accepts(snapshot.lens.stage) {
         return Err("the current Lens operation does not admit this transformation request".into());
     }
+    if snapshot.lens.response_history.capacity_reached {
+        return Err(usecase::response_history::RESPONSE_HISTORY_CAPACITY_MESSAGE.into());
+    }
     if admission.requires_watching()
         && snapshot
             .lens
@@ -2150,6 +2153,9 @@ fn finish_prompt_response(
     stop_reason: String,
     cancelled: bool,
 ) {
+    if lens.response_history.contains_run(key.run_id) {
+        return;
+    }
     if let Some(agent) = lens.agent.as_mut() {
         agent.received_updates = candidate.received_updates;
         agent.progress_text = candidate.progress_text();
@@ -2222,15 +2228,30 @@ fn finish_prompt_response(
     } else {
         target_context_revision
     };
-    lens.representation = Some(LensRepresentation {
+    let representation = LensRepresentation {
         prompt_execution_revision: lens.prompt_execution_revision,
         representation_id: Uuid::new_v4(),
         context_id,
         context_revision,
         projection: target_projection,
         run_id: key.run_id,
-        output_blocks: candidate.blocks(),
-    });
+        output_blocks: candidate.blocks().into(),
+    };
+    let session_id = lens
+        .agent
+        .as_ref()
+        .and_then(|agent| agent.session_id.clone());
+    if let Err(error) = lens
+        .response_history
+        .append(representation.clone(), session_id)
+    {
+        lens.stage = LensStage::Failed;
+        lens.error = Some(error.into());
+        lens.output_blocks.clear();
+        finish_retained_representation(lens, Some(LensRefreshOutcome::Failed), Some(error.into()));
+        return;
+    }
+    lens.representation = Some(representation);
     lens.output_blocks.clear();
     lens.stage = LensStage::Completed;
     lens.error = None;
@@ -3626,7 +3647,8 @@ mod tests {
             output_blocks: vec![LensOutputBlock::Markdown {
                 message_id: Some("old".into()),
                 text: "Old representation".into(),
-            }],
+            }]
+            .into(),
         };
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
@@ -3686,8 +3708,8 @@ mod tests {
         assert_eq!(settled.context_revision, 7);
         assert_eq!(settled.projection, target_projection);
         assert_eq!(
-            settled.output_blocks,
-            vec![
+            settled.output_blocks.as_ref(),
+            &vec![
                 LensOutputBlock::Markdown {
                     message_id: Some("new".into()),
                     text: "New representation".into(),
@@ -3756,7 +3778,7 @@ mod tests {
         assert!(lens.output_blocks.is_empty());
         let settled = lens.representation.expect("settled initial representation");
         assert_eq!(settled.context_revision, 3);
-        assert_eq!(settled.output_blocks, streamed);
+        assert_eq!(settled.output_blocks.as_ref(), &streamed);
         assert_eq!(lens.stage, LensStage::Completed);
     }
 
@@ -3885,7 +3907,8 @@ mod tests {
             output_blocks: vec![LensOutputBlock::Markdown {
                 message_id: None,
                 text: "Old representation".into(),
-            }],
+            }]
+            .into(),
         };
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
@@ -3950,7 +3973,8 @@ mod tests {
             output_blocks: vec![LensOutputBlock::Markdown {
                 message_id: None,
                 text: "Settled representation".into(),
-            }],
+            }]
+            .into(),
         };
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
@@ -3998,6 +4022,170 @@ mod tests {
         assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
         assert!(valid_environment_name("CLAUDE_CONFIG_DIR"));
         assert!(!valid_environment_name("BAD-NAME"));
+    }
+
+    #[test]
+    fn response_history_commits_once_per_success_and_retains_previous_output_on_rejection() {
+        let projection = projection_ref("Source", 2);
+        let mut lens = LensState {
+            operation_id: Some(Uuid::nil()),
+            context: Some(sample_context(2)),
+            projection: Some(projection.clone()),
+            ..LensState::default()
+        };
+        let output = |text: &str| {
+            vec![LensOutputBlock::Markdown {
+                message_id: Some("same".into()),
+                text: text.into(),
+            }]
+        };
+        for (run, text) in [(10, "first"), (11, "second")] {
+            lens.agent = Some(sample_run_state(Uuid::from_u128(run), projection.clone()));
+            if run == 10 {
+                lens.output_blocks = output(text);
+            }
+            finish_prompt_response(
+                &mut lens,
+                AgentRunKey {
+                    operation_id: Uuid::nil(),
+                    run_id: Uuid::from_u128(run),
+                },
+                projection.clone(),
+                2,
+                AgentOutputCandidate::from_blocks(output(text), 1),
+                "end_turn".into(),
+                false,
+            );
+            assert!(lens.output_blocks.is_empty());
+            assert_eq!(lens.response_history.responses.len(), (run - 9) as usize);
+        }
+        let first = lens.response_history.responses[0].representation_id;
+        assert_eq!(
+            lens.response_history
+                .representation(first)
+                .unwrap()
+                .output_blocks
+                .as_ref(),
+            &output("first")
+        );
+        let settled = lens.representation.clone();
+        let before = lens.response_history.clone();
+        finish_prompt_response(
+            &mut lens,
+            AgentRunKey {
+                operation_id: Uuid::nil(),
+                run_id: Uuid::from_u128(11),
+            },
+            projection.clone(),
+            2,
+            AgentOutputCandidate::from_blocks(output("duplicate"), 1),
+            "end_turn".into(),
+            false,
+        );
+        assert_eq!(lens.response_history, before);
+        assert_eq!(lens.representation, settled);
+
+        for (run, kind) in [
+            (12, "cancelled"),
+            (13, "empty"),
+            (14, "regressed"),
+            (15, "capacity"),
+        ] {
+            lens.agent = Some(sample_run_state(Uuid::from_u128(run), projection.clone()));
+            if kind == "capacity" {
+                lens.response_history.capacity_reached = true;
+            }
+            let target = if kind == "regressed" {
+                projection_ref("Old source", 1)
+            } else {
+                projection.clone()
+            };
+            let candidate = if kind == "empty" {
+                AgentOutputCandidate::default()
+            } else {
+                AgentOutputCandidate::from_blocks(output(kind), 1)
+            };
+            finish_prompt_response(
+                &mut lens,
+                AgentRunKey {
+                    operation_id: Uuid::nil(),
+                    run_id: Uuid::from_u128(run),
+                },
+                target,
+                2,
+                candidate,
+                "end_turn".into(),
+                kind == "cancelled",
+            );
+            assert_eq!(lens.response_history.responses, before.responses, "{kind}");
+            assert_eq!(lens.representation, settled, "{kind}");
+        }
+        assert_eq!(lens.stage, LensStage::Failed);
+        assert!(lens
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Response history is full"));
+    }
+
+    #[test]
+    fn response_history_survives_pause_and_a_new_acp_session_on_resume() {
+        let projection = projection_ref("Source", 1);
+        let mut lens = LensState {
+            operation_id: Some(Uuid::nil()),
+            context: Some(sample_context(1)),
+            projection: Some(projection.clone()),
+            live: Some(crate::model::LensLiveState {
+                lifecycle: LensMonitoringLifecycle::Watching,
+                health: LensSourceHealth::Healthy,
+                freshness: LensFreshness::Checking,
+                agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+                last_outcome: None,
+                error: None,
+            }),
+            ..LensState::default()
+        };
+        for (run, session, lifecycle, count) in [
+            (10, "session-a", LensMonitoringLifecycle::Watching, 1),
+            (11, "session-a", LensMonitoringLifecycle::Paused, 1),
+            (12, "session-b", LensMonitoringLifecycle::Watching, 2),
+        ] {
+            lens.live.as_mut().unwrap().lifecycle = lifecycle;
+            let mut agent = sample_run_state(Uuid::from_u128(run), projection.clone());
+            agent.session_id = Some(session.into());
+            lens.agent = Some(agent);
+            finish_prompt_response(
+                &mut lens,
+                AgentRunKey {
+                    operation_id: Uuid::nil(),
+                    run_id: Uuid::from_u128(run),
+                },
+                projection.clone(),
+                1,
+                AgentOutputCandidate::from_blocks(
+                    vec![LensOutputBlock::Markdown {
+                        message_id: None,
+                        text: format!("response {run}"),
+                    }],
+                    1,
+                ),
+                "end_turn".into(),
+                false,
+            );
+            assert_eq!(lens.response_history.responses.len(), count);
+        }
+        assert_eq!(
+            lens.response_history
+                .responses
+                .iter()
+                .map(|response| response.acp_session_id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("session-a"), Some("session-b")]
+        );
+        assert_eq!(
+            lens.response_history.responses[0].run_id,
+            Uuid::from_u128(10)
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ export interface PresentedOutputImage {
   readonly kind: "image";
   /** Snapshot-local identity. It never implies correspondence across representations. */
   readonly id: string;
-  readonly source: string;
+  readonly source?: string;
   readonly mimeType: string;
 }
 

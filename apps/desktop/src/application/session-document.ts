@@ -1,4 +1,4 @@
-import type { AgentKind } from "../types";
+import type { AgentKind, LensResponseBlockDescriptor } from "../types";
 
 export interface DeferredDocumentBlock {
   type: "deferred";
@@ -28,6 +28,18 @@ export type SessionEntry =
 export interface SessionDocument {
   entries: SessionEntry[];
 }
+/** Replay response grouping retains native document references, not live publications. */
+export type HistoryResponseBlockDescriptor = LensResponseBlockDescriptor & {
+  source: DeferredDocumentBlock;
+};
+export interface HistoryResponseManifest {
+  response_id: string;
+  sequence: number;
+  blocks: HistoryResponseBlockDescriptor[];
+}
+export interface HistoryInterpretation {
+  responses: HistoryResponseManifest[];
+}
 export interface SessionView {
   revision: number;
   generation?: string;
@@ -37,7 +49,8 @@ export interface SessionView {
   agent?: AgentKind;
   session_id?: string;
   title?: string;
-  /** Backend-selected Interpretation result; conversation retains the full history. */
+  interpretation?: HistoryInterpretation;
+  /** Legacy inline fixtures; native replay uses deferred interpretation manifests. */
   document?: SessionDocument;
   error?: string;
 }

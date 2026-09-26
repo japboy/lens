@@ -862,6 +862,9 @@ pub fn begin_agent_run<R: tauri::Runtime>(
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
+        if snapshot.lens.response_history.capacity_reached {
+            return Err(usecase::response_history::RESPONSE_HISTORY_CAPACITY_MESSAGE.into());
+        }
         if snapshot.lens.operation_id != Some(operation_id)
             || snapshot.lens.projection.as_ref() != Some(expected_projection)
             || !snapshot.config.same_execution_config(expected_config)

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { html } from "lit";
 import type { PresentedOutputImage, PresentedOutputMedia } from "../output-media";
 import type { LensState } from "../types";
 import type { LensOutputMedia } from "./lens-output-media";
@@ -131,16 +132,201 @@ describe("Interpretation media interactions", () => {
     return renderer;
   }
 
+  it("renders the shared Notification only in fullscreen and keeps arrival passive with keyboard access", async () => {
+    const element = await mount([images[0]!]);
+    const action = vi.fn<() => void>();
+    element.notificationContent = html`<div class="shared-notification" role="status">
+      <button @click=${action}>View latest</button>
+    </div>`;
+    await load(element, 0, 100, 100);
+    expect(element.querySelector(".shared-notification")).toBeNull();
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    setFullscreen(expanded);
+    resolveRequest();
+    await element.updateComplete;
+    const close = expanded.querySelector<HTMLButtonElement>(".output-media-expanded-close")!;
+    expect(expanded.querySelectorAll('[role="status"]')).toHaveLength(1);
+    element.media = images;
+    element.notificationContent = html`<div class="shared-notification" role="status">
+      <button @click=${action}>2 new responses</button>
+    </div>`;
+    await element.updateComplete;
+    expect(fullscreenElement).toBe(expanded);
+    expect(exitFullscreen).not.toHaveBeenCalled();
+    expect(
+      element.querySelector('.output-media-slide[aria-hidden="false"]')?.getAttribute("aria-label"),
+    ).toBe("Media 1 of 3");
+    close.focus();
+    close.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+    );
+    const latest = expanded.querySelector<HTMLButtonElement>(".shared-notification button")!;
+    expect(document.activeElement).toBe(latest);
+    latest.click();
+    expect(action).toHaveBeenCalledOnce();
+    latest.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(document.activeElement).toBe(close);
+    await element.exitFullscreen();
+    await element.updateComplete;
+    expect(element.querySelector(".shared-notification")).toBeNull();
+  });
+
+  it("includes nested shadow form controls in fullscreen Tab order and respects their Escape handling", async () => {
+    await import("./lens-select");
+    const element = await mount([images[0]!]);
+    const nested = document.createElement("div");
+    nested.attachShadow({ mode: "open" }).innerHTML =
+      '<lens-select></lens-select><button disabled>Unavailable</button><button tabindex="-1">Programmatic</button><button hidden>Hidden</button><button class="after">Continue</button>';
+    const select = nested.shadowRoot!.querySelector(
+      "lens-select",
+    )! as import("./lens-select").LensSelect;
+    select.options = [
+      { value: "a", label: "Option A" },
+      { value: "b", label: "Option B" },
+    ];
+    select.value = "a";
+    element.notificationContent = nested;
+    await load(element, 0, 100, 100);
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+    setFullscreen(expanded);
+    resolveRequest();
+    await element.updateComplete;
+    await select.updateComplete;
+    const close = expanded.querySelector<HTMLButtonElement>(".output-media-expanded-close")!;
+    const combo = select.shadowRoot!.querySelector<HTMLButtonElement>("button")!;
+    const after = nested.shadowRoot!.querySelector<HTMLButtonElement>(".after")!;
+    const key = (target: HTMLElement, value: string, shiftKey = false) =>
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: value,
+          shiftKey,
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        }),
+      );
+    close.focus();
+    key(close, "Tab");
+    expect(select.shadowRoot!.activeElement).toBe(combo);
+    key(combo, "ArrowDown");
+    await select.updateComplete;
+    key(combo, "Escape");
+    await select.updateComplete;
+    expect(combo.getAttribute("aria-expanded")).toBe("false");
+    expect(exitFullscreen).not.toHaveBeenCalled();
+    key(combo, "Tab");
+    expect(nested.shadowRoot!.activeElement).toBe(after);
+    key(after, "Tab", true);
+    expect(select.shadowRoot!.activeElement).toBe(combo);
+    key(combo, "Tab", true);
+    expect(document.activeElement).toBe(close);
+  });
+
+  it("exits fullscreen before explicit navigation and completes only after the selected HTML loads", async () => {
+    const element = await mount([images[0]!, htmlMedia]);
+    await load(element, 0, 100, 100);
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    setFullscreen(element.querySelector(".output-media-expanded"));
+    resolveRequest();
+    await element.updateComplete;
+    const state = vi.fn<(value: { selectedMediaId?: string; fullscreen: boolean }) => void>();
+    element.addEventListener("lens-media-presentation", (event) => state(event.detail));
+    let settled = false;
+    const navigation = element.presentMedia(htmlMedia.id).then((value) => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    await element.updateComplete;
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(exitFullscreen).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    await loadHtml(element);
+    await expect(navigation).resolves.toBe(true);
+    expect(state).toHaveBeenLastCalledWith({ selectedMediaId: htmlMedia.id, fullscreen: false });
+    expect(element.querySelector("iframe")?.closest("[inert]")).toBeNull();
+  });
+
+  it("mirrors Notification inside HTML fullscreen without recreating its browsing context on arrival", async () => {
+    const element = await mount([htmlMedia]);
+    const frame = await loadHtml(element);
+    element.notificationContent = html`<div class="shared-notification" role="status">
+      One new response
+    </div>`;
+    await element.updateComplete;
+    expect(element.querySelector(".shared-notification")).toBeNull();
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    const content = frame.parentElement!;
+    setFullscreen(content);
+    resolveRequest();
+    await element.updateComplete;
+    expect(content.querySelectorAll(".shared-notification")).toHaveLength(1);
+    element.notificationContent = html`<div class="shared-notification" role="status">
+      Two new responses
+    </div>`;
+    element.media = [htmlMedia, images[0]!];
+    await element.updateComplete;
+    expect(element.querySelector("iframe")).toBe(frame);
+    expect(fullscreenElement).toBe(content);
+    expect(exitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("does not navigate or acknowledge when fullscreen exit fails", async () => {
+    const element = await mount();
+    await load(element, 0, 100, 100);
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    setFullscreen(element.querySelector(".output-media-expanded"));
+    resolveRequest();
+    await element.updateComplete;
+    exitFullscreen.mockRejectedValueOnce(new Error("denied"));
+    await expect(element.presentMedia(images[1]!.id)).resolves.toBe(false);
+    expect(
+      element.querySelector('.output-media-slide[aria-hidden="false"]')?.getAttribute("aria-label"),
+    ).toBe("Media 1 of 3");
+    expect(fullscreenElement).not.toBeNull();
+  });
+
+  it("rejects superseded, failed, removed and disconnected navigation targets", async () => {
+    const element = await mount();
+    const first = element.presentMedia(images[1]!.id);
+    await Promise.resolve();
+    await element.updateComplete;
+    const second = element.presentMedia(images[2]!.id);
+    await expect(first).resolves.toBe(false);
+    await element.updateComplete;
+    element.mediaErrors = new Map([[images[2]!.id, "unavailable"]]);
+    await element.updateComplete;
+    await expect(second).resolves.toBe(false);
+    const removed = element.presentMedia(images[0]!.id);
+    await Promise.resolve();
+    await element.updateComplete;
+    element.media = [];
+    await element.updateComplete;
+    await expect(removed).resolves.toBe(false);
+    element.media = images;
+    await element.updateComplete;
+    const disconnected = element.presentMedia(images[1]!.id);
+    await Promise.resolve();
+    await element.updateComplete;
+    element.remove();
+    await expect(disconnected).resolves.toBe(false);
+  });
+
   it("mixes HTML and images without borrowing image dimensions or changing the controls", async () => {
     const element = await mount([images[0]!, htmlMedia]);
+    expect(element.querySelector("iframe")).toBeNull();
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
     const renderer = await loadHtml(element);
     expect(renderer.srcdoc).toContain("Readable result");
     expect(renderer.getAttribute("sandbox")).toBe("allow-popups");
     expect(renderer.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(renderer.title).toBe("HTML content");
-    expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(true);
-    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
-    await element.updateComplete;
     expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(false);
     expect(element.querySelector(".output-media-ambient")).toBeNull();
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
@@ -153,11 +339,11 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-overlay .fa-expand")).not.toBeNull();
   });
 
-  it("preserves the iframe and keeps native-handled external links in its document", async () => {
+  it("remounts returning HTML under an interactive slide and keeps native-handled links", async () => {
     const element = await mount([images[0]!, htmlMedia]);
-    const renderer = await loadHtml(element);
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
+    const renderer = await loadHtml(element);
     expect(renderer.closest(".output-media-slide")?.getAttribute("aria-hidden")).toBe("false");
     const preview = new DOMParser().parseFromString(renderer.srcdoc, "text/html");
     const anchor = preview.querySelector("a")!;
@@ -171,7 +357,17 @@ describe("Interpretation media interactions", () => {
     await element.updateComplete;
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
-    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+    const replacement = element.querySelector(".output-html-frame");
+    expect(replacement).not.toBe(renderer);
+    expect(renderer.isConnected).toBe(false);
+    expect(replacement?.closest("[inert]")).toBeNull();
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    renderer.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    replacement!.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
   });
 
   it("fullscreens the existing HTML content inside its stable slide and does not trap Tab on the close control", async () => {
@@ -204,13 +400,13 @@ describe("Interpretation media interactions", () => {
 
   it("keeps the final HTML flex slot and iframe when its inner content enters fullscreen", async () => {
     const element = await mount([...images, htmlMedia]);
-    const renderer = await loadHtml(element);
     const rail = element.querySelector<HTMLElement>(".output-media-rail")!;
     Object.defineProperty(rail, "clientWidth", { configurable: true, value: 400 });
     for (let i = 0; i < 3; i++) {
       element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
       await element.updateComplete;
     }
+    const renderer = await loadHtml(element);
     const frames = new Map<number, FrameRequestCallback>();
     let nextFrame = 0;
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -261,13 +457,13 @@ describe("Interpretation media interactions", () => {
 
   it("dismisses HTML details through a temporary backdrop without replacing the frame", async () => {
     const element = await mount([images[0]!, htmlMedia]);
-    const frame = await loadHtml(element);
     const toggle = element.querySelector<HTMLButtonElement>(".output-media-details-toggle")!;
     toggle.click();
     await element.updateComplete;
     expect(element.querySelector(".output-media-details-backdrop")).toBeNull();
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
+    const frame = await loadHtml(element);
     toggle.click();
     await element.updateComplete;
     const backdrop = element.querySelector<HTMLElement>(".output-media-details-backdrop")!;
@@ -312,6 +508,191 @@ describe("Interpretation media interactions", () => {
     element.media = [{ ...htmlMedia }];
     await element.updateComplete;
     expect(element.querySelector(".output-html-frame")).toBe(frame);
+  });
+
+  it("prepares neighbors but mounts only selected HTML, retaining slide geometry and append DOM", async () => {
+    const media = Array.from({ length: 30 }, (_, index) => ({
+      ...htmlMedia,
+      id: `response:${index}:html`,
+      resourceId: "reused-resource",
+    }));
+    const element = document.createElement("lens-output-media") as LensOutputMedia;
+    const requested: string[][] = [];
+    element.addEventListener("lens-output-media-demand", (event) =>
+      requested.push([...event.detail.mediaIds]),
+    );
+    element.media = media;
+    element.htmlContents = new Map(
+      media.map((item, index) => [
+        item.id,
+        {
+          resourceId: item.resourceId,
+          status: "ready" as const,
+          content: `<h1>Response ${index}</h1>`,
+        },
+      ]),
+    );
+    document.body.append(element);
+    await element.updateComplete;
+    expect(requested).toEqual([[media[0]!.id, media[1]!.id]]);
+    expect(element.querySelectorAll(".output-media-slide")).toHaveLength(30);
+    const slides = [...element.querySelectorAll(".output-media-slide")];
+    expect(element.querySelectorAll("iframe")).toHaveLength(1);
+    const first = element.querySelector("iframe");
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    const selected = element.querySelector<HTMLIFrameElement>(
+      '.output-media-slide[aria-hidden="false"] iframe',
+    )!;
+    expect(selected.srcdoc).toContain("Response 1");
+    expect(element.querySelectorAll("iframe")).toHaveLength(1);
+    expect(first?.isConnected).toBe(false);
+    element.media = [...media, { ...htmlMedia, id: "appended" }];
+    await element.updateComplete;
+    expect(element.querySelector('.output-media-slide[aria-hidden="false"] iframe')).toBe(selected);
+    const next = element.querySelector<HTMLButtonElement>(".output-media-next")!;
+    next.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    await element.updateComplete;
+    expect(first?.isConnected).toBe(false);
+    expect(element.querySelectorAll("iframe")).toHaveLength(0);
+    expect([...element.querySelectorAll(".output-media-slide")].slice(0, 30)).toEqual(slides);
+    expect(element.querySelector("[inert] .output-media-state")).toBeNull();
+    expect(requested.at(-1)).toEqual([media[29]!.id, "appended"]);
+  });
+
+  it("synchronizes interaction with fractional slide positions beyond the initial responses", async () => {
+    const media = Array.from({ length: 7 }, (_, index) => ({
+      ...htmlMedia,
+      id: `fractional:${index}`,
+    }));
+    const element = await mount(media);
+    element.htmlContents = new Map(
+      media.map((item) => [
+        item.id,
+        { resourceId: item.resourceId, status: "ready" as const, content: item.id },
+      ]),
+    );
+    await element.updateComplete;
+    const rail = element.querySelector<HTMLElement>(".output-media-rail")!;
+    const slides = [...rail.children] as HTMLElement[];
+    const width = 400.4;
+    Object.defineProperty(rail, "clientWidth", { value: 400 });
+    vi.spyOn(rail, "getBoundingClientRect").mockImplementation(
+      () => ({ left: 0, width }) as DOMRect,
+    );
+    slides.forEach((slide, index) =>
+      vi
+        .spyOn(slide, "getBoundingClientRect")
+        .mockImplementation(() => ({ left: index * width - rail.scrollLeft, width }) as DOMRect),
+    );
+    let frame!: FrameRequestCallback;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frame = callback;
+      return 1;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    for (const index of [4, 5, 6, 1]) {
+      rail.scrollLeft = index * width;
+      rail.dispatchEvent(new Event("scroll"));
+      frame(0);
+      await element.updateComplete;
+      expect(slides[index]!.getAttribute("aria-hidden")).toBe("false");
+      expect(slides[index]!.hasAttribute("inert")).toBe(false);
+      expect(slides[index]!.querySelector("iframe")).not.toBeNull();
+      expect(element.querySelectorAll("iframe")).toHaveLength(1);
+    }
+    const scroll = vi.spyOn(rail, "scrollTo");
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    const lastScroll = scroll.mock.calls.at(-1)!;
+    expect((lastScroll[0] as ScrollToOptions).left).toBeCloseTo(2 * width);
+    await element.updateComplete;
+    expect([...rail.children]).toEqual(slides);
+  });
+
+  it("never borrows an equal resource ID from another response or the legacy HTML slot", async () => {
+    const first = { ...htmlMedia, id: "response:1", resourceId: "shared" };
+    const second = { ...htmlMedia, id: "response:2", resourceId: "shared" };
+    const element = await mount([first, second]);
+    element.htmlContent = { resourceId: "shared", status: "ready", content: "Legacy" };
+    element.htmlContents = new Map([
+      [first.id, { resourceId: "shared", status: "ready", content: "First" }],
+    ]);
+    await element.updateComplete;
+    expect(element.querySelectorAll("iframe")).toHaveLength(1);
+    const oldFrame = element.querySelector("iframe")!;
+    element.media = [second];
+    await element.updateComplete;
+    oldFrame.dispatchEvent(new Event("load"));
+    expect(element.querySelector("iframe")).toBeNull();
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    element.htmlContents = new Map([
+      [second.id, { resourceId: "wrong", status: "ready", content: "Wrong" }],
+    ]);
+    await element.updateComplete;
+    expect(element.querySelector("iframe")).toBeNull();
+  });
+
+  it("keeps a deferred image selected through body arrival and eviction and requests it again on reconnect", async () => {
+    const deferred = { ...images[1]!, source: undefined };
+    const element = await mount([images[0]!, deferred]);
+    const requested: string[][] = [];
+    element.addEventListener("lens-output-media-demand", (event) =>
+      requested.push([...event.detail.mediaIds]),
+    );
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    expect(element.querySelector('.output-media-slide[aria-hidden="false"] img')).toBeNull();
+    element.mediaErrors = new Map([[deferred.id, "Image body is unavailable"]]);
+    await element.updateComplete;
+    expect(
+      element.querySelector('.output-media-slide[aria-hidden="false"]')?.textContent,
+    ).toContain("Image body is unavailable");
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    element.mediaErrors = new Map();
+    element.media = [images[0]!, images[1]!];
+    await element.updateComplete;
+    expect(
+      element.querySelector('.output-media-slide[aria-hidden="false"] img')?.getAttribute("src"),
+    ).toBe(images[1]!.source);
+    element.media = [images[0]!, deferred];
+    await element.updateComplete;
+    expect(
+      element.querySelector('.output-media-slide[aria-hidden="false"]')?.getAttribute("aria-label"),
+    ).toBe("Media 2 of 2");
+    expect(element.querySelector('.output-media-slide[aria-hidden="false"] img')).toBeNull();
+    element.remove();
+    document.body.append(element);
+    await element.updateComplete;
+    expect(requested.at(-1)).toEqual([images[0]!.id, images[1]!.id]);
+  });
+
+  it("fullscreens the selected HTML response when earlier HTML slides coexist", async () => {
+    const media = [0, 1].map((index) => ({ ...htmlMedia, id: `response:${index}` }));
+    const element = await mount(media);
+    element.htmlContents = new Map(
+      media.map((item, index) => [
+        item.id,
+        {
+          resourceId: item.resourceId,
+          status: "ready" as const,
+          content: `<h1>${index}</h1>`,
+        },
+      ]),
+    );
+    await element.updateComplete;
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    const selected = element.querySelector<HTMLIFrameElement>(
+      '.output-media-slide[aria-hidden="false"] iframe',
+    )!;
+    selected.dispatchEvent(new Event("load"));
+    await element.updateComplete;
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    expect(requestFullscreen.mock.contexts[0]).toBe(selected.parentElement);
+    setFullscreen(selected.parentElement);
+    resolveRequest();
+    await element.updateComplete;
+    expect(element.querySelector('.output-media-slide[aria-hidden="false"] iframe')).toBe(selected);
   });
 
   it("uses labeled Font Awesome controls and reports only loaded, known metadata", async () => {
