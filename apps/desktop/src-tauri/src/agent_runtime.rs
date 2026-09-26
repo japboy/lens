@@ -12,6 +12,7 @@ use std::{
     fs::{self, File},
     path::{Component, Path, PathBuf},
     process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
@@ -63,6 +64,8 @@ pub(crate) struct RuntimeInstallation {
     root: PathBuf,
     kind: AgentKind,
     id: String,
+    /// Historical confirmation survives retirement while this lease is alive.
+    confirmed: AtomicBool,
 }
 impl Drop for RuntimeInstallation {
     fn drop(&mut self) {
@@ -278,14 +281,20 @@ fn acquire_lease(
     id: &str,
 ) -> Result<std::sync::Arc<RuntimeInstallation>, String> {
     let path = install_root(root, kind, id)?;
+    let selector = read_selector(root, kind)?;
+    let confirmed = [selector.current.as_deref(), selector.previous.as_deref()].contains(&Some(id));
     let mut map = leases().lock().map_err(|_| "runtime leases unavailable")?;
     if let Some(lease) = map.get(&path).and_then(std::sync::Weak::upgrade) {
+        if confirmed {
+            lease.confirmed.store(true, Ordering::Release);
+        }
         return Ok(lease);
     }
     let lease = std::sync::Arc::new(RuntimeInstallation {
         root: root.to_owned(),
         kind,
         id: id.into(),
+        confirmed: AtomicBool::new(confirmed),
     });
     map.insert(path, std::sync::Arc::downgrade(&lease));
     Ok(lease)
@@ -303,8 +312,14 @@ fn confirm_ready_with_cleanup(
     let _guard = selector_mutex()
         .lock()
         .map_err(|_| "runtime selector unavailable")?;
+    // An admitted session may finish startup after one or more updates. Its
+    // verified lease remains valid, but must never reactivate the older version.
+    if install.confirmed.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let mut selector = read_selector(&install.root, install.kind)?;
     if selector.current.as_deref() == Some(&install.id) {
+        install.confirmed.store(true, Ordering::Release);
         return Ok(());
     }
     if selector.candidate.as_deref() != Some(&install.id) {
@@ -314,6 +329,7 @@ fn confirm_ready_with_cleanup(
     selector.current = selector.candidate.take();
     selector.rejected_version = None;
     write_selector(&install.root, install.kind, &selector)?;
+    install.confirmed.store(true, Ordering::Release);
     // Activation is committed by the atomic selector write. Cleanup can be
     // retried on a later lease release and must not report a false failure.
     if let Err(error) = cleanup(&install.root, install.kind) {
@@ -995,6 +1011,11 @@ pub(crate) fn publish_confirmed_version<R: tauri::Runtime>(
     app: &AppHandle<R>,
     runtime: &ResolvedAgentRuntime,
 ) -> Result<(), String> {
+    // Keep the selector authority stable until the corresponding snapshot is
+    // updated; otherwise a concurrent activation could publish an older version.
+    let _guard = selector_mutex()
+        .lock()
+        .map_err(|_| "runtime selector unavailable")?;
     let Some(current_version) = confirmed_runtime_version(runtime)? else {
         return Ok(());
     };
@@ -2962,6 +2983,62 @@ mod tests {
         drop(next_runtime);
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn confirmed_session_lease_survives_updates_during_startup_without_reactivation() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let original = Uuid::new_v4().to_string();
+        let next = Uuid::new_v4().to_string();
+        let latest = Uuid::new_v4().to_string();
+        for id in [&original, &next, &latest] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(original.clone()),
+                candidate: Some(next.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Session admission leases the current version before its asynchronous
+        // ACP initialization. Updates may activate while that initialization runs.
+        let admitted = snapshot_runtime_leases(&root, kind, true, false).unwrap();
+        let session = runtime(&root, kind, &original);
+        let next_runtime = runtime(&root, kind, &next);
+        confirm_ready(&next_runtime).unwrap();
+        let after_first_update = read_selector(&root, kind).unwrap();
+        assert!(confirm_ready(&session).is_ok());
+        assert_eq!(read_selector(&root, kind).unwrap(), after_first_update);
+
+        // A slow startup can outlive even the selector's single previous slot.
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                candidate: Some(latest.clone()),
+                ..after_first_update
+            },
+        )
+        .unwrap();
+        let latest_runtime = runtime(&root, kind, &latest);
+        confirm_ready(&latest_runtime).unwrap();
+        let after_second_update = read_selector(&root, kind).unwrap();
+        assert_eq!(after_second_update.previous.as_deref(), Some(next.as_str()));
+        assert!(confirm_ready(&session).is_ok());
+        assert_eq!(read_selector(&root, kind).unwrap(), after_second_update);
+        assert!(install_root(&root, kind, &original).unwrap().exists());
+
+        drop(admitted);
+        drop(session);
+        assert!(!install_root(&root, kind, &original).unwrap().exists());
+        drop(next_runtime);
+        drop(latest_runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn pruning_never_removes_an_installation_with_a_live_process_lease() {
         let root = root();
