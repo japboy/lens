@@ -1,6 +1,8 @@
 use crate::{
-    app_state::{publish_agent_runtime, update_agent_runtime, AppState},
-    model::{AgentKind, AgentRuntimeStage, AgentRuntimeState},
+    app_state::{publish_agent_runtime, update_agent_runtime, update_agent_selection, AppState},
+    model::{
+        AgentKind, AgentRuntimeStage, AgentRuntimeState, AgentSelectionStage, AgentSelectionState,
+    },
 };
 use flate2::read::GzDecoder;
 use reqwest::Client;
@@ -10,6 +12,7 @@ use std::{
     fs::{self, File},
     path::{Component, Path, PathBuf},
     process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
@@ -61,6 +64,8 @@ pub(crate) struct RuntimeInstallation {
     root: PathBuf,
     kind: AgentKind,
     id: String,
+    /// Historical confirmation survives retirement while this lease is alive.
+    confirmed: AtomicBool,
 }
 impl Drop for RuntimeInstallation {
     fn drop(&mut self) {
@@ -276,27 +281,45 @@ fn acquire_lease(
     id: &str,
 ) -> Result<std::sync::Arc<RuntimeInstallation>, String> {
     let path = install_root(root, kind, id)?;
+    let selector = read_selector(root, kind)?;
+    let confirmed = [selector.current.as_deref(), selector.previous.as_deref()].contains(&Some(id));
     let mut map = leases().lock().map_err(|_| "runtime leases unavailable")?;
     if let Some(lease) = map.get(&path).and_then(std::sync::Weak::upgrade) {
+        if confirmed {
+            lease.confirmed.store(true, Ordering::Release);
+        }
         return Ok(lease);
     }
     let lease = std::sync::Arc::new(RuntimeInstallation {
         root: root.to_owned(),
         kind,
         id: id.into(),
+        confirmed: AtomicBool::new(confirmed),
     });
     map.insert(path, std::sync::Arc::downgrade(&lease));
     Ok(lease)
 }
 pub(crate) fn confirm_ready(runtime: &ResolvedAgentRuntime) -> Result<(), String> {
+    confirm_ready_with_cleanup(runtime, prune_installations)
+}
+fn confirm_ready_with_cleanup(
+    runtime: &ResolvedAgentRuntime,
+    cleanup: impl FnOnce(&Path, AgentKind) -> Result<(), String>,
+) -> Result<(), String> {
     let Some(install) = &runtime.installation else {
         return Ok(());
     };
     let _guard = selector_mutex()
         .lock()
         .map_err(|_| "runtime selector unavailable")?;
+    // An admitted session may finish startup after one or more updates. Its
+    // verified lease remains valid, but must never reactivate the older version.
+    if install.confirmed.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let mut selector = read_selector(&install.root, install.kind)?;
     if selector.current.as_deref() == Some(&install.id) {
+        install.confirmed.store(true, Ordering::Release);
         return Ok(());
     }
     if selector.candidate.as_deref() != Some(&install.id) {
@@ -306,7 +329,13 @@ pub(crate) fn confirm_ready(runtime: &ResolvedAgentRuntime) -> Result<(), String
     selector.current = selector.candidate.take();
     selector.rejected_version = None;
     write_selector(&install.root, install.kind, &selector)?;
-    prune_installations(&install.root, install.kind)
+    install.confirmed.store(true, Ordering::Release);
+    // Activation is committed by the atomic selector write. Cleanup can be
+    // retried on a later lease release and must not report a false failure.
+    if let Err(error) = cleanup(&install.root, install.kind) {
+        eprintln!("Unable to prune retired Agent runtime: {error}");
+    }
+    Ok(())
 }
 pub(crate) async fn reject_candidate(
     runtime: &ResolvedAgentRuntime,
@@ -408,7 +437,30 @@ pub async fn resolve_for_session<R: tauri::Runtime>(
     if kind.is_external() {
         return resolve_external(app, kind).await;
     }
-    resolve_available(app, kind, true).await
+    // Installation and registry I/O belong to explicit user actions. A session
+    // takes a lease on the already published current installation immediately,
+    // even while an update is downloading or validating a private candidate.
+    ensure_supported_target()?;
+    let root = runtime_root(app)?;
+    migrate_legacy(&root, kind).await?;
+    selected_runtime_for_session(app, &root, kind)
+        .await?
+        .ok_or_else(|| format!("{} is not installed", display_name(kind)))
+}
+async fn selected_runtime_for_session<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    root: &Path,
+    kind: AgentKind,
+) -> Result<Option<ResolvedAgentRuntime>, String> {
+    if let Some(runtime) = selected_runtime_with_policy(root, kind, true, false).await? {
+        return Ok(Some(runtime));
+    }
+    // A candidate may belong to an explicit install still being verified.
+    // Even if a former current existed but failed integrity checks, do not
+    // launch that candidate until its installer has finished.
+    let state = app.state::<AppState>();
+    let _install_guard = state.agent_runtime_install.lock().await;
+    selected_runtime(root, kind, true).await
 }
 pub async fn resolve_installed<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -443,7 +495,7 @@ pub async fn resolve_installed<R: tauri::Runtime>(
         ensure_supported_target()?;
         let root = runtime_root(app)?;
         migrate_legacy(&root, kind).await?;
-        selected_runtime(&root, kind).await
+        selected_runtime(&root, kind, true).await
     }
     .await;
     match &result {
@@ -471,12 +523,18 @@ pub async fn resolve_installed<R: tauri::Runtime>(
 async fn selected_runtime(
     root: &Path,
     kind: AgentKind,
+    prefer_current: bool,
 ) -> Result<Option<ResolvedAgentRuntime>, String> {
-    let snapshot = read_selector(root, kind)?;
-    for id in [snapshot.candidate, snapshot.current, snapshot.previous]
-        .into_iter()
-        .flatten()
-    {
+    selected_runtime_with_policy(root, kind, prefer_current, true).await
+}
+async fn selected_runtime_with_policy(
+    root: &Path,
+    kind: AgentKind,
+    prefer_current: bool,
+    include_candidate: bool,
+) -> Result<Option<ResolvedAgentRuntime>, String> {
+    let ordered = snapshot_runtime_leases(root, kind, prefer_current, include_candidate)?;
+    for (id, _snapshot_lease) in ordered {
         match load_runtime(root, kind, &id).await {
             Ok(runtime) => {
                 let _guard = selector_mutex()
@@ -509,6 +567,34 @@ async fn selected_runtime(
     }
     Ok(None)
 }
+fn snapshot_runtime_leases(
+    root: &Path,
+    kind: AgentKind,
+    prefer_current: bool,
+    include_candidate: bool,
+) -> Result<Vec<(String, std::sync::Arc<RuntimeInstallation>)>, String> {
+    // Read the selector and acquire leases in one critical section. A concurrent
+    // activation may then change current, but it cannot prune the version this
+    // admission selected before its integrity checks finish.
+    {
+        let _guard = selector_mutex()
+            .lock()
+            .map_err(|_| "runtime selector unavailable")?;
+        let snapshot = read_selector(root, kind)?;
+        let mut ids = if prefer_current {
+            [snapshot.current, snapshot.previous, snapshot.candidate]
+        } else {
+            [snapshot.candidate, snapshot.current, snapshot.previous]
+        };
+        if !include_candidate {
+            ids = [ids[0].take(), ids[1].take(), None];
+        }
+        ids.into_iter()
+            .flatten()
+            .map(|id| acquire_lease(root, kind, &id).map(|lease| (id, lease)))
+            .collect::<Result<Vec<_>, _>>()
+    }
+}
 async fn resolve_available<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
@@ -517,17 +603,59 @@ async fn resolve_available<R: tauri::Runtime>(
     let state = app.state::<AppState>();
     let _guard = state.agent_runtime_install.lock().await;
     let root = runtime_root(app)?;
-    resolve_at(app, kind, update, &root).await
+    resolve_at(app, kind, update, false, &root)
+        .await
+        .map(|(runtime, _, _)| runtime)
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResolutionStatus {
+    Existing,
+    Candidate,
+    UpdateBlockedByReleaseAgePolicy,
+}
+
+enum CandidateInstallation {
+    Installed(ResolvedAgentRuntime),
+    BlockedByReleaseAgePolicy,
+}
+
+fn select_candidate_or_existing(
+    result: CandidateInstallation,
+    existing: Option<&ResolvedAgentRuntime>,
+) -> Result<(ResolvedAgentRuntime, ResolutionStatus), String> {
+    match result {
+        CandidateInstallation::Installed(runtime) => Ok((runtime, ResolutionStatus::Candidate)),
+        CandidateInstallation::BlockedByReleaseAgePolicy => existing
+            .cloned()
+            .map(|runtime| (runtime, ResolutionStatus::UpdateBlockedByReleaseAgePolicy))
+            .ok_or_else(|| {
+                "The Agent could not be installed under the current release age policy.".into()
+            }),
+    }
+}
+
+fn policy_blocked_update_message(kind: AgentKind, version: &str) -> String {
+    format!(
+        "The update could not be installed under the current release age policy. Keeping verified {} {version}.",
+        display_name(kind)
+    )
+}
+
 async fn resolve_at<R: tauri::Runtime>(
     app: &AppHandle<R>,
     kind: AgentKind,
     update: bool,
+    verify_before_ready: bool,
     root: &Path,
-) -> Result<ResolvedAgentRuntime, String> {
+) -> Result<(ResolvedAgentRuntime, Uuid, ResolutionStatus), String> {
     ensure_supported_target()?;
     migrate_legacy(root, kind).await?;
-    let existing = selected_runtime(root, kind).await?;
+    let existing = selected_runtime(root, kind, true).await?;
+    let current_version = existing
+        .as_ref()
+        .map(confirmed_runtime_version)
+        .transpose()?
+        .flatten();
     let operation_id = Uuid::new_v4();
     publish_agent_runtime(
         app,
@@ -538,6 +666,7 @@ async fn resolve_at<R: tauri::Runtime>(
             version: existing
                 .as_ref()
                 .map(|runtime| runtime.adapter_version.clone()),
+            current_version,
             message: Some("Checking the official ACP Registry…".into()),
             ..Default::default()
         },
@@ -545,14 +674,14 @@ async fn resolve_at<R: tauri::Runtime>(
     if !update || read_selector(root, kind)?.candidate.is_some() {
         if let Some(runtime) = &existing {
             publish_ready(app, operation_id, runtime, None)?;
-            return Ok(runtime.clone());
+            return Ok((runtime.clone(), operation_id, ResolutionStatus::Existing));
         }
     }
     let result = async {
         let version = fetch_registry_version(kind).await?;
         if let Some(runtime) = &existing {
             if version_order(&runtime.adapter_version, &version) != std::cmp::Ordering::Less {
-                return Ok(runtime.clone());
+                return Ok((runtime.clone(), ResolutionStatus::Existing));
             }
         }
         if read_selector(root, kind)?.rejected_version.as_deref() == Some(&version) {
@@ -563,7 +692,7 @@ async fn resolve_at<R: tauri::Runtime>(
         }
         let node = ensure_node_runtime(app, root, operation_id).await?;
         let pnpm = ensure_pnpm_runtime(app, root, &node, operation_id).await?;
-        install_requested_candidate(
+        let candidate = install_requested_candidate(
             app,
             root,
             &node,
@@ -577,18 +706,44 @@ async fn resolve_at<R: tauri::Runtime>(
             },
             operation_id,
         )
-        .await
+        .await?;
+        select_candidate_or_existing(candidate, existing.as_ref())
     }
     .await;
     match result {
-        Ok(runtime) => {
-            publish_ready(app, operation_id, &runtime, None)?;
-            Ok(runtime)
+        Ok((runtime, status)) => {
+            if verify_before_ready && is_candidate(&runtime)? {
+                update_agent_runtime(app, operation_id, |state| {
+                    state.stage = AgentRuntimeStage::Verifying;
+                    state.version = Some(runtime.adapter_version.clone());
+                    state.message =
+                        Some("Verifying ACP startup, HTTP MCP, and saved settings…".into());
+                    state.error = None;
+                })?;
+            } else {
+                publish_ready(app, operation_id, &runtime, None)?;
+            }
+            Ok((runtime, operation_id, status))
         }
         Err(error) => {
-            if let Some(runtime) = existing {
+            if verify_before_ready {
+                let retained = existing.is_some();
+                update_agent_runtime(app, operation_id, |state| {
+                    state.stage = AgentRuntimeStage::Failed;
+                    state.error = Some(error.clone());
+                    state.message = Some(
+                        if retained {
+                            "The installed Agent runtime was kept."
+                        } else {
+                            "The Agent could not be installed. Try again."
+                        }
+                        .into(),
+                    );
+                })?;
+                Err(error)
+            } else if let Some(runtime) = existing {
                 publish_ready(app, operation_id, &runtime, Some(error))?;
-                Ok(runtime)
+                Ok((runtime, operation_id, ResolutionStatus::Existing))
             } else {
                 update_agent_runtime(app, operation_id, |state| {
                     state.stage = AgentRuntimeStage::Failed;
@@ -600,15 +755,295 @@ async fn resolve_at<R: tauri::Runtime>(
         }
     }
 }
+fn is_candidate(runtime: &ResolvedAgentRuntime) -> Result<bool, String> {
+    let Some(install) = &runtime.installation else {
+        return Ok(false);
+    };
+    Ok(read_selector(&install.root, install.kind)?
+        .candidate
+        .as_deref()
+        == Some(&install.id))
+}
+
+/// Explicit Settings action. The installer mutex covers candidate verification too;
+/// persistent sessions bypass it and lease the confirmed current installation.
+pub async fn update_managed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+) -> Result<AgentRuntimeState, String> {
+    provider(kind)?;
+    let state = app.state::<AppState>();
+    let _install_guard = state.agent_runtime_install.lock().await;
+    ensure_supported_target()?;
+    let root = runtime_root(app)?;
+    migrate_legacy(&root, kind).await?;
+    let current = selected_runtime_with_policy(&root, kind, true, false).await?;
+    let current_version = current
+        .as_ref()
+        .map(|runtime| runtime.adapter_version.clone());
+    let selector = read_selector(&root, kind)?;
+    let had_current = current_version.is_some();
+
+    let initial_operation = Uuid::new_v4();
+    publish_agent_runtime(
+        app,
+        AgentRuntimeState {
+            operation_id: Some(initial_operation),
+            agent: Some(kind),
+            stage: AgentRuntimeStage::Resolving,
+            current_version,
+            message: Some("Checking the installed Agent runtime…".into()),
+            ..Default::default()
+        },
+    )?;
+
+    let mut progress_operation = initial_operation;
+    let outcome = async {
+        // A candidate from an earlier selection or interrupted update must be
+        // admitted before another registry version can supersede it.
+        if let Some(id) = selector.candidate {
+            let pending = match load_runtime(&root, kind, &id).await {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    discard_unloadable_candidate(&root, kind, &id)?;
+                    return Err(format!("The staged Agent update is unusable: {error}"));
+                }
+            };
+            verify_and_confirm(app, &pending, initial_operation).await?;
+            let message = format!(
+                "Applied staged {} {}. Check again for newer versions.",
+                display_name(kind),
+                pending.adapter_version
+            );
+            if let Err(error) = publish_ready(app, initial_operation, &pending, None) {
+                eprintln!("Unable to publish completed staged Agent update: {error}");
+            }
+            if let Err(error) = update_agent_runtime(app, initial_operation, |state| {
+                state.message = Some(message.clone())
+            }) {
+                eprintln!("Unable to publish staged Agent update result: {error}");
+            }
+            return Ok(AgentRuntimeState {
+                operation_id: Some(initial_operation),
+                agent: Some(kind),
+                stage: AgentRuntimeStage::Ready,
+                current_version: Some(pending.adapter_version.clone()),
+                version: Some(pending.adapter_version),
+                message: Some(message),
+                ..Default::default()
+            });
+        }
+
+        selected_runtime(&root, kind, true).await?;
+        let (result, operation, status) = resolve_at(app, kind, true, true, &root).await?;
+        progress_operation = operation;
+        let message = if is_candidate(&result)? {
+            verify_and_confirm(app, &result, operation).await?;
+            if let Err(error) = publish_ready(app, operation, &result, None) {
+                eprintln!("Unable to publish completed Agent update: {error}");
+            }
+            let action = if had_current { "Updated" } else { "Installed" };
+            format!(
+                "{action} {} {}.",
+                display_name(kind),
+                result.adapter_version
+            )
+        } else if status == ResolutionStatus::UpdateBlockedByReleaseAgePolicy {
+            policy_blocked_update_message(kind, &result.adapter_version)
+        } else {
+            format!(
+                "{} {} is already up to date.",
+                display_name(kind),
+                result.adapter_version
+            )
+        };
+        if let Err(error) = update_agent_runtime(app, operation, |state| {
+            state.message = Some(message.clone())
+        }) {
+            eprintln!("Unable to publish Agent update result: {error}");
+        }
+        Ok(AgentRuntimeState {
+            operation_id: Some(operation),
+            agent: Some(kind),
+            stage: AgentRuntimeStage::Ready,
+            current_version: Some(result.adapter_version.clone()),
+            version: Some(result.adapter_version),
+            message: Some(message),
+            ..Default::default()
+        })
+    }
+    .await;
+    if let Err(error) = &outcome {
+        // Keep command completion and the visible state finite even when a
+        // staged installation is corrupt or verification fails before resolve_at.
+        if let Err(publish_error) = finish_failed_update(app, progress_operation, error) {
+            eprintln!("Unable to publish failed Agent update: {publish_error}");
+        }
+    }
+    outcome
+}
+
+fn finish_failed_update<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation: Uuid,
+    error: &str,
+) -> Result<bool, String> {
+    update_agent_runtime(app, operation, |state| {
+        if state.stage != AgentRuntimeStage::Failed {
+            state.stage = AgentRuntimeStage::Failed;
+            state.error = Some(error.into());
+            state.message = Some("The Agent update was not applied. Try again.".into());
+        }
+    })
+}
+
+fn discard_unloadable_candidate(root: &Path, kind: AgentKind, id: &str) -> Result<(), String> {
+    let _guard = selector_mutex()
+        .lock()
+        .map_err(|_| "runtime selector unavailable")?;
+    let mut selector = read_selector(root, kind)?;
+    if selector.candidate.as_deref() == Some(id) {
+        selector.candidate = None;
+        write_selector(root, kind, &selector)?;
+        prune_installations(root, kind)?;
+    }
+    Ok(())
+}
+
+fn needs_installed_selection_guidance(selection: &AgentSelectionState, kind: AgentKind) -> bool {
+    !kind.is_external()
+        && selection.stage == AgentSelectionStage::Unselected
+        && selection.candidate == Some(kind)
+        && selection.error.is_none()
+        && selection.message.as_deref()
+            == Some(
+                format!(
+                    "{} will be downloaded when selected.",
+                    crate::session_view::agent_label(kind)
+                )
+                .as_str(),
+            )
+}
+
+fn refresh_installed_selection_guidance<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    kind: AgentKind,
+) -> Result<(), String> {
+    let selection = app.state::<AppState>().agent_selection()?;
+    let Some(operation) = selection.operation_id else {
+        return Ok(());
+    };
+    if !needs_installed_selection_guidance(&selection, kind) {
+        return Ok(());
+    }
+    update_agent_selection(app, operation, |current| {
+        if needs_installed_selection_guidance(current, kind) {
+            current.message = Some(format!(
+                "{} is installed. Verify connection to select it.",
+                crate::session_view::agent_label(kind)
+            ));
+        }
+    })?;
+    Ok(())
+}
+
+async fn verify_and_confirm<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    runtime: &ResolvedAgentRuntime,
+    operation: Uuid,
+) -> Result<(), String> {
+    update_agent_runtime(app, operation, |state| {
+        state.stage = AgentRuntimeStage::Verifying;
+        state.message = Some("Verifying ACP startup, HTTP MCP, and saved settings…".into());
+    })?;
+    let result = crate::agent::verify_managed_runtime(app, runtime.clone()).await;
+    if let Err(failure) = result {
+        let has_current = runtime
+            .installation
+            .as_ref()
+            .and_then(|install| read_selector(&install.root, install.kind).ok())
+            .is_some_and(|selector| selector.current.is_some());
+        let (error, retryable) = match failure {
+            crate::agent::ManagedVerificationError::Incompatible(error) => {
+                reject_candidate(runtime).await?;
+                (error, false)
+            }
+            crate::agent::ManagedVerificationError::Retryable(error) => (error, true),
+        };
+        update_agent_runtime(app, operation, |state| {
+            state.stage = AgentRuntimeStage::Failed;
+            state.error = Some(error.clone());
+            state.message = Some(if !has_current {
+                "The candidate was not applied; select an Agent or retry after resolving the error."
+            } else if retryable {
+                "The installed Agent runtime was kept; the update can be retried."
+            } else {
+                "The installed Agent runtime was kept; the incompatible update was rejected."
+            }.into());
+        })?;
+        return Err(error);
+    }
+    confirm_ready(runtime).inspect_err(|error| {
+        let _ = update_agent_runtime(app, operation, |state| {
+            state.stage = AgentRuntimeStage::Failed;
+            state.error = Some(error.clone());
+            state.message =
+                Some("The installed Agent runtime was kept; the update was not applied.".into());
+        });
+    })?;
+    if let Err(error) = refresh_installed_selection_guidance(app, runtime.kind) {
+        eprintln!("Unable to refresh Agent selection after installation: {error}");
+    }
+    Ok(())
+}
+fn confirmed_runtime_version(runtime: &ResolvedAgentRuntime) -> Result<Option<String>, String> {
+    let Some(installation) = &runtime.installation else {
+        return Ok(None);
+    };
+    Ok((read_selector(&installation.root, installation.kind)?
+        .current
+        .as_deref()
+        == Some(&installation.id))
+    .then(|| runtime.adapter_version.clone()))
+}
+
+pub(crate) fn publish_confirmed_version<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    runtime: &ResolvedAgentRuntime,
+) -> Result<(), String> {
+    // Keep the selector authority stable until the corresponding snapshot is
+    // updated; otherwise a concurrent activation could publish an older version.
+    let _guard = selector_mutex()
+        .lock()
+        .map_err(|_| "runtime selector unavailable")?;
+    let Some(current_version) = confirmed_runtime_version(runtime)? else {
+        return Ok(());
+    };
+    let snapshot = app.state::<AppState>().snapshot()?.agent_runtime;
+    if snapshot.agent != Some(runtime.kind) {
+        return Ok(());
+    }
+    if let Some(operation) = snapshot.operation_id {
+        update_agent_runtime(app, operation, |state| {
+            state.current_version = Some(current_version);
+        })?;
+    }
+    Ok(())
+}
+
 fn publish_ready<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation: Uuid,
     runtime: &ResolvedAgentRuntime,
     failure: Option<String>,
 ) -> Result<(), String> {
+    let current_version = confirmed_runtime_version(runtime)?;
     update_agent_runtime(app, operation, |state| {
         state.stage = AgentRuntimeStage::Ready;
         state.version = (!runtime.kind.is_external()).then(|| runtime.adapter_version.clone());
+        if current_version.is_some() || runtime.kind.is_external() {
+            state.current_version = current_version;
+        }
         state.message = Some(match &failure {
             None if runtime.kind.is_external() => {
                 "External ACP executable is available; connection verification is required.".into()
@@ -1518,7 +1953,7 @@ async fn install_candidate<R: tauri::Runtime>(
     version: &str,
     operation: Uuid,
 ) -> Result<ResolvedAgentRuntime, String> {
-    install_requested_candidate(
+    match install_requested_candidate(
         app,
         root,
         node,
@@ -1527,7 +1962,13 @@ async fn install_candidate<R: tauri::Runtime>(
         CandidateRequest::Exact(version),
         operation,
     )
-    .await
+    .await?
+    {
+        CandidateInstallation::Installed(runtime) => Ok(runtime),
+        CandidateInstallation::BlockedByReleaseAgePolicy => {
+            Err("The Agent could not be installed under the current release age policy.".into())
+        }
+    }
 }
 
 async fn install_requested_candidate<R: tauri::Runtime>(
@@ -1538,7 +1979,7 @@ async fn install_requested_candidate<R: tauri::Runtime>(
     kind: AgentKind,
     request: CandidateRequest<'_>,
     operation: Uuid,
-) -> Result<ResolvedAgentRuntime, String> {
+) -> Result<CandidateInstallation, String> {
     let version = request.ceiling();
     let selector = request.selector()?;
     update_agent_runtime(app, operation, |state| {
@@ -1571,7 +2012,11 @@ async fn install_requested_candidate<R: tauri::Runtime>(
             PnpmInstallMode::ResolveExact,
             PnpmInstallMode::ResolveEligible,
         );
-        run_pnpm_install(node, pnpm, &agent, &staging, mode).await?;
+        if run_pnpm_install(node, pnpm, &agent, &staging, mode).await?
+            == PnpmInstallOutcome::BlockedByReleaseAgePolicy
+        {
+            return Ok(CandidateInstallation::BlockedByReleaseAgePolicy);
+        }
         let resolved_manifest =
             fs::read(agent.join("package.json")).map_err(|error| error.to_string())?;
         let (version, package) = resolved_candidate_manifest(&resolved_manifest, kind, request)?;
@@ -1642,7 +2087,9 @@ async fn install_requested_candidate<R: tauri::Runtime>(
             selector.candidate = Some(id.clone());
             write_selector(root, kind, &selector)?;
         }
-        load_runtime(root, kind, &id).await
+        load_runtime(root, kind, &id)
+            .await
+            .map(CandidateInstallation::Installed)
     }
     .await;
     cleanup_staging(root, &staging);
@@ -1658,10 +2105,35 @@ fn package_manager_override(key: &str) -> bool {
             "node_options" | "node_path" | "node_tls_reject_unauthorized"
         )
 }
+#[derive(Clone, Copy)]
 enum PnpmInstallMode<'a> {
     ResolveExact,
     ResolveEligible(&'a str),
     Frozen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PnpmInstallOutcome {
+    Installed,
+    BlockedByReleaseAgePolicy,
+}
+
+const PNPM_DIAGNOSTIC_MAX_BYTES: usize = 16 * 1024;
+const PNPM_NO_MATURE_MATCHING_VERSION: &[u8] = b"[ERR_PNPM_NO_MATURE_MATCHING_VERSION]";
+
+fn pnpm_no_mature_matching_version(
+    mode: &PnpmInstallMode<'_>,
+    output: &std::process::Output,
+) -> bool {
+    matches!(mode, PnpmInstallMode::ResolveEligible(_))
+        && [output.stdout.as_slice(), output.stderr.as_slice()]
+            .into_iter()
+            .any(|diagnostic| {
+                diagnostic.len() <= PNPM_DIAGNOSTIC_MAX_BYTES
+                    && diagnostic
+                        .windows(PNPM_NO_MATURE_MATCHING_VERSION.len())
+                        .any(|window| window == PNPM_NO_MATURE_MATCHING_VERSION)
+            })
 }
 
 /// Installation has a managed bootstrap PATH, separate from Agent working PATH.
@@ -1690,7 +2162,7 @@ async fn run_pnpm_install(
     agent: &Path,
     staging: &Path,
     mode: PnpmInstallMode<'_>,
-) -> Result<(), String> {
+) -> Result<PnpmInstallOutcome, String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
     let pnpm = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
     let home = crate::agent_environment::user_home().map_err(|error| error.to_string())?;
@@ -1755,12 +2227,15 @@ async fn run_pnpm_install(
         .map_err(|_| "managed Agent pnpm installation timed out".to_string())?
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
+        if pnpm_no_mature_matching_version(&mode, &output) {
+            return Ok(PnpmInstallOutcome::BlockedByReleaseAgePolicy);
+        }
         return Err(format!(
             "managed Agent Safe-chain installation failed ({})",
             output.status
         ));
     }
-    Ok(())
+    Ok(PnpmInstallOutcome::Installed)
 }
 pub(crate) fn publish_recovery<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -1769,6 +2244,7 @@ pub(crate) fn publish_recovery<R: tauri::Runtime>(
 ) -> Result<(), String> {
     publish_agent_runtime(app, AgentRuntimeState {
         operation_id: Some(Uuid::new_v4()), agent: Some(runtime.kind), stage: AgentRuntimeStage::Ready,
+        current_version: Some(runtime.adapter_version.clone()),
         version: Some(runtime.adapter_version.clone()), message: Some(format!("The update did not meet required ACP capabilities. Continuing with verified {} {}.", display_name(runtime.kind), runtime.adapter_version)),
         error: Some(format!("Agent update failed required startup compatibility checks: {reason}")), ..Default::default()
     })
@@ -1967,8 +2443,8 @@ fn ensure_supported_target() -> Result<(), String> {
 
 fn display_name(kind: AgentKind) -> &'static str {
     match kind {
-        AgentKind::Claude => "Claude Agent",
-        AgentKind::Codex => "Codex",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "ChatGPT Codex",
         AgentKind::External(_) => "External ACP",
     }
 }
@@ -2006,6 +2482,419 @@ mod tests {
             installation: Some(acquire_lease(root, kind, id).unwrap()),
         }
     }
+    struct NoopTray;
+    impl crate::ui::TrayOutput<tauri::test::MockRuntime> for NoopTray {
+        fn apply(
+            &self,
+            _app: &AppHandle<tauri::test::MockRuntime>,
+            _presentation: crate::ui::TrayMenuPresentation,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn installed_runtime_refreshes_only_matching_unselected_selection_guidance() {
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .manage(crate::ui::TrayPresentation::<tauri::test::MockRuntime>(
+                std::sync::Arc::new(NoopTray),
+            ))
+            .build(crate::product_context())
+            .unwrap();
+        let operation = Uuid::new_v4();
+        let missing = AgentSelectionState {
+            operation_id: Some(operation),
+            stage: AgentSelectionStage::Unselected,
+            candidate: Some(AgentKind::Claude),
+            message: Some("Claude Code will be downloaded when selected.".into()),
+            ..Default::default()
+        };
+        crate::app_state::publish_agent_selection(app.handle(), missing.clone()).unwrap();
+        let before = app.state::<AppState>().snapshot().unwrap();
+        refresh_installed_selection_guidance(app.handle(), AgentKind::Codex).unwrap();
+        assert_eq!(app.state::<AppState>().snapshot().unwrap(), before);
+
+        refresh_installed_selection_guidance(app.handle(), AgentKind::Claude).unwrap();
+        let installed = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(installed.agent_selection.operation_id, Some(operation));
+        assert_eq!(
+            installed.agent_selection.stage,
+            AgentSelectionStage::Unselected
+        );
+        assert_eq!(installed.agent_selection.candidate, Some(AgentKind::Claude));
+        assert_eq!(
+            installed.agent_selection.message.as_deref(),
+            Some("Claude Code is installed. Verify connection to select it.")
+        );
+        assert_eq!(installed.revision, before.revision + 1);
+
+        crate::app_state::publish_agent_runtime(
+            app.handle(),
+            AgentRuntimeState {
+                agent: Some(AgentKind::Codex),
+                stage: AgentRuntimeStage::Ready,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            app.state::<AppState>().agent_selection().unwrap(),
+            installed.agent_selection
+        );
+        let revision = app.state::<AppState>().snapshot().unwrap().revision;
+        refresh_installed_selection_guidance(app.handle(), AgentKind::Claude).unwrap();
+        assert_eq!(
+            app.state::<AppState>().snapshot().unwrap().revision,
+            revision
+        );
+
+        for selection in [
+            AgentSelectionState {
+                stage: AgentSelectionStage::Selected,
+                ..missing.clone()
+            },
+            AgentSelectionState {
+                error: Some("Connection failed".into()),
+                ..missing.clone()
+            },
+            AgentSelectionState {
+                message: Some("Signed out of Claude.".into()),
+                ..missing
+            },
+        ] {
+            crate::app_state::publish_agent_selection(app.handle(), selection.clone()).unwrap();
+            let before = app.state::<AppState>().snapshot().unwrap();
+            refresh_installed_selection_guidance(app.handle(), AgentKind::Claude).unwrap();
+            assert_eq!(app.state::<AppState>().snapshot().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn only_a_bounded_no_mature_diagnostic_from_eligible_resolution_is_non_failure() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = |stdout: Vec<u8>, stderr: Vec<u8>| std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout,
+            stderr,
+        };
+        let diagnostic = b"[ERR_PNPM_NO_MATURE_MATCHING_VERSION] no eligible version".to_vec();
+        let eligible =
+            PnpmInstallMode::ResolveEligible("@agentclientprotocol/codex-acp@>1.12.0 <=1.13.1");
+        assert!(pnpm_no_mature_matching_version(
+            &eligible,
+            &output(diagnostic.clone(), vec![])
+        ));
+        assert!(pnpm_no_mature_matching_version(
+            &eligible,
+            &output(vec![], diagnostic.clone())
+        ));
+        assert!(!pnpm_no_mature_matching_version(
+            &PnpmInstallMode::ResolveExact,
+            &output(diagnostic.clone(), vec![])
+        ));
+        assert!(!pnpm_no_mature_matching_version(
+            &PnpmInstallMode::Frozen,
+            &output(diagnostic.clone(), vec![])
+        ));
+        assert!(!pnpm_no_mature_matching_version(
+            &eligible,
+            &output(b"[ERR_PNPM_FETCH_404] package unavailable".to_vec(), vec![])
+        ));
+        let mut oversized = vec![b'x'; PNPM_DIAGNOSTIC_MAX_BYTES];
+        oversized.extend_from_slice(&diagnostic);
+        assert!(!pnpm_no_mature_matching_version(
+            &eligible,
+            &output(oversized, vec![])
+        ));
+    }
+
+    #[test]
+    fn release_age_policy_block_retains_only_an_existing_runtime() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let id = Uuid::new_v4().to_string();
+        fs::create_dir_all(install_root(&root, kind, &id).unwrap()).unwrap();
+        let current = runtime(&root, kind, &id);
+        let (selected, status) = select_candidate_or_existing(
+            CandidateInstallation::BlockedByReleaseAgePolicy,
+            Some(&current),
+        )
+        .unwrap();
+        assert_eq!(status, ResolutionStatus::UpdateBlockedByReleaseAgePolicy);
+        assert_eq!(selected.installation.as_ref().unwrap().id, id);
+        assert!(select_candidate_or_existing(
+            CandidateInstallation::BlockedByReleaseAgePolicy,
+            None
+        )
+        .is_err());
+        assert_eq!(
+            policy_blocked_update_message(kind, &selected.adapter_version),
+            "The update could not be installed under the current release age policy. Keeping verified ChatGPT Codex 1.2.3."
+        );
+        drop(selected);
+        drop(current);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn session_snapshot_leases_current_without_waiting_for_update_and_survives_activation() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let current = Uuid::new_v4().to_string();
+        let candidate = Uuid::new_v4().to_string();
+        for id in [&current, &candidate] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(current.clone()),
+                candidate: Some(candidate.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let state = crate::test_support::state();
+        let _update_in_progress = state.agent_runtime_install.lock().await;
+        let confirmed = snapshot_runtime_leases(&root, kind, true, false).unwrap();
+        assert_eq!(confirmed.len(), 1);
+        assert_eq!(confirmed[0].0, current);
+        drop(confirmed);
+        let snapshot = snapshot_runtime_leases(&root, kind, true, true).unwrap();
+        assert_eq!(
+            snapshot
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec![current.as_str(), candidate.as_str()]
+        );
+
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(candidate),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        prune_installations(&root, kind).unwrap();
+        assert!(install_root(&root, kind, &current).unwrap().exists());
+        drop(snapshot);
+        assert!(!install_root(&root, kind, &current).unwrap().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn session_waits_for_candidate_when_no_valid_confirmed_runtime_exists() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .build(crate::product_context())
+            .unwrap();
+        let state = app.state::<AppState>();
+        let install_guard = state.agent_runtime_install.lock().await;
+        assert!(tokio::time::timeout(
+            Duration::from_millis(50),
+            selected_runtime_for_session(app.handle(), &root, kind),
+        )
+        .await
+        .is_err());
+
+        let current = Uuid::new_v4().to_string();
+        fs::create_dir_all(install_root(&root, kind, &current).unwrap()).unwrap();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(current),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A corrupt current is not a confirmed fallback. The candidate must
+        // wait for the installer, even though a current ID existed initially.
+        assert!(tokio::time::timeout(
+            Duration::from_millis(50),
+            selected_runtime_for_session(app.handle(), &root, kind),
+        )
+        .await
+        .is_err());
+        drop(install_guard);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unusable_candidate_cleanup_keeps_confirmed_current() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let current = Uuid::new_v4().to_string();
+        let candidate = Uuid::new_v4().to_string();
+        for id in [&current, &candidate] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(current.clone()),
+                candidate: Some(candidate.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        discard_unloadable_candidate(&root, kind, &candidate).unwrap();
+        let selector = read_selector(&root, kind).unwrap();
+        assert_eq!(selector.current.as_deref(), Some(current.as_str()));
+        assert!(selector.candidate.is_none());
+        assert!(install_root(&root, kind, &current).unwrap().exists());
+        assert!(!install_root(&root, kind, &candidate).unwrap().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn post_activation_cleanup_failure_does_not_report_update_failure() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let current = Uuid::new_v4().to_string();
+        let candidate = Uuid::new_v4().to_string();
+        for id in [&current, &candidate] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(current.clone()),
+                candidate: Some(candidate.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let pending = runtime(&root, kind, &candidate);
+        assert!(confirm_ready_with_cleanup(&pending, |_, _| Err("cleanup failed".into())).is_ok());
+        let selector = read_selector(&root, kind).unwrap();
+        assert_eq!(selector.current.as_deref(), Some(candidate.as_str()));
+        assert_eq!(selector.previous.as_deref(), Some(current.as_str()));
+        drop(pending);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn failed_update_preserves_confirmed_version_independently_of_candidate() {
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .build(crate::product_context())
+            .unwrap();
+        for current_version in [None, Some("1.0.0".to_string())] {
+            let operation = Uuid::new_v4();
+            publish_agent_runtime(
+                app.handle(),
+                AgentRuntimeState {
+                    operation_id: Some(operation),
+                    agent: Some(AgentKind::Codex),
+                    stage: AgentRuntimeStage::Verifying,
+                    version: Some("2.0.0".into()),
+                    current_version: current_version.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(finish_failed_update(app.handle(), operation, "corrupt candidate").unwrap());
+            let state = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+            assert_eq!(state.stage, AgentRuntimeStage::Failed);
+            assert_eq!(state.error.as_deref(), Some("corrupt candidate"));
+            assert_eq!(state.current_version, current_version);
+            assert_eq!(state.version.as_deref(), Some("2.0.0"));
+        }
+    }
+
+    #[test]
+    fn installed_version_tracks_confirmation_without_overwriting_other_agent_status() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let id = Uuid::new_v4().to_string();
+        fs::create_dir_all(install_root(&root, kind, &id).unwrap()).unwrap();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                candidate: Some(id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let runtime = runtime(&root, kind, &id);
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .build(crate::product_context())
+            .unwrap();
+        let operation = Uuid::new_v4();
+        publish_agent_runtime(
+            app.handle(),
+            AgentRuntimeState {
+                operation_id: Some(operation),
+                agent: Some(kind),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        update_agent_runtime(app.handle(), operation, |state| {
+            state.current_version = Some("1.0.0".into());
+        })
+        .unwrap();
+        publish_ready(app.handle(), operation, &runtime, None).unwrap();
+        finish_failed_update(app.handle(), operation, "incompatible candidate").unwrap();
+        assert_eq!(
+            app.state::<AppState>()
+                .snapshot()
+                .unwrap()
+                .agent_runtime
+                .current_version
+                .as_deref(),
+            Some("1.0.0")
+        );
+        update_agent_runtime(app.handle(), operation, |state| {
+            state.current_version = None;
+        })
+        .unwrap();
+        publish_ready(app.handle(), operation, &runtime, None).unwrap();
+        let staged = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+        assert_eq!(staged.version.as_deref(), Some("1.2.3"));
+        assert_eq!(staged.current_version, None);
+
+        confirm_ready(&runtime).unwrap();
+        publish_confirmed_version(app.handle(), &runtime).unwrap();
+        let confirmed = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+        assert_eq!(confirmed.current_version.as_deref(), Some("1.2.3"));
+        publish_ready(app.handle(), operation, &runtime, None).unwrap();
+        assert_eq!(
+            app.state::<AppState>()
+                .snapshot()
+                .unwrap()
+                .agent_runtime
+                .current_version,
+            confirmed.current_version
+        );
+
+        publish_agent_runtime(
+            app.handle(),
+            AgentRuntimeState {
+                operation_id: Some(Uuid::new_v4()),
+                agent: Some(AgentKind::Claude),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let other = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+        publish_confirmed_version(app.handle(), &runtime).unwrap();
+        assert_eq!(
+            app.state::<AppState>().snapshot().unwrap().agent_runtime,
+            other
+        );
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn registry_requires_unique_supported_identity_and_exact_version() {
         let valid = serde_json::json!({"version":"1.0.0","agents":[{"id":"codex-acp","version":"1.2.3","distribution":{"npx":{"package":"@agentclientprotocol/codex-acp@1.2.3"}}}]});
@@ -2094,6 +2983,62 @@ mod tests {
         drop(next_runtime);
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn confirmed_session_lease_survives_updates_during_startup_without_reactivation() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let original = Uuid::new_v4().to_string();
+        let next = Uuid::new_v4().to_string();
+        let latest = Uuid::new_v4().to_string();
+        for id in [&original, &next, &latest] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(original.clone()),
+                candidate: Some(next.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Session admission leases the current version before its asynchronous
+        // ACP initialization. Updates may activate while that initialization runs.
+        let admitted = snapshot_runtime_leases(&root, kind, true, false).unwrap();
+        let session = runtime(&root, kind, &original);
+        let next_runtime = runtime(&root, kind, &next);
+        confirm_ready(&next_runtime).unwrap();
+        let after_first_update = read_selector(&root, kind).unwrap();
+        assert!(confirm_ready(&session).is_ok());
+        assert_eq!(read_selector(&root, kind).unwrap(), after_first_update);
+
+        // A slow startup can outlive even the selector's single previous slot.
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                candidate: Some(latest.clone()),
+                ..after_first_update
+            },
+        )
+        .unwrap();
+        let latest_runtime = runtime(&root, kind, &latest);
+        confirm_ready(&latest_runtime).unwrap();
+        let after_second_update = read_selector(&root, kind).unwrap();
+        assert_eq!(after_second_update.previous.as_deref(), Some(next.as_str()));
+        assert!(confirm_ready(&session).is_ok());
+        assert_eq!(read_selector(&root, kind).unwrap(), after_second_update);
+        assert!(install_root(&root, kind, &original).unwrap().exists());
+
+        drop(admitted);
+        drop(session);
+        assert!(!install_root(&root, kind, &original).unwrap().exists());
+        drop(next_runtime);
+        drop(latest_runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn pruning_never_removes_an_installation_with_a_live_process_lease() {
         let root = root();
@@ -2379,7 +3324,10 @@ mod tests {
                 read_selector(&migration, kind).unwrap().current,
                 Some(format!("legacy:{version}"))
             );
-            let restored = selected_runtime(&migration, kind).await.unwrap().unwrap();
+            let restored = selected_runtime(&migration, kind, false)
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(restored.adapter_version, version);
             assert!(legacy.exists());
             drop(restored);
@@ -2544,7 +3492,9 @@ mod tests {
         for kind in [AgentKind::Codex, AgentKind::Claude] {
             assert_eq!(read_selector(&root, kind).unwrap(), Selector::default());
             let ceiling = fetch_registry_version(kind).await.unwrap();
-            let runtime = resolve_at(app.handle(), kind, true, &root).await.unwrap();
+            let (runtime, _, _) = resolve_at(app.handle(), kind, true, false, &root)
+                .await
+                .unwrap();
             assert!(CandidateRequest::Eligible {
                 ceiling: &ceiling,
                 after: None
@@ -2563,7 +3513,9 @@ mod tests {
                 AGENT_WORKSPACE
             );
             confirm_ready(&runtime).unwrap();
-            let again = resolve_at(app.handle(), kind, true, &root).await.unwrap();
+            let (again, _, _) = resolve_at(app.handle(), kind, true, false, &root)
+                .await
+                .unwrap();
             assert_eq!(again.installation.as_ref().unwrap().id, id);
             assert!(read_selector(&root, kind).unwrap().candidate.is_none());
             eprintln!(
@@ -2659,7 +3611,9 @@ mod tests {
             assert_eq!(record.schema_version, AGENT_INSTALL_RECORD_VERSION);
             // Exercise the exact callback; actual initialize/session validation belongs to live tests.
             confirm_ready(&runtime).unwrap();
-            let selected = resolve_at(app.handle(), kind, true, &root).await.unwrap();
+            let (selected, _, _) = resolve_at(app.handle(), kind, true, false, &root)
+                .await
+                .unwrap();
             if latest_blocked {
                 assert_eq!(selected.installation.as_ref().unwrap().id, id);
                 let snapshot = app

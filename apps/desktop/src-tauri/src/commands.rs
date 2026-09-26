@@ -139,6 +139,14 @@ pub async fn set_agent<R: tauri::Runtime>(
 }
 
 #[tauri::command]
+pub async fn update_managed_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    agent: AgentKind,
+) -> Result<crate::model::AgentRuntimeState, String> {
+    crate::agent_runtime::update_managed(&app, agent).await
+}
+
+#[tauri::command]
 pub async fn save_external_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,

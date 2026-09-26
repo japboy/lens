@@ -3,7 +3,8 @@ export type AgentKind = ManagedAgentKind | { external: string };
 export interface ExternalAgentDraft {
   id: string;
   name: string;
-  command_line: string;
+  command: string;
+  arguments: string;
 }
 export interface ExternalAgentProfile {
   id: string;
@@ -362,6 +363,7 @@ export interface AgentSelectionState {
 }
 
 export interface AgentRuntimeState {
+  current_version?: string | null;
   operation_id?: string;
   stage: AgentRuntimeStage;
   agent?: AgentKind;

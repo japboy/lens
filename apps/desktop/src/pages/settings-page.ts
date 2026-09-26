@@ -137,7 +137,10 @@ export class SettingsPage extends ReactiveElement {
       intent.type !== "open-screen-recording-settings"
     )
       return;
-    const identity: CommandIdentity = { scope: "settings", type: intent.type };
+    const identity: CommandIdentity =
+      intent.type === "update-managed-agent"
+        ? { scope: "settings", type: intent.type, agent: intent.agent }
+        : { scope: "settings", type: intent.type };
     switch (intent.type) {
       case "choose-external-executable": {
         const editor =
@@ -154,8 +157,8 @@ export class SettingsPage extends ReactiveElement {
         return;
       case "reset-agent-presets": {
         const approved = await this.port.confirmAction(
-          "Restore the external agent presets to GitHub Copilot and Goose? Added presets, saved command/name edits and unsaved drafts will be removed. Defaults for restored agents, Claude/Codex, prompts and the working directory will be preserved. Any selected external agent will be disconnected; select an agent again to verify its connection.",
-          "Reset Agent Presets",
+          "Added presets, edits and unsaved drafts will be removed. GitHub Copilot and Goose will be restored to their original settings. Claude Code, ChatGPT Codex, prompts and the working directory will not change. A selected preset being reset will be disconnected; select an agent again to verify its connection.",
+          "Reset presets?",
         );
         if (!approved) return;
         await this.commands.run(identity, async () => {
@@ -230,6 +233,12 @@ export class SettingsPage extends ReactiveElement {
       }
       case "select-agent":
         await this.commands.run(identity, () => this.port.setAgent(intent.agent));
+        return;
+      case "update-managed-agent":
+        await this.commands.run(identity, async () => {
+          const runtime = await this.port.updateManagedAgent(intent.agent);
+          return runtime.message ?? `${agentLabel(intent.agent)} is up to date.`;
+        });
         return;
       case "authenticate-agent-selection":
         await this.commands.run(identity, () =>

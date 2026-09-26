@@ -30,7 +30,11 @@ export class LensSettingsView extends LitElement {
     viewHostStyles,
     controlStyles,
     css`
-      lens-agent-settings,
+      lens-agent-settings {
+        display: block;
+        min-width: 0;
+      }
+
       lens-prompt-settings {
         display: contents;
       }
@@ -272,13 +276,91 @@ export class LensSettingsView extends LitElement {
       .external-executable-settings {
         display: grid;
         gap: 12px;
-        margin-top: 16px;
       }
 
-      .external-executable-settings .settings-field {
+      .external-executable-settings .settings-field,
+      .agent-preset-settings .settings-field {
         display: grid;
         gap: 6px;
         min-width: 0;
+      }
+
+      .agent-preset-settings {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+        margin-top: 12px;
+      }
+
+      .agent-preset-settings > .help {
+        margin: 0;
+      }
+
+      .agent-preset-settings > .agent-actions {
+        justify-content: flex-end;
+        margin-top: 0;
+      }
+
+      .agent-preset-settings {
+        padding-top: 14px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .executable-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        min-width: 0;
+      }
+      .executable-row > .agent-help:first-child {
+        flex: 1;
+        min-width: 0;
+      }
+      .agent-status {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .agent-status-row {
+        display: grid;
+        grid-template-columns: 84px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        min-height: 28px;
+      }
+      .agent-status-label {
+        color: GrayText;
+      }
+      .agent-status-row output {
+        overflow-wrap: anywhere;
+      }
+      .agent-help {
+        position: relative;
+        display: inline-block;
+        max-width: 100%;
+      }
+      .agent-help [role="tooltip"] {
+        position: absolute;
+        z-index: 10;
+        right: 0;
+        top: 100%;
+        width: max-content;
+        max-width: min(300px, 100vw - 280px);
+        padding: 6px 8px;
+        color: CanvasText;
+        background: Canvas;
+        border: 1px solid ButtonBorder;
+        border-radius: 5px;
+        box-shadow: 0 2px 6px color-mix(in srgb, CanvasText 15%, transparent);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .agent-help [role="tooltip"][hidden] {
+        display: none;
+      }
+      .agent-reset-actions {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--settings-group-border);
       }
 
       .external-executable-field {
@@ -887,16 +969,22 @@ export class LensSettingsView extends LitElement {
             ${renderSettingsFeedback(generalFeedback)}
 
             <div class="settings-detail-groups">
-              <section class="settings-group" aria-labelledby="agent-heading">
-                <h2 id="agent-heading">AI Agent</h2>
-                <div data-region-error="agent"></div>
-                <lens-agent-settings
-                  .selection=${model?.agentSelection}
-                  .runtime=${model?.agentRuntime}
-                  .profiles=${model?.config?.external_agents ?? []}
-                  .disabled=${!this.active || !model || model.pending}
-                ></lens-agent-settings>
-              </section>
+              <div data-region-error="agent"></div>
+              ${
+                !model?.agentSelection || !model?.agentRuntime
+                  ? html`<section class="settings-group" aria-labelledby="agent-heading">
+                      <h2 id="agent-heading">Agent</h2>
+                    </section>`
+                  : nothing
+              }
+              <lens-agent-settings
+                .selection=${model?.agentSelection}
+                .runtime=${model?.agentRuntime}
+                .updatePending=${model?.updatePending ?? false}
+                .updateAgent=${model?.updateAgent}
+                .profiles=${model?.config?.external_agents ?? []}
+                .disabled=${!this.active || !model || model.pending}
+              ></lens-agent-settings>
               <section class="settings-group" aria-labelledby="cwd-heading">
                 <h2 id="cwd-heading">Working Directory</h2>
                 <div class="directory-row">
@@ -1082,6 +1170,8 @@ export class LensSettingsView extends LitElement {
           return { type: "save-agent-defaults", defaults: event.detail.defaults };
         case "select":
           return { type: "select-agent", agent: event.detail.agent };
+        case "update-managed-agent":
+          return event.detail;
         case "authenticate":
           return {
             type: "authenticate-agent-selection",

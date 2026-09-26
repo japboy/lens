@@ -267,7 +267,11 @@ describe("progressive DSD resources", () => {
     try {
       const page = await createPage("settings");
       const root = viewRoot(page, "lens-settings-view")!;
-      expect(root.querySelector("#agent-heading")?.textContent).toBe("AI Agent");
+      expect(root.querySelector('[data-region-error="agent"]')).not.toBeNull();
+      const agentSettings = root.querySelector("lens-agent-settings")!;
+      expect(root.querySelector("#agent-heading")?.textContent).toBe("Agent");
+      expect(agentSettings.querySelector("#agent-heading")).toBeNull();
+      expect(agentSettings.querySelector("#agent-presets-heading")).toBeNull();
       expect(root.querySelector(".settings-sidebar-status-value")?.textContent?.trim()).toBe("");
       await vi.waitFor(() =>
         expect(root.querySelector(".permission-row output")?.textContent).toContain("Allowed"),
@@ -1014,6 +1018,77 @@ describe("Lens Settings", () => {
     }
   });
 
+  it("updates the displayed Claude without changing its selection and keeps progress targeted", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockedInvoke = vi.mocked(invoke);
+    const previousImplementation = mockedInvoke.getMockImplementation();
+    const previousSelection = snapshot.agent_selection;
+    const previousConfig = snapshot.config;
+    snapshot.agent_selection = {
+      stage: "selected",
+      candidate: "claude",
+      supports_logout: false,
+      auth_methods: [],
+    };
+    snapshot.config = { ...previousConfig, agent: "claude" };
+    let finishUpdate!: (value: unknown) => void;
+    mockedInvoke.mockImplementation(async (command, ...arguments_) => {
+      if (command === "update_managed_agent")
+        return await new Promise<unknown>((resolve) => {
+          finishUpdate = resolve;
+        });
+      return previousImplementation?.(command, ...arguments_);
+    });
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      await vi.waitFor(() =>
+        expect(root.querySelector("lens-agent-settings")?.querySelector("button")).not.toBeNull(),
+      );
+      const editor = root.querySelector("lens-agent-settings")!;
+      expect(editor.querySelectorAll("section.settings-group")).toHaveLength(1);
+      expect(editor.querySelector("#agent-presets-heading")).toBeNull();
+      expect(editor.querySelector(".agent-preset-settings")).toBeNull();
+      expect(editor.querySelector(".preset-add-actions")?.closest(".settings-group")).toBe(
+        editor.querySelector("#agent-heading")?.closest(".settings-group"),
+      );
+      expect(root.querySelector("#cwd-heading")?.closest(".settings-group")).not.toBe(
+        editor.querySelector("#agent-heading")?.closest(".settings-group"),
+      );
+      const managedUpdate = [...editor.querySelectorAll("button")].find(
+        (item) => item.textContent?.trim() === "Install",
+      )!;
+      expect(editor.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+      managedUpdate.click();
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("update_managed_agent", { agent: "claude" }),
+      );
+      expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+      expect(snapshot.agent_selection.candidate).toBe("claude");
+      await vi.waitFor(() =>
+        expect(editor.querySelector(".runtime-status")?.textContent).toContain(
+          "Checking Claude Code for updates…",
+        ),
+      );
+      finishUpdate({
+        agent: "claude",
+        stage: "ready",
+        downloaded_bytes: 0,
+        message: "Installed Claude.",
+      });
+      await vi.waitFor(() =>
+        expect(
+          root.querySelector(".settings-context-feedback[role='status']")?.textContent,
+        ).toContain("Installed Claude."),
+      );
+      expect(snapshot.agent_selection.candidate).toBe("claude");
+    } finally {
+      snapshot.agent_selection = previousSelection;
+      snapshot.config = previousConfig;
+      if (previousImplementation) mockedInvoke.mockImplementation(previousImplementation);
+    }
+  });
+
   it("keeps Goose file browsing local until Save and Verify", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1036,14 +1111,14 @@ describe("Lens Settings", () => {
       const page = await createPage("settings");
       const root = viewRoot(page, "lens-settings-view")!;
       const editor = root.querySelector("lens-agent-settings")!;
-      const path = editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
-      path.value = "/draft/goose acp";
+      const path = editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')!;
+      path.value = "/draft/goose";
       path.dispatchEvent(new Event("input"));
       expect(invoke).not.toHaveBeenCalledWith("save_external_agent", expect.anything());
       [...editor.querySelectorAll("button")]
-        .find((item) => item.textContent?.trim() === "Browse…")!
+        .find((item) => item.textContent?.trim() === "Choose…")!
         .click();
-      await vi.waitFor(() => expect(path.value).toBe("'/chosen directory/goose' acp"));
+      await vi.waitFor(() => expect(path.value).toBe("/chosen directory/goose"));
       expect(open).toHaveBeenCalledWith({
         directory: false,
         multiple: false,
@@ -1061,7 +1136,8 @@ describe("Lens Settings", () => {
           profile: {
             id: "profile-1",
             name: "Goose",
-            command_line: "'/chosen directory/goose' acp",
+            command: "/chosen directory/goose",
+            arguments: "acp",
           },
         }),
       );
@@ -1394,15 +1470,15 @@ it.each(["cancel", "success", "failure"] as const)(
           .click();
       click("Add preset");
       await vi.waitFor(() =>
-        expect(editor.querySelector('[aria-label="ACP command"]')).not.toBeNull(),
+        expect(editor.querySelector('[aria-label="Executable"]')).not.toBeNull(),
       );
-      const input = editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
+      const input = editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')!;
       input.value = "unsaved-agent --stdio";
       input.dispatchEvent(new Event("input"));
-      click("Reset Agent Presets…");
+      click("Reset presets…");
       await vi.waitFor(() =>
         expect(confirm).toHaveBeenCalledWith(expect.stringContaining("unsaved drafts"), {
-          title: "Reset Agent Presets",
+          title: "Reset presets?",
           kind: "warning",
         }),
       );
@@ -1411,7 +1487,7 @@ it.each(["cancel", "success", "failure"] as const)(
           vi.mocked(invoke).mock.calls.filter(([name]) => name === "reset_external_agents"),
         ).toHaveLength(outcome === "cancel" ? 0 : 1);
         expect(
-          editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')?.value ?? null,
+          editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')?.value ?? null,
         ).toBe(outcome === "success" ? null : "unsaved-agent --stdio");
         expect(root.textContent?.includes("Reset write failed")).toBe(outcome === "failure");
         expect(
@@ -1422,8 +1498,8 @@ it.each(["cancel", "success", "failure"] as const)(
           ].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
-            ? ["Claude", "Codex", "GitHub Copilot", "Goose"]
-            : ["Claude", "Codex", "New preset (unsaved)"],
+            ? ["Claude Code", "ChatGPT Codex", "GitHub Copilot", "Goose"]
+            : ["Claude Code", "ChatGPT Codex", "New preset (unsaved)"],
         );
       });
       expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());

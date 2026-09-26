@@ -2,6 +2,7 @@ import type { DesktopPlatform } from "../presentation-context";
 import type { SettingsDestination } from "../agent-prompt-template";
 import type {
   AgentRuntimeState,
+  ManagedAgentKind,
   AgentSelectionState,
   AppConfig,
   AppSnapshot,
@@ -36,6 +37,8 @@ export interface SettingsViewModel {
   config?: AppConfig;
   agentSelection: AgentSelectionState;
   agentRuntime: AgentRuntimeState;
+  updatePending: boolean;
+  updateAgent?: ManagedAgentKind;
   permission: AccessibilityPermissionState;
   pending: boolean;
   promptSynchronization: PromptSynchronization;
@@ -78,6 +81,7 @@ function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestinati
     case "save-agent-defaults":
       return "session-defaults";
     case "select-agent":
+    case "update-managed-agent":
     case "choose-external-executable":
     case "save-external-agent":
     case "delete-external-agent":
@@ -147,6 +151,13 @@ export function settingsViewModel(
     config: snapshot.config,
     agentSelection: snapshot.agent_selection,
     agentRuntime: snapshot.agent_runtime,
+    updatePending: isPendingCommand(command, "settings", "update-managed-agent"),
+    updateAgent:
+      command.stage === "pending" &&
+      command.command.scope === "settings" &&
+      command.command.type === "update-managed-agent"
+        ? command.command.agent
+        : undefined,
     permission,
     pending: command.stage === "pending",
     promptSynchronization:

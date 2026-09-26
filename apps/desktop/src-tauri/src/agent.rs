@@ -895,12 +895,117 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
         .await
 }
 
+/// Probe an update without consuming a prompt or changing the selected Agent.
+/// The candidate is promoted only after the same ACP and settings boundary used
+/// by a persistent session succeeds.
+pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    runtime: ResolvedAgentRuntime,
+) -> Result<(), ManagedVerificationError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let descriptor = AgentDescriptor::from_runtime(runtime);
+    let config = app
+        .state::<AppState>()
+        .config()
+        .map_err(ManagedVerificationError::Retryable)?;
+    let verified_config = config.clone();
+    let cwd = crate::store::effective_working_directory(&config);
+    let publisher = HttpPublisher::start()
+        .await
+        .map_err(|error| ManagedVerificationError::Retryable(error.to_string()))?;
+    let process = transport(
+        app,
+        &descriptor,
+        cwd.clone(),
+        EnvironmentPurpose::Validation,
+    );
+    let incompatible = Arc::new(AtomicBool::new(false));
+    let incompatible_in_probe = Arc::clone(&incompatible);
+    let probe = agent_client_protocol::Client
+        .builder()
+        .name("lens-agent-update")
+        .connect_with(process, |connection: ConnectionTo<Agent>| async move {
+            let initialize = initialize(&connection).await?;
+            if initialize.protocol_version != ProtocolVersion::V1 {
+                incompatible_in_probe.store(true, Ordering::Release);
+                return Err(state_error(
+                    "Agent returned an unsupported ACP protocol version".into(),
+                ));
+            }
+            if let Err(error) =
+                crate::output_mcp::require_http(&initialize.agent_capabilities.mcp_capabilities)
+            {
+                incompatible_in_probe.store(true, Ordering::Release);
+                return Err(error);
+            }
+            let session = connection
+                .build_session_from(crate::output_mcp::session_request(&cwd, &publisher))
+                .block_task()
+                .start_session()
+                .await?;
+            if let Err(error) = crate::output_mcp::require_no_publisher_failure(
+                initialize
+                    .agent_info
+                    .as_ref()
+                    .map(|info| info.name.as_str()),
+                session.meta(),
+            ) {
+                incompatible_in_probe.store(true, Ordering::Release);
+                return Err(error);
+            }
+            let defaults = config.agent_preferences.get(descriptor.kind);
+            crate::agent_preferences::validate_defaults(
+                descriptor.kind,
+                defaults,
+                session.config_options(),
+            )
+            .map_err(state_error)?;
+            session_controls::advertised_mode(session.config_options(), session.modes())?;
+            session_controls::apply_defaults(
+                &connection,
+                session.session_id(),
+                session.config_options().map(<[_]>::to_vec),
+                session.modes(),
+                defaults,
+            )
+            .await?;
+            Ok(())
+        });
+    match tokio::time::timeout(Duration::from_secs(30), probe).await {
+        Ok(Ok(())) => {
+            if app
+                .state::<AppState>()
+                .config()
+                .map_err(ManagedVerificationError::Retryable)?
+                != verified_config
+            {
+                return Err(ManagedVerificationError::Retryable(
+                    "Agent settings changed during update; check again".into(),
+                ));
+            }
+            Ok(())
+        }
+        Ok(Err(error)) if incompatible.load(Ordering::Acquire) => {
+            Err(ManagedVerificationError::Incompatible(error.to_string()))
+        }
+        Ok(Err(error)) => Err(ManagedVerificationError::Retryable(error.to_string())),
+        Err(_) => Err(ManagedVerificationError::Retryable(
+            "Agent update compatibility verification timed out".into(),
+        )),
+    }
+}
+
+pub(crate) enum ManagedVerificationError {
+    Incompatible(String),
+    Retryable(String),
+}
+
 fn claude_cli_authentication_status(
     descriptor: &AgentDescriptor,
     environment: crate::agent_environment::ResolvedEnvironment,
 ) -> Result<bool, String> {
     if descriptor.kind != AgentKind::Claude {
-        return Err("Claude authentication status requires the Claude adapter".into());
+        return Err("Claude Code authentication status requires the Claude Code adapter".into());
     }
     let mut command = Command::new(&descriptor.command);
     crate::agent_environment::bind_directory(
@@ -919,19 +1024,18 @@ fn claude_cli_authentication_status(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| format!("unable to inspect Claude authentication status: {error}"))?;
+        .map_err(|error| format!("unable to inspect Claude Code authentication status: {error}"))?;
     let deadline = Instant::now() + CLAUDE_AUTH_STATUS_TIMEOUT;
     let process_status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("unable to wait for Claude authentication status: {error}"))?
-        {
+        if let Some(status) = child.try_wait().map_err(|error| {
+            format!("unable to wait for Claude Code authentication status: {error}")
+        })? {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Claude authentication status timed out after 15 seconds".into());
+            return Err("Claude Code authentication status timed out after 15 seconds".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -939,14 +1043,16 @@ fn claude_cli_authentication_status(
     child
         .stdout
         .take()
-        .ok_or_else(|| "Claude authentication status stdout is unavailable".to_string())?
+        .ok_or_else(|| "Claude Code authentication status stdout is unavailable".to_string())?
         .read_to_end(&mut stdout)
-        .map_err(|error| format!("unable to read Claude authentication status: {error}"))?;
-    let status = serde_json::from_slice::<ClaudeAuthenticationStatus>(&stdout)
-        .map_err(|error| format!("Claude authentication status returned invalid JSON: {error}"))?;
+        .map_err(|error| format!("unable to read Claude Code authentication status: {error}"))?;
+    let status =
+        serde_json::from_slice::<ClaudeAuthenticationStatus>(&stdout).map_err(|error| {
+            format!("Claude Code authentication status returned invalid JSON: {error}")
+        })?;
     if status.logged_in && !process_status.success() {
         return Err(format!(
-            "Claude authentication status reported logged in but exited with {process_status}"
+            "Claude Code authentication status reported logged in but exited with {process_status}"
         ));
     }
     Ok(status.logged_in)
@@ -1071,8 +1177,8 @@ fn mark_selected_agent_authentication_required<R: tauri::Runtime>(
 
 fn agent_display_name(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => "Claude",
-        AgentKind::Codex => "Codex",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "ChatGPT Codex",
         AgentKind::External(_) => "External ACP",
     }
 }
@@ -1419,6 +1525,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 return Err(Error::request_cancelled());
             }
             app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
+            agent_runtime::publish_confirmed_version(&app, &descriptor.runtime()).map_err(state_error)?;
             *startup = SessionStartup::Ready;
             confirm_agent_selection_after_session(&app, identity.config.agent, &identity.config)
                 .map_err(state_error)?;

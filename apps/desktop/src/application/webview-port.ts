@@ -9,6 +9,8 @@ import type {
   AppConfig,
   PromptPresetChange,
   AgentKind,
+  ManagedAgentKind,
+  AgentRuntimeState,
   ExternalAgentDraft,
   AgentPromptTemplate,
   AppSnapshot,
@@ -69,6 +71,7 @@ export interface WebviewPort {
   getAccessibilityPermission(): Promise<boolean>;
   requestAccessibilityPermission(): Promise<boolean>;
   setAgent(agent: AgentKind): Promise<void>;
+  updateManagedAgent(agent: ManagedAgentKind): Promise<AgentRuntimeState>;
   saveExternalAgent(profile: ExternalAgentDraft): Promise<void>;
   deleteExternalAgent(id: string): Promise<void>;
   resetExternalAgents(): Promise<AppConfig>;
@@ -141,6 +144,7 @@ export const tauriWebviewPort: WebviewPort = {
   async setAgent(agent) {
     await invoke("set_agent", { agent });
   },
+  updateManagedAgent: (agent) => invoke<AgentRuntimeState>("update_managed_agent", { agent }),
   async saveExternalAgent(profile) {
     await invoke("save_external_agent", { profile });
   },

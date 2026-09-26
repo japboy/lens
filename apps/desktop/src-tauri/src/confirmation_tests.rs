@@ -407,10 +407,11 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
         cwd: std::path::PathBuf,
         purpose: crate::agent_environment::EnvironmentPurpose,
     ) -> DynConnectTo<Client> {
-        assert_eq!(
+        assert!(matches!(
             purpose,
             crate::agent_environment::EnvironmentPurpose::Session
-        );
+                | crate::agent_environment::EnvironmentPurpose::Validation
+        ));
         let first_connection = !self.0.effects.lock().unwrap().contains(&Effect::Connect);
         self.0.record(Effect::Connect);
         let initialize = self.0.clone();
@@ -951,6 +952,62 @@ fn cancelled_agent_response_discards_published_html() {
         .output_blocks
         .iter()
         .any(|block| matches!(block, LensOutputBlock::Html { .. })));
+}
+
+#[test]
+fn explicit_update_probe_checks_acp_http_and_settings_without_a_prompt() {
+    for scenario in [
+        Scenario::Success,
+        Scenario::CandidateAlwaysMissingHttp,
+        Scenario::CandidateAuthRequired,
+        Scenario::CandidateSetupFailure,
+    ] {
+        let harness = setup(scenario);
+        let runtime = ResolvedAgentRuntime {
+            kind: AgentKind::Codex,
+            adapter_name: "fixture-acp",
+            adapter_version: "2.0.0".into(),
+            installation: None,
+            command: "/fixture/not-executed".into(),
+            args: vec![],
+        };
+        let result = tauri::async_runtime::block_on(agent::verify_managed_runtime(
+            harness.app.handle(),
+            runtime,
+        ));
+        match scenario {
+            Scenario::Success => assert!(result.is_ok()),
+            Scenario::CandidateAlwaysMissingHttp => assert!(matches!(
+                result,
+                Err(agent::ManagedVerificationError::Incompatible(_))
+            )),
+            Scenario::CandidateAuthRequired | Scenario::CandidateSetupFailure => assert!(matches!(
+                result,
+                Err(agent::ManagedVerificationError::Retryable(_))
+            )),
+            _ => unreachable!(),
+        }
+        let effects = harness.fixture.effects.lock().unwrap().clone();
+        assert!(effects.contains(&Effect::Initialize));
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Prompt(_)))
+                .count(),
+            0
+        );
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::NewSession(_)))
+                .count(),
+            usize::from(scenario != Scenario::CandidateAlwaysMissingHttp),
+        );
+        assert_eq!(
+            effects.iter().filter(|e| **e == Effect::Configure).count(),
+            usize::from(scenario == Scenario::CandidateSetupFailure),
+        );
+    }
 }
 
 #[test]

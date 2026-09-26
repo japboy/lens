@@ -1,6 +1,7 @@
 import type {
   PromptPresetChange,
   AgentKind,
+  ManagedAgentKind,
   ExternalAgentDraft,
   AgentPromptTemplate,
   AgentDefaults,
@@ -23,6 +24,7 @@ export type AgentIntent =
   | { type: "preview-model"; configId: string; value?: string }
   | { type: "save-defaults"; defaults: AgentDefaults }
   | { type: "select"; agent: AgentKind }
+  | { type: "update-managed-agent"; agent: ManagedAgentKind }
   | { type: "authenticate"; methodId: string }
   | { type: "reauthenticate" }
   | { type: "sign-out" };
@@ -42,6 +44,7 @@ export type SettingsIntent =
   | { type: "preview-agent-model"; configId: string; value?: string }
   | { type: "save-agent-defaults"; defaults: AgentDefaults }
   | { type: "select-agent"; agent: AgentKind }
+  | { type: "update-managed-agent"; agent: ManagedAgentKind }
   | { type: "authenticate-agent-selection"; methodId: string }
   | { type: "reauthenticate-agent-selection" }
   | { type: "sign-out-agent-selection" }

@@ -135,6 +135,7 @@ fn command_handler<R: tauri::Runtime>(
             session_view::close_session_view,
             commands::get_html_output,
             commands::set_agent,
+            commands::update_managed_agent,
             commands::save_external_agent,
             commands::delete_external_agent,
             commands::reset_external_agents,

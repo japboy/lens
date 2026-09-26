@@ -58,7 +58,10 @@ function model(
 function succeeded(type: Exclude<SettingsIntent["type"], "open-about">): CommandState {
   return {
     stage: "succeeded",
-    command: { scope: "settings", type },
+    command:
+      type === "update-managed-agent"
+        ? { scope: "settings", type, agent: "codex" }
+        : { scope: "settings", type },
     message: `${type} completed`,
   };
 }
@@ -74,6 +77,7 @@ describe("Settings view model", () => {
   it("maps every General command result to the General destination", () => {
     const generalCommands = [
       "select-agent",
+      "update-managed-agent",
       "authenticate-agent-selection",
       "reauthenticate-agent-selection",
       "sign-out-agent-selection",
@@ -87,6 +91,25 @@ describe("Settings view model", () => {
         message: `${type} completed`,
       });
     }
+  });
+
+  it("marks only a pending managed update as update progress", () => {
+    expect(
+      model({
+        stage: "pending",
+        command: { scope: "settings", type: "update-managed-agent", agent: "codex" },
+      }).updatePending,
+    ).toBe(true);
+    expect(
+      model({
+        stage: "pending",
+        command: { scope: "settings", type: "update-managed-agent", agent: "codex" },
+      }).updateAgent,
+    ).toBe("codex");
+    expect(
+      model({ stage: "pending", command: { scope: "settings", type: "select-agent" } })
+        .updatePending,
+    ).toBe(false);
   });
 
   it("maps every Agent Prompt command result to the Agent Prompt destination", () => {

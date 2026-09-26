@@ -1,7 +1,12 @@
 import type { OverlayIntent, SettingsIntent, TargetSelectionIntent } from "../components/events";
+import type { ManagedAgentKind } from "../types";
 
 export type CommandIdentity =
-  | { scope: "settings"; type: Exclude<SettingsIntent["type"], "open-about"> }
+  | {
+      scope: "settings";
+      type: Exclude<SettingsIntent["type"], "open-about" | "update-managed-agent">;
+    }
+  | { scope: "settings"; type: "update-managed-agent"; agent: ManagedAgentKind }
   | { scope: "target-selection"; type: TargetSelectionIntent["type"] }
   | { scope: "overlay"; type: OverlayIntent["type"] };
 

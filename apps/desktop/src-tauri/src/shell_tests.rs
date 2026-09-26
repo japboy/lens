@@ -610,7 +610,8 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
             crate::external_agent::ExternalAgentDraft {
                 id,
                 name: "Saved before later action".into(),
-                command_line: "custom-agent --acp".into(),
+                command: "custom-agent".into(),
+                arguments: "--acp".into(),
             },
         )
         .unwrap();
@@ -694,7 +695,8 @@ fn saved_external_agent_verification_accepts_revision_after_closing_live_control
         crate::external_agent::ExternalAgentDraft {
             id: Uuid::from_u128(704),
             name: "Synthetic".into(),
-            command_line: "synthetic --acp".into(),
+            command: "synthetic".into(),
+            arguments: "--acp".into(),
         },
     )
     .unwrap();

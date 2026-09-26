@@ -1920,7 +1920,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.label.as_str())
                 .collect::<Vec<_>>(),
-            ["Claude", "Codex", "Z first", "A second"]
+            ["Claude Code", "ChatGPT Codex", "Z first", "A second"]
         );
         assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
         let generation = Uuid::new_v4();
