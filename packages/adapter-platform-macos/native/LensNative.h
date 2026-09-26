@@ -26,10 +26,37 @@ char *lens_format_short_datetime(double unix_seconds);
 /* Resolve the current application appearance to four sRGB bytes on the main thread. */
 bool lens_window_background_rgba(uint8_t *rgba);
 
+typedef struct {
+    uint8_t control_surface[4];
+    uint8_t window_surface[4];
+    uint8_t button_fill[4];
+    uint8_t button_pressed_fill[4];
+    uint8_t separator[4];
+    uint8_t primary_button_fill[4];
+    uint8_t primary_button_foreground[4];
+    bool colors_available;
+    bool increase_contrast;
+    bool reduce_transparency;
+    bool window_active;
+} LensControlPalette;
+
+/* Pure Lens policy for opaque sRGB accent input; checks contrast after byte quantization. */
+bool lens_primary_button_colors(const double *accentRGB, bool increaseContrast,
+                                uint8_t *fillRGBA, uint8_t *foregroundRGBA);
+
+/* Main-thread snapshot; null window uses NSApp.effectiveAppearance before creation.
+ * Color unavailability clears colors_available without erasing display/window state.
+ * False means invalid infrastructure (thread, application or output pointer). */
+bool lens_control_palette(void *windowPointer, LensControlPalette *palette);
+/* Borrow live NSWindow/WKWebView on the main thread; window owns observer teardown. */
+bool lens_observe_control_palette(void *windowPointer, void *webviewPointer);
+
 /* Main-thread modal alert: 1 explicit confirmation, 0 cancellation/dismissal, -1 error. */
 int32_t lens_confirm_destructive_action(const char *title, const char *message,
                                       const char *confirmLabel, const char *cancelLabel);
 
+/* Clip all floating-window content layers with the constructor-owned radius. */
+bool lens_configure_floating_window_radius(void *windowPointer, double radius);
 bool lens_present_window_from_screen_right(void *windowPointer);
 bool lens_dismiss_window_to_screen_right(
     void *windowPointer,

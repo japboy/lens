@@ -208,6 +208,20 @@ static NSRect LensFrameBeyondScreenRight(NSRect frame, NSScreen *screen) {
     return outsideFrame;
 }
 
+bool lens_configure_floating_window_radius(void *windowPointer, double radius) {
+    if (![NSThread isMainThread] || !windowPointer || !isfinite(radius) || radius < 0 || radius > 64) return false;
+    NSWindow *window = (__bridge NSWindow *)windowPointer;
+    NSView *content = window.contentView;
+    if (!content) return false;
+    content.wantsLayer = YES;
+    CALayer *layer = content.layer;
+    if (!layer) return false;
+    layer.cornerRadius = radius;
+    layer.masksToBounds = YES;
+    [window invalidateShadow];
+    return true;
+}
+
 bool lens_present_window_from_screen_right(void *windowPointer) {
     if (windowPointer == NULL) {
         return false;

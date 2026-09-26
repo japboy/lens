@@ -183,7 +183,7 @@ describe("overlay window dismissal", () => {
     );
     const { view, button } = await attach();
     await vi.waitFor(() => expect(view.model?.lens.operation_id).toBe(operationId));
-    expect(button.getAttribute("aria-label")).toBe("Stop Lens and close");
+    expect(button.getAttribute("aria-label")).toBe("Stop Lens and Close");
     button.click();
     expect(port.stopLens).toHaveBeenCalledExactlyOnceWith(operationId);
     expect(port.closeCurrentWindow).not.toHaveBeenCalled();

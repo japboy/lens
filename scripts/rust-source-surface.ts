@@ -180,6 +180,8 @@ const PLATFORM_TYPES = new Set([
   "Presentation",
   "WindowPresentation",
   "PresentationFuture",
+  "ControlPalette",
+  "ControlColors",
 ]);
 export function nativeCompositionViolations(source: string): string[] {
   const tokens = rustTokens(source);

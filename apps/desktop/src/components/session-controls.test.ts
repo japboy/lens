@@ -207,6 +207,7 @@ describe("session control boundary", () => {
             type: "object",
             properties: {
               count: { type: "integer", minimum: 1, maximum: 3 },
+              note: { type: "string" },
               enabled: { type: "boolean" },
             },
             required: ["count"],
@@ -220,6 +221,10 @@ describe("session control boundary", () => {
       intents.push((e as CustomEvent<OverlayIntent>).detail),
     );
     const count = element.querySelector<HTMLInputElement>('input[name="count"]')!;
+    const note = element.querySelector<HTMLInputElement>('input[name="note"]')!;
+    expect(count.getAttribute("data-lens-control")).toBe("text-entry");
+    expect(note.getAttribute("data-lens-control")).toBe("text-entry");
+    expect(element.querySelector("[data-settings-surface]")).toBeNull();
     count.value = "2";
     const enabled = element.querySelector<LensSelect>('lens-select[name="enabled"]')!;
     enabled.value = "false";
@@ -335,7 +340,7 @@ describe("session control boundary", () => {
     expect(element.textContent).toContain("https://example.com/authorize?state=fixture");
     expect(element.querySelector("a")).toBeNull();
     expect(intents).toEqual([]);
-    click(element, "Open URL and continue");
+    click(element, "Open URL and Continue");
     expect(intents[0]).toMatchObject({ response: { action: "accept" } });
   });
   it("disables ended-session settings and removes terminal forms", async () => {

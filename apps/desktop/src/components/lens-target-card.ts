@@ -49,16 +49,19 @@ export class LensTargetCard extends LitElement {
               />`
             : nothing
         }
-        <button
-          type="button"
-          class="target-selection-remove"
-          aria-label=${`Remove ${label}`}
-          title="Remove window"
-          ?disabled=${this.disabled}
-          @click=${() => dispatchComponentEvent(this, TARGET_REMOVE_EVENT, { targetId: item.id })}
-        >
-          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-        </button>
+        <span class="target-selection-image-action">
+          <button
+            data-lens-button-role="normal"
+            type="button"
+            class="target-selection-remove"
+            aria-label=${`Remove ${label}`}
+            title="Remove Window"
+            ?disabled=${this.disabled}
+            @click=${() => dispatchComponentEvent(this, TARGET_REMOVE_EVENT, { targetId: item.id })}
+          >
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </span>
       </div>
       <div class="target-selection-caption">
         <strong>${item.window.application_name || "Application"}</strong>

@@ -146,7 +146,7 @@ export class LensAgentOutput extends LitElement {
                   class="output-media-explanation"
                   @click=${this.showExplanation}
                 >
-                  Explore the interpretation
+                  Explore the Interpretation
                   <i class="fa-solid fa-arrow-down" aria-hidden="true"></i>
                 </button>
               `
@@ -162,7 +162,7 @@ export class LensAgentOutput extends LitElement {
                         class="output-media-return"
                         @click=${this.showMedia}
                       >
-                        <i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to media
+                        <i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to Media
                       </button>`
                     : nothing
                 }
@@ -319,13 +319,13 @@ export class LensAgentOutput extends LitElement {
               ></lens-output-media>`
             : nothing
         }
-        ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-explanation" @click=${this.showExplanation}>Explore the interpretation <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>` : nothing}
+        ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-explanation" @click=${this.showExplanation}>Explore the Interpretation <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>` : nothing}
         <div
           class="lens-output-narrative"
           @click=${this.openMarkdownLink}
           @markdown-render-error=${this.handleMarkdownRenderError}
         >
-          ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-return" @click=${this.showMedia}><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to media</button>` : nothing}
+          ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-return" @click=${this.showMedia}><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to Media</button>` : nothing}
           ${repeat(
             narrativeResponses,
             (response) => response.id,

@@ -79,14 +79,18 @@ export class LensSessionControls extends LitElement {
                     ${
                       details.kind === "url"
                         ? html` <button
+                              type="button"
+                              data-lens-button-role="cancel"
                               @click=${() => this.respond(interaction.id, { action: "decline" })}
                             >
                               Decline
                             </button>
                             <button
+                              type="button"
+                              data-lens-button-role="normal"
                               @click=${() => this.respond(interaction.id, { action: "accept" })}
                             >
-                              Open URL and continue
+                              Open URL and Continue
                             </button>`
                         : [...details.options]
                             .sort(
@@ -96,13 +100,15 @@ export class LensSessionControls extends LitElement {
                             .map(
                               (option) =>
                                 html`<button
+                                  type="button"
+                                  data-lens-button-role=${option.kind === "reject_once" ? "cancel" : "normal"}
                                   @click=${() => this.respond(interaction.id, { action: "select", option_id: option.optionId })}
                                 >
                                   ${option.name}
                                 </button>`,
                             )
                     }
-                    ${details.kind === "permission" && !details.options.some((o) => o.kind === "reject_once") ? html`<button @click=${() => this.respond(interaction.id, { action: "cancel" })}>Cancel request</button>` : nothing}
+                    ${details.kind === "permission" && !details.options.some((o) => o.kind === "reject_once") ? html`<button type="button" data-lens-button-role="cancel" @click=${() => this.respond(interaction.id, { action: "cancel" })}>Cancel Request</button>` : nothing}
                   </div>`
           }
         </fieldset>
@@ -126,10 +132,14 @@ export class LensSessionControls extends LitElement {
         ${Object.entries(schema.properties).map(([name, field]) => html`<label class="session-form-field"><span>${field.title ?? name}${schema.required?.includes(name) ? " (required)" : ""}</span>${this.formField(name, field, schema.required?.includes(name) ?? false, busy)}<span class="help">${field.description ?? ""}</span></label>`)}
       </div>
       <div class="interaction-actions">
-        <button type="button" @click=${() => this.respond(id, { action: "decline" })}>
+        <button
+          data-lens-button-role="cancel"
+          type="button"
+          @click=${() => this.respond(id, { action: "decline" })}
+        >
           Decline
         </button>
-        <button type="submit">Send response</button>
+        <button data-lens-button-role="primary" type="submit">Send Response</button>
       </div>
     </form>`;
   }
@@ -176,6 +186,7 @@ export class LensSessionControls extends LitElement {
     }
     if (field.type === "number" || field.type === "integer")
       return html`<input
+        data-lens-control="text-entry"
         name=${name}
         type="number"
         step=${field.type === "integer" ? "1" : "any"}
@@ -184,6 +195,7 @@ export class LensSessionControls extends LitElement {
         ?required=${required}
       />`;
     return html`<input
+      data-lens-control="text-entry"
       name=${name}
       type="text"
       minlength=${field.minLength ?? nothing}

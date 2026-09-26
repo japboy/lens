@@ -363,6 +363,11 @@ export class LensSettingsView extends LitElement {
         border-top: 1px solid var(--settings-group-border);
       }
 
+      .agent-reset-actions .agent-help [role="tooltip"] {
+        left: 0;
+        right: auto;
+      }
+
       .external-executable-field {
         box-sizing: border-box;
         min-width: 0;
@@ -388,45 +393,6 @@ export class LensSettingsView extends LitElement {
         font: inherit;
         line-height: 1.45;
         tab-size: 2;
-      }
-
-      :host([data-platform="macos"])
-        .settings-shell
-        :is(.directory-field, .external-executable-field, .prompt-editor, .prompt-preset-field) {
-        appearance: none;
-        border: 1px solid ButtonBorder;
-        border-radius: 5px;
-        color: FieldText;
-        background: Field;
-        box-shadow: inset 0 1px 1px color-mix(in srgb, CanvasText 8%, transparent);
-      }
-
-      :host([data-platform="macos"])
-        .settings-shell
-        :is(
-          .directory-field,
-          .external-executable-field,
-          .prompt-editor,
-          .prompt-preset-field
-        ):focus-visible {
-        border-color: var(--settings-focus-ring);
-        outline: 3px solid var(--settings-focus-ring);
-        outline-offset: 1px;
-      }
-
-      :host([data-platform="macos"])
-        .settings-shell
-        :is(
-          .directory-field,
-          .external-executable-field,
-          .prompt-editor,
-          .prompt-preset-field
-        ):disabled {
-        border-color: color-mix(in srgb, ButtonBorder 65%, transparent);
-        color: GrayText;
-        background: color-mix(in srgb, Field 72%, Canvas);
-        box-shadow: none;
-        cursor: default;
       }
 
       :host([data-platform="macos"])
@@ -773,10 +739,6 @@ export class LensSettingsView extends LitElement {
         color: GrayText;
       }
 
-      .primary {
-        font-weight: 600;
-      }
-
       .status-warning {
         color: MarkText;
         background: Mark;
@@ -814,30 +776,15 @@ export class LensSettingsView extends LitElement {
         }
       }
 
+      :host([data-platform="macos"][data-increase-contrast="true"]) .settings-group {
+        border-width: 2px;
+        border-color: CanvasText;
+      }
+
       @media (prefers-contrast: more) {
         :host([data-platform="macos"]) .settings-group {
           border-width: 2px;
           border-color: CanvasText;
-        }
-
-        :host([data-platform="macos"])
-          .settings-shell
-          :is(.directory-field, .external-executable-field, .prompt-editor, .prompt-preset-field) {
-          border-width: 2px;
-          border-color: CanvasText;
-          box-shadow: none;
-        }
-
-        :host([data-platform="macos"])
-          .settings-shell
-          :is(
-            .directory-field,
-            .external-executable-field,
-            .prompt-editor,
-            .prompt-preset-field
-          ):focus-visible {
-          border-color: AccentColor;
-          outline-width: 4px;
         }
       }
 
@@ -989,6 +936,7 @@ export class LensSettingsView extends LitElement {
                 <h2 id="cwd-heading">Working Directory</h2>
                 <div class="directory-row">
                   <input
+                    data-lens-control="text-entry"
                     type="text"
                     class="directory-field"
                     aria-label="Working Directory"
@@ -996,6 +944,8 @@ export class LensSettingsView extends LitElement {
                     .value=${model?.config?.working_directory ?? ""}
                   />
                   <button
+                    data-lens-button-role="normal"
+                    type="button"
                     @click=${() => this.emit({ type: "choose-directory" })}
                     ?disabled=${!this.active || !model || model.pending || !model?.config}
                   >
@@ -1031,6 +981,7 @@ export class LensSettingsView extends LitElement {
                   : html`<div class="settings-group">
                       <p>Connect an Agent to configure its session defaults.</p>
                       <button
+                        data-lens-button-role="normal"
                         type="button"
                         @click=${() => {
                           this.destination = "connection";
@@ -1066,6 +1017,8 @@ export class LensSettingsView extends LitElement {
                 <div class="permission-row">
                   <span>Manage access in System Settings.</span>
                   <button
+                    data-lens-button-role="normal"
+                    type="button"
                     @click=${() => this.emit({ type: "open-screen-recording-settings" })}
                     ?disabled=${!this.active || this.commandPending}
                   >
@@ -1083,6 +1036,8 @@ export class LensSettingsView extends LitElement {
                     permissionAllowed || permission.stage === "checking"
                       ? nothing
                       : html`<button
+                          data-lens-button-role="normal"
+                          type="button"
                           @click=${() => this.emit({ type: "request-accessibility-permission" })}
                           ?disabled=${!this.active || this.commandPending || permission.stage === "inactive"}
                         >
@@ -1118,6 +1073,7 @@ export class LensSettingsView extends LitElement {
 
   private aboutButton() {
     return html`<button
+      data-lens-button-role="normal"
       type="button"
       ?disabled=${!this.active}
       @click=${() => this.emit({ type: "open-about" })}

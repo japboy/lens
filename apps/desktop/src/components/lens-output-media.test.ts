@@ -136,7 +136,7 @@ describe("Interpretation media interactions", () => {
     const element = await mount([images[0]!]);
     const action = vi.fn<() => void>();
     element.notificationContent = html`<div class="shared-notification" role="status">
-      <button @click=${action}>View latest</button>
+      <button @click=${action}>View Latest</button>
     </div>`;
     await load(element, 0, 100, 100);
     expect(element.querySelector(".shared-notification")).toBeNull();
@@ -697,8 +697,8 @@ describe("Interpretation media interactions", () => {
 
   it("uses labeled Font Awesome controls and reports only loaded, known metadata", async () => {
     const element = await mount();
-    const details = element.querySelector<HTMLButtonElement>('[aria-label="Media details"]')!;
-    const expand = element.querySelector<HTMLButtonElement>('[aria-label="Expand media"]')!;
+    const details = element.querySelector<HTMLButtonElement>('[aria-label="Media Details"]')!;
+    const expand = element.querySelector<HTMLButtonElement>('[aria-label="Expand Media"]')!;
     expect(details.querySelector(".fa-circle-info")).not.toBeNull();
     expect(expand.querySelector(".fa-expand")).not.toBeNull();
     expect(details.textContent?.trim()).toBe("");

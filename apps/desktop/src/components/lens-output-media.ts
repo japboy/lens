@@ -319,7 +319,7 @@ export class LensOutputMedia extends LitElement {
               <button
                 type="button"
                 class="output-media-tool output-media-details-toggle"
-                aria-label="Media details"
+                aria-label="Media Details"
                 title="Details"
                 aria-expanded=${this.overlay === "details" ? "true" : "false"}
                 aria-controls=${this.detailsId}
@@ -332,8 +332,8 @@ export class LensOutputMedia extends LitElement {
               <button
                 type="button"
                 class="output-media-tool output-media-expand"
-                aria-label="Expand media"
-                title="View fullscreen"
+                aria-label="Expand Media"
+                title="View Fullscreen"
                 ?disabled=${!ready || this.fullscreen.status !== "idle"}
                 @click=${this.expandMedia}
               >
@@ -346,8 +346,8 @@ export class LensOutputMedia extends LitElement {
               ? html` <button
                     type="button"
                     class="output-media-arrow output-media-previous"
-                    aria-label="Previous media"
-                    title="Previous media"
+                    aria-label="Previous Media"
+                    title="Previous Media"
                     ?disabled=${this.selectedIndex === 0}
                     @click=${() => this.select(this.selectedIndex - 1)}
                   >
@@ -356,8 +356,8 @@ export class LensOutputMedia extends LitElement {
                   <button
                     type="button"
                     class="output-media-arrow output-media-next"
-                    aria-label="Next media"
-                    title="Next media"
+                    aria-label="Next Media"
+                    title="Next Media"
                     ?disabled=${this.selectedIndex === count - 1}
                     @click=${() => this.select(this.selectedIndex + 1)}
                   >
@@ -418,8 +418,8 @@ export class LensOutputMedia extends LitElement {
             <button
               type="button"
               class="output-media-tool output-media-expanded-close"
-              aria-label="Close expanded media"
-              title="Close expanded media"
+              aria-label="Close Expanded Media"
+              title="Close Expanded Media"
               ?disabled=${this.fullscreen.status === "exiting"}
               @click=${this.closeExpanded}
             >
@@ -495,8 +495,8 @@ export class LensOutputMedia extends LitElement {
           <button
             type="button"
             class="output-media-tool output-html-expanded-close"
-            aria-label="Close expanded HTML"
-            title="Close expanded media"
+            aria-label="Close Expanded HTML"
+            title="Close Expanded Media"
             ?disabled=${this.fullscreen.status === "exiting"}
             @click=${this.closeExpanded}
           >

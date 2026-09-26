@@ -152,6 +152,7 @@ export class LensResponseBlock extends LitElement {
       return html`<p class="error" role="alert">
         ${this.failure}
         <button
+          data-lens-button-role="normal"
           type="button"
           @click=${() => {
             this.failure = "";

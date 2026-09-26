@@ -4,6 +4,7 @@ fn main() {
     }
     cc::Build::new()
         .file("native/LensNative.m")
+        .file("native/LensControlPalette.m")
         .include("native")
         .flag("-fobjc-arc")
         .flag("-mmacosx-version-min=15.2")
@@ -16,9 +17,11 @@ fn main() {
         "CoreGraphics",
         "Foundation",
         "ScreenCaptureKit",
+        "WebKit",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
     println!("cargo:rerun-if-changed=native/LensNative.m");
     println!("cargo:rerun-if-changed=native/LensNative.h");
+    println!("cargo:rerun-if-changed=native/LensControlPalette.m");
 }

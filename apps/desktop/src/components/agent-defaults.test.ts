@@ -594,3 +594,20 @@ it("uses the shared control for every default and explicitly disables custom tri
   ).toBe(true);
   expect(intents).toEqual([]);
 });
+
+it("submits defaults once and never submits for revert or while disabled", async () => {
+  const { element, intents } = await mount();
+  const form = element.querySelector("form")!;
+  const save = element.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  expect(save.dataset.lensButtonRole).toBe("primary");
+  form.requestSubmit(save);
+  expect(intents).toEqual([{ type: "save-defaults", defaults: saved() }]);
+  intents.length = 0;
+  click(element, "Revert");
+  expect(intents.some((intent) => intent.type === "save-defaults")).toBe(false);
+  intents.length = 0;
+  element.disabled = true;
+  await element.updateComplete;
+  form.requestSubmit(save);
+  expect(intents).toEqual([]);
+});

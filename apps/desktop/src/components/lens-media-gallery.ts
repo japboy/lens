@@ -61,7 +61,7 @@ export class LensMediaGallery extends LitElement {
         <div class="input-media-carousel" role="group" aria-label="Input image carousel">
           <button
             type="button"
-            aria-label="Previous input image"
+            aria-label="Previous Input Image"
             ?disabled=${index === 0}
             @click=${() => this.select(media[index - 1]?.id)}
           >
@@ -78,7 +78,7 @@ export class LensMediaGallery extends LitElement {
                         ? "input-media-thumbnail is-selected"
                         : "input-media-thumbnail"
                     }
-                    aria-label=${`Show input image ${candidateIndex + 1} of ${media.length}`}
+                    aria-label=${`Show Input Image ${candidateIndex + 1} of ${media.length}`}
                     aria-current=${candidateIndex === index ? "true" : "false"}
                     @click=${() => this.select(candidate.id)}
                   >
@@ -95,7 +95,7 @@ export class LensMediaGallery extends LitElement {
           </ol>
           <button
             type="button"
-            aria-label="Next input image"
+            aria-label="Next Input Image"
             ?disabled=${index === media.length - 1}
             @click=${() => this.select(media[index + 1]?.id)}
           >
