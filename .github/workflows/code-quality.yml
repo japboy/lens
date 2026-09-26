@@ -14,6 +14,7 @@ concurrency:
 jobs:
   repository-verification:
     name: Repository rules and tooling
+    if: github.event.pull_request.state == 'open'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -57,6 +58,7 @@ jobs:
 
   frontend-verification:
     name: Frontend verification
+    if: github.event.pull_request.state == 'open'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -115,7 +117,7 @@ jobs:
       - frontend-verification
       - shared-rust-verification
       - macos-verification
-    if: always()
+    if: always() && github.event.pull_request.state == 'open'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
