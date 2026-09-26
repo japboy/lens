@@ -384,7 +384,19 @@ exec "$2" --lens-internal-capture-environment "$3""#
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    command.as_std_mut().process_group(0);
+    // A separate process group alone retains Lens's controlling terminal. An
+    // interactive shell can then stop on SIGTTOU before running startup scripts.
+    // A new session also creates the owned group, with no controlling terminal.
+    // SAFETY: setsid is async-signal-safe; this closure does not allocate or lock.
+    unsafe {
+        command.as_std_mut().pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
     let process = command.spawn().map_err(|_| EnvironmentError::Spawn)?;
     let group = process.id().ok_or(EnvironmentError::Spawn)? as i32;
     let mut child = ShellGroup {
@@ -506,6 +518,84 @@ mod tests {
         };
         let debug = format!("{value:?}");
         assert!(!debug.contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn shell_acquisition_from_a_controlling_terminal() {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        use std::{
+            os::fd::{AsRawFd, FromRawFd, OwnedFd},
+            os::unix::process::CommandExt,
+            process::Stdio,
+        };
+
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: openpty initializes both descriptors; optional outputs are null.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        // SAFETY: successful openpty returns two unique owned descriptors.
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        for descriptor in [&master, &slave] {
+            assert_eq!(
+                unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+        }
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        // Reuse the full acquisition contract, in a finite child test invocation.
+        // Its parent has a controlling terminal even though standard streams do not.
+        command
+            .args([
+                "--exact",
+                "agent_environment::tests::shell_acquisition_is_fresh_cwd_sensitive_and_keeps_logical_pwd",
+                "--nocapture",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        // SAFETY: only direct OS operations run between fork and exec. The owned
+        // slave descriptor remains valid through spawn and closes during exec.
+        unsafe {
+            command.as_std_mut().pre_exec(move || {
+                if libc::setsid() == -1
+                    || libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY as _, 0) == -1
+                    || libc::tcgetpgrp(slave.as_raw_fd()) != libc::getpgrp()
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
+            .await
+            .expect("terminal-owned acquisition test must finish within its deadline")
+            .unwrap();
+        drop(master);
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "the terminal-owned child must execute the acquisition contract test"
+        );
+        assert!(
+            output.status.success(),
+            "terminal-owned acquisition failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[tokio::test]
