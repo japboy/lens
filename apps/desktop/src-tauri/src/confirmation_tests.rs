@@ -1412,6 +1412,110 @@ fn assert_config_failure_settles_turn(scenario: Scenario, supersede: bool) {
 }
 
 #[test]
+fn adapter_defaults_fallback_keeps_running_prompt_and_reuses_its_physical_session() {
+    let harness = setup(Scenario::SwitchDuringPrompt);
+    let state = harness.app.state::<AppState>();
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.config.agent_preferences.codex.choices.push(
+            crate::agent_preferences::SavedChoice {
+                config_id: "mode".into(),
+                value: "safe".into(),
+            },
+        );
+    }
+    let (invocation, receiver) = start_held_prompt(&harness);
+    let before = state.lens().unwrap().session_controls.unwrap();
+    let generation = state.agent_control.active_session_generation().unwrap();
+    assert_eq!(before.configured_mode.as_deref(), Some("safe"));
+    // Simulate the successful update's config publication while its former adapter
+    // still owns a prompt. This must not revoke run output or replace the actor.
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        let mut config = snapshot.config.clone();
+        config.agent_preferences.codex.choices.clear();
+        state.store.save(&config).unwrap();
+        snapshot.config = config;
+    }
+    harness.fixture.finish_prompt.notify_one();
+    let result = receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    invocation.join().unwrap();
+    assert_eq!(
+        serde_json::from_value::<LensState>(result).unwrap().stage,
+        LensStage::Completed
+    );
+    let completed = state.lens().unwrap();
+    let controls = completed.session_controls.unwrap();
+    assert_eq!(controls.instance_id, before.instance_id);
+    assert_eq!(controls.configured_mode.as_deref(), Some("safe"));
+    // The actor deliberately spaces prompts three minutes apart. Poll two real
+    // checkpoint submissions once: the same capacity-one mailbox coalesces the
+    // first immediately, while replacing the actor would reject that completion.
+    let after = tauri::async_runtime::block_on(async {
+        let first = agent::transform_recovery_projection(harness.app.handle().clone(), OPERATION);
+        let second = agent::transform_recovery_projection(harness.app.handle().clone(), OPERATION);
+        tokio::pin!(first, second);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(first.as_mut(), context).is_pending());
+            assert!(std::future::Future::poll(second.as_mut(), context).is_pending());
+            assert_eq!(
+                state.agent_control.active_session_generation(),
+                Some(generation)
+            );
+            Poll::Ready(())
+        })
+        .await;
+        let coalesced = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+            .await
+            .expect("same actor coalesces the pending checkpoint")
+            .unwrap();
+        assert_eq!(coalesced.stage, LensStage::Completed);
+        assert!(state.agent_control.has_pending_work().unwrap());
+        let after = state.lens().unwrap().session_controls.unwrap();
+        crate::commands::stop_lens(harness.app.handle().clone(), OPERATION).unwrap();
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .expect("Stop settles the remaining checkpoint");
+        assert!(cancelled.is_err());
+        assert!(!state.agent_control.has_pending_work().unwrap());
+        after
+    });
+    assert_eq!(after.instance_id, before.instance_id);
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Connect))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::NewSession(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Configure))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Prompt(_)))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn working_directory_change_settles_before_and_after_cancellation_completion() {
     for cancel_before_change in [false, true] {
         let harness = setup(Scenario::ConfigFailureDuringPrompt);

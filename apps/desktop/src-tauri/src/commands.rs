@@ -1606,23 +1606,28 @@ pub async fn preview_agent_model<R: tauri::Runtime>(
     selection_id: Uuid,
     config_id: String,
     value: Option<String>,
+    catalog_generation: Option<Uuid>,
+    catalog_revision: Option<u32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let expected = state.snapshot()?;
     if expected.agent_selection.operation_id != Some(selection_id)
         || expected.agent_selection.selected_agent() != Some(expected.config.agent)
+        || expected.agent_selection.catalog_generation != catalog_generation
+        || catalog_revision.is_some_and(|revision| expected.agent_selection.catalog_revision != revision)
         || !expected.agent_selection.config_options.as_ref().is_some_and(|options| options.iter().any(|o|
             o.id.to_string() == config_id && o.category == Some(agent_client_protocol::schema::v1::SessionConfigOptionCategory::Model)))
     { return Err("Agent model selection changed".into()); }
     let defaults = crate::agent_preferences::AgentDefaults {
         choices: value
+            .clone()
             .map(|value| crate::agent_preferences::SavedChoice { config_id, value })
             .into_iter()
             .collect(),
         ..Default::default()
     };
-    let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
-    let snapshot = {
+    let validated = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
+    let snapshot = crate::agent_runtime::with_current_runtime(&validated.runtime, || {
         let mut snapshot = state
             .runtime
             .write()
@@ -1632,10 +1637,18 @@ pub async fn preview_agent_model<R: tauri::Runtime>(
         {
             return Err("Agent settings changed during model lookup".into());
         }
-        snapshot.revision = next_revision(&snapshot)?;
-        snapshot.agent_selection.config_options = options;
-        snapshot.clone()
-    };
+        let revision = next_revision(&snapshot)?;
+        let catalog_revision = snapshot
+            .agent_selection
+            .catalog_revision
+            .checked_add(1)
+            .ok_or("Agent catalog revision exhausted")?;
+        snapshot.revision = revision;
+        snapshot.agent_selection.config_options = validated.options;
+        snapshot.agent_selection.catalog_revision = catalog_revision;
+        snapshot.agent_selection.catalog_model = value;
+        Ok(snapshot.clone())
+    })?;
     emit_app_snapshot(&app, snapshot, true)?;
     Ok(())
 }
@@ -1815,39 +1828,57 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
     app: AppHandle<R>,
     selection_id: Uuid,
     defaults: crate::agent_preferences::AgentDefaults,
+    catalog_generation: Option<Uuid>,
+    catalog_revision: Option<u32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let expected = state.snapshot()?;
     if expected.agent_selection.operation_id != Some(selection_id)
         || expected.agent_selection.selected_agent() != Some(expected.config.agent)
+        || expected.agent_selection.catalog_generation != catalog_generation
+        || catalog_revision
+            .is_some_and(|revision| expected.agent_selection.catalog_revision != revision)
     {
         return Err("Agent selection changed".into());
     }
-    let options = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
-    // Cancel the old configuration's actor before changing persisted authority.
-    state.agent_control.cancel_active()?;
-    let snapshot = {
+    let validated = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
+    let snapshot = crate::agent_runtime::with_current_runtime(&validated.runtime, || {
         let mut snapshot = state
             .runtime
             .write()
             .map_err(|_| "Application state is unavailable")?;
         if snapshot.config != expected.config
-            || snapshot.agent_selection.operation_id != Some(selection_id)
+            || snapshot.agent_selection != expected.agent_selection
         {
             return Err("Agent settings changed during validation".into());
         }
+        let revision = next_revision(&snapshot)?;
+        let catalog_revision = snapshot
+            .agent_selection
+            .catalog_revision
+            .checked_add(1)
+            .ok_or("Agent catalog revision exhausted")?;
+        let catalog_model =
+            crate::session_controls::explicit_model(&defaults, validated.options.as_deref());
         let mut config = snapshot.config.clone();
         config.agent_preferences.set(config.agent, defaults);
-        let revision = next_revision(&snapshot)?;
         state
             .store
             .save(&config)
             .map_err(|_| "Unable to save Agent defaults")?;
+        // Stale/rejected/unsaved drafts cannot cancel the admitted live session.
+        if let Err(error) = state.agent_control.cancel_active() {
+            state.store.save(&snapshot.config).map_err(|rollback|
+                format!("Unable to cancel the old Agent session: {error}; restoring defaults failed: {rollback}"))?;
+            return Err(error);
+        }
         snapshot.config = config;
-        snapshot.agent_selection.config_options = options;
+        snapshot.agent_selection.config_options = validated.options;
+        snapshot.agent_selection.catalog_revision = catalog_revision;
+        snapshot.agent_selection.catalog_model = catalog_model;
         snapshot.revision = revision;
-        snapshot.clone()
-    };
+        Ok(snapshot.clone())
+    })?;
     emit_app_snapshot(&app, snapshot, true)?;
     Ok(())
 }

@@ -23,7 +23,7 @@ impl AgentSessionIdentity {
         self.operation_id == requested.operation_id
             && self.context_id == requested.context_id
             && self.effective_working_directory == requested.effective_working_directory
-            && self.config.same_execution_config(&requested.config)
+            && self.config.same_active_session_config(&requested.config)
             && !mailbox_closed
     }
 }
@@ -331,7 +331,7 @@ pub fn agent_run_has_authority(
     key: AgentRunKey,
     expected_config: &AppConfig,
 ) -> bool {
-    snapshot.config.same_execution_config(expected_config)
+    snapshot.config.same_active_session_config(expected_config)
         && snapshot.lens.operation_id == Some(key.operation_id)
         && snapshot
             .lens
@@ -493,6 +493,37 @@ mod tests {
             }
             assert!(!identity.admits_reuse(&changed, false));
         }
+    }
+
+    #[test]
+    fn adapter_fallback_keeps_session_reuse_without_changing_its_captured_policy() {
+        use crate::agent_preferences::{SavedChoice, ToolPolicy};
+        let mut config = AppConfig::new("/fixture".into());
+        config.agent = AgentKind::Codex;
+        config.agent_preferences.codex.choices = vec![SavedChoice {
+            config_id: "model".into(),
+            value: "retired-model".into(),
+        }];
+        let identity = AgentSessionIdentity {
+            operation_id: Uuid::from_u128(1),
+            context_id: Uuid::from_u128(2),
+            effective_working_directory: "/fixture".into(),
+            config,
+        };
+        let mut requested = identity.clone();
+        requested.config.agent_preferences.codex.choices.clear();
+        assert!(identity.admits_reuse(&requested, false));
+        assert!(!identity.admits_reuse(&requested, true));
+        assert_eq!(
+            identity.config.agent_preferences.codex.choices[0].value,
+            "retired-model"
+        );
+        requested.config.agent_preferences.codex.tools.execute = ToolPolicy::Allow;
+        assert!(!identity.admits_reuse(&requested, false));
+        assert_eq!(
+            identity.config.agent_preferences.codex.tools.execute,
+            ToolPolicy::Deny
+        );
     }
 
     #[test]
@@ -932,6 +963,26 @@ mod tests {
         };
 
         assert!(agent_run_has_authority(&snapshot, key, &config));
+        snapshot.config.agent_preferences.set(
+            config.agent,
+            crate::agent_preferences::AgentDefaults {
+                choices: vec![crate::agent_preferences::SavedChoice {
+                    config_id: "model".into(),
+                    value: "new-session-model".into(),
+                }],
+                tools: config.agent_preferences.get(config.agent).tools.clone(),
+            },
+        );
+        assert!(agent_run_has_authority(&snapshot, key, &config));
+        assert!(!snapshot.config.same_execution_config(&config));
+        let mut changed_policy = snapshot.config.agent_preferences.get(config.agent).clone();
+        changed_policy.tools.execute = crate::agent_preferences::ToolPolicy::Allow;
+        snapshot
+            .config
+            .agent_preferences
+            .set(config.agent, changed_policy);
+        assert!(!agent_run_has_authority(&snapshot, key, &config));
+        snapshot.config = config.clone();
         snapshot.lens.agent.as_mut().expect("active run").run_id = Uuid::from_u128(3);
         assert!(!agent_run_has_authority(&snapshot, key, &config));
     }

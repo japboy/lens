@@ -812,11 +812,12 @@ pub async fn update_managed<R: tauri::Runtime>(
                     return Err(format!("The staged Agent update is unusable: {error}"));
                 }
             };
-            verify_and_confirm(app, &pending, initial_operation).await?;
+            let removed = verify_and_confirm(app, &pending, initial_operation).await?;
             let message = format!(
-                "Applied staged {} {}. Check again for newer versions.",
+                "Applied staged {} {}. Check again for newer versions.{}",
                 display_name(kind),
-                pending.adapter_version
+                pending.adapter_version,
+                update_defaults_notice(&removed)
             );
             if let Err(error) = publish_ready(app, initial_operation, &pending, None) {
                 eprintln!("Unable to publish completed staged Agent update: {error}");
@@ -841,15 +842,16 @@ pub async fn update_managed<R: tauri::Runtime>(
         let (result, operation, status) = resolve_at(app, kind, true, true, &root).await?;
         progress_operation = operation;
         let message = if is_candidate(&result)? {
-            verify_and_confirm(app, &result, operation).await?;
+            let removed = verify_and_confirm(app, &result, operation).await?;
             if let Err(error) = publish_ready(app, operation, &result, None) {
                 eprintln!("Unable to publish completed Agent update: {error}");
             }
             let action = if had_current { "Updated" } else { "Installed" };
             format!(
-                "{action} {} {}.",
+                "{action} {} {}.{}",
                 display_name(kind),
-                result.adapter_version
+                result.adapter_version,
+                update_defaults_notice(&removed)
             )
         } else if status == ResolutionStatus::UpdateBlockedByReleaseAgePolicy {
             policy_blocked_update_message(kind, &result.adapter_version)
@@ -950,43 +952,209 @@ fn refresh_installed_selection_guidance<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Commit two individually atomic files under the common authority locks. If activation
+/// fails, restore settings before publishing any new in-memory authority.
+fn persist_update(
+    previous: &crate::model::AppConfig,
+    next: &crate::model::AppConfig,
+    mut save: impl FnMut(&crate::model::AppConfig) -> Result<(), String>,
+    activate: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let changed = next != previous;
+    if changed {
+        save(next).map_err(|error| format!("Unable to save updated Agent defaults: {error}"))?;
+    }
+    if let Err(error) = activate() {
+        if changed {
+            if let Err(rollback) = save(previous) {
+                return Err(format!("Agent activation failed: {error}. Restoring previous defaults also failed: {rollback}. The installed runtime was kept, but saved defaults may have changed; review Agent settings."));
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn commit_verified_update<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    runtime: &ResolvedAgentRuntime,
+    verified: crate::agent::VerifiedManagedRuntime,
+) -> Result<Vec<String>, String> {
+    let install = runtime
+        .installation
+        .as_ref()
+        .ok_or("Managed update has no installation identity")?;
+    let state = app.state::<AppState>();
+    let removed = verified
+        .removed
+        .iter()
+        .map(|choice| {
+            verified
+                .options
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .chain(
+                    verified
+                        .expected_selection
+                        .config_options
+                        .as_ref()
+                        .filter(|_| verified.expected_selection.candidate == Some(runtime.kind))
+                        .into_iter()
+                        .flatten(),
+                )
+                .find(|option| option.id.to_string() == choice.config_id)
+                .map(|option| option.name.clone())
+                .unwrap_or_else(|| "An unavailable setting".into())
+        })
+        .collect::<Vec<_>>();
+    let snapshot = {
+        let _selector_guard = selector_mutex()
+            .lock()
+            .map_err(|_| "runtime selector unavailable")?;
+        let mut selector = read_selector(&install.root, install.kind)?;
+        let already_current = selector.current.as_deref() == Some(&install.id);
+        if !already_current && selector.candidate.as_deref() != Some(&install.id) {
+            return Err("runtime candidate was superseded".into());
+        }
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if snapshot.config != verified.expected_config
+            || snapshot.agent_selection != verified.expected_selection
+        {
+            return Err("Agent settings changed during update; check again".into());
+        }
+        let revision = crate::app_state::next_revision(&snapshot)?;
+        let mut config = snapshot.config.clone();
+        config
+            .agent_preferences
+            .set(runtime.kind, verified.defaults.clone());
+        if !already_current {
+            selector.previous = selector.current.take();
+            selector.current = selector.candidate.take();
+            selector.rejected_version = None;
+        }
+        persist_update(
+            &snapshot.config,
+            &config,
+            |config| state.store.save(config).map_err(|error| error.to_string()),
+            || {
+                if already_current {
+                    Ok(())
+                } else {
+                    write_selector(&install.root, install.kind, &selector)
+                }
+            },
+        )?;
+        install.confirmed.store(true, Ordering::Release);
+        snapshot.config = config;
+        if snapshot.agent_runtime.agent == Some(runtime.kind) {
+            snapshot.agent_runtime.current_version = Some(runtime.adapter_version.clone());
+        }
+        if snapshot.agent_selection.selected_agent() == Some(runtime.kind) {
+            let selection = &mut snapshot.agent_selection;
+            selection.catalog_model = crate::session_controls::explicit_model(
+                &verified.defaults,
+                verified.options.as_deref(),
+            );
+            selection.config_options = verified.options;
+            selection.modes = verified.modes;
+            selection.agent_default = verified.agent_default;
+            selection.catalog_generation = Some(Uuid::new_v4());
+            selection.catalog_revision = 1;
+        }
+        snapshot.revision = revision;
+        snapshot.clone()
+    };
+    // Activation has committed. Notification/retirement failures must not report rollback.
+    if let Err(error) = crate::app_state::emit_app_snapshot(app, snapshot, true) {
+        eprintln!("Unable to publish updated Agent settings: {error}");
+    }
+    if let Err(error) = (|| {
+        let _guard = selector_mutex()
+            .lock()
+            .map_err(|_| "runtime selector unavailable")?;
+        prune_installations(&install.root, install.kind)
+    })() {
+        eprintln!("Unable to prune retired Agent runtime: {error}");
+    }
+    Ok(removed)
+}
+
+/// A Settings probe may lease an older installation while an update runs. Keep selector
+/// authority until its result has passed application-state admission and been published.
+pub(crate) fn with_current_runtime<T>(
+    runtime: &ResolvedAgentRuntime,
+    publish: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = selector_mutex()
+        .lock()
+        .map_err(|_| "runtime selector unavailable")?;
+    if let Some(install) = &runtime.installation {
+        let selector = read_selector(&install.root, install.kind)?;
+        let admitted = selector
+            .current
+            .as_deref()
+            .or(selector.candidate.as_deref());
+        if admitted != Some(&install.id) {
+            return Err("Agent runtime changed during settings lookup; refresh its choices".into());
+        }
+    }
+    publish()
+}
+
+fn update_defaults_notice(removed: &[String]) -> String {
+    if removed.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Unavailable saved settings now use Agent defaults: {}.",
+        removed.join(", ")
+    )
+}
+
 async fn verify_and_confirm<R: tauri::Runtime>(
     app: &AppHandle<R>,
     runtime: &ResolvedAgentRuntime,
     operation: Uuid,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     update_agent_runtime(app, operation, |state| {
         state.stage = AgentRuntimeStage::Verifying;
         state.message = Some("Verifying ACP startup, HTTP MCP, and saved settings…".into());
     })?;
     let result = crate::agent::verify_managed_runtime(app, runtime.clone()).await;
-    if let Err(failure) = result {
-        let has_current = runtime
-            .installation
-            .as_ref()
-            .and_then(|install| read_selector(&install.root, install.kind).ok())
-            .is_some_and(|selector| selector.current.is_some());
-        let (error, retryable) = match failure {
-            crate::agent::ManagedVerificationError::Incompatible(error) => {
-                reject_candidate(runtime).await?;
-                (error, false)
-            }
-            crate::agent::ManagedVerificationError::Retryable(error) => (error, true),
-        };
-        update_agent_runtime(app, operation, |state| {
-            state.stage = AgentRuntimeStage::Failed;
-            state.error = Some(error.clone());
-            state.message = Some(if !has_current {
+    let verified = match result {
+        Ok(verified) => verified,
+        Err(failure) => {
+            let has_current = runtime
+                .installation
+                .as_ref()
+                .and_then(|install| read_selector(&install.root, install.kind).ok())
+                .is_some_and(|selector| selector.current.is_some());
+            let (error, retryable) = match failure {
+                crate::agent::ManagedVerificationError::Incompatible(error) => {
+                    reject_candidate(runtime).await?;
+                    (error, false)
+                }
+                crate::agent::ManagedVerificationError::Retryable(error) => (error, true),
+            };
+            update_agent_runtime(app, operation, |state| {
+                state.stage = AgentRuntimeStage::Failed;
+                state.error = Some(error.clone());
+                state.message = Some(if !has_current {
                 "The candidate was not applied; select an Agent or retry after resolving the error."
             } else if retryable {
                 "The installed Agent runtime was kept; the update can be retried."
             } else {
                 "The installed Agent runtime was kept; the incompatible update was rejected."
             }.into());
-        })?;
-        return Err(error);
-    }
-    confirm_ready(runtime).inspect_err(|error| {
+            })?;
+            return Err(error);
+        }
+    };
+    let removed = commit_verified_update(app, runtime, verified).inspect_err(|error| {
         let _ = update_agent_runtime(app, operation, |state| {
             state.stage = AgentRuntimeStage::Failed;
             state.error = Some(error.clone());
@@ -997,7 +1165,7 @@ async fn verify_and_confirm<R: tauri::Runtime>(
     if let Err(error) = refresh_installed_selection_guidance(app, runtime.kind) {
         eprintln!("Unable to refresh Agent selection after installation: {error}");
     }
-    Ok(())
+    Ok(removed)
 }
 fn confirmed_runtime_version(runtime: &ResolvedAgentRuntime) -> Result<Option<String>, String> {
     let Some(installation) = &runtime.installation else {
@@ -2463,6 +2631,9 @@ fn display_name(kind: AgentKind) -> &'static str {
     }
 }
 #[cfg(test)]
+#[path = "agent_update_tests.rs"]
+mod update_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3193,6 +3364,76 @@ mod tests {
             assert!(policy.contains(required));
         }
     }
+    #[test]
+    fn settings_catalog_admission_tracks_candidate_and_confirmed_runtime_identity() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let first = Uuid::new_v4().to_string();
+        let superseded = Uuid::new_v4().to_string();
+        let next = Uuid::new_v4().to_string();
+        for id in [&first, &superseded, &next] {
+            fs::create_dir_all(install_root(&root, kind, id).unwrap()).unwrap();
+        }
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                candidate: Some(first.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let first_runtime = runtime(&root, kind, &first);
+        let superseded_runtime = runtime(&root, kind, &superseded);
+        let next_runtime = runtime(&root, kind, &next);
+        let published = std::cell::Cell::new(0);
+        let publish = || {
+            published.set(published.get() + 1);
+            Ok(())
+        };
+        // First selection can expose defaults before a physical session confirms it.
+        with_current_runtime(&first_runtime, publish).unwrap();
+        assert_eq!(published.get(), 1);
+        confirm_ready(&first_runtime).unwrap();
+        with_current_runtime(&first_runtime, publish).unwrap();
+        assert_eq!(published.get(), 2);
+
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(first.clone()),
+                candidate: Some(superseded.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(first.clone()),
+                candidate: Some(next.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(with_current_runtime(&superseded_runtime, publish).is_err());
+        // Staging cannot grant a candidate Settings authority over a confirmed runtime.
+        assert!(with_current_runtime(&next_runtime, publish).is_err());
+        assert_eq!(published.get(), 2);
+        confirm_ready(&next_runtime).unwrap();
+        assert!(with_current_runtime(&first_runtime, publish).is_err());
+        assert!(with_current_runtime(&superseded_runtime, publish).is_err());
+        assert_eq!(published.get(), 2);
+        with_current_runtime(&next_runtime, publish).unwrap();
+        assert_eq!(published.get(), 3);
+        drop(first_runtime);
+        drop(superseded_runtime);
+        drop(next_runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn ready_callback_promotes_only_the_exact_candidate_and_retains_one_previous() {
         let root = root();
