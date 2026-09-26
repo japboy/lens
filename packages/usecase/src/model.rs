@@ -108,6 +108,9 @@ pub struct AgentRuntimeState {
     pub agent: Option<AgentKind>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Last verified, confirmed managed installation, independent of an update candidate.
+    #[serde(default)]
+    pub current_version: Option<String>,
     #[serde(default)]
     pub downloaded_bytes: u64,
     #[serde(default)]
@@ -125,6 +128,7 @@ impl Default for AgentRuntimeState {
             stage: AgentRuntimeStage::NotInstalled,
             agent: None,
             version: None,
+            current_version: None,
             downloaded_bytes: 0,
             total_bytes: None,
             message: None,

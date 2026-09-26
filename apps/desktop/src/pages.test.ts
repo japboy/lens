@@ -1056,7 +1056,7 @@ describe("Lens Settings", () => {
         editor.querySelector("#agent-heading")?.closest(".settings-group"),
       );
       const managedUpdate = [...editor.querySelectorAll("button")].find(
-        (item) => item.textContent?.trim() === "Install or update",
+        (item) => item.textContent?.trim() === "Install",
       )!;
       expect(editor.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
       managedUpdate.click();
@@ -1111,14 +1111,14 @@ describe("Lens Settings", () => {
       const page = await createPage("settings");
       const root = viewRoot(page, "lens-settings-view")!;
       const editor = root.querySelector("lens-agent-settings")!;
-      const path = editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
-      path.value = "/draft/goose acp";
+      const path = editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')!;
+      path.value = "/draft/goose";
       path.dispatchEvent(new Event("input"));
       expect(invoke).not.toHaveBeenCalledWith("save_external_agent", expect.anything());
       [...editor.querySelectorAll("button")]
-        .find((item) => item.textContent?.trim() === "Browse…")!
+        .find((item) => item.textContent?.trim() === "Choose…")!
         .click();
-      await vi.waitFor(() => expect(path.value).toBe("'/chosen directory/goose' acp"));
+      await vi.waitFor(() => expect(path.value).toBe("/chosen directory/goose"));
       expect(open).toHaveBeenCalledWith({
         directory: false,
         multiple: false,
@@ -1136,7 +1136,8 @@ describe("Lens Settings", () => {
           profile: {
             id: "profile-1",
             name: "Goose",
-            command_line: "'/chosen directory/goose' acp",
+            command: "/chosen directory/goose",
+            arguments: "acp",
           },
         }),
       );
@@ -1469,15 +1470,15 @@ it.each(["cancel", "success", "failure"] as const)(
           .click();
       click("Add preset");
       await vi.waitFor(() =>
-        expect(editor.querySelector('[aria-label="ACP command"]')).not.toBeNull(),
+        expect(editor.querySelector('[aria-label="Executable"]')).not.toBeNull(),
       );
-      const input = editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
+      const input = editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')!;
       input.value = "unsaved-agent --stdio";
       input.dispatchEvent(new Event("input"));
-      click("Reset Agent Presets…");
+      click("Reset presets…");
       await vi.waitFor(() =>
         expect(confirm).toHaveBeenCalledWith(expect.stringContaining("unsaved drafts"), {
-          title: "Reset Agent Presets",
+          title: "Reset presets?",
           kind: "warning",
         }),
       );
@@ -1486,7 +1487,7 @@ it.each(["cancel", "success", "failure"] as const)(
           vi.mocked(invoke).mock.calls.filter(([name]) => name === "reset_external_agents"),
         ).toHaveLength(outcome === "cancel" ? 0 : 1);
         expect(
-          editor.querySelector<HTMLInputElement>('[aria-label="ACP command"]')?.value ?? null,
+          editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')?.value ?? null,
         ).toBe(outcome === "success" ? null : "unsaved-agent --stdio");
         expect(root.textContent?.includes("Reset write failed")).toBe(outcome === "failure");
         expect(

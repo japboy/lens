@@ -1524,6 +1524,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 return Err(Error::request_cancelled());
             }
             app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
+            agent_runtime::publish_confirmed_version(&app, &descriptor.runtime()).map_err(state_error)?;
             *startup = SessionStartup::Ready;
             confirm_agent_selection_after_session(&app, identity.config.agent, &identity.config)
                 .map_err(state_error)?;

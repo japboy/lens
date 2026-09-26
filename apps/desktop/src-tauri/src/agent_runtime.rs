@@ -635,6 +635,11 @@ async fn resolve_at<R: tauri::Runtime>(
     ensure_supported_target()?;
     migrate_legacy(root, kind).await?;
     let existing = selected_runtime(root, kind, true).await?;
+    let current_version = existing
+        .as_ref()
+        .map(confirmed_runtime_version)
+        .transpose()?
+        .flatten();
     let operation_id = Uuid::new_v4();
     publish_agent_runtime(
         app,
@@ -645,6 +650,7 @@ async fn resolve_at<R: tauri::Runtime>(
             version: existing
                 .as_ref()
                 .map(|runtime| runtime.adapter_version.clone()),
+            current_version,
             message: Some("Checking the official ACP Registry…".into()),
             ..Default::default()
         },
@@ -755,8 +761,12 @@ pub async fn update_managed<R: tauri::Runtime>(
     ensure_supported_target()?;
     let root = runtime_root(app)?;
     migrate_legacy(&root, kind).await?;
+    let current = selected_runtime_with_policy(&root, kind, true, false).await?;
+    let current_version = current
+        .as_ref()
+        .map(|runtime| runtime.adapter_version.clone());
     let selector = read_selector(&root, kind)?;
-    let had_current = selector.current.is_some();
+    let had_current = current_version.is_some();
 
     let initial_operation = Uuid::new_v4();
     publish_agent_runtime(
@@ -765,6 +775,7 @@ pub async fn update_managed<R: tauri::Runtime>(
             operation_id: Some(initial_operation),
             agent: Some(kind),
             stage: AgentRuntimeStage::Resolving,
+            current_version,
             message: Some("Checking the installed Agent runtime…".into()),
             ..Default::default()
         },
@@ -800,6 +811,7 @@ pub async fn update_managed<R: tauri::Runtime>(
                 operation_id: Some(initial_operation),
                 agent: Some(kind),
                 stage: AgentRuntimeStage::Ready,
+                current_version: Some(pending.adapter_version.clone()),
                 version: Some(pending.adapter_version),
                 message: Some(message),
                 ..Default::default()
@@ -838,6 +850,7 @@ pub async fn update_managed<R: tauri::Runtime>(
             operation_id: Some(operation),
             agent: Some(kind),
             stage: AgentRuntimeStage::Ready,
+            current_version: Some(result.adapter_version.clone()),
             version: Some(result.adapter_version),
             message: Some(message),
             ..Default::default()
@@ -967,15 +980,49 @@ async fn verify_and_confirm<R: tauri::Runtime>(
     }
     Ok(())
 }
+fn confirmed_runtime_version(runtime: &ResolvedAgentRuntime) -> Result<Option<String>, String> {
+    let Some(installation) = &runtime.installation else {
+        return Ok(None);
+    };
+    Ok((read_selector(&installation.root, installation.kind)?
+        .current
+        .as_deref()
+        == Some(&installation.id))
+    .then(|| runtime.adapter_version.clone()))
+}
+
+pub(crate) fn publish_confirmed_version<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    runtime: &ResolvedAgentRuntime,
+) -> Result<(), String> {
+    let Some(current_version) = confirmed_runtime_version(runtime)? else {
+        return Ok(());
+    };
+    let snapshot = app.state::<AppState>().snapshot()?.agent_runtime;
+    if snapshot.agent != Some(runtime.kind) {
+        return Ok(());
+    }
+    if let Some(operation) = snapshot.operation_id {
+        update_agent_runtime(app, operation, |state| {
+            state.current_version = Some(current_version);
+        })?;
+    }
+    Ok(())
+}
+
 fn publish_ready<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation: Uuid,
     runtime: &ResolvedAgentRuntime,
     failure: Option<String>,
 ) -> Result<(), String> {
+    let current_version = confirmed_runtime_version(runtime)?;
     update_agent_runtime(app, operation, |state| {
         state.stage = AgentRuntimeStage::Ready;
         state.version = (!runtime.kind.is_external()).then(|| runtime.adapter_version.clone());
+        if current_version.is_some() || runtime.kind.is_external() {
+            state.current_version = current_version;
+        }
         state.message = Some(match &failure {
             None if runtime.kind.is_external() => {
                 "External ACP executable is available; connection verification is required.".into()
@@ -2176,6 +2223,7 @@ pub(crate) fn publish_recovery<R: tauri::Runtime>(
 ) -> Result<(), String> {
     publish_agent_runtime(app, AgentRuntimeState {
         operation_id: Some(Uuid::new_v4()), agent: Some(runtime.kind), stage: AgentRuntimeStage::Ready,
+        current_version: Some(runtime.adapter_version.clone()),
         version: Some(runtime.adapter_version.clone()), message: Some(format!("The update did not meet required ACP capabilities. Continuing with verified {} {}.", display_name(runtime.kind), runtime.adapter_version)),
         error: Some(format!("Agent update failed required startup compatibility checks: {reason}")), ..Default::default()
     })
@@ -2711,7 +2759,50 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn failed_update_leaves_a_terminal_runtime_state() {
+    fn failed_update_preserves_confirmed_version_independently_of_candidate() {
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .build(crate::product_context())
+            .unwrap();
+        for current_version in [None, Some("1.0.0".to_string())] {
+            let operation = Uuid::new_v4();
+            publish_agent_runtime(
+                app.handle(),
+                AgentRuntimeState {
+                    operation_id: Some(operation),
+                    agent: Some(AgentKind::Codex),
+                    stage: AgentRuntimeStage::Verifying,
+                    version: Some("2.0.0".into()),
+                    current_version: current_version.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(finish_failed_update(app.handle(), operation, "corrupt candidate").unwrap());
+            let state = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+            assert_eq!(state.stage, AgentRuntimeStage::Failed);
+            assert_eq!(state.error.as_deref(), Some("corrupt candidate"));
+            assert_eq!(state.current_version, current_version);
+            assert_eq!(state.version.as_deref(), Some("2.0.0"));
+        }
+    }
+
+    #[test]
+    fn installed_version_tracks_confirmation_without_overwriting_other_agent_status() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let id = Uuid::new_v4().to_string();
+        fs::create_dir_all(install_root(&root, kind, &id).unwrap()).unwrap();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                candidate: Some(id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let runtime = runtime(&root, kind, &id);
         let app = tauri::test::mock_builder()
             .manage(crate::test_support::state())
             .build(crate::product_context())
@@ -2721,17 +2812,68 @@ mod tests {
             app.handle(),
             AgentRuntimeState {
                 operation_id: Some(operation),
-                agent: Some(AgentKind::Codex),
-                stage: AgentRuntimeStage::Resolving,
+                agent: Some(kind),
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(finish_failed_update(app.handle(), operation, "corrupt candidate").unwrap());
-        let state = app.state::<AppState>().snapshot().unwrap().agent_runtime;
-        assert_eq!(state.stage, AgentRuntimeStage::Failed);
-        assert_eq!(state.error.as_deref(), Some("corrupt candidate"));
+        update_agent_runtime(app.handle(), operation, |state| {
+            state.current_version = Some("1.0.0".into());
+        })
+        .unwrap();
+        publish_ready(app.handle(), operation, &runtime, None).unwrap();
+        finish_failed_update(app.handle(), operation, "incompatible candidate").unwrap();
+        assert_eq!(
+            app.state::<AppState>()
+                .snapshot()
+                .unwrap()
+                .agent_runtime
+                .current_version
+                .as_deref(),
+            Some("1.0.0")
+        );
+        update_agent_runtime(app.handle(), operation, |state| {
+            state.current_version = None;
+        })
+        .unwrap();
+        publish_ready(app.handle(), operation, &runtime, None).unwrap();
+        let staged = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+        assert_eq!(staged.version.as_deref(), Some("1.2.3"));
+        assert_eq!(staged.current_version, None);
+
+        confirm_ready(&runtime).unwrap();
+        publish_confirmed_version(app.handle(), &runtime).unwrap();
+        let confirmed = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+        assert_eq!(confirmed.current_version.as_deref(), Some("1.2.3"));
+        publish_ready(app.handle(), operation, &runtime, None).unwrap();
+        assert_eq!(
+            app.state::<AppState>()
+                .snapshot()
+                .unwrap()
+                .agent_runtime
+                .current_version,
+            confirmed.current_version
+        );
+
+        publish_agent_runtime(
+            app.handle(),
+            AgentRuntimeState {
+                operation_id: Some(Uuid::new_v4()),
+                agent: Some(AgentKind::Claude),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let other = app.state::<AppState>().snapshot().unwrap().agent_runtime;
+        publish_confirmed_version(app.handle(), &runtime).unwrap();
+        assert_eq!(
+            app.state::<AppState>().snapshot().unwrap().agent_runtime,
+            other
+        );
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
     }
+
     #[test]
     fn registry_requires_unique_supported_identity_and_exact_version() {
         let valid = serde_json::json!({"version":"1.0.0","agents":[{"id":"codex-acp","version":"1.2.3","distribution":{"npx":{"package":"@agentclientprotocol/codex-acp@1.2.3"}}}]});

@@ -33,18 +33,22 @@ pub(crate) fn validate_profile(profile: &crate::model::ExternalAgentProfile) -> 
 pub(crate) struct ExternalAgentDraft {
     pub id: uuid::Uuid,
     pub name: String,
-    pub command_line: String,
+    pub command: String,
+    pub arguments: String,
 }
 impl ExternalAgentDraft {
     pub fn parse(self) -> Result<crate::model::ExternalAgentProfile, String> {
-        if self.command_line.len() > 17408 || self.command_line.contains(['\0', '\r', '\n']) {
+        if self.command.len() + self.arguments.len() > 17408
+            || self.command.contains(['\0', '\r', '\n'])
+            || self.arguments.contains(['\0', '\r', '\n'])
+        {
             return Err(
-                "Command must be one line, contain no NUL, and use at most 17408 bytes.".into(),
+                "Executable and arguments must each be one line, contain no NUL, and use at most 17408 bytes combined.".into(),
             );
         }
         let mut quote = None;
         let mut escaped = false;
-        for c in self.command_line.chars() {
+        for c in self.arguments.chars() {
             if escaped {
                 escaped = false;
                 continue;
@@ -70,18 +74,13 @@ impl ExternalAgentDraft {
                 );
             }
         }
-        let parts = shlex::split(&self.command_line)
-            .ok_or("Command contains an unfinished quote or escape.")?;
-        let mut parts = parts.into_iter();
-        let command = parts
-            .next()
-            .filter(|p| !p.is_empty())
-            .ok_or("Enter an Agent command.")?;
+        let args = shlex::split(&self.arguments)
+            .ok_or("Arguments contain an unfinished quote or escape.")?;
         let profile = crate::model::ExternalAgentProfile {
             id: self.id,
             name: self.name,
-            command: command.into(),
-            args: parts.collect(),
+            command: self.command.into(),
+            args,
         };
         profile.validate()?;
         Ok(profile)
@@ -182,37 +181,70 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
-    fn command_text_is_literal_and_rejects_shell_programs() {
-        let parse = |text: &str| {
+    fn draft_preserves_literal_executable_and_parses_only_arguments() {
+        let command = "/Applications/My Agent's CLI/agent $(literal)";
+        let arguments = r#"acp '' '$HOME' "$HOME" escaped\|pipe"#;
+        let profile = ExternalAgentDraft {
+            id: uuid::Uuid::from_u128(1),
+            name: "Custom".into(),
+            command: command.into(),
+            arguments: arguments.into(),
+        }
+        .parse()
+        .unwrap();
+        assert_eq!(profile.command, Path::new(command));
+        assert_eq!(profile.args, ["acp", "", "$HOME", "$HOME", "escaped|pipe"]);
+        let roundtrip = ExternalAgentDraft {
+            id: profile.id,
+            name: profile.name.clone(),
+            command: profile.command.to_str().unwrap().into(),
+            arguments: shlex::try_join(profile.args.iter().map(String::as_str)).unwrap(),
+        }
+        .parse()
+        .unwrap();
+        assert_eq!(roundtrip, profile);
+        let no_arguments = ExternalAgentDraft {
+            id: profile.id,
+            name: profile.name,
+            command: "goose".into(),
+            arguments: String::new(),
+        }
+        .parse()
+        .unwrap();
+        assert!(no_arguments.args.is_empty());
+    }
+
+    #[test]
+    fn draft_rejects_invalid_executables_and_argument_syntax() {
+        let parse = |command: &str, arguments: &str| {
             ExternalAgentDraft {
                 id: uuid::Uuid::from_u128(1),
                 name: "Custom".into(),
-                command_line: text.into(),
+                command: command.into(),
+                arguments: arguments.into(),
             }
             .parse()
         };
-        let profile = parse(r#"goose acp '' '$HOME' "$HOME" escaped\|pipe"#).unwrap();
-        assert_eq!(profile.command, Path::new("goose"));
-        assert_eq!(profile.args, ["acp", "", "$HOME", "$HOME", "escaped|pipe"]);
-        for text in [
-            "",
-            "''",
-            "goose | other",
-            "goose $HOME",
-            "goose `id`",
-            "goose 'unfinished",
-            "./goose acp",
-            "goose\0acp",
-            "~/goose",
-        ] {
-            assert!(parse(text).is_err(), "{text:?}");
+        for command in ["", "./goose", "~/goose", "goose\0", "goose\r", "goose\n"] {
+            assert!(parse(command, "").is_err(), "{command:?}");
         }
-        let line = shlex::try_join(
-            std::iter::once(profile.command.to_str().unwrap())
-                .chain(profile.args.iter().map(String::as_str)),
-        )
-        .unwrap();
-        assert_eq!(parse(&line).unwrap(), profile);
+        for arguments in [
+            "| other",
+            "$HOME",
+            "`id`",
+            "'unfinished",
+            "unfinished\\",
+            "acp\0",
+            "acp\r",
+            "acp\n",
+            "# comment",
+        ] {
+            assert!(parse("goose", arguments).is_err(), "{arguments:?}");
+        }
+        assert!(parse("goose", &"x ".repeat(65)).is_err());
+        assert!(parse("goose", &"x".repeat(16385)).is_err());
+        assert!(parse(&"x".repeat(17409), "").is_err());
+        assert!(parse(&"x".repeat(1025), &"x".repeat(16384)).is_err());
     }
 
     #[test]

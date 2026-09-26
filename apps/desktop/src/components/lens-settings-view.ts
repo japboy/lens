@@ -297,10 +297,66 @@ export class LensSettingsView extends LitElement {
       }
 
       .agent-preset-settings > .agent-actions {
-        justify-content: flex-start;
+        justify-content: flex-end;
         margin-top: 0;
       }
 
+      .agent-preset-settings {
+        padding-top: 14px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .executable-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        min-width: 0;
+      }
+      .executable-row > .agent-help:first-child {
+        flex: 1;
+        min-width: 0;
+      }
+      .agent-status {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .agent-status-row {
+        display: grid;
+        grid-template-columns: 84px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        min-height: 28px;
+      }
+      .agent-status-label {
+        color: GrayText;
+      }
+      .agent-status-row output {
+        overflow-wrap: anywhere;
+      }
+      .agent-help {
+        position: relative;
+        display: inline-block;
+        max-width: 100%;
+      }
+      .agent-help [role="tooltip"] {
+        position: absolute;
+        z-index: 10;
+        right: 0;
+        top: 100%;
+        width: max-content;
+        max-width: min(300px, 100vw - 280px);
+        padding: 6px 8px;
+        color: CanvasText;
+        background: Canvas;
+        border: 1px solid ButtonBorder;
+        border-radius: 5px;
+        box-shadow: 0 2px 6px color-mix(in srgb, CanvasText 15%, transparent);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .agent-help [role="tooltip"][hidden] {
+        display: none;
+      }
       .agent-reset-actions {
         margin-top: 16px;
         padding-top: 12px;

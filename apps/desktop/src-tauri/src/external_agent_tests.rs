@@ -365,11 +365,8 @@ async fn saved_external_profile_survives_failed_acp_verification_without_ready_s
         crate::external_agent::ExternalAgentDraft {
             id: saved.id,
             name: saved.name.clone(),
-            command_line: shlex::try_join(
-                std::iter::once(saved.command.to_str().unwrap())
-                    .chain(saved.args.iter().map(String::as_str)),
-            )
-            .unwrap(),
+            command: saved.command.to_str().unwrap().into(),
+            arguments: shlex::try_join(saved.args.iter().map(String::as_str)).unwrap(),
         },
     )
     .await

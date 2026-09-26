@@ -1,6 +1,6 @@
 /** Preview only. Native save parsing is authoritative. Quotes follow POSIX shlex,
  * but unquoted shell operators/expansions are rejected because no shell is run. */
-export function parseExternalAgentCommand(input: string): { command: string; args: string[] } {
+function parseWords(input: string): string[] {
   const words: string[] = [];
   let word = "";
   let started = false;
@@ -42,13 +42,27 @@ export function parseExternalAgentCommand(input: string): { command: string; arg
   }
   if (quote) throw new Error("Close the quoted command or argument.");
   if (started) words.push(word);
-  const [command, ...args] = words;
+  return words;
+}
+
+export function parseExternalAgentCommand(input: string): { command: string; args: string[] } {
+  const [command, ...args] = parseWords(input);
   if (!command) throw new Error("Enter an executable and any arguments.");
   return { command, args };
 }
 
+export function parseExternalAgentArguments(input: string): string[] {
+  return parseWords(input);
+}
+
+export function formatExternalAgentArguments(args: string[]): string {
+  return args.map(quoteWord).join(" ");
+}
+
+function quoteWord(word: string): string {
+  return /^[\w./:@=+-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+}
+
 export function formatExternalAgentCommand(profile: { command: string; args: string[] }): string {
-  const quote = (word: string): string =>
-    /^[\w./:@=+-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
-  return [profile.command, ...profile.args].map(quote).join(" ");
+  return [profile.command, ...profile.args].map(quoteWord).join(" ");
 }

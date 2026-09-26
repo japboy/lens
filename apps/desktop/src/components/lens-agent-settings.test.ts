@@ -31,11 +31,17 @@ function button(element: LensAgentSettings, text: string) {
   )!;
 }
 function command(element: LensAgentSettings) {
-  return element.querySelector<HTMLInputElement>('[aria-label="ACP command"]')!;
+  return element.querySelector<HTMLInputElement>('[aria-label="Executable"]')!;
+}
+function argumentsField(element: LensAgentSettings) {
+  return element.querySelector<HTMLInputElement>('[aria-label="Arguments"]')!;
 }
 async function edit(element: LensAgentSettings, value: string) {
-  command(element).value = value;
+  const [executable, ...args] = value.split(" ");
+  command(element).value = executable!;
   command(element).dispatchEvent(new Event("input"));
+  argumentsField(element).value = args.join(" ");
+  argumentsField(element).dispatchEvent(new Event("input"));
   await element.updateComplete;
 }
 async function choose(element: LensAgentSettings, value: string) {
@@ -49,7 +55,7 @@ async function choose(element: LensAgentSettings, value: string) {
   await element.updateComplete;
 }
 function browse(element: LensAgentSettings, intents: AgentIntent[]) {
-  button(element, "Browse…").click();
+  button(element, "Choose…").click();
   const intent = intents.at(-1)!;
   if (intent.type !== "choose-external-executable") throw new Error();
   return intent.draftRevision;
@@ -59,7 +65,7 @@ it("uses one Agent menu and keeps managed agents non-deletable", async () => {
   const { element } = await mount();
   expect(element.querySelectorAll("lens-select")).toHaveLength(1);
   expect(element.querySelector('input[type="radio"]')).toBeNull();
-  expect(command(element).value).toBe("goose acp");
+  expect(command(element).value).toBe("goose");
   expect(button(element, "Delete preset")).toBeDefined();
   await choose(element, "claude");
   expect(command(element)).toBeNull();
@@ -76,7 +82,7 @@ it("keeps external ACP editing and runtime status in one Agent card", async () =
     message: "Checking user-owned executable…",
   };
   await element.updateComplete;
-  expect(button(element, "Install or update")).toBeUndefined();
+  expect(button(element, "Install")).toBeUndefined();
   const cards = element.querySelectorAll<HTMLElement>(":scope > .settings-group");
   expect(cards).toHaveLength(1);
   expect(cards[0]?.querySelector("h2")?.textContent).toBe("Agent");
@@ -85,16 +91,16 @@ it("keeps external ACP editing and runtime status in one Agent card", async () =
   expect(presets.querySelector("legend")?.classList.contains("visually-hidden")).toBe(true);
   expect(button(element, "Add preset").closest(".preset-add-actions")).not.toBeNull();
   expect(button(element, "Add preset").closest(".settings-group")).toBe(cards[0]);
-  expect(button(element, "Reset Agent Presets…").closest(".agent-reset-actions")).not.toBeNull();
-  expect(button(element, "Reset Agent Presets…").closest(".settings-group")).toBe(cards[0]);
+  expect(button(element, "Reset presets…").closest(".agent-reset-actions")).not.toBeNull();
+  expect(button(element, "Reset presets…").closest(".settings-group")).toBe(cards[0]);
   const runtimeStatus = element.querySelector(".runtime-status")!;
   expect(runtimeStatus.closest(".settings-group")).toBe(cards[0]);
   expect(runtimeStatus.textContent).toContain("Checking user-owned executable…");
-  expect(runtimeStatus.compareDocumentPosition(presets) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+  expect(presets.compareDocumentPosition(runtimeStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING,
   );
   expect(
-    runtimeStatus.compareDocumentPosition(button(element, "Reset Agent Presets…")) &
+    runtimeStatus.compareDocumentPosition(button(element, "Reset presets…")) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
@@ -115,10 +121,10 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
   expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
   expect(
-    button(element, "Install or update").compareDocumentPosition(button(element, "Add preset")) &
+    button(element, "Add preset").compareDocumentPosition(button(element, "Install")) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-  button(element, "Install or update").click();
+  button(element, "Install").click();
   expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "claude" });
   expect(element.selection.candidate).toBe("claude");
 
@@ -129,7 +135,7 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   await element.updateComplete;
   expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("codex");
   expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
-  button(element, "Install or update").click();
+  button(element, "Install").click();
   expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "codex" });
   element.updatePending = true;
   element.updateAgent = "codex";
@@ -145,7 +151,7 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
     message: "Downloading Codex…",
   };
   await element.updateComplete;
-  expect(button(element, "Install or update").disabled).toBe(true);
+  expect(button(element, "Install").disabled).toBe(true);
   expect(element.querySelector(".runtime-status")?.textContent).toContain("Downloading Codex…");
   expect(element.querySelector("progress")?.getAttribute("max")).toBe("10");
   element.updatePending = false;
@@ -160,16 +166,80 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   expect(element.selection.candidate).toBe("codex");
 });
 
+it.each([
+  { currentVersion: null, stage: "not_installed", label: "Install" },
+  { currentVersion: "1.0.0", stage: "ready", label: "Update" },
+  { currentVersion: "1.0.0", stage: "failed", label: "Update" },
+  { currentVersion: null, stage: "failed", label: "Install" },
+] as const)(
+  "shows $label using the confirmed installation at $stage",
+  async ({ currentVersion, stage, label }) => {
+    const { element } = await mount();
+    element.selection = { ...element.selection!, candidate: "codex" };
+    element.runtime = {
+      agent: "codex",
+      current_version: currentVersion,
+      version: "2.0.0",
+      stage,
+      downloaded_bytes: 0,
+    };
+    await element.updateComplete;
+    expect(button(element, label).closest(".installation-status")).not.toBeNull();
+    expect(button(element, label).closest(".preset-add-actions")).toBeNull();
+  },
+);
+
+it("offers verification without save instructions for the initial managed choice", async () => {
+  const { element } = await mount("unselected");
+  element.selection = { stage: "unselected", supports_logout: false, auth_methods: [] };
+  await element.updateComplete;
+  expect(element.querySelector(".selection-status")?.textContent).not.toContain("Save");
+  expect(button(element, "Verify connection")).toBeDefined();
+});
+it("groups preset management and keeps Choose beside the executable", async () => {
+  const { element } = await mount();
+  expect(button(element, "Delete preset").closest(".preset-add-actions")).toBe(
+    button(element, "Add preset").closest(".preset-add-actions"),
+  );
+  expect(button(element, "Choose…").closest(".executable-row")?.contains(command(element))).toBe(
+    true,
+  );
+  expect(
+    button(element, "Choose…").closest(".executable-row")?.contains(argumentsField(element)),
+  ).toBe(false);
+});
+
+it("shows control help on focus and hover and dismisses it with Escape", async () => {
+  const { element } = await mount();
+  const add = button(element, "Add preset");
+  const help = element.querySelector<HTMLElement>("#agent-add-help")!;
+  expect(add.getAttribute("aria-describedby")).toBe(help.id);
+  expect(help.hidden).toBe(true);
+  add.focus();
+  await element.updateComplete;
+  expect(help.hidden).toBe(false);
+  add.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await element.updateComplete;
+  expect(help.hidden).toBe(true);
+  add.blur();
+  add.parentElement!.dispatchEvent(new Event("pointerenter"));
+  await element.updateComplete;
+  expect(help.hidden).toBe(false);
+  add.parentElement!.dispatchEvent(new Event("pointerleave"));
+  await element.updateComplete;
+  expect(help.hidden).toBe(true);
+});
+
 it("keeps Add preset available while Claude is displayed", async () => {
   const { element } = await mount();
   element.selection = { ...element.selection!, candidate: "claude" };
   await element.updateComplete;
-  expect(button(element, "Install or update")).toBeDefined();
+  expect(button(element, "Install")).toBeDefined();
   button(element, "Add preset").click();
   await element.updateComplete;
-  expect(button(element, "Install or update")).toBeUndefined();
+  expect(button(element, "Install")).toBeUndefined();
   expect(command(element)).toBeDefined();
-  expect(button(element, "Reset Agent Presets…")).toBeDefined();
+  expect(button(element, "Reset presets…")).toBeDefined();
 });
 
 it("restores an in-flight Codex update from parent properties after remount", async () => {
@@ -210,26 +280,31 @@ it("sends the raw command only on Save and Verify and preserves arguments when b
   const revision = browse(element, intents);
   expect(element.acceptExternalExecutable("/chosen path/goose", revision)).toBe(true);
   await element.updateComplete;
-  expect(command(element).value).toBe(`'/chosen path/goose' acp '' ' literal argument '`);
+  expect(command(element).value).toBe("/chosen path/goose");
+  expect(argumentsField(element).value).toBe("acp '' ' literal argument '");
   button(element, "Save and Verify").click();
   expect(intents.at(-1)).toEqual({
     type: "save-external-agent",
     profile: {
       id: "profile-1",
       name: "Goose",
-      command_line: `'/chosen path/goose' acp '' ' literal argument '`,
+      command: "/chosen path/goose",
+      arguments: "acp '' ' literal argument '",
     },
   });
   expect(element.profiles[0]!.command).toBe("goose");
 });
-it("keeps invalid quoted text local and cannot save or overwrite it with Browse", async () => {
+it("keeps incomplete arguments local while choosing a new executable", async () => {
   const { element, intents } = await mount();
   await edit(element, "goose 'incomplete");
   expect(element.querySelector('[role="alert"]')).not.toBeNull();
   expect(button(element, "Save and Verify").disabled).toBe(true);
   const revision = browse(element, intents);
-  expect(element.acceptExternalExecutable("/chosen/goose", revision)).toBe(false);
-  expect(command(element).value).toBe("goose 'incomplete");
+  expect(element.acceptExternalExecutable("/chosen/goose", revision)).toBe(true);
+  await element.updateComplete;
+  expect(command(element).value).toBe("/chosen/goose");
+  expect(argumentsField(element).value).toBe("'incomplete");
+  expect(button(element, "Save and Verify").disabled).toBe(true);
 });
 it("retains drafts across managed switches and equivalent snapshots", async () => {
   const { element } = await mount();
@@ -238,14 +313,20 @@ it("retains drafts across managed switches and equivalent snapshots", async () =
   await choose(element, "profile-1");
   element.profiles = structuredClone(element.profiles);
   await element.updateComplete;
-  expect(command(element).value).toBe("goose acp --example");
+  expect(command(element).value).toBe("goose");
+  expect(argumentsField(element).value).toBe("acp --example");
 });
-it.each(["typing", "saved-args", "agent-switch", "new-browse", "disconnect"])(
+it.each(["typing", "arguments", "saved-args", "agent-switch", "new-browse", "disconnect"])(
   "invalidates delayed Browse after %s",
   async (change) => {
     const { element, intents } = await mount();
     const revision = browse(element, intents);
     if (change === "typing") await edit(element, "goose acp --new");
+    if (change === "arguments") {
+      argumentsField(element).value = 'new "unfinished';
+      argumentsField(element).dispatchEvent(new Event("input"));
+      await element.updateComplete;
+    }
     if (change === "saved-args") {
       element.profiles = [{ ...element.profiles[0]!, args: ["acp", ""] }];
       await element.updateComplete;
@@ -294,7 +375,7 @@ it("disables editing while pending and uses advertised logout capability", async
   element.disabled = true;
   await element.updateComplete;
   expect(command(element).closest("fieldset")!.disabled).toBe(true);
-  expect(button(element, "Reset Agent Presets…").disabled).toBe(true);
+  expect(button(element, "Reset presets…").disabled).toBe(true);
   element.disabled = false;
   element.selection = { ...element.selection!, supports_logout: true };
   await element.updateComplete;
@@ -314,7 +395,7 @@ it("accepts Browse for an empty new command draft", async () => {
   const revision = browse(element, intents);
   expect(element.acceptExternalExecutable("/new path/agent", revision)).toBe(true);
   await element.updateComplete;
-  expect(command(element).value).toBe("'/new path/agent'");
+  expect(command(element).value).toBe("/new path/agent");
 });
 it("blocks saving a legacy multiline argument instead of silently stripping it", async () => {
   const { element } = await mount();
@@ -356,7 +437,8 @@ it("renders both first-run external presets with managed agents in the single se
   expect(intents).toEqual([]);
   await choose(element, presets[0]!.id);
   expect(selector.value).toBe(presets[0]!.id);
-  expect(command(element).value).toBe("copilot --acp --stdio");
+  expect(command(element).value).toBe("copilot");
+  expect(argumentsField(element).value).toBe("--acp --stdio");
   expect(intents).toEqual([{ type: "select", agent: { external: presets[0]!.id } }]);
   expect(button(element, "Delete preset")).toBeDefined();
 });
@@ -368,7 +450,7 @@ it("resets saved edits and unsaved drafts only after acceptance and invalidates 
   await element.updateComplete;
   await edit(element, "custom-agent");
   const revision = browse(element, intents);
-  button(element, "Reset Agent Presets…").click();
+  button(element, "Reset presets…").click();
   expect(intents.at(-1)).toEqual({ type: "reset-agent-presets" });
   expect(command(element).value).toBe("custom-agent");
   const count = intents.length;
@@ -383,7 +465,7 @@ it("resets saved edits and unsaved drafts only after acceptance and invalidates 
   ).toHaveLength(3);
   expect(intents).toHaveLength(count);
   await choose(element, "profile-1");
-  expect(command(element).value).toBe("goose acp");
+  expect(command(element).value).toBe("goose");
 });
 
 it.each(["unselected", "failed", "authentication_required", "history_selected"] as const)(
@@ -406,6 +488,7 @@ it("returns to the authoritative external choice after discarding a new draft wi
   button(element, "Discard draft").click();
   await element.updateComplete;
   expect(element.querySelector<LensSelect>("lens-select")!.value).toBe("profile-1");
-  expect(command(element).value).toBe("goose acp --saved-profile-draft");
+  expect(command(element).value).toBe("goose");
+  expect(argumentsField(element).value).toBe("acp --saved-profile-draft");
   expect(intents).toEqual([]);
 });

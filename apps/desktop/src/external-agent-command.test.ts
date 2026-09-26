@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { formatExternalAgentCommand, parseExternalAgentCommand } from "./external-agent-command";
+import {
+  formatExternalAgentCommand,
+  parseExternalAgentCommand,
+  parseExternalAgentArguments,
+  formatExternalAgentArguments,
+} from "./external-agent-command";
 it.each([
   { command: "goose", args: ["acp"] },
   { command: "/path with spaces/agent", args: ["", " ' \" ", "$VALUE", "a\\b"] },
@@ -7,6 +12,12 @@ it.each([
 ])("round-trips structured literal command %j", (profile) => {
   expect(parseExternalAgentCommand(formatExternalAgentCommand(profile))).toEqual(profile);
 });
+it.each([[], [""], ["acp", "", "two words", "a'b", "C:\\Program Files\\agent"]])(
+  "round-trips independent arguments %j",
+  (...args) => {
+    expect(parseExternalAgentArguments(formatExternalAgentArguments(args))).toEqual(args);
+  },
+);
 it("previews POSIX quotes and backslash rules without expansion", () => {
   expect(parseExternalAgentCommand(`goose 'a b' "c\\qd" "\\$literal" '' a\\ b`)).toEqual({
     command: "goose",

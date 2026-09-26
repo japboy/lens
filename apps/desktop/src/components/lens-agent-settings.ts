@@ -18,7 +18,10 @@ import {
   isAgentRuntimeActive,
   selectedAgent,
 } from "../view-model";
-import { formatExternalAgentCommand, parseExternalAgentCommand } from "../external-agent-command";
+import {
+  formatExternalAgentArguments,
+  parseExternalAgentArguments,
+} from "../external-agent-command";
 import { AGENT_INTENT_EVENT, dispatchComponentEvent, type AgentIntent } from "./events";
 
 @customElement("lens-agent-settings")
@@ -41,8 +44,9 @@ export class LensAgentSettings extends LitElement {
   @property({ attribute: false }) profiles: ExternalAgentProfile[] = [];
   @state() private managedSelection: ManagedAgentKind = "claude";
   @state() private editingId: string | undefined;
-  @state() private commandDrafts: Record<string, string> = {};
+  @state() private argumentDrafts: Record<string, string> = {};
   @state() private drafts: Record<string, ExternalAgentProfile> = {};
+  @state() private activeHelp: string | undefined;
   private draftRevision = 0;
   private browseSavedProfile = "";
 
@@ -65,9 +69,9 @@ export class LensAgentSettings extends LitElement {
         const old = before.find((p) => p.id === profile.id);
         if (!this.drafts[profile.id] || JSON.stringify(old) !== JSON.stringify(profile)) {
           this.drafts = { ...this.drafts, [profile.id]: structuredClone(profile) };
-          this.commandDrafts = {
-            ...this.commandDrafts,
-            [profile.id]: formatExternalAgentCommand(profile),
+          this.argumentDrafts = {
+            ...this.argumentDrafts,
+            [profile.id]: formatExternalAgentArguments(profile.args),
           };
           this.draftRevision += 1;
         }
@@ -89,8 +93,8 @@ export class LensAgentSettings extends LitElement {
     this.drafts = Object.fromEntries(
       profiles.map((profile) => [profile.id, structuredClone(profile)]),
     );
-    this.commandDrafts = Object.fromEntries(
-      profiles.map((profile) => [profile.id, formatExternalAgentCommand(profile)]),
+    this.argumentDrafts = Object.fromEntries(
+      profiles.map((profile) => [profile.id, formatExternalAgentArguments(profile.args)]),
     );
     this.editingId = typeof agent === "object" ? agent.external : undefined;
     if (typeof agent === "string") this.managedSelection = agent;
@@ -111,15 +115,7 @@ export class LensAgentSettings extends LitElement {
       this.savedFingerprint() !== this.browseSavedProfile
     )
       return false;
-    const draft = this.drafts[this.editingId]!;
-    let args = draft.args;
-    try {
-      const line = this.commandDrafts[this.editingId] ?? "";
-      args = line.trim() ? parseExternalAgentCommand(line).args : draft.args;
-    } catch {
-      return false;
-    }
-    this.editCommand(formatExternalAgentCommand({ command: path, args }));
+    this.editDraft({ command: path });
     return true;
   }
   private editDraft(change: Partial<ExternalAgentProfile>): void {
@@ -133,7 +129,7 @@ export class LensAgentSettings extends LitElement {
   private addProfile(): void {
     const id = crypto.randomUUID();
     this.drafts = { ...this.drafts, [id]: { id, name: "", command: "", args: [] } };
-    this.commandDrafts = { ...this.commandDrafts, [id]: "" };
+    this.argumentDrafts = { ...this.argumentDrafts, [id]: "" };
     this.editingId = id;
     this.draftRevision += 1;
   }
@@ -146,6 +142,7 @@ export class LensAgentSettings extends LitElement {
     if (!this.selection || !this.runtime) return nothing;
     const controlsDisabled =
       this.disabled ||
+      this.updatePending ||
       isAgentRuntimeActive(this.runtime.stage) ||
       ["checking", "authenticating", "signing_out"].includes(this.selection.stage);
     const methods =
@@ -154,204 +151,115 @@ export class LensAgentSettings extends LitElement {
         : [];
     const selected = selectedAgent(this.selection);
     const selectedLabel = selected ? agentLabel(selected, this.profiles) : undefined;
-    const externalSelected = typeof this.selection.candidate === "object";
     const draft = this.editingId ? this.drafts[this.editingId] : undefined;
     const saved = this.profiles.find((p) => p.id === this.editingId);
-    const runtimeForEditor = this.editingId
-      ? typeof this.runtime.agent === "object" && this.runtime.agent.external === this.editingId
-        ? this.runtime
-        : undefined
-      : this.runtime.agent === this.managedSelection
-        ? this.runtime
-        : undefined;
-    const updateRuntime =
-      this.updatePending && this.runtime.agent === this.updateAgent ? this.runtime : undefined;
-    const displayedRuntime = this.updatePending ? updateRuntime : runtimeForEditor;
+    const editorAgent = this.editingId ? { external: this.editingId } : this.managedSelection;
+    const selectionMatchesEditor = sameAgent(this.selection.candidate, editorAgent);
+    const displayedRuntime = sameAgent(this.runtime.agent, editorAgent) ? this.runtime : undefined;
+    const updateForEditor =
+      this.updatePending && this.updateAgent === this.managedSelection && !this.editingId;
+    const installed = Boolean(displayedRuntime?.current_version);
     const total = displayedRuntime?.total_bytes;
+    const validationError = this.commandError();
+    const dirty = Boolean(
+      draft && (JSON.stringify(draft) !== JSON.stringify(saved) || validationError),
+    );
 
-    return html`
-      <section class="settings-group" aria-labelledby="agent-heading">
-        <h2 id="agent-heading">Agent</h2>
-        <fieldset class="external-executable-settings" ?disabled=${controlsDisabled}>
-          <legend class="visually-hidden">AI agent to use</legend>
-          <div class="settings-field">
-            <lens-select
-              label="Agent"
-              .disabled=${controlsDisabled}
-              .value=${this.editingId ?? this.managedSelection}
-              .options=${[
-                { value: "claude", label: "Claude", icon: agentIcon("Claude") },
-                { value: "codex", label: "Codex", icon: agentIcon("Codex") },
-                ...Object.values(this.drafts).map((profile) => ({
-                  value: profile.id,
-                  icon: agentIcon(profile.name),
-                  label: `${profile.name || "New preset"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}`,
-                })),
-              ]}
-              @change=${(event: Event) => {
-                const value = (event.target as LensSelect).value;
-                this.draftRevision += 1;
-                this.editingId = value === "claude" || value === "codex" ? undefined : value;
-                if (!this.editingId) this.managedSelection = value as "claude" | "codex";
-                if (!this.editingId)
-                  this.emit({ type: "select", agent: value as "claude" | "codex" });
-                else if (this.profiles.some((profile) => profile.id === value))
-                  this.emit({ type: "select", agent: { external: value } });
-              }}
-            ></lens-select>
-          </div>
-          ${
-            !this.editingId
-              ? html`<div class="agent-actions managed-agent-actions">
-                    <button
-                      ?disabled=${controlsDisabled}
-                      @click=${() => this.requestManagedUpdate()}
-                    >
-                      Install or update
-                    </button>
-                  </div>
-                  <p class="help">
-                    Check the ACP Registry and install or update
-                    ${agentLabel(this.managedSelection)}. Existing sessions keep their current
-                    version.
-                  </p>`
-              : nothing
-          }
-        </fieldset>
-        <div class="agent-actions preset-add-actions">
-          <button
+    return html` <section class="settings-group" aria-labelledby="agent-heading">
+      <h2 id="agent-heading">Agent</h2>
+      <fieldset class="external-executable-settings" ?disabled=${controlsDisabled}>
+        <legend class="visually-hidden">Agent to use</legend>
+        <div class="settings-field">
+          <lens-select
+            label="Agent"
+            .disabled=${controlsDisabled}
+            .value=${this.editingId ?? this.managedSelection}
+            .options=${[
+              { value: "claude", label: "Claude", icon: agentIcon("Claude") },
+              { value: "codex", label: "Codex", icon: agentIcon("Codex") },
+              ...Object.values(this.drafts).map((profile) => ({
+                value: profile.id,
+                icon: agentIcon(profile.name),
+                label: `${profile.name || "New preset"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}`,
+              })),
+            ]}
+            @change=${(event: Event) => {
+              const value = (event.target as LensSelect).value;
+              this.draftRevision += 1;
+              this.activeHelp = undefined;
+              this.editingId = value === "claude" || value === "codex" ? undefined : value;
+              if (!this.editingId) this.managedSelection = value as ManagedAgentKind;
+              if (!this.editingId) this.emit({ type: "select", agent: value as ManagedAgentKind });
+              else if (this.profiles.some((profile) => profile.id === value))
+                this.emit({ type: "select", agent: { external: value } });
+            }}
+          ></lens-select>
+        </div>
+      </fieldset>
+      <div class="agent-actions preset-add-actions">
+        ${this.help(
+          "agent-add-help",
+          "Create connection settings for another agent.",
+          html` <button
+            aria-describedby="agent-add-help"
             ?disabled=${controlsDisabled || Object.keys(this.drafts).length >= 16}
             @click=${() => this.addProfile()}
           >
             Add preset
-          </button>
-        </div>
-        <p class="help">
-          Add external ACP Agent presets here. Install and update their CLIs separately.
-        </p>
-        <p class="help">The ACP agent, not Lens, manages authentication credentials.</p>
-        ${
-          displayedRuntime || this.updatePending
-            ? html`<div class="runtime-status" aria-live="polite">
-                <output
-                  class=${displayedRuntime?.stage === "failed" && !this.updatePending ? "status-warning" : "runtime-message"}
-                >
-                  ${
-                    this.updatePending &&
-                    (!displayedRuntime || !isAgentRuntimeActive(displayedRuntime.stage))
-                      ? `Checking ${agentLabel(this.updateAgent ?? this.managedSelection)} for updates…`
-                      : (displayedRuntime?.error ??
-                        displayedRuntime?.message ??
-                        (displayedRuntime ? AGENT_RUNTIME_LABEL[displayedRuntime.stage] : nothing))
-                  }
-                </output>
-                ${
-                  displayedRuntime?.stage === "downloading"
-                    ? total === undefined
-                      ? html`<progress aria-label="Agent runtime download progress"></progress>`
-                      : html`<progress
-                          aria-label="Agent runtime download progress"
-                          .value=${displayedRuntime.downloaded_bytes}
-                          max=${total}
-                        ></progress>`
-                    : nothing
-                }
-              </div>`
-            : nothing
-        }
-        <output
-          class="selection-status ${this.selection.stage === "selected" ? "status-ok" : "status-warning"}"
-        >
-          ${this.selection.error ?? this.selection.message ?? AGENT_SELECTION_LABEL[this.selection.stage]}
-        </output>
-        ${
-          this.selection.stage === "authentication_required" && !externalSelected
-            ? html`<div class="agent-actions" aria-label="Agent authentication">
-                ${
-                  methods.length
-                    ? methods.map(
-                        (method) => html`
-                          <button
-                            ?disabled=${this.disabled}
-                            @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
-                          >
-                            Authenticate with ${method.name}…
-                          </button>
-                        `,
-                      )
-                    : html`<p>
-                        Authenticate with this Agent's existing CLI, then select it again.
-                      </p>`
-                }
-              </div>`
-            : nothing
-        }
-        ${
-          !this.editingId &&
-          ["unselected", "failed", "authentication_required", "history_selected"].includes(
-            this.selection.stage,
-          )
-            ? html`<div class="agent-actions">
-                <button
-                  ?disabled=${controlsDisabled}
-                  @click=${() => this.emit({ type: "select", agent: this.managedSelection })}
-                >
-                  Verify connection
-                </button>
-              </div>`
-            : nothing
-        }
-        ${
-          selected && this.selection.supports_logout
-            ? html`<div
-                class="agent-actions"
-                aria-label="${selectedLabel} authentication management"
-              >
-                <button
-                  ?disabled=${this.disabled}
-                  @click=${() => this.emit({ type: "reauthenticate" })}
-                >
-                  Reauthenticate…
-                </button>
-                <button ?disabled=${this.disabled} @click=${() => this.emit({ type: "sign-out" })}>
-                  Sign Out…
-                </button>
-              </div>`
-            : nothing
-        }
+          </button>`,
+        )}
         ${
           draft
-            ? html`
-                <fieldset class="agent-preset-settings" ?disabled=${controlsDisabled}>
-                  <legend class="visually-hidden">Agent Presets</legend>
-                  <label class="settings-field"
-                    ><span>Display name</span
-                    ><input
+            ? this.help(
+                "agent-delete-help",
+                saved ? "Remove the selected preset." : "Remove this unsaved preset.",
+                html` <button
+                  aria-describedby="agent-delete-help"
+                  ?disabled=${controlsDisabled}
+                  @click=${() => (saved ? this.emit({ type: "delete-external-agent", id: draft.id }) : this.discardDraft(draft.id))}
+                >
+                  ${saved ? "Delete preset" : "Discard draft"}
+                </button>`,
+              )
+            : nothing
+        }
+      </div>
+      ${
+        draft
+          ? html` <fieldset class="agent-preset-settings" ?disabled=${controlsDisabled}>
+              <legend class="visually-hidden">Preset settings</legend>
+              <label class="settings-field"
+                ><span>Display name</span>
+                <input
+                  class="external-executable-field"
+                  aria-label="Connection name"
+                  .value=${draft.name}
+                  @input=${(event: Event) => this.editDraft({ name: (event.target as HTMLInputElement).value })}
+                />
+              </label>
+              <div class="settings-field">
+                <label for="agent-executable">Executable</label>
+                <div class="executable-row">
+                  ${this.help(
+                    "agent-executable-help",
+                    "Enter a command name or an executable path. Paths do not need quotes.",
+                    html` <input
+                      id="agent-executable"
                       class="external-executable-field"
-                      aria-label="Connection name"
-                      .value=${draft.name}
-                      @input=${(event: Event) => this.editDraft({ name: (event.target as HTMLInputElement).value })}
-                  /></label>
-                  <label class="settings-field"
-                    ><span>Command</span
-                    ><input
-                      class="external-executable-field"
-                      aria-label="ACP command"
+                      aria-label="Executable"
+                      aria-describedby="agent-executable-help"
                       spellcheck="false"
                       autocomplete="off"
-                      placeholder="goose acp"
-                      .value=${this.commandDrafts[draft.id] ?? ""}
-                      @input=${(event: Event) => this.editCommand((event.target as HTMLInputElement).value)}
-                  /></label>
-                  <p class="help">
-                    Enter a single-line command using an executable name from PATH or an absolute
-                    path, such as goose acp. Quote paths or arguments containing spaces. Quotes and
-                    backslash escapes group literal arguments; shell expansion is not supported.
-                  </p>
-                  ${this.commandError() ? html`<p role="alert">${this.commandError()}</p>` : nothing}
-                  ${JSON.stringify(draft) !== JSON.stringify(saved) || Boolean(this.commandError()) ? html`<p class="help" role="status">Unsaved connection changes have not been verified.</p>` : nothing}
-                  <div class="agent-actions">
-                    <button
+                      placeholder="goose"
+                      .value=${draft.command}
+                      @input=${(event: Event) => this.editDraft({ command: (event.target as HTMLInputElement).value })}
+                    />`,
+                  )}
+                  ${this.help(
+                    "agent-choose-help",
+                    "Choose an executable file.",
+                    html` <button
+                      aria-describedby="agent-choose-help"
                       @click=${() => {
                         this.draftRevision += 1;
                         this.browseSavedProfile = this.savedFingerprint();
@@ -362,54 +270,190 @@ export class LensAgentSettings extends LitElement {
                         });
                       }}
                     >
-                      Browse…
-                    </button>
-                    <button
-                      ?disabled=${!draft.name.trim() || Boolean(this.commandError())}
-                      @click=${() => this.emit({ type: "save-external-agent", profile: { id: this.editingId!, name: this.drafts[this.editingId!]!.name, command_line: this.commandDrafts[this.editingId!]! } })}
+                      Choose…
+                    </button>`,
+                  )}
+                </div>
+              </div>
+              <label class="settings-field"
+                ><span>Arguments</span>
+                ${this.help(
+                  "agent-arguments-help",
+                  "Separate arguments with spaces; quote values containing spaces. No shell expansion.",
+                  html` <input
+                    class="external-executable-field"
+                    aria-label="Arguments"
+                    aria-describedby="agent-arguments-help"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="acp"
+                    .value=${this.argumentDrafts[draft.id] ?? ""}
+                    @input=${(event: Event) => this.editArguments((event.target as HTMLInputElement).value)}
+                  />`,
+                )}
+              </label>
+              <p class="help">Install and update this agent’s CLI separately.</p>
+              ${validationError ? html`<p role="alert">${validationError}</p>` : nothing}
+              ${dirty ? html`<p class="help" role="status">Unsaved connection changes have not been verified.</p>` : nothing}
+              <div class="agent-actions">
+                ${this.help(
+                  "agent-save-help",
+                  "Save these settings and start the executable to verify its ACP connection.",
+                  html` <button
+                    aria-describedby="agent-save-help"
+                    ?disabled=${!draft.name.trim() || Boolean(validationError)}
+                    @click=${() =>
+                      this.emit({
+                        type: "save-external-agent",
+                        profile: {
+                          id: draft.id,
+                          name: draft.name,
+                          command: draft.command,
+                          arguments: this.argumentDrafts[draft.id] ?? "",
+                        },
+                      })}
+                  >
+                    Save and Verify
+                  </button>`,
+                )}
+              </div>
+            </fieldset>`
+          : nothing
+      }
+      <div class="agent-status" aria-live="polite">
+        <div class="agent-status-row installation-status">
+          <span class="agent-status-label">Installation</span>
+          <div class="runtime-status">
+            <output
+              class=${displayedRuntime?.stage === "failed" && !updateForEditor ? "status-warning" : "runtime-message"}
+            >
+              ${
+                updateForEditor &&
+                (!displayedRuntime || !isAgentRuntimeActive(displayedRuntime.stage))
+                  ? `Checking ${agentLabel(this.managedSelection)} for updates…`
+                  : (displayedRuntime?.error ??
+                    displayedRuntime?.message ??
+                    (displayedRuntime
+                      ? AGENT_RUNTIME_LABEL[displayedRuntime.stage]
+                      : draft
+                        ? "Managed separately"
+                        : "Not checked"))
+              }
+            </output>
+            ${
+              displayedRuntime?.stage === "downloading"
+                ? total === undefined
+                  ? html`<progress aria-label="Agent runtime download progress"></progress>`
+                  : html`<progress
+                      aria-label="Agent runtime download progress"
+                      .value=${displayedRuntime.downloaded_bytes}
+                      max=${total}
+                    ></progress>`
+                : nothing
+            }
+          </div>
+          ${
+            !draft
+              ? html`<div class="managed-agent-actions">
+                  ${this.help(
+                    "agent-update-help",
+                    installed
+                      ? "Check for updates and install the latest available version."
+                      : "Download and install the selected agent.",
+                    html` <button
+                      aria-describedby="agent-update-help"
+                      ?disabled=${controlsDisabled}
+                      @click=${() => this.requestManagedUpdate()}
                     >
-                      Save and Verify
-                    </button>
-                    ${
-                      saved
-                        ? html`<button
-                            @click=${() => this.emit({ type: "delete-external-agent", id: draft.id })}
-                          >
-                            Delete preset
-                          </button>`
-                        : html`<button
-                            @click=${() => {
-                              const { [draft.id]: _removed, ...remaining } = this.drafts;
-                              this.drafts = remaining;
-                              const candidate = this.selection?.candidate;
-                              this.editingId =
-                                typeof candidate === "object" ? candidate.external : undefined;
-                              if (typeof candidate === "string") this.managedSelection = candidate;
-                              this.draftRevision += 1;
-                            }}
-                          >
-                            Discard draft
-                          </button>`
-                    }
-                  </div>
-                  <p class="help">
-                    Editing and browsing do not start a process. Save and Verify saves the
-                    connection and starts its ACP executable to verify it.
-                  </p>
-                </fieldset>
-              `
-            : nothing
-        }
-        <div class="agent-actions agent-reset-actions">
-          <button
+                      ${installed ? "Update" : "Install"}
+                    </button>`,
+                  )}
+                </div>`
+              : nothing
+          }
+        </div>
+        <div class="agent-status-row">
+          <span class="agent-status-label">Connection</span>
+          <output
+            class="selection-status ${selectionMatchesEditor && !dirty && this.selection.stage === "selected" ? "status-ok" : "status-warning"}"
+          >
+            ${
+              !selectionMatchesEditor
+                ? draft
+                  ? "Save and verify to connect"
+                  : AGENT_SELECTION_LABEL.unselected
+                : dirty
+                  ? "Saved connection; changes have not been verified"
+                  : (this.selection.error ??
+                    this.selection.message ??
+                    AGENT_SELECTION_LABEL[this.selection.stage])
+            }
+          </output>
+        </div>
+      </div>
+      <p class="help">Credentials are managed by the selected agent.</p>
+      ${
+        selectionMatchesEditor && this.selection.stage === "authentication_required" && !draft
+          ? html`<div class="agent-actions" aria-label="Agent authentication">
+              ${
+                methods.length
+                  ? methods.map(
+                      (method) => html` <button
+                        ?disabled=${this.disabled}
+                        @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
+                      >
+                        Authenticate with ${method.name}…
+                      </button>`,
+                    )
+                  : html`<p>Authenticate with this Agent's existing CLI, then select it again.</p>`
+              }
+            </div>`
+          : nothing
+      }
+      ${
+        !draft &&
+        ["unselected", "failed", "authentication_required", "history_selected"].includes(
+          this.selection.stage,
+        )
+          ? html`<div class="agent-actions">
+              <button
+                ?disabled=${controlsDisabled}
+                @click=${() => this.emit({ type: "select", agent: this.managedSelection })}
+              >
+                Verify connection
+              </button>
+            </div>`
+          : nothing
+      }
+      ${
+        selectionMatchesEditor && selected && this.selection.supports_logout
+          ? html`<div class="agent-actions" aria-label="${selectedLabel} authentication management">
+              <button
+                ?disabled=${this.disabled}
+                @click=${() => this.emit({ type: "reauthenticate" })}
+              >
+                Reauthenticate…
+              </button>
+              <button ?disabled=${this.disabled} @click=${() => this.emit({ type: "sign-out" })}>
+                Sign Out…
+              </button>
+            </div>`
+          : nothing
+      }
+      <div class="agent-actions agent-reset-actions">
+        ${this.help(
+          "agent-reset-help",
+          "Restore preset defaults after confirmation.",
+          html` <button
+            aria-describedby="agent-reset-help"
             ?disabled=${controlsDisabled}
             @click=${() => this.emit({ type: "reset-agent-presets" })}
           >
-            Reset Agent Presets…
-          </button>
-        </div>
-      </section>
-    `;
+            Reset presets…
+          </button>`,
+        )}
+      </div>
+    </section>`;
   }
 
   private requestManagedUpdate(): void {
@@ -417,24 +461,62 @@ export class LensAgentSettings extends LitElement {
     this.emit({ type: "update-managed-agent", agent: this.managedSelection });
   }
 
-  private editCommand(value: string): void {
+  private editArguments(value: string): void {
     if (!this.editingId) return;
-    this.commandDrafts = { ...this.commandDrafts, [this.editingId]: value };
+    this.argumentDrafts = { ...this.argumentDrafts, [this.editingId]: value };
     this.draftRevision += 1;
     try {
-      this.editDraft(parseExternalAgentCommand(value));
+      this.editDraft({ args: parseExternalAgentArguments(value) });
     } catch {
-      /* Keep the incomplete text as a local draft. */
+      /* Preserve incomplete argument text until the user completes it. */
     }
   }
   private commandError(): string | undefined {
     if (!this.editingId) return undefined;
+    const command = this.drafts[this.editingId]?.command ?? "";
+    if (!command.trim()) return "Enter an executable name or path.";
+    if (/[\r\n\0]/.test(command)) return "Use an executable without line breaks or NUL characters.";
     try {
-      parseExternalAgentCommand(this.commandDrafts[this.editingId] ?? "");
+      parseExternalAgentArguments(this.argumentDrafts[this.editingId] ?? "");
       return undefined;
     } catch (error) {
       return (error as Error).message;
     }
+  }
+
+  private help(id: string, text: string, control: unknown) {
+    return html`<span
+      class="agent-help"
+      @pointerenter=${() => {
+        this.activeHelp = id;
+      }}
+      @pointerleave=${() => {
+        this.activeHelp = undefined;
+      }}
+      @focusin=${() => {
+        this.activeHelp = id;
+      }}
+      @focusout=${() => {
+        this.activeHelp = undefined;
+      }}
+      @keydown=${(event: KeyboardEvent) => {
+        if (event.key === "Escape") this.activeHelp = undefined;
+      }}
+      >${control}<span id=${id} role="tooltip" ?hidden=${this.activeHelp !== id}
+        >${text}</span
+      ></span
+    >`;
+  }
+
+  private discardDraft(id: string): void {
+    const { [id]: _removed, ...remaining } = this.drafts;
+    const { [id]: _arguments, ...remainingArguments } = this.argumentDrafts;
+    this.drafts = remaining;
+    this.argumentDrafts = remainingArguments;
+    const candidate = this.selection?.candidate;
+    this.editingId = typeof candidate === "object" ? candidate.external : undefined;
+    if (typeof candidate === "string") this.managedSelection = candidate;
+    this.draftRevision += 1;
   }
 
   private emit(intent: AgentIntent): void {
