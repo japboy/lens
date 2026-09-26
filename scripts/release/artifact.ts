@@ -1,16 +1,8 @@
 import { createHash } from "node:crypto";
-import {
-  copyFileSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { changelogSection, cleanSource, commitSha, git } from "./source.ts";
-import { readVersion, stableVersion, tagVersion } from "./version.ts";
+import { commitSha } from "./source.ts";
+import { stableVersion, tagVersion } from "./version.ts";
 
 export const sha256 = (bytes: Buffer | string): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -85,69 +77,6 @@ ${installationText(asset.name)}
 - DMG SHA-256: \`${asset.sha256}\`
 ${previousTag ? `- Changes: [${previousTag}...${tag}](${base}/compare/${previousTag}...${tag})\n` : ""}
 `;
-}
-
-export function packageArtifact(
-  root: string,
-  destination: string,
-  input: {
-    tag: string;
-    source: string;
-    repository: string;
-    runId: string;
-    runAttempt: string;
-    previousTag: string | null;
-  },
-): ReleaseManifest {
-  cleanSource(root, input.source);
-  const version = tagVersion(input.tag);
-  const state = readVersion(root);
-  if (!state.bootstrapped || state.version !== version)
-    throw new Error("Artifact source/version mismatch");
-  const name = `Lens_${version}_aarch64.dmg`;
-  const source = join(root, "target/aarch64-apple-darwin/release/bundle/dmg", name);
-  const bytes = readFileSync(source);
-  const dmg: Asset = { name, size: bytes.length, sha256: sha256(bytes) };
-  const sums = Buffer.from(`${dmg.sha256}  ${name}\n`);
-  const section = changelogSection(git(root, "show", `${input.source}:CHANGELOG.md`), version);
-  const notes = releaseNotes(section, input, dmg);
-  const command = (file: string, args: string[]) =>
-    execFileSync(file, args, { cwd: root, encoding: "utf8" }).trim();
-  const manifest: ReleaseManifest = {
-    schema: 1,
-    ...input,
-    version,
-    assets: [dmg, { name: "SHA256SUMS", size: sums.length, sha256: sha256(sums) }],
-    notesSha256: sha256(notes),
-    configuration: Object.fromEntries(
-      CONFIGURATION_FILES.map((path) => [path, sha256(readFileSync(join(root, path)))]),
-    ),
-    tools: {
-      node: process.version,
-      pnpm: command("pnpm", ["--version"]),
-      rustc: command("rustc", ["-vV"]),
-      tauri: command("pnpm", ["--dir", "apps/desktop", "exec", "tauri", "--version"]),
-      xcode: command("xcodebuild", ["-version"]),
-      sdk: command("xcrun", ["--show-sdk-version"]),
-      os: command("sw_vers", []),
-      runnerImage: process.env.ImageVersion ?? "local",
-    },
-    applicationSignature: "adhoc",
-    dmgSignature: "unsigned",
-    notarization: "not-performed",
-  };
-  mkdirSync(destination, { recursive: true });
-  if (readdirSync(destination).length)
-    throw new Error("Release artifact destination must be empty");
-  copyFileSync(source, join(destination, name));
-  writeFileSync(join(destination, "SHA256SUMS"), sums);
-  writeFileSync(join(destination, "release-notes.md"), notes);
-  writeFileSync(
-    join(destination, "release-manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-  );
-  verifyArtifact(destination, input);
-  return manifest;
 }
 
 export function verifyArtifact(

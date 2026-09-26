@@ -1,10 +1,18 @@
-import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { packageArtifact, sha256 } from "./artifact.ts";
+import { CONFIGURATION_FILES, releaseNotes, sha256 } from "./artifact.ts";
 import type { Asset, ReleaseManifest } from "./artifact.ts";
 import type { AdmittedRelease } from "./admission.ts";
-import { commitSha } from "./source.ts";
-import { tagVersion } from "./version.ts";
+import { changelogSection, cleanSource, commitSha, git } from "./source.ts";
+import { readVersion, tagVersion } from "./version.ts";
 
 export const RECEIPT_NAME = "release-receipt.json";
 export const RELEASE_WORKFLOW = ".github/workflows/release-please.yml";
@@ -77,20 +85,57 @@ export function packageArtifactV2(
   input: BuildIdentity & { previousTag: string | null },
 ): ArtifactManifestV2 {
   requireBuildIdentity(input);
-  const original = packageArtifact(root, destination, input);
+  cleanSource(root, input.source);
+  const version = tagVersion(input.tag);
+  const state = readVersion(root);
+  if (!state.bootstrapped || state.version !== version)
+    throw new Error("Artifact source/version mismatch");
+  const name = `Lens_${version}_aarch64.dmg`;
+  const source = join(root, "target/aarch64-apple-darwin/release/bundle/dmg", name);
+  const bytes = readFileSync(source);
+  const dmg: Asset = { name, size: bytes.length, sha256: sha256(bytes) };
+  const sums = Buffer.from(`${dmg.sha256}  ${name}\n`);
+  const section = changelogSection(git(root, "show", `${input.source}:CHANGELOG.md`), version);
+  const notes = releaseNotes(section, input, dmg);
+  const command = (file: string, args: string[]) =>
+    execFileSync(file, args, { cwd: root, encoding: "utf8" }).trim();
   const manifest: ArtifactManifestV2 = {
-    ...original,
+    ...input,
     schema: 2,
-    controller: input.controller,
-    workflow: input.workflow,
     verificationAttempt: input.runAttempt,
+    version,
+    assets: [dmg, { name: "SHA256SUMS", size: sums.length, sha256: sha256(sums) }],
+    notesSha256: sha256(notes),
+    configuration: Object.fromEntries(
+      CONFIGURATION_FILES.map((path) => [path, sha256(readFileSync(join(root, path)))]),
+    ),
+    tools: {
+      node: process.version,
+      pnpm: command("pnpm", ["--version"]),
+      rustc: command("rustc", ["-vV"]),
+      tauri: command("pnpm", ["--dir", "apps/desktop", "exec", "tauri", "--version"]),
+      xcode: command("xcodebuild", ["-version"]),
+      sdk: command("xcrun", ["--show-sdk-version"]),
+      os: command("sw_vers", []),
+      runnerImage: process.env.ImageVersion ?? "local",
+    },
+    applicationSignature: "adhoc",
+    dmgSignature: "unsigned",
+    notarization: "not-performed",
   };
+  mkdirSync(destination, { recursive: true });
+  if (readdirSync(destination).length)
+    throw new Error("Release artifact destination must be empty");
+  copyFileSync(source, join(destination, name));
+  writeFileSync(join(destination, "SHA256SUMS"), sums);
+  writeFileSync(join(destination, "release-notes.md"), notes);
   writeFileSync(
     join(destination, "release-manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
   return verifyArtifactV2(destination, input);
 }
+
 export function verifyArtifactV2(
   directory: string,
   expected: Pick<BuildIdentity, "tag" | "source" | "repository">,
@@ -178,30 +223,6 @@ export function parseReceipt(
   requireAssets(receipt.assets, admitted.version);
   return receipt;
 }
-export function createReceipt(
-  manifest: ArtifactManifestV2,
-  admitted: AdmittedRelease,
-  artifactId: string,
-): ReleaseReceipt {
-  const receipt: ReleaseReceipt = {
-    schema: 2,
-    repository: manifest.repository,
-    tag: manifest.tag,
-    source: manifest.source,
-    controller: manifest.controller,
-    workflow: manifest.workflow,
-    runId: manifest.runId,
-    runAttempt: manifest.runAttempt,
-    verificationAttempt: manifest.verificationAttempt,
-    version: manifest.version,
-    pullRequest: admitted.pullRequest,
-    releaseId: admitted.releaseId,
-    artifactId,
-    assets: manifest.assets,
-  };
-  return parseReceipt(Buffer.from(JSON.stringify(receipt)), admitted, manifest.repository);
-}
-
 /** Promotion runs in the trusted controller after the aggregate gate succeeds.
  * Preserve the original build attempt when only failed jobs were rerun. */
 export function promoteArtifactV2(

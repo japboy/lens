@@ -8,6 +8,12 @@ const cli = readFileSync("scripts/release/cli.ts", "utf8");
 const native = readFileSync(".github/workflows/native-quality.yml", "utf8");
 
 describe("release workflow authority and recovery", () => {
+  it("routes release publication through the durable publisher", () => {
+    const steps = parse(release).jobs.publish.steps as { run?: string }[];
+    expect(steps.some((step) => step.run === "node scripts/release/cli.ts publish")).toBe(true);
+    const publication = cli.split('mode === "publish"')[1]!;
+    expect(publication).toContain("await publishDurableRelease(");
+  });
   it("attests only after verification and grants signing authority only to promotion", () => {
     const workflow = parse(release);
     expect(workflow.permissions["id-token"]).toBeUndefined();

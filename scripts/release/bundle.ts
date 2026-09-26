@@ -75,9 +75,10 @@ export function verifyDmg(dmg: string, contract: ReturnType<typeof bundleContrac
     throw new Error("Expected an unsigned DMG wrapper");
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), "lens-dmg-")));
   const mount = join(temporary, "mounted");
-  mkdirSync(mount);
   let device: string | undefined;
+  const failures: unknown[] = [];
   try {
+    mkdirSync(mount);
     const plist = execFileSync("hdiutil", [
       "attach",
       "-readonly",
@@ -111,9 +112,24 @@ export function verifyDmg(dmg: string, contract: ReturnType<typeof bundleContrac
     verifyApp(copied, contract);
     if (!existsSync(join(copied, "Contents/MacOS/lens")))
       throw new Error("Copied executable missing");
+  } catch (error) {
+    failures.push(error);
   } finally {
     // Mountpoint is a fallback cleanup target if structured attach parsing fails.
-    execFileSync("hdiutil", ["detach", device ?? mount], { stdio: "inherit" });
-    rmSync(temporary, { recursive: true, force: true });
+    try {
+      execFileSync("hdiutil", ["detach", device ?? mount], { stdio: "inherit" });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      rmSync(temporary, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "DMG verification or cleanup failed", {
+      cause: failures[0],
+    });
 }
