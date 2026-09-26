@@ -1114,28 +1114,100 @@ pub(crate) async fn reconcile_defaults(
         options = resolved;
         reconciled.choices.push(choice);
     }
-    // A later complete response can remove an earlier choice. A fresh session is required
-    // to recover the Agent's defaults rather than reuse state mutated by a removed override.
     let mut restart_required = false;
-    let mut retained = Vec::new();
-    for choice in reconciled.choices {
-        if !saved_choice_available(&choice, options.as_deref(), modes)? {
-            removed.push(choice);
-            restart_required = true;
-        } else {
-            if let Some(catalog) = &options {
-                confirm_choice(catalog, &choice.config_id, &choice.value)?;
-            }
-            retained.push(choice);
-        }
+    if let Some(catalog) = options.take() {
+        let stable =
+            stabilize_choices(connection, session_id, catalog, &reconciled.choices).await?;
+        restart_required = !stable.unavailable.is_empty();
+        reconciled
+            .choices
+            .retain(|choice| !stable.unavailable.contains(choice));
+        removed.extend(stable.unavailable);
+        options = Some(stable.options);
     }
-    reconciled.choices = retained;
     Ok(ReconciledDefaults {
         defaults: reconciled,
         options,
         removed,
         restart_required,
     })
+}
+
+struct StabilizedChoices {
+    options: Vec<SessionConfigOption>,
+    unavailable: Vec<crate::agent_preferences::SavedChoice>,
+}
+
+/// Reapply supported choices reset by later complete responses. Missing choices are
+/// reported to the caller: update reconciliation may remove them; strict startup/save fails.
+async fn stabilize_choices(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    mut options: Vec<SessionConfigOption>,
+    choices: &[crate::agent_preferences::SavedChoice],
+) -> Result<StabilizedChoices, Error> {
+    use sha2::Digest as _;
+    let repair_budget = choices.len().saturating_mul(choices.len());
+    let mut repairs = 0;
+    let mut seen_catalogs = BTreeSet::new();
+    loop {
+        validate_options(&options)?;
+        let mut unavailable = Vec::new();
+        for choice in choices {
+            if !saved_choice_available(choice, Some(&options), None)? {
+                unavailable.push(choice.clone());
+            }
+        }
+        if !unavailable.is_empty() {
+            return Ok(StabilizedChoices {
+                options,
+                unavailable,
+            });
+        }
+        let mut mismatches = Vec::new();
+        for choice in choices {
+            let option = options
+                .iter()
+                .find(|option| option.id.to_string() == choice.config_id)
+                .ok_or_else(|| {
+                    invalid("Saved Agent option is unavailable; review Agent settings")
+                })?;
+            if current_value(option)? != choice.value {
+                let priority = match option.category {
+                    Some(SessionConfigOptionCategory::Mode) => 0,
+                    Some(SessionConfigOptionCategory::Model) => 1,
+                    _ => 2,
+                };
+                mismatches.push((priority, choice));
+            }
+        }
+        let Some((_, choice)) = mismatches.into_iter().min_by_key(|(priority, _)| *priority) else {
+            return Ok(StabilizedChoices {
+                options,
+                unavailable,
+            });
+        };
+        let catalog_state: [u8; 32] = sha2::Sha256::digest(
+            serde_json::to_vec(&options).map_err(|_| invalid("Invalid Agent options"))?,
+        )
+        .into();
+        if repairs >= repair_budget || !seen_catalogs.insert(catalog_state) {
+            return Err(invalid("Agent settings did not stabilize"));
+        }
+        let response = connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                choice.config_id.clone(),
+                SessionConfigValueId::new(choice.value.clone()),
+            ))
+            .block_task()
+            .await?;
+        validate_options(&response.config_options)?;
+        // Immediate rejection is distinct from another later request resetting this value.
+        confirm_choice(&response.config_options, &choice.config_id, &choice.value)?;
+        options = response.config_options;
+        repairs += 1;
+    }
 }
 
 pub(crate) fn explicit_model(
@@ -1290,7 +1362,14 @@ pub async fn apply_defaults(
         confirm_choice(&response.config_options, &saved.config_id, &saved.value)?;
         options = Some(response.config_options);
     }
-    if options.is_some() {
+    if let Some(catalog) = options.take() {
+        let stable = stabilize_choices(connection, session_id, catalog, &defaults.choices).await?;
+        if !stable.unavailable.is_empty() {
+            return Err(invalid(
+                "Saved Agent choice is unavailable; review Agent settings",
+            ));
+        }
+        options = Some(stable.options);
         effective_mode = advertised_mode(options.as_deref(), None)?;
     }
     if requested_mode

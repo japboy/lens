@@ -19,6 +19,11 @@ enum Scenario {
     Cascade,
     Empty,
     ChangedType,
+    ResetMode,
+    CyclicReset,
+    ChangingCyclicReset,
+    UnconfirmedValue,
+    RepairRemovesModel,
 }
 
 struct Fixture {
@@ -125,6 +130,10 @@ impl AgentHost<MockRuntime> for Arc<Fixture> {
                     }
                     let id = format!("session-{index}");
                     let mut options = catalog();
+                    if matches!(initial.scenario, Scenario::ResetMode | Scenario::CyclicReset | Scenario::ChangingCyclicReset | Scenario::RepairRemovesModel) {
+                        options.push(select("mode", "Mode", "auto", &["auto", "safe"])
+                            .category(SessionConfigOptionCategory::Mode));
+                    }
                     if initial.scenario == Scenario::Malformed { options.push(options[0].clone()); }
                     if initial.scenario == Scenario::Empty { options.clear(); }
                     if initial.scenario == Scenario::ChangedType {
@@ -154,6 +163,9 @@ impl AgentHost<MockRuntime> for Arc<Fixture> {
                     }
                     let mut all = catalogs.lock().unwrap();
                     let options = all.get_mut(&request.session_id.to_string()).unwrap();
+                    if configure.scenario == Scenario::UnconfirmedValue {
+                        return responder.respond(SetSessionConfigOptionResponse::new(options.clone()));
+                    }
                     if id == "model" && value == "kept" {
                         options[1] = select("thought", "Reasoning effort", "normal", &["normal", "high"])
                             .category(SessionConfigOptionCategory::ThoughtLevel);
@@ -163,6 +175,24 @@ impl AgentHost<MockRuntime> for Arc<Fixture> {
                     }
                     if configure.scenario == Scenario::Cascade && id == "advanced" {
                         options.retain(|option| option.id.to_string() != "thought");
+                    }
+                    if matches!(configure.scenario, Scenario::ResetMode | Scenario::CyclicReset | Scenario::ChangingCyclicReset | Scenario::RepairRemovesModel) {
+                        if id == "model" {
+                            if let SessionConfigKind::Select(mode) = &mut options[3].kind {
+                                mode.current_value = "auto".into();
+                            }
+                        } else if id == "mode" && configure.scenario != Scenario::ResetMode {
+                            if configure.scenario == Scenario::RepairRemovesModel {
+                                if crate::session_controls::current_value(&options[0]).unwrap() == "kept" {
+                                    options.remove(0);
+                                }
+                            } else if let SessionConfigKind::Select(model) = &mut options[0].kind {
+                                model.current_value = "new".into();
+                            }
+                        }
+                        if configure.scenario == Scenario::ChangingCyclicReset {
+                            options[0].name = format!("Model response {}", configure.requests.lock().unwrap().len());
+                        }
                     }
                     responder.respond(SetSessionConfigOptionResponse::new(options.clone()))
                 }, agent_client_protocol::on_receive_request!()))
@@ -350,6 +380,148 @@ async fn removed_model_and_dependent_choice_fall_back_without_configuration_rpc(
         .choices
         .is_empty());
 }
+#[tokio::test]
+async fn supported_mode_reset_by_model_is_reapplied_without_dropping_overrides() {
+    let h = Harness::new(
+        Scenario::ResetMode,
+        defaults(&[("mode", "safe"), ("model", "kept")]),
+    );
+    let verified = h.verify().await.unwrap();
+    assert!(verified.removed.is_empty());
+    assert_eq!(
+        verified.defaults.choices,
+        defaults(&[("mode", "safe"), ("model", "kept")]).choices
+    );
+    assert_eq!(
+        h.fixture.requests.lock().unwrap().as_slice(),
+        &[
+            ("mode".into(), "safe".into()),
+            ("model".into(), "kept".into()),
+            ("mode".into(), "safe".into()),
+        ]
+    );
+    assert_eq!(h.fixture.sessions.load(Ordering::SeqCst), 1);
+    let options = verified.options.as_ref().unwrap();
+    crate::session_controls::confirm_choice(options, "mode", "safe").unwrap();
+    crate::session_controls::confirm_choice(options, "model", "kept").unwrap();
+    commit_verified_update(h.app.handle(), &h.candidate, verified).unwrap();
+    assert_eq!(
+        h.config_on_disk().agent_preferences.codex.choices,
+        defaults(&[("mode", "safe"), ("model", "kept")]).choices
+    );
+}
+
+#[tokio::test]
+async fn cyclic_and_nonconverging_resets_fail_with_bounded_requests_and_keep_authority() {
+    for (scenario, expected_requests) in [
+        (Scenario::CyclicReset, 4),
+        (Scenario::ChangingCyclicReset, 6),
+    ] {
+        let h = Harness::new(scenario, defaults(&[("mode", "safe"), ("model", "kept")]));
+        let before = h.app.state::<AppState>().snapshot().unwrap();
+        let disk = h.config_on_disk();
+        let error = h
+            .verify()
+            .await
+            .err()
+            .expect("cyclic configuration must fail");
+        assert!(
+            matches!(error, crate::agent::ManagedVerificationError::Retryable(ref message)
+            if message.contains("did not stabilize"))
+        );
+        assert_eq!(h.fixture.requests.lock().unwrap().len(), expected_requests);
+        assert_eq!(h.fixture.sessions.load(Ordering::SeqCst), 1);
+        assert_eq!(h.app.state::<AppState>().snapshot().unwrap(), before);
+        assert_eq!(h.config_on_disk(), disk);
+        assert_eq!(
+            read_selector(h.root.path(), AgentKind::Codex)
+                .unwrap()
+                .current
+                .as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    }
+}
+
+#[tokio::test]
+async fn removal_during_reapplication_restarts_update_but_strict_validation_fails() {
+    let choices = defaults(&[("mode", "safe"), ("model", "kept")]);
+    let h = Harness::new(Scenario::RepairRemovesModel, choices.clone());
+    let verified = h.verify().await.unwrap();
+    assert_eq!(
+        verified.defaults.choices,
+        defaults(&[("mode", "safe")]).choices
+    );
+    assert_eq!(verified.removed, defaults(&[("model", "kept")]).choices);
+    assert_eq!(h.fixture.sessions.load(Ordering::SeqCst), 2);
+    assert_eq!(h.fixture.requests.lock().unwrap().len(), 4);
+    let options = verified.options.unwrap();
+    crate::session_controls::confirm_choice(&options, "mode", "safe").unwrap();
+    crate::session_controls::confirm_choice(&options, "model", "new").unwrap();
+
+    let h = Harness::new(Scenario::RepairRemovesModel, choices.clone());
+    let config = h.app.state::<AppState>().config().unwrap();
+    assert!(
+        crate::agent::validate_agent_defaults(h.app.handle(), &config, &choices)
+            .await
+            .is_err()
+    );
+    assert_eq!(h.fixture.sessions.load(Ordering::SeqCst), 1);
+    assert_eq!(h.fixture.requests.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn ordinary_defaults_validation_reapplies_supported_resets_but_remains_strict() {
+    let choices = defaults(&[("mode", "safe"), ("model", "kept")]);
+    let h = Harness::new(Scenario::ResetMode, choices.clone());
+    let config = h.app.state::<AppState>().config().unwrap();
+    let validated = crate::agent::validate_agent_defaults(h.app.handle(), &config, &choices)
+        .await
+        .unwrap();
+    let options = validated.options.unwrap();
+    crate::session_controls::confirm_choice(&options, "mode", "safe").unwrap();
+    crate::session_controls::confirm_choice(&options, "model", "kept").unwrap();
+    assert_eq!(
+        h.fixture.requests.lock().unwrap().as_slice(),
+        &[
+            ("mode".into(), "safe".into()),
+            ("model".into(), "kept".into()),
+            ("mode".into(), "safe".into()),
+        ]
+    );
+    for (scenario, defaults, requests) in [
+        (Scenario::Normal, defaults(&[("model", "removed")]), 0),
+        (
+            Scenario::UnconfirmedValue,
+            defaults(&[("model", "kept")]),
+            1,
+        ),
+        (Scenario::CyclicReset, choices.clone(), 4),
+        (Scenario::ChangingCyclicReset, choices.clone(), 6),
+    ] {
+        let h = Harness::new(scenario, defaults.clone());
+        let before = h.app.state::<AppState>().snapshot().unwrap();
+        assert!(
+            crate::agent::validate_agent_defaults(h.app.handle(), &before.config, &defaults)
+                .await
+                .is_err()
+        );
+        assert_eq!(h.fixture.requests.lock().unwrap().len(), requests);
+        assert_eq!(h.app.state::<AppState>().snapshot().unwrap(), before);
+        assert_eq!(h.config_on_disk(), before.config);
+    }
+}
+
+#[tokio::test]
+async fn immediate_response_that_does_not_confirm_requested_value_is_not_retried() {
+    let h = Harness::new(Scenario::UnconfirmedValue, defaults(&[("model", "kept")]));
+    assert!(h.verify().await.is_err());
+    assert_eq!(
+        h.fixture.requests.lock().unwrap().as_slice(),
+        &[("model".into(), "kept".into())]
+    );
+}
+
 #[tokio::test]
 async fn later_catalog_removal_restarts_from_fresh_agent_defaults() {
     let h = Harness::new(
