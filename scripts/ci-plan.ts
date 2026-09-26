@@ -13,7 +13,6 @@ export const VERIFICATION_REQUIREMENTS = [
   { sharedRust: true, macos: "dmg" },
 ] as const satisfies readonly VerificationRequirements[];
 export type Change = { path: string; before: string | null; after: string | null };
-export type Result = "success" | "failure" | "cancelled" | "skipped";
 export type ChangeRequirement = {
   path: string;
   ruleId: string;
@@ -48,15 +47,6 @@ export function validateRequirements(value: unknown): VerificationRequirements {
   if (!state || Object.keys(candidate).sort().join(",") !== "macos,sharedRust")
     throw new Error("Invalid verification requirements");
   return { ...state };
-}
-
-export function parseRequirementOutputs(
-  sharedRust: string,
-  macos: string,
-): VerificationRequirements {
-  if (sharedRust !== "true" && sharedRust !== "false")
-    throw new Error("Invalid shared Rust requirement output");
-  return validateRequirements({ sharedRust: sharedRust === "true", macos });
 }
 
 export function validateChangedPath(path: string): void {
@@ -177,23 +167,4 @@ export function planChanges(changes: readonly Change[]): {
     0,
   );
   return { requirements: { ...VERIFICATION_REQUIREMENTS[index]! }, reasons };
-}
-
-export function requireCiResults(
-  requirements: VerificationRequirements,
-  repository: string,
-  frontend: string,
-  sharedRust: string,
-  macos: string,
-): void {
-  const expected = validateRequirements(requirements);
-  if (
-    repository !== "success" ||
-    frontend !== "success" ||
-    sharedRust !== (expected.sharedRust ? "success" : "skipped") ||
-    macos !== (expected.macos === "none" ? "skipped" : "success")
-  )
-    throw new Error(
-      `Incomplete CI result: ${JSON.stringify(expected)}/${repository}/${frontend}/${sharedRust}/${macos}`,
-    );
 }

@@ -4,9 +4,7 @@ import {
   FRONTEND_TEST_INPUTS,
   classifyChange,
   parseChangedPaths,
-  parseRequirementOutputs,
   planChanges,
-  requireCiResults,
   validateRequirements,
 } from "./ci-plan.ts";
 import type { Change } from "./ci-plan.ts";
@@ -116,13 +114,10 @@ describe("finite verification requirements with per-input reasons", () => {
   });
 });
 
-describe("canonical requirement and complete four-owner result admission", () => {
-  it("admits exactly five records and exact workflow output strings", () => {
+describe("canonical verification requirements", () => {
+  it("admits exactly five records", () => {
     for (const requirements of VERIFICATION_REQUIREMENTS) {
       expect(validateRequirements(requirements)).toEqual(requirements);
-      expect(parseRequirementOutputs(String(requirements.sharedRust), requirements.macos)).toEqual(
-        requirements,
-      );
     }
     for (const value of [
       null,
@@ -135,46 +130,5 @@ describe("canonical requirement and complete four-owner result admission", () =>
       { ...dmg, extra: true },
     ])
       expect(() => validateRequirements(value)).toThrow("Invalid verification requirements");
-    for (const value of ["", "TRUE", "1", " true", "false\n"])
-      expect(() => parseRequirementOutputs(value, "none")).toThrow(/Invalid|Incomplete/u);
-    for (const value of ["", "bundle", "none\n", "code "])
-      expect(() => parseRequirementOutputs("true", value)).toThrow(/Invalid|Incomplete/u);
-    expect(() => parseRequirementOutputs("false", "app")).toThrow(/Invalid|Incomplete/u);
-  });
-
-  it("accepts only the required success/authorized-skip tuple across 3,125 cases", () => {
-    const outcomes = ["success", "failure", "cancelled", "skipped", ""];
-    let cases = 0;
-    for (const requirements of VERIFICATION_REQUIREMENTS) {
-      const expected = [
-        "success",
-        "success",
-        requirements.sharedRust ? "success" : "skipped",
-        requirements.macos === "none" ? "skipped" : "success",
-      ];
-      expect(() =>
-        requireCiResults(requirements, ...(expected as [string, string, string, string])),
-      ).not.toThrow();
-      cases += 1;
-      const invalid = outcomes
-        .flatMap((repository) =>
-          outcomes.flatMap((frontend) =>
-            outcomes.flatMap((sharedRust) =>
-              outcomes.map((macos) => [repository, frontend, sharedRust, macos] as const),
-            ),
-          ),
-        )
-        .filter((tuple) => tuple.join(":") !== expected.join(":"));
-      for (const [repository, frontend, sharedRust, macos] of invalid) {
-        expect(() =>
-          requireCiResults(requirements, repository, frontend, sharedRust, macos),
-        ).toThrow("Incomplete CI result");
-        cases += 1;
-      }
-      expect(() =>
-        requireCiResults(requirements, "unknown", "success", "success", "success"),
-      ).toThrow(/Invalid|Incomplete/u);
-    }
-    expect(cases).toBe(3125);
   });
 });
