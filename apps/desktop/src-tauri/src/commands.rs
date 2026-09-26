@@ -492,7 +492,6 @@ fn update_config<R: tauri::Runtime>(
     update: impl FnOnce(&mut AppConfig),
 ) -> Result<AppSnapshot, String> {
     let state = app.state::<AppState>();
-    let _ = state.agent_control.cancel_active()?;
     let snapshot = {
         let mut snapshot = state
             .runtime
@@ -502,6 +501,12 @@ fn update_config<R: tauri::Runtime>(
         update(&mut next);
         let revision = next_revision(&snapshot)?;
         state.store.save(&next).map_err(|error| error.to_string())?;
+        if !snapshot.config.same_execution_config(&next) {
+            // Submission and completion also take runtime authority. Revoke the
+            // old execution and settle its UI state in this same transaction.
+            let _ = state.agent_control.cancel_active()?;
+            usecase::state::reconcile_lens_after_execution_config_change(&mut snapshot.lens);
+        }
         snapshot.config = next;
         snapshot.revision = revision;
         snapshot.clone()
