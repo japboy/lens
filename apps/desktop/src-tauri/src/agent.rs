@@ -1005,7 +1005,7 @@ fn claude_cli_authentication_status(
     environment: crate::agent_environment::ResolvedEnvironment,
 ) -> Result<bool, String> {
     if descriptor.kind != AgentKind::Claude {
-        return Err("Claude authentication status requires the Claude adapter".into());
+        return Err("Claude Code authentication status requires the Claude Code adapter".into());
     }
     let mut command = Command::new(&descriptor.command);
     crate::agent_environment::bind_directory(
@@ -1024,19 +1024,18 @@ fn claude_cli_authentication_status(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| format!("unable to inspect Claude authentication status: {error}"))?;
+        .map_err(|error| format!("unable to inspect Claude Code authentication status: {error}"))?;
     let deadline = Instant::now() + CLAUDE_AUTH_STATUS_TIMEOUT;
     let process_status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("unable to wait for Claude authentication status: {error}"))?
-        {
+        if let Some(status) = child.try_wait().map_err(|error| {
+            format!("unable to wait for Claude Code authentication status: {error}")
+        })? {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Claude authentication status timed out after 15 seconds".into());
+            return Err("Claude Code authentication status timed out after 15 seconds".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1044,14 +1043,16 @@ fn claude_cli_authentication_status(
     child
         .stdout
         .take()
-        .ok_or_else(|| "Claude authentication status stdout is unavailable".to_string())?
+        .ok_or_else(|| "Claude Code authentication status stdout is unavailable".to_string())?
         .read_to_end(&mut stdout)
-        .map_err(|error| format!("unable to read Claude authentication status: {error}"))?;
-    let status = serde_json::from_slice::<ClaudeAuthenticationStatus>(&stdout)
-        .map_err(|error| format!("Claude authentication status returned invalid JSON: {error}"))?;
+        .map_err(|error| format!("unable to read Claude Code authentication status: {error}"))?;
+    let status =
+        serde_json::from_slice::<ClaudeAuthenticationStatus>(&stdout).map_err(|error| {
+            format!("Claude Code authentication status returned invalid JSON: {error}")
+        })?;
     if status.logged_in && !process_status.success() {
         return Err(format!(
-            "Claude authentication status reported logged in but exited with {process_status}"
+            "Claude Code authentication status reported logged in but exited with {process_status}"
         ));
     }
     Ok(status.logged_in)
@@ -1176,8 +1177,8 @@ fn mark_selected_agent_authentication_required<R: tauri::Runtime>(
 
 fn agent_display_name(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => "Claude",
-        AgentKind::Codex => "Codex",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "ChatGPT Codex",
         AgentKind::External(_) => "External ACP",
     }
 }

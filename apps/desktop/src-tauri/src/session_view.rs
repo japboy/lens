@@ -463,8 +463,8 @@ fn record_live_metadata<R: Runtime>(
 
 pub(crate) fn agent_label(agent: AgentKind) -> &'static str {
     match agent {
-        AgentKind::Claude => "Claude",
-        AgentKind::Codex => "Codex",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "ChatGPT Codex",
         AgentKind::External(_) => "External ACP",
     }
 }

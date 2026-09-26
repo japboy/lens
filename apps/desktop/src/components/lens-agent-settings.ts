@@ -175,8 +175,8 @@ export class LensAgentSettings extends LitElement {
             .disabled=${controlsDisabled}
             .value=${this.editingId ?? this.managedSelection}
             .options=${[
-              { value: "claude", label: "Claude", icon: agentIcon("Claude") },
-              { value: "codex", label: "Codex", icon: agentIcon("Codex") },
+              { value: "claude", label: agentLabel("claude"), icon: agentIcon("Claude") },
+              { value: "codex", label: agentLabel("codex"), icon: agentIcon("Codex") },
               ...Object.values(this.drafts).map((profile) => ({
                 value: profile.id,
                 icon: agentIcon(profile.name),
@@ -250,7 +250,7 @@ export class LensAgentSettings extends LitElement {
                       aria-describedby="agent-executable-help"
                       spellcheck="false"
                       autocomplete="off"
-                      placeholder="goose"
+                      placeholder="copilot"
                       .value=${draft.command}
                       @input=${(event: Event) => this.editDraft({ command: (event.target as HTMLInputElement).value })}
                     />`,
@@ -286,7 +286,7 @@ export class LensAgentSettings extends LitElement {
                     aria-describedby="agent-arguments-help"
                     spellcheck="false"
                     autocomplete="off"
-                    placeholder="acp"
+                    placeholder="--acp --stdio"
                     .value=${this.argumentDrafts[draft.id] ?? ""}
                     @input=${(event: Event) => this.editArguments((event.target as HTMLInputElement).value)}
                   />`,

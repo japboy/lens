@@ -1067,7 +1067,7 @@ describe("Lens Settings", () => {
       expect(snapshot.agent_selection.candidate).toBe("claude");
       await vi.waitFor(() =>
         expect(editor.querySelector(".runtime-status")?.textContent).toContain(
-          "Checking Claude for updates…",
+          "Checking Claude Code for updates…",
         ),
       );
       finishUpdate({
@@ -1498,8 +1498,8 @@ it.each(["cancel", "success", "failure"] as const)(
           ].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
-            ? ["Claude", "Codex", "GitHub Copilot", "Goose"]
-            : ["Claude", "Codex", "New preset (unsaved)"],
+            ? ["Claude Code", "ChatGPT Codex", "GitHub Copilot", "Goose"]
+            : ["Claude Code", "ChatGPT Codex", "New preset (unsaved)"],
         );
       });
       expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());

@@ -141,7 +141,7 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   element.updateAgent = "codex";
   await element.updateComplete;
   expect(element.querySelector(".runtime-status")?.textContent).toContain(
-    "Checking Codex for updates…",
+    "Checking ChatGPT Codex for updates…",
   );
   element.runtime = {
     agent: "codex",
@@ -259,7 +259,7 @@ it("restores an in-flight Codex update from parent properties after remount", as
   document.body.append(replacement);
   await replacement.updateComplete;
   expect(replacement.querySelector(".runtime-status")?.textContent).toContain(
-    "Checking Codex for updates…",
+    "Checking ChatGPT Codex for updates…",
   );
 });
 
@@ -429,8 +429,8 @@ it("renders both first-run external presets with managed agents in the single se
   expect(element.querySelectorAll("lens-select")).toHaveLength(1);
   const selector = element.querySelector<LensSelect>("lens-select")!;
   expect(selector.options.map((option) => option.label)).toEqual([
-    "Claude",
-    "Codex",
+    "Claude Code",
+    "ChatGPT Codex",
     "GitHub Copilot",
     "Goose",
   ]);

@@ -157,7 +157,7 @@ export class SettingsPage extends ReactiveElement {
         return;
       case "reset-agent-presets": {
         const approved = await this.port.confirmAction(
-          "Added presets, edits and unsaved drafts will be removed. GitHub Copilot and Goose will be restored to their original settings. Claude, Codex, prompts and the working directory will not change. A selected preset being reset will be disconnected; select an agent again to verify its connection.",
+          "Added presets, edits and unsaved drafts will be removed. GitHub Copilot and Goose will be restored to their original settings. Claude Code, ChatGPT Codex, prompts and the working directory will not change. A selected preset being reset will be disconnected; select an agent again to verify its connection.",
           "Reset presets?",
         );
         if (!approved) return;

@@ -2422,8 +2422,8 @@ fn ensure_supported_target() -> Result<(), String> {
 
 fn display_name(kind: AgentKind) -> &'static str {
     match kind {
-        AgentKind::Claude => "Claude Agent",
-        AgentKind::Codex => "Codex",
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "ChatGPT Codex",
         AgentKind::External(_) => "External ACP",
     }
 }
@@ -2486,7 +2486,7 @@ mod tests {
             operation_id: Some(operation),
             stage: AgentSelectionStage::Unselected,
             candidate: Some(AgentKind::Claude),
-            message: Some("Claude will be downloaded when selected.".into()),
+            message: Some("Claude Code will be downloaded when selected.".into()),
             ..Default::default()
         };
         crate::app_state::publish_agent_selection(app.handle(), missing.clone()).unwrap();
@@ -2504,7 +2504,7 @@ mod tests {
         assert_eq!(installed.agent_selection.candidate, Some(AgentKind::Claude));
         assert_eq!(
             installed.agent_selection.message.as_deref(),
-            Some("Claude is installed. Verify connection to select it.")
+            Some("Claude Code is installed. Verify connection to select it.")
         );
         assert_eq!(installed.revision, before.revision + 1);
 
@@ -2609,7 +2609,7 @@ mod tests {
         .is_err());
         assert_eq!(
             policy_blocked_update_message(kind, &selected.adapter_version),
-            "The update could not be installed under the current release age policy. Keeping verified Codex 1.2.3."
+            "The update could not be installed under the current release age policy. Keeping verified ChatGPT Codex 1.2.3."
         );
         drop(selected);
         drop(current);

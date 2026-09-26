@@ -16,8 +16,8 @@ import type {
 } from "./types";
 
 export const AGENT_LABEL: Record<ManagedAgentKind, string> = {
-  claude: "Claude",
-  codex: "Codex",
+  claude: "Claude Code",
+  codex: "ChatGPT Codex",
 };
 
 export function sameAgent(a: AgentKind | undefined, b: AgentKind | undefined): boolean {
