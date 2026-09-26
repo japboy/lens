@@ -87,11 +87,21 @@ describe("actual workflow admission", () => {
     expect(result.stdout.trim().split("\n")).toEqual(accepted);
   }, 35_000);
 
-  it("keeps independent repository/frontend owners before every Rust consumer", () => {
+  it("admits only open PRs while preserving independent owners and the complete result gate", () => {
     const repository = qualityJobs["repository-verification"];
     const frontend = qualityJobs["frontend-verification"];
-    expect(repository.needs).toBeUndefined();
-    expect(frontend.needs).toBeUndefined();
+    expect(parse(quality).on.pull_request.types).toEqual([
+      "opened",
+      "synchronize",
+      "reopened",
+      "edited",
+    ]);
+    // Only the two entry jobs admit source execution. Closed/unknown states skip
+    // both; Rust consumers retain the dependency gate below and cannot start.
+    for (const entry of [repository, frontend]) {
+      expect(entry.needs).toBeUndefined();
+      expect(entry.if).toBe("github.event.pull_request.state == 'open'");
+    }
     expect(
       repository.steps.findIndex(
         (step: { run?: string }) => step.run === "mise run verify:repository",
@@ -119,7 +129,11 @@ describe("actual workflow admission", () => {
       "shared-rust-verification",
       "macos-verification",
     ]);
-    expect(qualityJobs["code-quality"].if).toBe("always()");
+    // Open PRs must still evaluate failed/cancelled prerequisites; closed PRs
+    // must skip the aggregate instead of failing it on the intentionally skipped DAG.
+    expect(qualityJobs["code-quality"].if).toBe(
+      "always() && github.event.pull_request.state == 'open'",
+    );
     expect(quality).toContain("HEAD_SHA: ${{ github.sha }}");
     expect(quality).toContain("BASE_SHA: ${{ github.event.pull_request.base.sha }}");
     expect(quality).not.toContain("pull_request.head.sha");
