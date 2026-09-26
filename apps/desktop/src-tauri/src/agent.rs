@@ -812,6 +812,8 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
     descriptor: AgentDescriptor,
     working_directory: PathBuf,
 ) -> Result<(), Error> {
+    let expected_config = app.state::<AppState>().config().map_err(state_error)?;
+    let catalog_runtime = descriptor.runtime();
     let claude_authenticated = if descriptor.kind == AgentKind::Claude {
         let status_descriptor = descriptor.clone();
         let home = crate::agent_environment::user_home()
@@ -852,11 +854,12 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .iter()
                 .map(auth_method_model)
                 .collect::<Vec<_>>();
-            update_agent_selection(&app, operation_id, |selection| {
-                selection.auth_methods = auth_methods;
-                selection.supports_logout = supports_logout;
-            })
-            .map_err(state_error)?;
+            crate::agent_runtime::with_current_runtime(&catalog_runtime, || {
+                update_agent_selection(&app, operation_id, |selection| {
+                    selection.auth_methods = auth_methods;
+                    selection.supports_logout = supports_logout;
+                })
+            }).map_err(state_error)?;
             if claude_authenticated == Some(false) {
                 return Err(Error::auth_required());
             }
@@ -870,29 +873,50 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 session_controls::validate_options(options)?;
             }
             // A persisted model determines which dependent selectors Settings must expose.
-            let config = app.state::<AppState>().snapshot().map_err(state_error)?.config;
-            let model_choices = config.agent_preferences.get(descriptor.kind).choices.iter()
+            let model_choices = expected_config.agent_preferences.get(descriptor.kind).choices.iter()
                 .filter(|choice| options.as_ref().is_some_and(|catalog| catalog.iter().any(|option|
                     option.id.to_string() == choice.config_id && option.category == Some(agent_client_protocol::schema::v1::SessionConfigOptionCategory::Model))))
                 .cloned().collect::<Vec<_>>();
+            let mut catalog_model = None;
             if !model_choices.is_empty() {
                 let model_defaults = crate::agent_preferences::AgentDefaults { choices: model_choices, ..Default::default() };
                 if let Ok((resolved, _)) = session_controls::apply_defaults(&connection, session.session_id(), options.clone(), session.modes(), &model_defaults).await {
                     options = resolved;
+                    catalog_model = model_defaults.choices.first().map(|choice| choice.value.clone());
                 }
             }
-            update_agent_selection(&app, operation_id, |selection| {
+            let snapshot = crate::agent_runtime::with_current_runtime(&catalog_runtime, || {
+                let state = app.state::<AppState>();
+                let mut snapshot = state.runtime.write().map_err(|_| "Application state is unavailable")?;
+                if snapshot.config != expected_config || snapshot.agent_selection.operation_id != Some(operation_id) {
+                    return Err("Agent settings changed during catalog discovery".into());
+                }
+                let revision = next_revision(&snapshot)?;
+                let selection = &mut snapshot.agent_selection;
                 selection.config_options = options;
-                selection.modes = session
-                    .modes()
-                    .map(|m| m.available_modes.clone())
-                    .unwrap_or_default();
+                selection.catalog_generation = Some(Uuid::new_v4());
+                selection.catalog_revision = 1;
+                selection.catalog_model = catalog_model;
+                selection.modes = session.modes().map(|m| m.available_modes.clone()).unwrap_or_default();
                 selection.agent_default = session_controls::advertised_mode(session.config_options(), session.modes()).ok().flatten();
-            })
-            .map_err(state_error)?;
+                snapshot.revision = revision;
+                Ok(snapshot.clone())
+            }).map_err(state_error)?;
+            emit_app_snapshot(&app, snapshot, true).map_err(state_error)?;
             Ok(())
         })
         .await
+}
+
+/// Candidate-owned evidence; it acquires Settings authority only when this runtime is promoted.
+pub(crate) struct VerifiedManagedRuntime {
+    pub expected_config: AppConfig,
+    pub expected_selection: AgentSelectionState,
+    pub options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
+    pub modes: Vec<agent_client_protocol::schema::v1::SessionMode>,
+    pub agent_default: Option<String>,
+    pub defaults: crate::agent_preferences::AgentDefaults,
+    pub removed: Vec<crate::agent_preferences::SavedChoice>,
 }
 
 /// Probe an update without consuming a prompt or changing the selected Agent.
@@ -901,14 +925,16 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
 pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
     app: &AppHandle<R>,
     runtime: ResolvedAgentRuntime,
-) -> Result<(), ManagedVerificationError> {
+) -> Result<VerifiedManagedRuntime, ManagedVerificationError> {
     use std::sync::atomic::{AtomicBool, Ordering};
     let descriptor = AgentDescriptor::from_runtime(runtime);
-    let config = app
+    let expected = app
         .state::<AppState>()
-        .config()
+        .snapshot()
         .map_err(ManagedVerificationError::Retryable)?;
+    let config = expected.config;
     let verified_config = config.clone();
+    let expected_selection = expected.agent_selection;
     let cwd = crate::store::effective_working_directory(&config);
     let publisher = HttpPublisher::start()
         .await
@@ -938,41 +964,61 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
                 incompatible_in_probe.store(true, Ordering::Release);
                 return Err(error);
             }
-            let session = connection
-                .build_session_from(crate::output_mcp::session_request(&cwd, &publisher))
-                .block_task()
-                .start_session()
+            let mut defaults = config.agent_preferences.get(descriptor.kind).clone();
+            let mut removed = Vec::new();
+            // Each restart removes at least one of the at-most-32 saved overrides.
+            // The existing overall timeout also bounds Agent work.
+            let max_attempts = defaults.choices.len().min(32) + 1;
+            for _ in 0..max_attempts {
+                let session = connection
+                    .build_session_from(crate::output_mcp::session_request(&cwd, &publisher))
+                    .block_task()
+                    .start_session()
+                    .await?;
+                if let Err(error) = crate::output_mcp::require_no_publisher_failure(
+                    initialize
+                        .agent_info
+                        .as_ref()
+                        .map(|info| info.name.as_str()),
+                    session.meta(),
+                ) {
+                    incompatible_in_probe.store(true, Ordering::Release);
+                    return Err(error);
+                }
+                let agent_default =
+                    session_controls::advertised_mode(session.config_options(), session.modes())?;
+                let resolved = session_controls::reconcile_defaults(
+                    &connection,
+                    session.session_id(),
+                    session.config_options().map(<[_]>::to_vec),
+                    session.modes(),
+                    &defaults,
+                )
                 .await?;
-            if let Err(error) = crate::output_mcp::require_no_publisher_failure(
-                initialize
-                    .agent_info
-                    .as_ref()
-                    .map(|info| info.name.as_str()),
-                session.meta(),
-            ) {
-                incompatible_in_probe.store(true, Ordering::Release);
-                return Err(error);
+                defaults = resolved.defaults;
+                removed.extend(resolved.removed);
+                if resolved.restart_required {
+                    continue;
+                }
+                return Ok(VerifiedManagedRuntime {
+                    expected_config: config,
+                    expected_selection,
+                    options: resolved.options,
+                    modes: session
+                        .modes()
+                        .map(|modes| modes.available_modes.clone())
+                        .unwrap_or_default(),
+                    agent_default,
+                    defaults,
+                    removed,
+                });
             }
-            let defaults = config.agent_preferences.get(descriptor.kind);
-            crate::agent_preferences::validate_defaults(
-                descriptor.kind,
-                defaults,
-                session.config_options(),
-            )
-            .map_err(state_error)?;
-            session_controls::advertised_mode(session.config_options(), session.modes())?;
-            session_controls::apply_defaults(
-                &connection,
-                session.session_id(),
-                session.config_options().map(<[_]>::to_vec),
-                session.modes(),
-                defaults,
-            )
-            .await?;
-            Ok(())
+            Err(state_error(
+                "Agent settings did not stabilize during update".into(),
+            ))
         });
     match tokio::time::timeout(Duration::from_secs(30), probe).await {
-        Ok(Ok(())) => {
+        Ok(Ok(verified)) => {
             if app
                 .state::<AppState>()
                 .config()
@@ -983,7 +1029,7 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
                     "Agent settings changed during update; check again".into(),
                 ));
             }
-            Ok(())
+            Ok(verified)
         }
         Ok(Err(error)) if incompatible.load(Ordering::Acquire) => {
             Err(ManagedVerificationError::Incompatible(error.to_string()))
@@ -995,6 +1041,7 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum ManagedVerificationError {
     Incompatible(String),
     Retryable(String),
@@ -1133,7 +1180,7 @@ fn confirm_agent_selection_after_session<R: tauri::Runtime>(
     expected_config: &AppConfig,
 ) -> Result<(), String> {
     let snapshot = app.state::<AppState>().snapshot()?;
-    if !snapshot.config.same_execution_config(expected_config) {
+    if !snapshot.config.same_active_session_config(expected_config) {
         return Err("Agent settings changed before session readiness was confirmed".into());
     }
     let selection = snapshot.agent_selection;
@@ -1313,6 +1360,17 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
         }
         return;
     };
+    // Resolution acquires the installation lease asynchronously. Defaults may have
+    // been normalized by an update while this actor was waiting for that lease.
+    // Reject before opening the transport rather than apply old IDs to a new adapter.
+    // Once this check succeeds, later updates cannot remove the leased installation.
+    let descriptor = descriptor.and_then(|descriptor| {
+        let config = app.state::<AppState>().config()?;
+        if !config.same_execution_config(&identity.config) {
+            return Err("Agent settings changed before session startup; retry the session".into());
+        }
+        Ok(descriptor)
+    });
     let (result, descriptor) = match descriptor {
         Ok(mut descriptor) => {
             let mut startup = SessionStartup::Pending;
@@ -1723,7 +1781,7 @@ fn agent_session_identity_is_current<R: tauri::Runtime>(
     identity: &AgentSessionIdentity,
 ) -> Result<bool, String> {
     let snapshot = app.state::<AppState>().snapshot()?;
-    Ok(snapshot.config.same_execution_config(&identity.config)
+    Ok(snapshot.config.same_active_session_config(&identity.config)
         && crate::store::effective_working_directory(&snapshot.config)
             == identity.effective_working_directory
         && snapshot.agent_selection.selected_agent() == Some(identity.config.agent)
@@ -2814,13 +2872,19 @@ fn build_prompt_blocks(
     Ok(blocks)
 }
 
+pub(crate) struct ValidatedAgentDefaults {
+    pub options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
+    pub runtime: ResolvedAgentRuntime,
+}
+
 pub async fn validate_agent_defaults<R: tauri::Runtime>(
     app: &AppHandle<R>,
     config: &AppConfig,
     defaults: &crate::agent_preferences::AgentDefaults,
-) -> Result<Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>, String> {
+) -> Result<ValidatedAgentDefaults, String> {
     let working_directory = crate::store::effective_working_directory(config);
     let descriptor = AgentDescriptor::resolve(app, config.agent).await?;
+    let runtime = descriptor.runtime();
     let result = agent_client_protocol::Client
         .builder()
         .name("lens-agent-settings")
@@ -2852,7 +2916,7 @@ pub async fn validate_agent_defaults<R: tauri::Runtime>(
                     defaults,
                 )
                 .await?;
-                Ok(options)
+                Ok(ValidatedAgentDefaults { options, runtime })
             },
         );
     tokio::time::timeout(Duration::from_secs(30), result).await

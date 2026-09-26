@@ -349,6 +349,9 @@ export interface AgentAuthMethod {
 }
 
 export interface AgentSelectionState {
+  catalog_generation?: string;
+  catalog_revision?: number;
+  catalog_model?: string | null;
   supports_logout: boolean;
   config_options?: SessionConfigOption[];
   modes?: SessionMode[];

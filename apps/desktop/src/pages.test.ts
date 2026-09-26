@@ -1089,6 +1089,184 @@ describe("Lens Settings", () => {
     }
   });
 
+  it("refreshes the updated adapter catalog and unsaved model without Revert", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const { DEFAULT_AGENT_DEFAULTS } = await import("./components/lens-agent-defaults");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    const originalSelection = snapshot.agent_selection;
+    const originalConfig = snapshot.config;
+    snapshot.agent_selection = {
+      stage: "selected",
+      candidate: "codex",
+      operation_id: operationId,
+      supports_logout: false,
+      auth_methods: [],
+      catalog_generation: "old",
+      catalog_revision: 1,
+      catalog_model: "second",
+      config_options: [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "second",
+          options: [
+            { value: "first", name: "First" },
+            { value: "second", name: "Second" },
+          ],
+        },
+        {
+          id: "effort",
+          name: "Reasoning effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [{ value: "high", name: "High" }],
+        },
+      ],
+    };
+    snapshot.config = {
+      ...snapshot.config,
+      agent: "codex",
+      agent_preferences: {
+        codex: {
+          ...structuredClone(DEFAULT_AGENT_DEFAULTS),
+          choices: [{ config_id: "model", value: "second" }],
+        },
+      },
+    };
+    let finishUpdate!: (value: unknown) => void;
+    let finishPreview!: () => void;
+    vi.mocked(invoke).mockImplementation((command, ...args) => {
+      if (command === "update_managed_agent")
+        return new Promise((resolve) => {
+          finishUpdate = resolve;
+        });
+      if (
+        command === "preview_agent_model" &&
+        (args[0] as { catalogGeneration?: string })?.catalogGeneration === "new"
+      )
+        return new Promise<void>((resolve) => {
+          finishPreview = resolve;
+        });
+      return original(command, ...args);
+    });
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      const defaults = root.querySelector("lens-agent-defaults")!;
+      await vi.waitFor(() =>
+        expect(defaults.querySelector('lens-select[data-agent-config-id="model"]')).not.toBeNull(),
+      );
+      const model = defaults.querySelector<LensSelect>(
+        'lens-select[data-agent-config-id="model"]',
+      )!;
+      model.value = "first";
+      model.dispatchEvent(new Event("change"));
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("preview_agent_model", {
+          selectionId: operationId,
+          configId: "model",
+          value: "first",
+          catalogGeneration: "old",
+          catalogRevision: 1,
+        }),
+      );
+      const editor = root.querySelector("lens-agent-settings")!;
+      await vi.waitFor(() =>
+        expect(
+          editor.querySelector<HTMLButtonElement>(".managed-agent-actions button")?.disabled,
+        ).toBe(false),
+      );
+      editor.querySelector<HTMLButtonElement>(".managed-agent-actions button")!.click();
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("update_managed_agent", { agent: "codex" }),
+      );
+      const listener = vi
+        .mocked(listen)
+        .mock.calls.find(([event]) => event === "app-state-changed")?.[1];
+      const updatedSelection = {
+        ...snapshot.agent_selection,
+        catalog_generation: "new",
+        catalog_revision: 2,
+        config_options: snapshot.agent_selection.config_options!.map((option) =>
+          option.category === "model"
+            ? { ...option, options: [...option.options!, { value: "third", name: "Third" }] }
+            : option,
+        ),
+      };
+      listener?.({
+        event: "app-state-changed",
+        id: 1,
+        payload: { ...snapshot, revision: 2, agent_selection: updatedSelection },
+      });
+      await vi.waitFor(() =>
+        expect(model.options.some((option) => option.value === "third")).toBe(true),
+      );
+      expect(invoke).not.toHaveBeenCalledWith(
+        "preview_agent_model",
+        expect.objectContaining({ catalogGeneration: "new" }),
+      );
+      finishUpdate({ agent: "codex", stage: "ready", downloaded_bytes: 0, message: "Updated." });
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("preview_agent_model", {
+          selectionId: operationId,
+          configId: "model",
+          value: "first",
+          catalogGeneration: "new",
+          catalogRevision: 2,
+        }),
+      );
+      const effort = defaults.querySelector<LensSelect>(
+        'lens-select[data-agent-config-id="effort"]',
+      )!;
+      expect(effort.disabled).toBe(true);
+      expect(model.value).toBe("first");
+      listener?.({
+        event: "app-state-changed",
+        id: 1,
+        payload: {
+          ...snapshot,
+          revision: 3,
+          agent_selection: {
+            ...updatedSelection,
+            catalog_revision: 3,
+            catalog_model: "first",
+            config_options: updatedSelection.config_options.map((option) =>
+              option.category === "model" ? { ...option, currentValue: "first" } : option,
+            ),
+          },
+        },
+      });
+      finishPreview();
+      await vi.waitFor(() => expect(effort.disabled).toBe(false));
+      expect(model.value).toBe("first");
+      expect(defaults.textContent).not.toContain("need to be refreshed");
+      expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+      const save = [...defaults.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Save Defaults",
+      )!;
+      save.click();
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("set_agent_defaults", {
+          selectionId: operationId,
+          defaults: {
+            ...DEFAULT_AGENT_DEFAULTS,
+            choices: [{ config_id: "model", value: "first" }],
+          },
+          catalogGeneration: "new",
+          catalogRevision: 3,
+        }),
+      );
+    } finally {
+      snapshot.agent_selection = originalSelection;
+      snapshot.config = originalConfig;
+      vi.mocked(invoke).mockImplementation(original);
+    }
+  });
+
   it("keeps Goose file browsing local until Save and Verify", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { open } = await import("@tauri-apps/plugin-dialog");

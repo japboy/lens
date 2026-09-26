@@ -169,6 +169,15 @@ pub enum AgentSelectionStage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentSelectionState {
+    /// Identity of the installed runtime whose Settings catalog was discovered.
+    #[serde(default)]
+    pub catalog_generation: Option<Uuid>,
+    /// Successful catalog publications within this generation, including model previews.
+    #[serde(default)]
+    pub catalog_revision: u32,
+    /// Explicit model used for this catalog; absent means the Agent's default.
+    #[serde(default)]
+    pub catalog_model: Option<String>,
     #[serde(default)]
     pub config_options: Option<Vec<agent_client_protocol_schema::v1::SessionConfigOption>>,
     #[serde(default)]
@@ -208,6 +217,9 @@ impl Default for AgentSelectionState {
             operation_id: None,
             stage: AgentSelectionStage::Unselected,
             config_options: None,
+            catalog_generation: None,
+            catalog_revision: 0,
+            catalog_model: None,
             modes: Vec::new(),
             agent_default: None,
             candidate: None,
@@ -286,18 +298,35 @@ impl AppConfig {
 
     pub fn same_agent_execution(&self, other: &Self, agent: AgentKind) -> bool {
         self.agent_preferences.get(agent) == other.agent_preferences.get(agent)
-            && match agent {
-                AgentKind::External(id) => {
-                    let left = self.external_agents.iter().find(|p| p.id == id);
-                    let right = other.external_agents.iter().find(|p| p.id == id);
-                    match (left, right) {
-                        (Some(a), Some(b)) => a.command == b.command && a.args == b.args,
-                        (None, None) => false,
-                        _ => false,
-                    }
-                }
-                _ => true,
+            && self.same_agent_invocation(other, agent)
+    }
+
+    fn same_agent_invocation(&self, other: &Self, agent: AgentKind) -> bool {
+        match agent {
+            AgentKind::External(id) => {
+                let left = self.external_agents.iter().find(|profile| profile.id == id);
+                let right = other
+                    .external_agents
+                    .iter()
+                    .find(|profile| profile.id == id);
+                matches!((left, right), (Some(left), Some(right))
+                    if left.command == right.command && left.args == right.args)
             }
+            _ => true,
+        }
+    }
+
+    /// An admitted physical session retains its applied selectors across adapter updates.
+    /// Permission policy and all other execution authority remain exact. Explicit settings
+    /// saves must still close the actor before publishing changed defaults.
+    pub fn same_active_session_config(&self, other: &Self) -> bool {
+        self.prompt_presets.execution_revision == other.prompt_presets.execution_revision
+            && self.agent == other.agent
+            && self.same_agent_invocation(other, self.agent)
+            && self.agent_preferences.get(self.agent).tools
+                == other.agent_preferences.get(other.agent).tools
+            && self.working_directory == other.working_directory
+            && self.agent_prompt_template == other.agent_prompt_template
     }
     pub fn same_execution_config(&self, other: &Self) -> bool {
         self.prompt_presets.execution_revision == other.prompt_presets.execution_revision
@@ -933,6 +962,44 @@ mod tests {
         assert_eq!(selected.selected_agent(), Some(AgentKind::Codex));
         assert!(selected.can_select_lens_target());
     }
+    #[test]
+    fn active_session_retains_choices_but_not_changed_execution_or_permission_authority() {
+        use crate::agent_preferences::{SavedChoice, ToolPolicy};
+        let mut original = AppConfig::new("/fixture".into());
+        original.agent = AgentKind::Codex;
+        original.agent_preferences.codex.choices = vec![SavedChoice {
+            config_id: "model".into(),
+            value: "retired-model".into(),
+        }];
+        let mut normalized = original.clone();
+        normalized.agent_preferences.codex.choices.clear();
+        assert!(original.same_active_session_config(&normalized));
+        assert!(!original.same_execution_config(&normalized));
+        for axis in 0..5 {
+            let mut changed = normalized.clone();
+            match axis {
+                0 => changed.agent_preferences.codex.tools.execute = ToolPolicy::Allow,
+                1 => changed.working_directory = "/other".into(),
+                2 => changed.agent = AgentKind::Claude,
+                3 => changed.prompt_presets.execution_revision += 1,
+                4 => changed.agent_prompt_template.common.push_str("changed"),
+                _ => unreachable!(),
+            }
+            assert!(
+                !original.same_active_session_config(&changed),
+                "axis {axis}"
+            );
+        }
+        let profile = original.external_agents[0].clone();
+        original.agent = AgentKind::External(profile.id);
+        let mut changed = original.clone();
+        changed.external_agents[0].command = "/changed/agent".into();
+        assert!(!original.same_active_session_config(&changed));
+        changed = original.clone();
+        changed.external_agents[0].args.push("--changed".into());
+        assert!(!original.same_active_session_config(&changed));
+    }
+
     #[test]
     fn external_executable_is_part_of_execution_identity_and_legacy_defaults() {
         let mut config = AppConfig::new("/fixture".into());

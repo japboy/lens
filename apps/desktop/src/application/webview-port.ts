@@ -56,8 +56,19 @@ export interface WebviewPort {
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
   showAbout(): Promise<void>;
-  previewAgentModel(selectionId: string, configId: string, value?: string): Promise<void>;
-  setAgentDefaults(selectionId: string, defaults: AgentDefaults): Promise<void>;
+  previewAgentModel(
+    selectionId: string,
+    configId: string,
+    value?: string,
+    catalogGeneration?: string,
+    catalogRevision?: number,
+  ): Promise<void>;
+  setAgentDefaults(
+    selectionId: string,
+    defaults: AgentDefaults,
+    catalogGeneration?: string,
+    catalogRevision?: number,
+  ): Promise<void>;
   setSessionOption(
     operationId: string,
     instanceId: string,
@@ -124,11 +135,22 @@ export const tauriWebviewPort: WebviewPort = {
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
   getAboutDocuments: () => invoke<AboutDocuments>("get_about_documents"),
   showAbout: () => invoke<void>("show_about"),
-  async previewAgentModel(selectionId, configId, value) {
-    await invoke("preview_agent_model", { selectionId, configId, value });
+  async previewAgentModel(selectionId, configId, value, catalogGeneration, catalogRevision) {
+    await invoke("preview_agent_model", {
+      selectionId,
+      configId,
+      value,
+      catalogGeneration,
+      catalogRevision,
+    });
   },
-  async setAgentDefaults(selectionId, defaults) {
-    await invoke("set_agent_defaults", { selectionId, defaults });
+  async setAgentDefaults(selectionId, defaults, catalogGeneration, catalogRevision) {
+    await invoke("set_agent_defaults", {
+      selectionId,
+      defaults,
+      catalogGeneration,
+      catalogRevision,
+    });
   },
   async setSessionOption(operationId, instanceId, configRevision, configId, value) {
     await invoke("set_session_option", {

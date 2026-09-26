@@ -213,10 +213,16 @@ export class SettingsPage extends ReactiveElement {
         return;
       }
       case "preview-agent-model": {
-        const selectionId = this.snapshots.snapshot?.agent_selection.operation_id;
-        if (!selectionId) return;
+        const selection = this.snapshots.snapshot?.agent_selection;
+        if (!selection?.operation_id) return;
         await this.commands.run(identity, () =>
-          this.port.previewAgentModel(selectionId, intent.configId, intent.value),
+          this.port.previewAgentModel(
+            selection.operation_id!,
+            intent.configId,
+            intent.value,
+            selection.catalog_generation,
+            selection.catalog_revision,
+          ),
         );
         return;
       }
@@ -226,7 +232,13 @@ export class SettingsPage extends ReactiveElement {
         if (!selection?.operation_id) return;
         await this.commands.run(
           identity,
-          () => this.port.setAgentDefaults(selection.operation_id!, intent.defaults),
+          () =>
+            this.port.setAgentDefaults(
+              selection.operation_id!,
+              intent.defaults,
+              selection.catalog_generation,
+              selection.catalog_revision,
+            ),
           "Shared Agent settings saved.",
         );
         return;

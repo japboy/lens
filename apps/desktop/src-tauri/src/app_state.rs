@@ -345,6 +345,15 @@ impl AgentControl {
         self.session.lock().expect("Agent session state").is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_session_generation(&self) -> Option<Uuid> {
+        self.session
+            .lock()
+            .expect("Agent session state")
+            .as_ref()
+            .map(|session| session.generation)
+    }
+
     pub(crate) fn finish_session(&self, generation: Uuid) -> Result<bool, String> {
         let mut session = self
             .session
@@ -867,7 +876,7 @@ pub fn begin_agent_run<R: tauri::Runtime>(
         }
         if snapshot.lens.operation_id != Some(operation_id)
             || snapshot.lens.projection.as_ref() != Some(expected_projection)
-            || !snapshot.config.same_execution_config(expected_config)
+            || !snapshot.config.same_active_session_config(expected_config)
             || snapshot
                 .lens
                 .live
@@ -940,7 +949,7 @@ pub fn update_lens_state_for_projection<R: tauri::Runtime>(
     update_lens_state_if(
         app,
         |snapshot| {
-            snapshot.config.same_execution_config(expected_config)
+            snapshot.config.same_active_session_config(expected_config)
                 && snapshot.lens.operation_id == Some(operation_id)
                 && snapshot.lens.projection.as_ref() == Some(expected_projection)
         },

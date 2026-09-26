@@ -304,6 +304,222 @@ describe("Model & Behavior selection persistence", () => {
     expect(intents.at(-1)).toEqual({ type: "preview-model", configId: "model", value: "second" });
   });
 
+  it("replaces an updated runtime catalog and resets only invalid draft choices", async () => {
+    const state = { ...selection(), catalog_generation: "old", catalog_revision: 1 };
+    const { element, intents } = await mount(saved(), state);
+    await choose(element, "Mode", "safe");
+    const policy = element.querySelector<LensSelect>(
+      'lens-select[label="Read files or data policy"]',
+    )!;
+    policy.value = "allow";
+    policy.dispatchEvent(new Event("change"));
+    const next = { ...selection(), catalog_generation: "new", catalog_revision: 2 };
+    next.config_options = next.config_options!.map((option) =>
+      option.category === "model"
+        ? { ...option, options: [{ value: "third", name: "Third" }], currentValue: "third" }
+        : option,
+    );
+    element.defaults = {
+      ...saved(),
+      choices: saved().choices.filter((choice) => choice.config_id !== "model"),
+    };
+    element.selection = next;
+    await element.updateComplete;
+    expect(select(element, "Model").options.some((option) => option.value === "third")).toBe(true);
+    expect(select(element, "Model").options.some((option) => option.value === "second")).toBe(
+      false,
+    );
+    expect(select(element, "Model").value).toBe("");
+    expect(select(element, "Mode").value).toBe("safe");
+    expect(policy.value).toBe("allow");
+    expect(element.textContent).toContain("These choices now use Agent default");
+    expect(intents).toEqual([]);
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toMatchObject({
+      type: "save-defaults",
+      defaults: {
+        choices: [
+          { config_id: "effort", value: "high" },
+          { config_id: "mode", value: "safe" },
+        ],
+        tools: { read: "allow" },
+      },
+    });
+  });
+
+  it("refreshes an unsaved model after update before reconciling its dependent choices", async () => {
+    const state = { ...selection(), catalog_generation: "old", catalog_revision: 1 };
+    const { element, intents } = await mount(saved(), state);
+    await choose(element, "Model", "first");
+    await choose(element, "Reasoning effort", "high");
+    const next = { ...selection(), catalog_generation: "new", catalog_revision: 2 };
+    next.config_options = next.config_options!.map((option) =>
+      option.category === "thought_level"
+        ? { ...option, options: [{ value: "medium", name: "Medium" }] }
+        : option,
+    );
+    element.disabled = true;
+    element.selection = next;
+    await element.updateComplete;
+    expect(intents).toHaveLength(1);
+    expect(select(element, "Model").value).toBe("first");
+    expect(select(element, "Reasoning effort").value).toBe("high");
+    element.disabled = false;
+    await element.updateComplete;
+    expect(intents).toHaveLength(2);
+    expect(intents.at(-1)).toEqual({ type: "preview-model", configId: "model", value: "first" });
+    expect(select(element, "Reasoning effort").disabled).toBe(true);
+    click(element, "Save Defaults");
+    expect(intents).toHaveLength(2);
+    element.selection = structuredClone(next);
+    await element.updateComplete;
+    expect(intents).toHaveLength(2);
+    expect(select(element, "Reasoning effort").disabled).toBe(true);
+    element.selection = {
+      ...next,
+      catalog_revision: 3,
+      catalog_model: "first",
+      config_options: selection().config_options!.map((option) =>
+        option.category === "model" ? { ...option, currentValue: "first" } : option,
+      ),
+    };
+    await element.updateComplete;
+    expect(select(element, "Reasoning effort").disabled).toBe(false);
+    expect(select(element, "Reasoning effort").value).toBe("high");
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toMatchObject({
+      type: "save-defaults",
+      defaults: {
+        choices: [
+          { config_id: "mode", value: "write" },
+          { config_id: "model", value: "first" },
+          { config_id: "effort", value: "high" },
+        ],
+      },
+    });
+  });
+
+  it("resolves a removed unsaved model against Agent default instead of the saved model catalog", async () => {
+    const { element, intents } = await mount(saved(), {
+      ...selection(),
+      catalog_generation: "old",
+      catalog_revision: 1,
+    });
+    await choose(element, "Model", "first");
+    await choose(element, "Reasoning effort", "high");
+    element.selection = {
+      ...selection(),
+      catalog_generation: "new",
+      catalog_revision: 2,
+      catalog_model: "second",
+      config_options: selection().config_options!.map((option) =>
+        option.category === "model"
+          ? { ...option, options: [{ value: "second", name: "Second" }] }
+          : option,
+      ),
+    };
+    await element.updateComplete;
+    expect(select(element, "Model").value).toBe("");
+    expect(select(element, "Reasoning effort").value).toBe("high");
+    expect(intents.at(-1)).toEqual({ type: "preview-model", configId: "model", value: undefined });
+    element.selection = { ...element.selection!, catalog_revision: 3, catalog_model: null };
+    await element.updateComplete;
+    expect(select(element, "Reasoning effort").disabled).toBe(false);
+    expect(select(element, "Reasoning effort").value).toBe("high");
+  });
+
+  it("does not accept a different model preview as completion after a newer update", async () => {
+    const { element, intents } = await mount(saved(), {
+      ...selection(),
+      catalog_generation: "old",
+      catalog_revision: 1,
+    });
+    await choose(element, "Model", "first");
+    element.selection = {
+      ...selection(),
+      catalog_generation: "new",
+      catalog_revision: 2,
+      catalog_model: "second",
+    };
+    await element.updateComplete;
+    element.selection = {
+      ...selection(),
+      catalog_generation: "newer",
+      catalog_revision: 3,
+      catalog_model: "second",
+    };
+    await element.updateComplete;
+    expect(intents).toHaveLength(3);
+    element.selection = { ...element.selection!, catalog_revision: 4 };
+    await element.updateComplete;
+    expect(select(element, "Reasoning effort").disabled).toBe(true);
+    click(element, "Save Defaults");
+    expect(intents).toHaveLength(3);
+    click(element, "Refresh Model Settings");
+    element.selection = { ...element.selection!, catalog_revision: 5, catalog_model: "first" };
+    await element.updateComplete;
+    expect(select(element, "Reasoning effort").disabled).toBe(false);
+    expect(intents).toHaveLength(4);
+  });
+
+  it("removes missing configuration IDs on update while retaining renamed choices and tools", async () => {
+    const { element, intents } = await mount(saved(), {
+      ...selection(),
+      catalog_generation: "old",
+      catalog_revision: 1,
+    });
+    const next = { ...selection(), catalog_generation: "new", catalog_revision: 2 };
+    next.config_options = next
+      .config_options!.filter((option) => option.category !== "model")
+      .map((option) => (option.category === "mode" ? { ...option, name: "Updated mode" } : option));
+    element.selection = next;
+    await element.updateComplete;
+    expect(select(element, "Model")).toBeNull();
+    expect(select(element, "Updated mode").value).toBe("write");
+    expect(intents).toEqual([]);
+    click(element, "Save Defaults");
+    expect(intents.at(-1)).toMatchObject({
+      type: "save-defaults",
+      defaults: {
+        choices: [
+          { config_id: "effort", value: "high" },
+          { config_id: "mode", value: "write" },
+        ],
+        tools: saved().tools,
+      },
+    });
+  });
+
+  it("resolves an unsaved Agent default model and permits explicit refresh after failure", async () => {
+    const { element, intents } = await mount(saved(), {
+      ...selection(),
+      catalog_generation: "old",
+      catalog_revision: 1,
+    });
+    await choose(element, "Model", "");
+    await choose(element, "Reasoning effort", "high");
+    element.selection = { ...selection(), catalog_generation: "new", catalog_revision: 2 };
+    await element.updateComplete;
+    expect(intents.at(-1)).toEqual({ type: "preview-model", configId: "model", value: undefined });
+    expect(select(element, "Reasoning effort").disabled).toBe(true);
+    click(element, "Refresh Model Settings");
+    expect(intents).toHaveLength(3);
+    element.selection = {
+      ...selection(),
+      catalog_generation: "new",
+      catalog_revision: 3,
+      config_options: selection().config_options!.map((option) =>
+        option.category === "thought_level"
+          ? { ...option, options: [{ value: "medium", name: "Medium" }] }
+          : option,
+      ),
+    };
+    await element.updateComplete;
+    expect(select(element, "Reasoning effort").value).toBe("");
+    expect(select(element, "Reasoning effort").disabled).toBe(false);
+    expect(element.textContent).toContain("Reasoning effort. These choices now use Agent default");
+  });
+
   it("clears reasoning when the user switches model and applies changed saved defaults", async () => {
     const { element, intents } = await mount();
     await choose(element, "Model", "first");
