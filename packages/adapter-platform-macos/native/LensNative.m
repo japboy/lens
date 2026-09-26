@@ -1389,7 +1389,7 @@ static AXUIElementRef LensCopyResolvedAXWindowForApplication(
         }
     }
 
-    if (resolvedWindow == NULL || (bestScore < 25.0 && windows.count > 1)) {
+    if (resolvedWindow == NULL || bestScore < 25.0) {
         if (diagnostics != nil) {
             [diagnostics addObject:[NSString stringWithFormat:
                 @"LensTargetResolver found %lu AXWindows but none met the deterministic match "
