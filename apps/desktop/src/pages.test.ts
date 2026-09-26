@@ -569,7 +569,7 @@ describe("Lens target selection preview", () => {
     ).toBe(false);
     expect(selectionRoot?.querySelector(".target-selection-count")?.textContent).toContain("2 / 4");
 
-    selectionRoot?.querySelector<HTMLButtonElement>('[aria-label="Add another window"]')?.click();
+    selectionRoot?.querySelector<HTMLButtonElement>('[aria-label="Add Another Window"]')?.click();
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("add_lens_target", { operationId });
     });
@@ -585,7 +585,7 @@ describe("Lens target selection preview", () => {
       });
     });
     const confirmButton = selectionRoot?.querySelector<HTMLButtonElement>(
-      '[aria-label="Use selected windows"]',
+      '[aria-label="Use Selected Windows"]',
     );
     await vi.waitFor(() => expect(confirmButton?.disabled).toBe(false));
     confirmButton?.click();
@@ -608,10 +608,10 @@ describe("Lens rich Agent output", () => {
     expect(
       overlayRoot?.querySelector(".overlay-header")?.getAttribute("data-tauri-drag-region"),
     ).toBe("deep");
-    const closeButton = overlayRoot?.querySelector('[aria-label="Stop Lens and close"]');
+    const closeButton = overlayRoot?.querySelector('[aria-label="Stop Lens and Close"]');
     expect(closeButton?.getAttribute("data-tauri-drag-region")).toBe("false");
-    expect(closeButton?.getAttribute("aria-label")).toBe("Stop Lens and close");
-    expect(closeButton?.getAttribute("title")).toBe("Stop Lens and close");
+    expect(closeButton?.getAttribute("aria-label")).toBe("Stop Lens and Close");
+    expect(closeButton?.getAttribute("title")).toBe("Stop Lens and Close");
     expect(closeButton?.classList.contains("close-button")).toBe(true);
     expect(closeButton?.querySelector(".fa-xmark")?.getAttribute("aria-hidden")).toBe("true");
     expect(closeButton?.textContent?.trim()).toBe("");
@@ -838,7 +838,7 @@ describe("Lens rich Agent output", () => {
       expect(invoke).toHaveBeenCalledWith("pause_lens", { operationId });
     });
 
-    overlayRoot?.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and close"]')?.click();
+    overlayRoot?.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and Close"]')?.click();
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("stop_lens", { operationId });
       expect(closeCurrentWindow).toHaveBeenCalledOnce();
@@ -884,7 +884,7 @@ describe("Lens rich Agent output", () => {
     const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
-        viewRoot(element, "lens-overlay-view")?.querySelector('[aria-label="Stop Lens and close"]'),
+        viewRoot(element, "lens-overlay-view")?.querySelector('[aria-label="Stop Lens and Close"]'),
       ).not.toBeNull();
     });
     const { invoke } = await import("@tauri-apps/api/core");
@@ -897,7 +897,7 @@ describe("Lens rich Agent output", () => {
 
     try {
       viewRoot(element, "lens-overlay-view")
-        ?.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and close"]')
+        ?.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and Close"]')
         ?.click();
       await vi.waitFor(() => {
         expect(mockedInvoke).toHaveBeenCalledWith("stop_lens", { operationId });
@@ -1496,7 +1496,7 @@ describe("Lens Settings", () => {
     prompt.value = "Updated instruction.\n\n{turn_instruction}";
     prompt.dispatchEvent(new Event("input", { bubbles: true }));
     await element.updateComplete;
-    settingsRoot?.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+    prompt.form?.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
 
     const { invoke } = await import("@tauri-apps/api/core");
     await vi.waitFor(() => {
@@ -1646,14 +1646,14 @@ it.each(["cancel", "success", "failure"] as const)(
         [...editor.querySelectorAll("button")]
           .find((item) => item.textContent?.trim() === label)!
           .click();
-      click("Add preset");
+      click("Add Preset");
       await vi.waitFor(() =>
         expect(editor.querySelector('[aria-label="Executable"]')).not.toBeNull(),
       );
       const input = editor.querySelector<HTMLInputElement>('[aria-label="Executable"]')!;
       input.value = "unsaved-agent --stdio";
       input.dispatchEvent(new Event("input"));
-      click("Reset presets…");
+      click("Reset Presets…");
       await vi.waitFor(() =>
         expect(confirm).toHaveBeenCalledWith(expect.stringContaining("unsaved drafts"), {
           title: "Reset presets?",

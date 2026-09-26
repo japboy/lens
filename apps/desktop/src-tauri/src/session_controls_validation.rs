@@ -85,7 +85,47 @@ fn ui_response<R: tauri::Runtime>(
         panel.dispatchEvent(new KeyboardEvent('keydown', {{key:'Escape',bubbles:true}}));
         if (!root.querySelector('#source-panel') || !panel.querySelector('.lens-progress-snackbar')) {{clearInterval(timer);return;}}
         const input = panel.querySelector('input[name="answer"]');
-        if (input) input.value = 'fixture-answer';
+        if (input) {{
+          const palette = window.__LENS_CONTROL_PALETTE__?.colors?.control_surface;
+          const label = input.closest('label');
+          const background = getComputedStyle(input).backgroundColor;
+          const labelBackground = label ? getComputedStyle(label).backgroundColor : null;
+          const validPalette = Array.isArray(palette) && palette.length === 4 && palette[3] === 255
+            && palette.every(channel => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+          const expected = validPalette ? `rgb(${{palette.slice(0, 3).join(', ')}})` : null;
+          const submit = panel.querySelector('button[type="submit"]');
+          const cancel = panel.querySelector('button[data-lens-button-role="cancel"]');
+          const submitStyle = submit && getComputedStyle(submit);
+          const cancelStyle = cancel && getComputedStyle(cancel);
+          const shellStyle = getComputedStyle(root.querySelector('.overlay-shell'));
+          const colors = window.__LENS_CONTROL_PALETTE__?.colors;
+          const expectedShell = Array.isArray(colors?.window_surface)
+            ? `rgb(${{colors.window_surface.slice(0, 3).join(', ')}})` : null;
+          const primaryFill = colors?.primary_button_fill;
+          const primaryForeground = colors?.primary_button_foreground;
+          const primaryColorContract = !window.__LENS_CONTROL_PALETTE__?.window_active
+            || (Array.isArray(primaryFill) && Array.isArray(primaryForeground)
+              && submitStyle?.backgroundColor === `rgb(${{primaryFill.slice(0, 3).join(', ')}})`
+              && submitStyle?.color === `rgb(${{primaryForeground.slice(0, 3).join(', ')}})`);
+          const buttonContract = submit?.dataset.lensButtonRole === 'primary'
+            && submitStyle?.appearance === 'none' && cancelStyle?.appearance === 'none'
+            && submitStyle?.fontWeight === '400' && cancelStyle?.fontWeight === '400'
+            && primaryColorContract;
+          const passed = input.dataset.lensControl === 'text-entry' && validPalette
+            && background === expected && labelBackground === 'rgba(0, 0, 0, 0)'
+            && buttonContract && shellStyle.backgroundColor === expectedShell;
+          // Complete the ordinary response even on failure, so Rust reports the exact
+          // visual contract failure instead of waiting for an interaction timeout.
+          input.value = passed ? 'fixture-answer' : 'fixture-palette-error:' + JSON.stringify({{
+            palette: palette ?? null, background, expected, labelBackground,
+            ownership: input.dataset.lensControl ?? null,
+            buttonContract, primaryColorContract, primaryFill, primaryForeground,
+            submitColor: submitStyle?.color, submitBackground: submitStyle?.backgroundColor,
+            submitWeight: submitStyle?.fontWeight, cancelWeight: cancelStyle?.fontWeight,
+            submitAppearance: submitStyle?.appearance,
+            cancelAppearance: cancelStyle?.appearance, shellBackground: shellStyle.backgroundColor, expectedShell,
+          }});
+        }}
         const target = [...panel.querySelectorAll('button')].find(b => b.textContent.trim() === button);
         if (target && !target.disabled) {{ clearInterval(timer); target.click(); }}
       }}, 50);
@@ -159,7 +199,7 @@ async fn protocol_and_ui<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Er
             agent_client_protocol::on_receive_request!(),
         );
     Agent.builder().connect_with(client, async |connection: ConnectionTo<Client>| {
-        for (button, expected) in [("Allow once", "fixture-allow"), ("Reject once", "fixture-deny"), ("Cancel request", "cancelled")] {
+        for (button, expected) in [("Allow once", "fixture-allow"), ("Reject once", "fixture-deny"), ("Cancel Request", "cancelled")] {
             ui_response(app, "Native permission fixture", button)?;
             let mut request = permission("Native permission fixture");
             if expected == "cancelled" { request.options.retain(|option| option.kind != PermissionOptionKind::RejectOnce); }
@@ -180,12 +220,18 @@ async fn protocol_and_ui<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Er
             println!("LENS_INTERACTION_CASE=automatic_{expected}:passed");
         }
         controls.set_initial_authority(Some("safe".into()), super::ModeOrigin::AgentDefault, Default::default())?;
-        for (button, expected) in [("Send response", "accept"), ("Decline", "decline")] {
+        for (button, expected) in [("Send Response", "accept"), ("Decline", "decline")] {
             ui_response(app, "Native form fixture", button)?;
             let response = connection.send_request(form()).block_task().await?;
             let value = serde_json::to_value(response).unwrap();
             check(value["action"] == expected, "Native form outcome mismatch")?;
-            if expected == "accept" { check(value["content"]["answer"] == "fixture-answer", "Native form content mismatch")?; }
+            if expected == "accept" {
+                check(
+                    value["content"]["answer"] == "fixture-answer",
+                    &format!("Native form content/palette contract mismatch: {}", value["content"]["answer"]),
+                )?;
+                println!("LENS_INTERACTION_CASE=overlay_control_palette:passed");
+            }
             println!("LENS_INTERACTION_CASE=form_{expected}:passed");
         }
         let url: CreateElicitationRequest = serde_json::from_value(serde_json::json!({"sessionId":"fixture-session","mode":"url","message":"Native URL fixture","url":"http://127.0.0.1:9/lens-validation","elicitationId":"fixture-url"})).unwrap();
@@ -275,7 +321,7 @@ async fn lifecycle<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
                     const view=document.querySelector('lens-overlay-view');
                     if (++attempts > 100) {{clearInterval(timer); return;}}
                     if (view?.model?.lens?.operation_id !== {operation}) return;
-                    const button=view.shadowRoot?.querySelector('button[aria-label="Stop Lens and close"]');
+                    const button=view.shadowRoot?.querySelector('button[aria-label="Stop Lens and Close"]');
                     if (button && !button.disabled) {{clearInterval(timer); button.click();}}
                 }},50);}})()"#
                 );
@@ -413,14 +459,16 @@ async fn high_level_session<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(),
 }
 
 pub async fn run<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), Error> {
-    tauri::WebviewWindowBuilder::new(
+    crate::ui::build_lens_webview(
         app,
-        crate::ui::LENS_WINDOW_LABEL,
-        tauri::WebviewUrl::App("overlay.html?platform=macos".into()),
+        tauri::WebviewWindowBuilder::new(
+            app,
+            crate::ui::LENS_WINDOW_LABEL,
+            tauri::WebviewUrl::App("overlay.html?platform=macos".into()),
+        )
+        .title("Lens interaction validation")
+        .inner_size(720.0, 680.0),
     )
-    .title("Lens interaction validation")
-    .inner_size(720.0, 680.0)
-    .build()
     .map_err(|_| invalid("Unable to create native fixture window"))?;
     protocol_and_ui(app).await?;
     high_level_session(app).await?;

@@ -11,7 +11,6 @@ use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    utils::{config::WindowEffectsConfig, WindowEffect, WindowEffectState},
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, LogicalUnit, Manager, WebviewUrl,
     WebviewWindowBuilder, WindowSizeConstraints,
 };
@@ -32,7 +31,6 @@ const LENS_MULTIPLE_TARGET_SCREEN_HEIGHT_RATIO: f64 = 0.8;
 const LENS_MULTIPLE_TARGET_ASPECT_WIDTH: f64 = 10.0;
 const LENS_MULTIPLE_TARGET_ASPECT_HEIGHT: f64 = 16.0;
 const LENS_WINDOW_CORNER_RADIUS: f64 = 12.0;
-const LENS_WINDOW_EFFECT: WindowEffect = WindowEffect::HudWindow;
 const TARGET_SELECTION_WINDOW_WIDTH: f64 = 240.0;
 const TARGET_SELECTION_WINDOW_TOOLBAR_HEIGHT: f64 = 58.0;
 const TARGET_SELECTION_WINDOW_ITEM_HEIGHT: f64 = 144.0;
@@ -72,16 +70,83 @@ fn webview_url(view: WebviewView) -> WebviewUrl {
     WebviewUrl::App(format!("{}?platform={DESKTOP_PLATFORM}", view.entry_path()).into())
 }
 
-pub(crate) fn show_settings_recovery<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let window = WebviewWindowBuilder::new(
+/// Every Lens-owned document receives the same main-frame-only control palette.
+/// Presentation is managed before setup, so this also works before recovery admits AppState.
+pub(crate) fn build_lens_webview<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    builder: WebviewWindowBuilder<'_, R, AppHandle<R>>,
+) -> tauri::Result<tauri::WebviewWindow<R>> {
+    let presentation = app.state::<crate::platform::Presentation<R>>();
+    let palette = presentation.0.control_palette(app).unwrap_or_else(|error| {
+        eprintln!("Unable to resolve control palette: {error}");
+        None
+    });
+    let window = builder
+        .initialization_script(crate::platform::control_palette_script(palette))
+        .build()?;
+    // Opt-in validation affects this process's app appearance on macOS, never OS preferences.
+    #[cfg(debug_assertions)]
+    if let Some(theme) = std::env::var("LENS_VALIDATION_APPEARANCE")
+        .ok()
+        .and_then(|value| match value.as_str() {
+            "light" => Some(tauri::Theme::Light),
+            "dark" => Some(tauri::Theme::Dark),
+            _ => None,
+        })
+    {
+        if let Err(error) = window.set_theme(Some(theme)) {
+            let _ = window.destroy();
+            return Err(error);
+        }
+    }
+    if let Err(error) = presentation.0.observe_control_palette(&window) {
+        // An unavailable color already selects semantic CSS fallback. Broken observer
+        // infrastructure rolls back this window, allowing the next open to retry.
+        let _ = window.destroy();
+        return Err(tauri::Error::Io(std::io::Error::other(error.to_string())));
+    }
+    Ok(window)
+}
+
+fn floating_window_geometry_script(radius: f64) -> String {
+    let geometry = serde_json::json!({ "corner_radius": radius });
+    format!("if(window===window.top){{window.__LENS_FLOATING_WINDOW_GEOMETRY__={geometry};}}")
+}
+
+/// Native clipping and the CSS stroke share one constructor-owned shape authority.
+fn build_floating_lens_webview<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    builder: WebviewWindowBuilder<'_, R, AppHandle<R>>,
+) -> tauri::Result<tauri::WebviewWindow<R>> {
+    let window = build_lens_webview(
         app,
-        crate::settings_recovery::WINDOW_LABEL,
-        WebviewUrl::App(format!("settings-recovery.html?platform={DESKTOP_PLATFORM}").into()),
-    )
-    .title("Lens Settings Recovery")
-    .inner_size(640.0, 460.0)
-    .min_inner_size(480.0, 360.0)
-    .build()?;
+        builder
+            .visible(false)
+            .initialization_script(floating_window_geometry_script(LENS_WINDOW_CORNER_RADIUS)),
+    )?;
+    if let Err(error) = app
+        .state::<crate::platform::Presentation<R>>()
+        .0
+        .configure_floating_window_radius(&window, LENS_WINDOW_CORNER_RADIUS)
+    {
+        let _ = window.destroy();
+        return Err(tauri::Error::Io(std::io::Error::other(error.to_string())));
+    }
+    Ok(window)
+}
+
+pub(crate) fn show_settings_recovery<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let window = build_lens_webview(
+        app,
+        WebviewWindowBuilder::new(
+            app,
+            crate::settings_recovery::WINDOW_LABEL,
+            WebviewUrl::App(format!("settings-recovery.html?platform={DESKTOP_PLATFORM}").into()),
+        )
+        .title("Lens Settings Recovery")
+        .inner_size(640.0, 460.0)
+        .min_inner_size(480.0, 360.0),
+    )?;
     present_window(&window)
 }
 
@@ -705,13 +770,7 @@ pub(crate) fn install_application_menu<R: tauri::Runtime>(app: &mut App<R>) -> t
 }
 
 pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()> {
-    let select = MenuItem::with_id(
-        app,
-        "select_target",
-        "Select Targets...",
-        false,
-        None::<&str>,
-    )?;
+    let select = MenuItem::with_id(app, "select_target", "Select Targets…", false, None::<&str>)?;
     let agents = Submenu::with_id(app, "agents", "Agents", true)?;
     let directory_label = MenuItem::with_id(
         app,
@@ -727,7 +786,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         true,
         None::<&str>,
     )?;
-    let settings = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let about = MenuItem::with_id(app, "about", "About", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let prompt_presets = Submenu::with_id(app, "prompt_presets", "Prompt Presets", true)?;
@@ -1128,10 +1187,12 @@ pub(crate) fn show_history_window<R: tauri::Runtime>(app: &AppHandle<R>) -> taur
         return present_window(&window);
     }
     let geometry = primary_screen_overlay_geometry(app)?;
-    let window = overlay_window_builder(app)
-        .inner_size(geometry.width, geometry.height)
-        .position(geometry.x, geometry.y)
-        .build()?;
+    let window = build_floating_lens_webview(
+        app,
+        overlay_window_builder(app)
+            .inner_size(geometry.width, geometry.height)
+            .position(geometry.x, geometry.y),
+    )?;
     present_window(&window)
 }
 
@@ -1149,12 +1210,6 @@ fn overlay_window_builder<R: tauri::Runtime>(
         .transparent(true)
         .shadow(true)
         .resizable(true)
-        .effects(WindowEffectsConfig {
-            effects: vec![LENS_WINDOW_EFFECT],
-            state: Some(WindowEffectState::Active),
-            radius: Some(LENS_WINDOW_CORNER_RADIUS),
-            color: None,
-        })
 }
 
 fn sync_prompt_preset_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -1355,16 +1410,18 @@ pub fn show_about<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         return present_window(&window).map_err(|error| error.to_string());
     }
     let background = settings_background(app).map_err(|error| error.to_string())?;
-    let window = WebviewWindowBuilder::new(app, "about", webview_url(WebviewView::About))
-        .background_color(background)
-        .title("About Lens")
-        .minimizable(false)
-        .inner_size(640.0, 560.0)
-        .min_inner_size(400.0, 320.0)
-        .resizable(true)
-        .center()
-        .build()
-        .map_err(|error| error.to_string())?;
+    let window = build_lens_webview(
+        app,
+        WebviewWindowBuilder::new(app, "about", webview_url(WebviewView::About))
+            .background_color(background)
+            .title("About Lens")
+            .minimizable(false)
+            .inner_size(640.0, 560.0)
+            .min_inner_size(400.0, 320.0)
+            .resizable(true)
+            .center(),
+    )
+    .map_err(|error| error.to_string())?;
     track_settings_background(&window);
     present_window(&window).map_err(|error| error.to_string())
 }
@@ -1424,16 +1481,18 @@ fn show_settings_destination<R: tauri::Runtime>(
     } else {
         webview_url(WebviewView::Settings)
     };
-    let window = WebviewWindowBuilder::new(app, SETTINGS_LABEL, url)
-        .background_color(background)
-        .title("Lens Settings")
-        .minimizable(false)
-        .inner_size(size.width, size.height)
-        .inner_size_constraints(SETTINGS_WINDOW_SIZE_POLICY.constraints())
-        .resizable(true)
-        .maximizable(SETTINGS_WINDOW_SIZE_POLICY.maximizable)
-        .center()
-        .build()?;
+    let window = build_lens_webview(
+        app,
+        WebviewWindowBuilder::new(app, SETTINGS_LABEL, url)
+            .background_color(background)
+            .title("Lens Settings")
+            .minimizable(false)
+            .inner_size(size.width, size.height)
+            .inner_size_constraints(SETTINGS_WINDOW_SIZE_POLICY.constraints())
+            .resizable(true)
+            .maximizable(SETTINGS_WINDOW_SIZE_POLICY.maximizable)
+            .center(),
+    )?;
     track_settings_background(&window);
     present_window(&window)
 }
@@ -1466,10 +1525,12 @@ pub fn show_lens_window<R: tauri::Runtime>(
         }
         (None, LensWindowPlacementDecision::Apply) => {
             let geometry = lens_window_geometry(app, target_set)?;
-            let window = overlay_window_builder(app)
-                .inner_size(geometry.width, geometry.height)
-                .position(geometry.x, geometry.y)
-                .build()?;
+            let window = build_floating_lens_webview(
+                app,
+                overlay_window_builder(app)
+                    .inner_size(geometry.width, geometry.height)
+                    .position(geometry.x, geometry.y),
+            )?;
             placement.record_applied(target_set.selection_id);
             drop(placement);
             present_window(&window)
@@ -1524,32 +1585,28 @@ pub async fn show_target_selection_window<R: tauri::Runtime>(
         return present_window(&window);
     }
 
-    let window = WebviewWindowBuilder::new(
+    let window = build_floating_lens_webview(
         app,
-        TARGET_SELECTION_WINDOW_LABEL,
-        webview_url(WebviewView::TargetSelection),
-    )
-    .title("Lens Target Selection")
-    .inner_size(geometry.width, geometry.height)
-    .position(geometry.x, geometry.y)
-    .decorations(false)
-    .always_on_top(true)
-    .transparent(true)
-    .shadow(true)
-    .resizable(false)
-    .maximizable(false)
-    .minimizable(false)
-    .closable(false)
-    .skip_taskbar(true)
-    .visible(false)
-    .accept_first_mouse(true)
-    .effects(WindowEffectsConfig {
-        effects: vec![LENS_WINDOW_EFFECT],
-        state: Some(WindowEffectState::Active),
-        radius: Some(LENS_WINDOW_CORNER_RADIUS),
-        color: None,
-    })
-    .build()?;
+        WebviewWindowBuilder::new(
+            app,
+            TARGET_SELECTION_WINDOW_LABEL,
+            webview_url(WebviewView::TargetSelection),
+        )
+        .title("Lens Target Selection")
+        .inner_size(geometry.width, geometry.height)
+        .position(geometry.x, geometry.y)
+        .decorations(false)
+        .always_on_top(true)
+        .transparent(true)
+        .shadow(true)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .skip_taskbar(true)
+        .visible(false)
+        .accept_first_mouse(true),
+    )?;
     crate::platform::present_window_from_screen_right(&window)
         .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
     // The native entrance owns showing and positioning; focus only after it completes.
@@ -1807,8 +1864,17 @@ mod tests {
     }
 
     #[test]
-    fn lens_window_uses_the_semantic_hud_material() {
-        assert_eq!(LENS_WINDOW_EFFECT, WindowEffect::HudWindow);
+    fn floating_window_shape_seed_uses_the_constructor_radius() {
+        let script = floating_window_geometry_script(LENS_WINDOW_CORNER_RADIUS);
+        assert!(script.starts_with("if(window===window.top)"));
+        let json = script
+            .split_once("__LENS_FLOATING_WINDOW_GEOMETRY__=")
+            .unwrap()
+            .1
+            .strip_suffix(";}")
+            .unwrap();
+        let geometry: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(geometry["corner_radius"], LENS_WINDOW_CORNER_RADIUS);
     }
 
     #[test]

@@ -17,7 +17,7 @@
       !root().querySelector(".overlay-new-response-count");
     await wait(() => root()?.querySelector("iframe")?.srcdoc.includes("Replay visual 1"));
     const firstFrame = root().querySelector("iframe");
-    root().querySelector('[aria-label="Next media"]').click();
+    root().querySelector('[aria-label="Next Media"]').click();
     await wait(() =>
       root()
         ?.querySelector('.output-media-slide[aria-hidden="false"] iframe')

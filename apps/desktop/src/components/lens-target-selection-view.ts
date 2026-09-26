@@ -47,11 +47,14 @@ export class LensTargetSelectionView extends LitElement {
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        border: 1px solid color-mix(in srgb, Separator 78%, transparent);
-        border-radius: 14px;
-        background: color-mix(in srgb, Canvas 86%, transparent);
+        border: var(--floating-window-border, 1px solid ButtonBorder);
+        border-radius: var(--floating-window-corner-radius, 0px);
+        background: var(--floating-window-background, Canvas);
         color: CanvasText;
-        box-shadow: 0 14px 38px color-mix(in srgb, CanvasText 24%, transparent);
+        box-shadow: var(
+          --floating-window-shadow,
+          0 14px 38px color-mix(in srgb, CanvasText 24%, transparent)
+        );
       }
 
       .target-selection-toolbar {
@@ -81,49 +84,16 @@ export class LensTargetSelectionView extends LitElement {
 
       .target-selection-icon-button,
       .target-selection-remove {
-        appearance: none;
         display: grid;
         place-items: center;
-        border: 0;
         padding: 0;
-        color: GrayText;
-        cursor: default;
       }
 
       .target-selection-icon-button {
         width: 28px;
         min-width: 28px;
-        height: 28px;
-        min-height: 28px;
-        border-radius: 50%;
-        background: color-mix(in srgb, CanvasText 7%, transparent);
-        font-size: 11px;
-      }
-
-      .target-selection-icon-button.is-primary {
-        color: AccentColorText;
-        background: AccentColor;
-      }
-
-      .target-selection-icon-button:is(:hover, :focus-visible):not(:disabled) {
-        color: CanvasText;
-        background: color-mix(in srgb, CanvasText 14%, transparent);
-      }
-
-      .target-selection-icon-button.is-primary:is(:hover, :focus-visible):not(:disabled) {
-        color: AccentColorText;
-        background: color-mix(in srgb, AccentColor 86%, CanvasText 14%);
-      }
-
-      .target-selection-icon-button:focus-visible,
-      .target-selection-remove:focus-visible {
-        outline: 3px solid color-mix(in srgb, AccentColor 48%, transparent);
-        outline-offset: 1px;
-      }
-
-      .target-selection-icon-button:disabled,
-      .target-selection-remove:disabled {
-        opacity: 0.38;
+        height: 24px;
+        min-height: 24px;
       }
 
       .target-selection-list {
@@ -210,24 +180,23 @@ export class LensTargetSelectionView extends LitElement {
         font-size: 24px;
       }
 
-      .target-selection-remove {
+      .target-selection-image-action {
         position: absolute;
         z-index: 1;
         top: 7px;
         right: 7px;
-        width: 22px;
-        min-width: 22px;
-        height: 22px;
-        min-height: 22px;
-        border-radius: 50%;
-        color: white;
-        background: color-mix(in srgb, black 64%, transparent);
-        box-shadow: 0 1px 4px color-mix(in srgb, black 32%, transparent);
-        font-size: 10px;
+        display: grid;
+        width: 24px;
+        height: 24px;
+        border-radius: var(--button-radius, 5px);
+        background: var(--window-background, Canvas);
       }
 
-      .target-selection-remove:is(:hover, :focus-visible):not(:disabled) {
-        background: color-mix(in srgb, black 82%, transparent);
+      .target-selection-remove {
+        width: 24px;
+        min-width: 24px;
+        height: 24px;
+        min-height: 24px;
       }
 
       .target-selection-caption {
@@ -271,8 +240,15 @@ export class LensTargetSelectionView extends LitElement {
   private cardMotion: TargetCardMotion = initialTargetSelectionState().cardMotion;
 
   private removeMotionFallback: number | undefined;
+  private defaultFocusConsidered = false;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener("keydown", this.handleDefaultKey);
+  }
 
   override disconnectedCallback(): void {
+    this.removeEventListener("keydown", this.handleDefaultKey);
     this.clearRemoveMotionFallback();
     super.disconnectedCallback();
   }
@@ -309,6 +285,67 @@ export class LensTargetSelectionView extends LitElement {
     }
   }
 
+  protected updated(): void {
+    if (this.defaultFocusConsidered || !this.canConfirm) return;
+    this.defaultFocusConsidered = true;
+    const focused = this.shadowRoot?.activeElement;
+    if (!focused && (document.activeElement === document.body || document.activeElement === this)) {
+      this.shadowRoot
+        ?.querySelector<HTMLFormElement>("form.target-selection-shell")
+        ?.focus({ preventScroll: true });
+    }
+  }
+
+  private get canConfirm(): boolean {
+    const selection = this.model?.lens.selection;
+    return Boolean(
+      this.model?.lens.operation_id &&
+      selection &&
+      selection.stage !== "picking" &&
+      this.cardMotion.stage === "settled" &&
+      !this.model?.pending &&
+      selection.items.length > 0,
+    );
+  }
+
+  private confirmSelection = (event: SubmitEvent): void => {
+    event.preventDefault();
+    if (this.canConfirm) this.emit({ type: "confirm" });
+  };
+
+  private handleDefaultKey = (event: KeyboardEvent): void => {
+    if (
+      event.key !== "Enter" ||
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.repeat ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      !this.canConfirm
+    )
+      return;
+    const form = this.shadowRoot?.querySelector<HTMLFormElement>("form.target-selection-shell");
+    const focused = this.shadowRoot?.activeElement;
+    if (!form || (focused && focused !== form)) return;
+    const interactive =
+      'button, input, textarea, select, lens-select, a[href], [contenteditable]:not([contenteditable="false"]), [role="button"], [role="combobox"], [tabindex]';
+    if (
+      event
+        .composedPath()
+        .some(
+          (node) =>
+            node instanceof Element && node !== this && node !== form && node.matches(interactive),
+        )
+    )
+      return;
+    const submitter = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (!submitter || submitter.disabled) return;
+    event.preventDefault();
+    form.requestSubmit(submitter);
+  };
+
   protected render() {
     const model = this.model;
     const selection = model?.lens.selection;
@@ -328,8 +365,10 @@ export class LensTargetSelectionView extends LitElement {
     );
 
     return html`
-      <section
+      <form
         class="target-selection-shell"
+        tabindex="-1"
+        @submit=${this.confirmSelection}
         aria-label="Selected windows"
         @lens-target-remove=${this.removeTarget}
       >
@@ -341,22 +380,23 @@ export class LensTargetSelectionView extends LitElement {
           </output>
           <div class="target-selection-actions" aria-label="Selection actions">
             <button
+              data-lens-button-role="normal"
               type="button"
               class="target-selection-icon-button"
-              aria-label="Add another window"
-              title="Add another window"
+              aria-label="Add Another Window"
+              title="Add Another Window"
               ?disabled=${!canAdd || model?.pending}
               @click=${() => this.emit({ type: "add" })}
             >
               <i class="fa-solid fa-plus" aria-hidden="true"></i>
             </button>
             <button
-              type="button"
-              class="target-selection-icon-button is-primary"
-              aria-label="Use selected windows"
-              title="Use selected windows"
-              ?disabled=${!canEdit || items.length === 0}
-              @click=${() => this.emit({ type: "confirm" })}
+              type="submit"
+              data-lens-button-role="primary"
+              class="target-selection-icon-button"
+              aria-label="Use Selected Windows"
+              title="Use Selected Windows"
+              ?disabled=${!this.canConfirm}
             >
               <i class="fa-solid fa-check" aria-hidden="true"></i>
             </button>
@@ -389,7 +429,7 @@ export class LensTargetSelectionView extends LitElement {
             (pickerActive ? "Choose one window in the system picker." : nothing)
           }
         </p>
-      </section>
+      </form>
     `;
   }
 

@@ -173,6 +173,80 @@ pub unsafe fn window_background_rgba() -> Result<[u8; 4], PlatformError> {
     }
 }
 
+/// Native C snapshot; color availability is independent of accessibility/window state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControlPalette {
+    pub control_surface: [u8; 4],
+    pub window_surface: [u8; 4],
+    pub button_fill: [u8; 4],
+    pub button_pressed_fill: [u8; 4],
+    pub separator: [u8; 4],
+    pub primary_button_fill: [u8; 4],
+    pub primary_button_foreground: [u8; 4],
+    pub colors_available: bool,
+    pub increase_contrast: bool,
+    pub reduce_transparency: bool,
+    pub window_active: bool,
+}
+
+/// Resolve the application palette before constructing any Lens-owned WebView.
+/// Unavailable native fill APIs select the semantic CSS fallback.
+///
+/// # Safety
+/// Call on the AppKit main thread after NSApplication initialization.
+pub unsafe fn control_palette() -> Option<ControlPalette> {
+    unsafe extern "C" {
+        fn lens_control_palette(window: *mut c_void, palette: *mut ControlPalette) -> bool;
+    }
+    let mut palette = ControlPalette::default();
+    // SAFETY: Null selects application appearance; the output matches the C layout.
+    unsafe { lens_control_palette(std::ptr::null_mut(), &mut palette) }.then_some(palette)
+}
+
+/// Attach native appearance/accessibility observation for the window's lifetime.
+///
+/// # Safety
+/// Borrow a live NSWindow and its WKWebView on the AppKit main thread.
+/// Native retains the observer on the window and only weak references to those views.
+pub unsafe fn observe_control_palette(
+    window: *mut c_void,
+    webview: *mut c_void,
+) -> Result<(), PlatformError> {
+    unsafe extern "C" {
+        fn lens_observe_control_palette(window: *mut c_void, webview: *mut c_void) -> bool;
+    }
+    // SAFETY: Caller guarantees handle type, lifetime and AppKit affinity.
+    if unsafe { lens_observe_control_palette(window, webview) } {
+        Ok(())
+    } else {
+        Err(PlatformError::Operation(
+            "unable to observe control appearance".into(),
+        ))
+    }
+}
+
+/// Clip the native content parent and its WebView descendants.
+///
+/// # Safety
+/// Borrow a live NSWindow on the AppKit main thread.
+pub unsafe fn configure_floating_window_radius(
+    window: *mut c_void,
+    radius: f64,
+) -> Result<(), PlatformError> {
+    unsafe extern "C" {
+        fn lens_configure_floating_window_radius(window: *mut c_void, radius: f64) -> bool;
+    }
+    // SAFETY: Caller guarantees the native handle lifetime and main-thread affinity.
+    if unsafe { lens_configure_floating_window_radius(window, radius) } {
+        Ok(())
+    } else {
+        Err(PlatformError::Operation(
+            "unable to configure floating window shape".into(),
+        ))
+    }
+}
+
 struct WindowTransitionContext {
     sender: Option<oneshot::Sender<bool>>,
 }

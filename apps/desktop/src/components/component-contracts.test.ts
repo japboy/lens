@@ -1126,7 +1126,7 @@ it("keeps Agent diagnostics out of the Lens interpretation layout", async () => 
   };
   await element.updateComplete;
   expect(root.querySelector(".lens-progress-region")?.textContent).toContain(
-    "Open URL and continue",
+    "Open URL and Continue",
   );
   expect(root.querySelector(".lens-progress-dismiss")).toBeNull();
   expect(root.querySelector(".overlay-status-toggle")).toBeNull();

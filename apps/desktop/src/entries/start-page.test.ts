@@ -27,11 +27,63 @@ function root(): ShadowRoot {
 }
 
 afterEach(() => {
+  window.dispatchEvent(new Event("pagehide"));
+  delete window.__LENS_CONTROL_PALETTE__;
+  document.documentElement.style.removeProperty("--control-background");
+  delete document.documentElement.dataset.increaseContrast;
+  delete document.documentElement.dataset.reduceTransparency;
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
 
 describe("progressive page attachment", () => {
+  it("colors ready Settings DSD before its page code loads without replacing the readonly field", async () => {
+    installGeneratedPage("settings");
+    const view = document.querySelector("lens-settings-view")!;
+    const field = view.shadowRoot!.querySelector<HTMLInputElement>(".directory-field")!;
+    window.__LENS_CONTROL_PALETTE__ = {
+      colors: {
+        control_surface: [248, 248, 248, 255],
+        window_surface: [255, 255, 255, 255],
+        button_fill: [0, 0, 0, 20],
+        button_pressed_fill: [0, 0, 0, 25],
+        primary_button_fill: [0, 114, 240, 255],
+        primary_button_foreground: [255, 255, 255, 255],
+        separator: [0, 0, 0, 25],
+      },
+      window_active: true,
+      increase_contrast: true,
+      reduce_transparency: false,
+    };
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const startup = startPage("settings", async () => {
+      await delayed;
+      throw new Error("Test stops before page attachment");
+    });
+    expect(document.documentElement.style.getPropertyValue("--control-background")).toBe(
+      "rgb(248 248 248)",
+    );
+    expect(view.getAttribute("data-increase-contrast")).toBe("true");
+    expect(field.getAttribute("data-lens-control")).toBe("text-entry");
+    expect(field.closest("[data-settings-surface]")).toBeNull();
+    expect(field.readOnly).toBe(true);
+    expect(field.disabled).toBe(false);
+    field.focus();
+    field.value = "/fixture/path";
+    field.setSelectionRange(0, 8);
+    window.dispatchEvent(new CustomEvent("lens-control-palette", { detail: null }));
+    expect(view.shadowRoot!.querySelector(".directory-field")).toBe(field);
+    expect(view.shadowRoot!.activeElement).toBe(field);
+    expect(field.selectionEnd).toBe(8);
+    expect(document.documentElement.style.getPropertyValue("--control-background")).toBe("");
+    release();
+    await startup;
+  });
+
   it("preserves the HTML header, document selection and focus made before the page module arrives", async () => {
     installDocument();
     const header = root().querySelector("header");

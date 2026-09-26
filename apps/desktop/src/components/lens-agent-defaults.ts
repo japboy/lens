@@ -158,6 +158,15 @@ export class LensAgentDefaults extends LitElement {
       ? [{ value, label: `${value} (not in current choices)`, disabled: true }]
       : [];
   }
+  private saveDefaults = (event: SubmitEvent): void => {
+    event.preventDefault();
+    if (this.disabled || this.catalogRefresh || this.selection?.stage !== "selected") return;
+    dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, {
+      type: "save-defaults",
+      defaults: this.editableDefaults(this.draft),
+    });
+  };
+
   protected render() {
     if (this.selection?.stage !== "selected") return nothing;
     const options = this.selection?.config_options;
@@ -165,7 +174,11 @@ export class LensAgentDefaults extends LitElement {
     const model = options?.find((o) => o.category === "model");
     const savedModel = this.draft.choices.find((c) => c.config_id === model?.id)?.value;
     const unresolvedModel = savedModel && savedModel !== model?.currentValue;
-    return html`<section class="settings-group" aria-labelledby="agent-defaults-heading">
+    return html`<form
+      class="settings-group"
+      aria-labelledby="agent-defaults-heading"
+      @submit=${this.saveDefaults}
+    >
       <h2 id="agent-defaults-heading">Model & Behavior</h2>
       <p class="help">
         Defaults apply to new Lens sessions for this Agent. Saving ends its current session. Choices
@@ -174,7 +187,12 @@ export class LensAgentDefaults extends LitElement {
       ${
         this.catalogRefresh
           ? html`<p role="status">Model settings need to be refreshed for the updated Agent.</p>
-              <button ?disabled=${this.disabled} @click=${() => this.refreshModel()}>
+              <button
+                type="button"
+                data-lens-button-role="normal"
+                ?disabled=${this.disabled}
+                @click=${() => this.refreshModel()}
+              >
                 Refresh Model Settings
               </button>`
           : unresolvedModel
@@ -271,11 +289,14 @@ export class LensAgentDefaults extends LitElement {
       </details>
       <button
         ?disabled=${this.disabled || Boolean(this.catalogRefresh)}
-        @click=${() => dispatchComponentEvent<AgentIntent>(this, AGENT_INTENT_EVENT, { type: "save-defaults", defaults: this.editableDefaults(this.draft) })}
+        type="submit"
+        data-lens-button-role="primary"
       >
         Save Defaults
       </button>
       <button
+        type="button"
+        data-lens-button-role="cancel"
         ?disabled=${this.disabled}
         @click=${() => {
           this.draft = this.editableDefaults(this.defaults ?? DEFAULT_AGENT_DEFAULTS);
@@ -297,7 +318,7 @@ export class LensAgentDefaults extends LitElement {
       >
         Revert
       </button>
-    </section>`;
+    </form>`;
   }
   private renderOption(option: NonNullable<AgentSelectionState["config_options"]>[number]) {
     if (this.externallyManaged(option.id)) {

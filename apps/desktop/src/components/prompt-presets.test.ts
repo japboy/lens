@@ -73,6 +73,22 @@ async function browse(element: LensPromptSettings, id: string) {
 }
 afterEach(() => document.body.replaceChildren());
 describe("prompt preset editing", () => {
+  it("marks both name and editor as owned controls while preserving validation and disabled state", async () => {
+    const { element } = await mount();
+    const name = element.querySelector<HTMLInputElement>("#prompt-preset-name")!;
+    const editor = element.querySelector<HTMLTextAreaElement>("#prompt-editor")!;
+    expect(name.getAttribute("data-lens-control")).toBe("text-entry");
+    expect(editor.getAttribute("data-lens-control")).toBe("text-entry");
+    expect(element.querySelector("[data-settings-surface]")).toBeNull();
+    await edit(element, "#prompt-editor", "");
+    expect(editor.getAttribute("aria-invalid")).toBe("true");
+    expect(editor.getAttribute("aria-describedby")).toContain("prompt-editor-validation");
+    element.disabled = true;
+    await element.updateComplete;
+    expect(name.disabled).toBe(true);
+    expect(editor.disabled).toBe(true);
+  });
+
   it("groups the editor with sibling advanced and preview disclosures and separate reset", async () => {
     const { element } = await mount();
     const group = element.querySelector(".prompt-presets")!;

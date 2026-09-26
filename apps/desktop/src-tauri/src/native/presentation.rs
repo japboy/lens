@@ -118,6 +118,77 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         })?
     }
 
+    fn control_palette(
+        &self,
+        app: &tauri::AppHandle<R>,
+    ) -> Result<Option<crate::platform::ControlPalette>, PlatformError> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            // SAFETY: Tauri initialized NSApplication and dispatches on AppKit's thread.
+            let palette = unsafe { presentation::control_palette() }.map(|palette| {
+                crate::platform::ControlPalette {
+                    colors: palette
+                        .colors_available
+                        .then_some(crate::platform::ControlColors {
+                            control_surface: palette.control_surface,
+                            window_surface: palette.window_surface,
+                            button_fill: palette.button_fill,
+                            button_pressed_fill: palette.button_pressed_fill,
+                            separator: palette.separator,
+                            primary_button_fill: palette.primary_button_fill,
+                            primary_button_foreground: palette.primary_button_foreground,
+                        }),
+                    increase_contrast: palette.increase_contrast,
+                    reduce_transparency: palette.reduce_transparency,
+                    window_active: palette.window_active,
+                }
+            });
+            let _ = sender.send(palette);
+        })
+        .map_err(|error| PlatformError::Operation(error.to_string()))?;
+        receiver
+            .recv()
+            .map_err(|_| PlatformError::Operation("Control palette dispatch was dropped".into()))
+    }
+
+    fn observe_control_palette(&self, window: &WebviewWindow<R>) -> Result<(), PlatformError> {
+        // with_webview executes on the main thread. Resolve both borrowed handles there;
+        // neither pointer leaves this closure or enters a Rust channel.
+        let owned_window = window.clone();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        window
+            .with_webview(move |webview| {
+                let result = owned_window
+                    .ns_window()
+                    .map_err(|error| PlatformError::Operation(error.to_string()))
+                    .and_then(|native_window| {
+                        // SAFETY: Live window and its WKWebView are borrowed on AppKit's thread.
+                        unsafe {
+                            presentation::observe_control_palette(native_window, webview.inner())
+                        }
+                    });
+                let _ = sender.send(result);
+            })
+            .map_err(|error| PlatformError::Operation(error.to_string()))?;
+        receiver.recv().map_err(|_| {
+            PlatformError::Operation("Control observation dispatch was dropped".into())
+        })?
+    }
+
+    fn configure_floating_window_radius(
+        &self,
+        window: &WebviewWindow<R>,
+        radius: f64,
+    ) -> Result<(), PlatformError> {
+        on_main_thread(window, move |window| {
+            let native_window = window.ns_window().map_err(|error| {
+                PlatformError::Operation(format!("unable to resolve floating window: {error}"))
+            })?;
+            // SAFETY: The window is live and borrowed on the AppKit main thread.
+            unsafe { presentation::configure_floating_window_radius(native_window, radius) }
+        })
+    }
+
     fn present(&self, window: &WebviewWindow<R>) -> Result<(), PlatformError> {
         on_main_thread(window, |window| {
             let native_window = window.ns_window().map_err(|error| {

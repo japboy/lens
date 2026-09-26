@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { LensOverlayView } from "../src/components/lens-overlay-view";
 import { LensSettingsView } from "../src/components/lens-settings-view";
+import { LensAboutView } from "../src/components/lens-about-view";
+import { controlStyles } from "../src/styles/component-styles";
 
 const overlayStyles = LensOverlayView.styles.map((style) => style.cssText).join("\n");
 const settingsStyles = LensSettingsView.styles.map((style) => style.cssText).join("\n");
@@ -16,8 +18,63 @@ describe("canonical application icon presentation", () => {
   });
 });
 
+describe("shared app-owned text controls", () => {
+  it("uses one common control appearance in Settings, Overlay and About", () => {
+    expect(LensSettingsView.styles).toContain(controlStyles);
+    expect(LensOverlayView.styles).toContain(controlStyles);
+    expect(LensAboutView.styles).toContain(controlStyles);
+    expect(controlStyles.cssText).toContain("background: var(--control-background, Field);");
+    expect(controlStyles.cssText).toContain(
+      "border: 1px solid var(--control-border, ButtonBorder);",
+    );
+    expect(controlStyles.cssText).toContain(
+      "outline: 3px solid var(--control-focus-ring, Highlight);",
+    );
+    expect(settingsStyles).not.toContain("data-settings-surface");
+    expect(settingsStyles).not.toContain("--settings-editor-surface");
+    expect(documentStyles).toContain("--control-background: Field;");
+    expect(documentStyles).toContain("--control-border: -apple-system-separator;");
+  });
+});
+
+describe("shared native action button and window surfaces", () => {
+  it("keeps action ownership and explicit roles separate from submit and shape", () => {
+    expect(controlStyles.cssText).toContain("[data-lens-button-role]:is(button):where(");
+    expect(controlStyles.cssText).toContain('data-lens-button-role="primary"');
+    expect(controlStyles.cssText).toContain("appearance: var(--button-appearance, auto)");
+    expect(controlStyles.cssText).toContain("background: var(--button-disabled-fill, revert)");
+    expect(controlStyles.cssText).toContain("outline: var(--button-focus-outline, revert)");
+    expect(controlStyles.cssText).not.toContain(":default");
+    expect(controlStyles.cssText).not.toContain('[type="submit"]');
+    expect(documentStyles).toContain("--button-fill: var(--native-button-fill)");
+    expect(documentStyles).toContain("--button-border: 1px solid var(--native-separator)");
+    expect(documentStyles).toContain('[data-window-active="true"]');
+    expect(documentStyles).toContain(
+      "--button-primary-foreground: var(--native-primary-button-foreground)",
+    );
+    expect(documentStyles).toContain("--button-primary-fill: var(--native-primary-button-fill)");
+    expect(documentStyles).toContain(
+      "--button-primary-hover-fill: var(--native-primary-button-fill)",
+    );
+    expect(documentStyles).toContain(
+      "--button-primary-pressed-fill: var(--native-primary-button-fill)",
+    );
+    expect(documentStyles).not.toContain("AccentColorText");
+    expect(controlStyles.cssText).toContain("font-weight: 400;");
+    expect(settingsStyles).not.toMatch(/\.primary\s*\{/);
+  });
+
+  it("uses the opaque shared window surface independently of native availability or display preferences", () => {
+    expect(documentStyles).toContain("--floating-window-background: var(--window-background)");
+    expect(documentStyles).toContain("--window-background: Canvas");
+    expect(documentStyles).not.toContain("floating-window-tint-opacity");
+    expect(documentStyles).not.toContain("data-backdrop-available");
+    expect(documentStyles.match(/--floating-window-background:/g)).toHaveLength(1);
+  });
+});
+
 describe("macOS Settings surface colors", () => {
-  it("derives low-contrast groups from AppKit's dynamic window and content colors", () => {
+  it("keeps native window and selection colors as the semantic fallback", () => {
     const macosSettingsColors = documentStyles.match(
       /html:is\(\[data-view="settings"\], \[data-view="about"\]\)\[data-platform="macos"\] \{(?<declarations>.*?)\n\s*\}/s,
     )?.groups?.declarations;
@@ -26,11 +83,7 @@ describe("macOS Settings surface colors", () => {
     )?.groups?.declarations;
 
     expect(macosSettingsColors).toBeDefined();
-    expect(macosSettingsColors).toContain("--settings-backdrop: Window;");
-    expect(macosSettingsColors).toContain(
-      "--settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);",
-    );
-    expect(macosSettingsColors).not.toMatch(/--settings-group-background:\s*Canvas;/);
+    expect(macosSettingsColors).toContain("--settings-backdrop: var(--window-background);");
     expect(macosSettingsColors).not.toContain("-apple-system-grouped-background");
     expect(macosSettingsColors).not.toContain("-apple-system-secondary-grouped-background");
     expect(macosSelectionColors).toContain(
@@ -122,16 +175,16 @@ describe("Lens overlay presentation", () => {
     const overlayFooter = overlayStyles.match(/\.overlay-footer \{(?<declarations>.*?)\n\s*\}/s)
       ?.groups?.declarations;
 
-    expect(overlayShell).toContain("background: transparent;");
+    expect(overlayShell).toContain("background: var(--floating-window-background, Canvas);");
     expect(sourceSummary).toContain("background: color-mix(in srgb, AccentColor 8%, transparent);");
     expect(progressSnackbar).toContain("background: color-mix(in srgb, Canvas 82%, transparent);");
     expect(progressSnackbar).toContain("backdrop-filter: blur(18px) saturate(150%);");
     expect(overlayFooter).toContain("position: relative;");
     expect(overlayStyles).toMatch(
-      /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{\s*\.overlay-shell \{[^}]*background: Canvas;/s,
+      /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{\s*\.overlay-shell \{[^}]*background: var\(--window-background, Canvas\);/s,
     );
     expect(overlayStyles).toMatch(
-      /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{[\s\S]*\.lens-progress-snackbar \{[^}]*background: Canvas;[^}]*backdrop-filter: none;/,
+      /@media \(prefers-reduced-transparency: reduce\), \(prefers-contrast: more\) \{[\s\S]*\.lens-progress-snackbar \{[^}]*background: var\(--window-background, Canvas\);[^}]*backdrop-filter: none;/,
     );
   });
 });

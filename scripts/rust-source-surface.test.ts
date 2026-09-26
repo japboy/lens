@@ -74,6 +74,10 @@ describe("separately compiled native consumers", () => {
     "use super::{platform, model};",
     "use crate::platform::*;",
     "use super::platform::{Services as S};",
+    "use crate::platform::ControlPaletteState;",
+    "use crate::platform::ControlColorsState;",
+    "crate::platform::ControlColors::hidden_consumer();",
+    "crate::platform::ControlPalette::hidden_consumer();",
     "crate::model::Value::new();",
     "super::super::model::Value::new();",
     "macro_rules! native { () => {} }",
@@ -88,6 +92,10 @@ describe("separately compiled native consumers", () => {
 
   it.each([
     "use super::platform::{Services, Presentation};",
+    "use crate::platform::ControlPalette;",
+    "use crate::platform::ControlColors;",
+    "fn colors() -> Option<crate::platform::ControlColors> { None }",
+    "fn palette() -> Option<crate::platform::ControlPalette> { None }",
     "impl<R> crate::platform::WindowPresentation<R> for Native {}",
     "pub(crate) fn run() { super::run_with_runtime(builder, services, presentation); }",
     "#[cfg_attr(mobile, tauri::mobile_entry_point)] pub fn run() {}",

@@ -1,4 +1,5 @@
 import "./lens-select";
+import { controlStyles } from "../styles/component-styles";
 import type { LensSelect } from "./lens-select";
 import { LitElement, html, nothing, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -14,6 +15,7 @@ import icon from "../../src-tauri/icons/128x128@2x.png";
 @customElement("lens-about-view")
 export class LensAboutView extends LitElement {
   static styles = [
+    controlStyles,
     css`
       :host {
         display: block;

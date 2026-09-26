@@ -29,9 +29,10 @@ export const NATIVE_BUILD_INPUTS = {
     inputs: ["mise.toml", "mise.lock", "package.json", "apps/desktop/package.json"],
   },
   "packages/adapter-platform-macos/build.rs": {
-    digest: "a0cc159d4392a5e36c8c391e00ff495ae232f06843b383900764c021f5ff5060",
+    digest: "7369b195aa7d5debc2b35b6919db9f5364bd19b0ba5eb5f4cc9de3d49e83ed59",
     inputs: [
       "packages/adapter-platform-macos/native/LensNative.m",
+      "packages/adapter-platform-macos/native/LensControlPalette.m",
       "packages/adapter-platform-macos/native/LensNative.h",
     ],
   },

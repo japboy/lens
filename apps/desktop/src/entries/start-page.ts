@@ -1,3 +1,5 @@
+import { installControlPalette } from "../control-palette";
+import { installFloatingWindowGeometry } from "../floating-window-geometry";
 import {
   applyPresentationContext,
   presentationContextForPage,
@@ -13,6 +15,8 @@ export async function startPage(view: AppView, load: () => Promise<unknown>): Pr
       window.location.search,
     );
     const viewElement = document.querySelector<HTMLElement>(`lens-${view}-view`);
+    installFloatingWindowGeometry(context, document.documentElement);
+    installControlPalette(context, document.documentElement, viewElement);
     applyPresentationContext(context, [
       document.documentElement,
       document.body,

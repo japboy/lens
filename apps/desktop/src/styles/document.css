@@ -6,6 +6,14 @@
   background: transparent;
   accent-color: AccentColor;
   font-synthesis: none;
+  --window-background: Canvas;
+  --floating-window-background: var(--window-background);
+  --floating-window-corner-radius: 0px;
+  --floating-window-border: 1px solid var(--native-separator, ButtonBorder);
+  --control-background: Field;
+  --control-foreground: FieldText;
+  --control-border: ButtonBorder;
+  --control-focus-ring: Highlight;
   --settings-backdrop: transparent;
   --settings-group-background: transparent;
   --settings-group-border: ButtonBorder;
@@ -18,16 +26,85 @@
 }
 
 html[data-platform] {
-  --settings-backdrop: Canvas;
+  --settings-backdrop: var(--window-background);
   --settings-group-background: Canvas;
   --settings-sidebar-background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
 }
 
 html:is([data-view="settings"], [data-view="about"])[data-platform="macos"] {
-  --settings-backdrop: Window;
+  --settings-backdrop: var(--window-background);
   --settings-group-background: color-mix(in srgb, Window 80%, Canvas 20%);
   --settings-group-border: color-mix(in srgb, -apple-system-separator 50%, transparent 50%);
   --settings-sidebar-background: color-mix(in srgb, Window 92%, CanvasText 8%);
+}
+
+html[data-platform="macos"] {
+  --floating-window-shadow: none;
+  --window-background: Window;
+  --control-border: color-mix(in srgb, FieldText 40%, Field);
+}
+
+@supports (color: -apple-system-separator) {
+  html[data-platform="macos"] {
+    --control-border: -apple-system-separator;
+  }
+}
+
+html[data-platform="macos"][data-native-controls="true"] {
+  --control-border: var(--native-separator);
+  --button-appearance: none;
+  --button-fill: var(--native-button-fill);
+  --button-hover-fill: var(--native-button-pressed-fill);
+  --button-pressed-fill: var(--native-button-pressed-fill);
+  --button-foreground: ButtonText;
+  --button-border: 1px solid var(--native-separator);
+  --button-hover-border: var(--native-separator);
+  --button-pressed-border: ButtonText;
+  --button-pressed-shadow: inset 0 0 0 1px ButtonText;
+  --button-radius: 5px;
+  --button-primary-fill: var(--button-fill);
+  --button-primary-foreground: ButtonText;
+  --button-primary-hover-fill: var(--button-hover-fill);
+  --button-primary-pressed-fill: var(--button-pressed-fill);
+  --button-disabled-fill: var(--button-fill);
+  --button-disabled-foreground: GrayText;
+  --button-focus-outline: 3px solid var(--control-focus-ring);
+  --button-borderless-fill: transparent;
+  --button-borderless-border: transparent;
+  --button-destructive-foreground: ButtonText;
+}
+
+@supports (color: -apple-system-red) {
+  html[data-platform="macos"][data-native-controls="true"] {
+    --button-destructive-foreground: -apple-system-red;
+  }
+}
+
+html[data-platform="macos"][data-native-controls="true"][data-window-active="true"] {
+  --button-primary-fill: var(--native-primary-button-fill);
+  --button-primary-foreground: var(--native-primary-button-foreground);
+  --button-primary-hover-fill: var(--native-primary-button-fill);
+  --button-primary-pressed-fill: var(--native-primary-button-fill);
+}
+
+html[data-platform="macos"][data-native-controls="true"][data-increase-contrast="true"] {
+  --button-border: 2px solid ButtonText;
+  --button-hover-border: ButtonText;
+  --button-focus-outline: 4px solid var(--control-focus-ring);
+}
+
+@media (prefers-contrast: more) {
+  html[data-platform="macos"][data-native-controls="true"] {
+    --button-border: 2px solid ButtonText;
+    --button-hover-border: ButtonText;
+    --button-focus-outline: 4px solid var(--control-focus-ring);
+  }
+}
+
+@supports (color: -webkit-focus-ring-color) {
+  html[data-platform="macos"] {
+    --control-focus-ring: -webkit-focus-ring-color;
+  }
 }
 
 @supports (color: -apple-system-selected-content-background) {

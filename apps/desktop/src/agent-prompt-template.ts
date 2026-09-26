@@ -80,7 +80,7 @@ export const SHARED_PROMPT_SECTION: PromptSectionDescriptor = {
   variables: [
     promptVariable(
       "turn_instruction",
-      "Request instruction",
+      "Request Instruction",
       "Inserts the instruction for the selected request type.",
     ),
   ],
@@ -101,8 +101,8 @@ export const REQUEST_PROMPT_SECTIONS: readonly PromptRequestSectionDescriptor[] 
     description:
       "Defines the instruction used when a newer full projection replaces the session source.",
     variables: [
-      promptVariable("base_revision", "Previous revision", "Inserts the revision being replaced."),
-      promptVariable("target_revision", "New revision", "Inserts the authoritative new revision."),
+      promptVariable("base_revision", "Previous Revision", "Inserts the revision being replaced."),
+      promptVariable("target_revision", "New Revision", "Inserts the authoritative new revision."),
     ],
   },
   {
@@ -114,7 +114,7 @@ export const REQUEST_PROMPT_SECTIONS: readonly PromptRequestSectionDescriptor[] 
     variables: [
       promptVariable(
         "applied_revision",
-        "Current revision",
+        "Current Revision",
         "Inserts the revision that remains authoritative for the retry.",
       ),
     ],

@@ -328,6 +328,7 @@ export class LensSelect extends LitElement {
     const selected = this.options.filter((option) => this.selected(option));
     return html` <button
         type="button"
+        data-lens-button-role="normal"
         role="combobox"
         aria-label=${this.label}
         aria-haspopup="listbox"
@@ -389,6 +390,7 @@ export class LensSelect extends LitElement {
           this.multiple
             ? html`<button
                 type="button"
+                data-lens-button-role="normal"
                 tabindex="-1"
                 class="lens-select-done"
                 @click=${() => {

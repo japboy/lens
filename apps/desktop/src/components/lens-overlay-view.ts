@@ -157,11 +157,14 @@ export class LensOverlayView extends LitElement {
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: auto auto auto minmax(0, 1fr) auto;
         overflow: hidden;
-        border: 1px solid Separator;
-        border-radius: 12px;
-        background: transparent;
+        border: var(--floating-window-border, 1px solid ButtonBorder);
+        border-radius: var(--floating-window-corner-radius, 0px);
+        background: var(--floating-window-background, Canvas);
         color: CanvasText;
-        box-shadow: 0 12px 36px color-mix(in srgb, CanvasText 20%, transparent);
+        box-shadow: var(
+          --floating-window-shadow,
+          0 12px 36px color-mix(in srgb, CanvasText 20%, transparent)
+        );
       }
 
       .overlay-shell[data-media-cue="true"] {
@@ -203,7 +206,6 @@ export class LensOverlayView extends LitElement {
       }
 
       .overlay-header-action {
-        appearance: auto;
         min-height: 26px;
         padding-inline: 9px;
         font: inherit;
@@ -1602,14 +1604,26 @@ export class LensOverlayView extends LitElement {
         font-variant-numeric: tabular-nums;
       }
 
+      :host([data-increase-contrast="true"]) .overlay-shell {
+        border-width: 2px;
+        border-color: CanvasText;
+      }
+
+      :host(:is([data-reduce-transparency="true"], [data-increase-contrast="true"]))
+        .lens-progress-snackbar {
+        background: var(--window-background, Canvas);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+      }
+
       @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
         .overlay-shell {
           border-width: 2px;
-          background: Canvas;
+          background: var(--window-background, Canvas);
         }
 
         .lens-progress-snackbar {
-          background: Canvas;
+          background: var(--window-background, Canvas);
           -webkit-backdrop-filter: none;
           backdrop-filter: none;
         }
@@ -1924,6 +1938,7 @@ export class LensOverlayView extends LitElement {
               canCancel
                 ? html`<button
                     type="button"
+                    data-lens-button-role="cancel"
                     class="overlay-header-action"
                     data-tauri-drag-region="false"
                     ?disabled=${model?.cancelPending}
@@ -1937,6 +1952,7 @@ export class LensOverlayView extends LitElement {
               canRetry
                 ? html`<button
                     type="button"
+                    data-lens-button-role="normal"
                     class="overlay-header-action"
                     data-tauri-drag-region="false"
                     ?disabled=${model?.pending}
@@ -1950,6 +1966,7 @@ export class LensOverlayView extends LitElement {
               lens?.live?.lifecycle === "watching"
                 ? html`<button
                     type="button"
+                    data-lens-button-role="normal"
                     class="overlay-header-action"
                     data-tauri-drag-region="false"
                     @click=${() => this.emit({ type: "pause" })}
@@ -1959,6 +1976,7 @@ export class LensOverlayView extends LitElement {
                 : lens?.live?.lifecycle === "paused"
                   ? html`<button
                       type="button"
+                      data-lens-button-role="normal"
                       class="overlay-header-action"
                       data-tauri-drag-region="false"
                       @click=${() => this.emit({ type: "resume" })}
@@ -1968,7 +1986,7 @@ export class LensOverlayView extends LitElement {
                   : nothing
             }
           `,
-          lens?.operation_id ? "Stop Lens and close" : "Close Lens",
+          lens?.operation_id ? "Stop Lens and Close" : "Close Lens",
         )}
 
         <section class="overlay-source-summary" aria-label="Selected source context">
@@ -2007,6 +2025,8 @@ export class LensOverlayView extends LitElement {
                     authenticationMethods.length
                       ? authenticationMethods.map(
                           (method) => html`<button
+                            type="button"
+                            data-lens-button-role="normal"
                             ?disabled=${model?.pending}
                             @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
                           >
@@ -2089,8 +2109,8 @@ export class LensOverlayView extends LitElement {
                   ? html`<button
                       type="button"
                       class="close-button lens-progress-dismiss"
-                      aria-label="Dismiss notification"
-                      title="Dismiss notification"
+                      aria-label="Dismiss Notification"
+                      title="Dismiss Notification"
                       @click=${this.dismissNotification}
                     >
                       <i class="fa-solid fa-xmark" aria-hidden="true"></i>
@@ -2117,10 +2137,11 @@ export class LensOverlayView extends LitElement {
                       <button
                         type="button"
                         class="lens-view-latest"
+                        data-lens-button-role="normal"
                         ?disabled=${Boolean(this.updateNavigation)}
                         @click=${this.viewLatest}
                       >
-                        ${this.updateNavigation ? "Opening…" : "View latest"}
+                        ${this.updateNavigation ? "Opening…" : "View Latest"}
                       </button>
                       ${this.updateNavigationError ? html`<span class="lens-update-error" role="alert">${this.updateNavigationError}</span>` : nothing}
                     </div>`
@@ -2156,8 +2177,8 @@ export class LensOverlayView extends LitElement {
       class="overlay-footer-status overlay-status-toggle"
       aria-controls="lens-progress-notification"
       aria-expanded=${showStatusSnackbar ? "true" : "false"}
-      aria-label="${showStatusSnackbar ? "Hide" : "Show"} status details: ${announcedStatus.title}${this.scopedResponseUpdates?.pendingCount ? `, ${newResponseLabel(this.scopedResponseUpdates.pendingCount)}` : ""}"
-      title=${showStatusSnackbar ? "Hide status details" : "Show status details"}
+      aria-label="${showStatusSnackbar ? "Hide" : "Show"} Status Details: ${announcedStatus.title}${this.scopedResponseUpdates?.pendingCount ? `, ${newResponseLabel(this.scopedResponseUpdates.pendingCount)}` : ""}"
+      title=${showStatusSnackbar ? "Hide Status Details" : "Show Status Details"}
       @click=${this.toggleNotification}
     >
       <span class="overlay-stage-indicator" aria-hidden="true"></span>

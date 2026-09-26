@@ -586,8 +586,12 @@ async fn show_target_selection_validation<R: tauri::Runtime>(
                         frame,
                     },
                 },
-                preview_uri: None,
-                preview_error: Some("Source-free validation fixture".into()),
+                // Extreme preview colors expose image-overlay action contrast regressions.
+                preview_uri: Some(format!(
+                    "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22640%22 height=%22480%22%3E%3Cpath fill=%22{}%22 d=%22M0 0h640v480H0z%22/%3E%3C/svg%3E",
+                    if ordinal == 1 { "black" } else { "white" },
+                )),
+                preview_error: None,
             })
             .collect(),
         notice: None,
@@ -603,7 +607,51 @@ async fn show_target_selection_validation<R: tauri::Runtime>(
     )?;
     ui::show_target_selection_window(app, &selection)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let capture_keys = std::env::var("LENS_VALIDATE_TARGET_SELECTION_KEYS").as_deref() == Ok("1");
+    if capture_keys {
+        let window = app
+            .get_webview_window(ui::TARGET_SELECTION_WINDOW_LABEL)
+            .ok_or("Target-selection validation window is unavailable")?;
+        let script = r#"
+(() => {
+  let attempts = 0;
+  const install = () => {
+    const view = document.querySelector('lens-target-selection-view');
+    const form = view?.shadowRoot?.querySelector('form.target-selection-shell');
+    const submitter = form?.querySelector('button[type="submit"]');
+    if (!customElements.get('lens-target-selection-view') || !form || !submitter || submitter.disabled) {
+      if (++attempts < 80) { setTimeout(install, 100); return; }
+      const failure = document.createElement('output');
+      failure.textContent = 'Validation: target form readiness timed out';
+      failure.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:Canvas;color:CanvasText;z-index:1000';
+      document.body?.append(failure);
+      return;
+    }
+    if (view.hasAttribute('data-validation-keys')) return;
+    view.setAttribute('data-validation-keys', 'true');
+    const counts = { confirm: 0, add: 0, remove: 0 };
+    const status = document.createElement('output');
+    status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'position:absolute;bottom:12px;left:12px;right:12px;border-radius:5px;padding:3px 6px;font:11px system-ui;background:Canvas;color:CanvasText;z-index:1000;pointer-events:none';
+    const render = () => {
+      status.textContent = 'Validation: confirm ' + counts.confirm + ', add ' + counts.add + ', remove ' + counts.remove;
+    };
+    view.addEventListener('lens-target-selection-intent', (event) => {
+      event.stopImmediatePropagation();
+      const type = event.detail?.type;
+      if (Object.hasOwn(counts, type)) counts[type] += 1;
+      render();
+    }, { capture: true });
+    view.shadowRoot.append(status);
+    render();
+  };
+  install();
+})();
+"#;
+        window.eval(script).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(debug_assertions)]

@@ -144,6 +144,7 @@ export class LensPromptSettings extends LitElement {
           </details>
           <div class="prompt-actions prompt-save-actions">
             <button
+              data-lens-button-role="cancel"
               type="button"
               @click=${this.revert}
               ?hidden=${Boolean(this.promptPresets)}
@@ -152,6 +153,7 @@ export class LensPromptSettings extends LitElement {
               Revert Changes
             </button>
             <button
+              data-lens-button-role="destructive"
               type="button"
               ?hidden=${Boolean(this.promptPresets)}
               @click=${() => this.emit({ type: "reset" })}
@@ -167,8 +169,8 @@ export class LensPromptSettings extends LitElement {
             >
             <span class="prompt-action-spacer"></span>
             <button
+              data-lens-button-role="primary"
               type="submit"
-              class="primary"
               ?disabled=${this.disabled || !this.dirty || invalid || (Boolean(this.promptPresets) && (!this.validMetadata() || !this.currentPreset()))}
             >
               ${this.promptPresets ? "Save Preset" : "Save Template"}
@@ -214,6 +216,7 @@ export class LensPromptSettings extends LitElement {
             >${descriptor.title}</label
           >
           <textarea
+            data-lens-control="text-entry"
             id=${advanced ? "prompt-request-editor" : "prompt-editor"}
             class="prompt-editor"
             aria-describedby=${advanced ? "prompt-request-editor-description prompt-request-editor-validation" : "prompt-editor-description prompt-editor-validation"}
@@ -231,6 +234,7 @@ export class LensPromptSettings extends LitElement {
                 ? descriptor.variables.map((variable) => {
                     const count = occurrences.filter(({ name }) => name === variable.name).length;
                     return html`<button
+                      data-lens-button-role="normal"
                       type="button"
                       class="prompt-variable-token"
                       data-variable=${variable.name}
@@ -369,6 +373,7 @@ export class LensPromptSettings extends LitElement {
     return html` <div class="prompt-preset-active">
         <span role="status">In use: <strong>${selected?.name}</strong></span>
         <button
+          data-lens-button-role="normal"
           type="button"
           ?disabled=${this.disabled || !preset || preset.id === collection.selected_id}
           @click=${() => preset && this.emit({ type: "presets", change: { type: "select", id: preset.id } })}
@@ -385,6 +390,7 @@ export class LensPromptSettings extends LitElement {
           <h2 id="prompt-presets-heading">Presets</h2>
           <div class="prompt-actions">
             <button
+              data-lens-button-role="normal"
               type="button"
               ?disabled=${this.disabled || !this.draft || collection.presets.length >= 64 || Object.keys(validateAgentPromptTemplate(this.draft)).length > 0}
               @click=${() => this.duplicatePreset()}
@@ -392,6 +398,7 @@ export class LensPromptSettings extends LitElement {
               Duplicate
             </button>
             <button
+              data-lens-button-role="destructive"
               type="button"
               ?disabled=${this.disabled || !preset || collection.presets.length <= 1}
               @click=${() => {
@@ -438,6 +445,7 @@ export class LensPromptSettings extends LitElement {
         <label
           >Name
           <input
+            data-lens-control="text-entry"
             id="prompt-preset-name"
             class="prompt-preset-field"
             type="text"
@@ -456,7 +464,12 @@ export class LensPromptSettings extends LitElement {
                   This preset was changed or deleted elsewhere. Your draft is preserved. Duplicate
                   it to keep your changes, or reload the latest saved preset.
                 </p>
-                <button type="button" ?disabled=${this.disabled} @click=${this.revert}>
+                <button
+                  data-lens-button-role="normal"
+                  type="button"
+                  ?disabled=${this.disabled}
+                  @click=${this.revert}
+                >
                   Reload Saved Preset
                 </button>`
             : nothing
@@ -465,6 +478,7 @@ export class LensPromptSettings extends LitElement {
       </form>
       <div class="prompt-preset-reset">
         <button
+          data-lens-button-role="destructive"
           type="button"
           ?disabled=${this.disabled}
           @click=${() => this.emit({ type: "presets", change: { type: "reset_all", expected_catalog_revision: collection.revision } })}
