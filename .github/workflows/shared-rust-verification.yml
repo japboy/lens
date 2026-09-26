@@ -1,10 +1,14 @@
-name: Linux Common Verification
+name: Shared Rust Verification
 
 on:
   workflow_call:
     inputs:
       source_sha:
         description: Exact verified source; defaults to the caller revision for ordinary CI.
+        type: string
+        default: ""
+      release_tag:
+        description: Admitted release tag; permits complete legacy source verification without cache reuse.
         type: string
         default: ""
       frontend_artifact:
@@ -20,8 +24,8 @@ permissions:
   contents: read
 
 jobs:
-  linux-common:
-    name: linux-common
+  shared-rust-verification:
+    name: Linux
     runs-on: ubuntu-24.04
     # The uncached complete migration run took twelve minutes with repeated measurements.
     timeout-minutes: 25
@@ -39,6 +43,41 @@ jobs:
           sha256: ff182b17e78d2ae09b5ae3ff3c032eed061e6c2a6b2d4a03ce959d4d74c4b7dd # linux-x64
           cache: false
           install: true
+
+      - name: Admit the complete verification source capability
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SAVE_CACHE: ${{ inputs.save_cache }}
+          SEED_BUNDLE_CACHE: "false"
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, existsSync, readFileSync } from "node:fs";
+          const tasks = readFileSync("mise.toml", "utf8");
+          const task = (name) => tasks.includes(`[tasks."${name}"]`);
+          const modern = [
+            existsSync("scripts/macos-build-contract.ts"),
+            existsSync("scripts/macos-bundle-build.ts"),
+            existsSync("mise-tasks/verify/macos-bundle.ts"),
+            task("verify:macos"), task("verify:shared-rust"), task("build:macos-bundle"),
+          ];
+          const legacy = [
+            existsSync("mise-tasks/verify/bundle.ts"),
+            task("verify:native"), task("verify:common"),
+          ];
+          let generation;
+          if (modern.every(Boolean) && !legacy.some(Boolean)) {
+            generation = "current";
+          } else if (!modern.some(Boolean) && legacy.every(Boolean) &&
+            process.env.RELEASE_TAG && /^[a-f0-9]{40}$/.test(process.env.SOURCE_SHA ?? "") &&
+            process.env.SAVE_CACHE === "false" && process.env.SEED_BUNDLE_CACHE === "false") {
+            generation = "legacy";
+          } else {
+            throw new Error("Incomplete or unauthorized verification source capability");
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `generation=${generation}\n`);
+          NODE
 
       - name: Install common-shell system dependencies
         run: |
@@ -64,11 +103,12 @@ jobs:
           mise run verify:portable
 
       - name: Restore common Rust dependency artifacts
+        if: steps.source.outputs.generation == 'current'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: lens-v3-rust
           shared-key: common-x86_64-unknown-linux-gnu
-          key: ${{ hashFiles('mise.lock') }}
+          key: ${{ hashFiles('mise.lock', 'Cargo.toml') }}
           workspaces: . -> target
           cache-targets: true
           cache-bin: false
@@ -78,4 +118,6 @@ jobs:
           save-if: ${{ inputs.save_cache && github.ref == 'refs/heads/main' }}
 
       - name: Verify normal common code, tests and native-feature compatibility
-        run: mise run verify:common
+        env:
+          VERIFY_TASK: ${{ steps.source.outputs.generation == 'legacy' && 'verify:common' || 'verify:shared-rust' }}
+        run: mise run "$VERIFY_TASK"

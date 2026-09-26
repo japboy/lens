@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 //MISE description = "Build and inspect the native app or DMG using prebuilt frontend assets"
 //MISE dir = "{{config_root}}"
-//MISE wait_for = ["frontend:build", "verify:native"]
+//MISE wait_for = ["frontend:build", "verify:macos", "verify:portable", "verify:repository", "verify:frontend", "build:macos-bundle"]
 
-import { BUILD_PATHS } from "../../apps/desktop/tooling/build-paths.ts";
-import { PAGE_ENTRIES } from "../../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runVariant } from "../../scripts/run-workspace-variant.ts";
-import { bundleContract, verifyApp, verifyDmg } from "../../scripts/release/bundle.ts";
+import { buildMacosBundle } from "../../scripts/macos-bundle-build.ts";
+import { verifyApp, verifyDmg } from "../../scripts/release/bundle.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 export function verifyNativeBundle(root = ROOT, kind = "app"): string {
@@ -18,45 +16,37 @@ export function verifyNativeBundle(root = ROOT, kind = "app"): string {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw new Error("Bundle verification requires the admitted Apple-silicon host");
   const application = join(root, "apps/desktop");
-  const contract = bundleContract(root);
-  for (const entry of Object.values(PAGE_ENTRIES)) {
-    if (!existsSync(join(application, BUILD_PATHS.webview, entry)))
-      throw new Error(`Prebuilt frontend entry is required: ${entry}`);
-  }
+  const contract = buildMacosBundle(root);
   const directory = join(root, "target/aarch64-apple-darwin/release/bundle");
-  const previous = process.env.MACOSX_DEPLOYMENT_TARGET;
-  try {
-    process.env.MACOSX_DEPLOYMENT_TARGET = contract.minimum;
-    runVariant("macos-bundle-build", root);
-    // Remove only generated packaging output; stale DMGs cannot become candidates.
-    rmSync(directory, { recursive: true, force: true });
-    // Resolve under the installed pnpm environment before setting CI for Tauri only.
-    // pnpm changes its virtual-store policy when CI changes after installation.
-    const cli = execFileSync(
-      "pnpm",
-      ["exec", "node", "-p", 'require.resolve("@tauri-apps/cli/tauri.js")'],
-      { cwd: application, encoding: "utf8" },
-    ).trim();
-    execFileSync(
-      process.execPath,
-      [
-        cli,
-        "bundle",
-        "--target",
-        "aarch64-apple-darwin",
-        "--features",
-        "tauri/custom-protocol",
-        "--bundles",
-        kind,
-        "--ci",
-        ...(kind === "dmg" ? ["--config", "src-tauri/tauri.release.conf.json"] : []),
-      ],
-      { cwd: application, stdio: "inherit", env: { ...process.env, CI: "true" } },
-    );
-  } finally {
-    if (previous === undefined) delete process.env.MACOSX_DEPLOYMENT_TARGET;
-    else process.env.MACOSX_DEPLOYMENT_TARGET = previous;
-  }
+  // Remove only generated packaging output; stale DMGs cannot become candidates.
+  rmSync(directory, { recursive: true, force: true });
+  // Resolve under the installed pnpm environment before setting CI for Tauri only.
+  // pnpm changes its virtual-store policy when CI changes after installation.
+  const cli = execFileSync(
+    "pnpm",
+    ["exec", "node", "-p", 'require.resolve("@tauri-apps/cli/tauri.js")'],
+    { cwd: application, encoding: "utf8" },
+  ).trim();
+  execFileSync(
+    process.execPath,
+    [
+      cli,
+      "bundle",
+      "--target",
+      "aarch64-apple-darwin",
+      "--features",
+      "tauri/custom-protocol",
+      "--bundles",
+      kind,
+      "--ci",
+      ...(kind === "dmg" ? ["--config", "src-tauri/tauri.release.conf.json"] : []),
+    ],
+    {
+      cwd: application,
+      stdio: "inherit",
+      env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: contract.minimum, CI: "true" },
+    },
+  );
   const app = join(directory, "macos/Lens.app");
   // Tauri removes its intermediate .app when only DMG was requested.
   if (kind === "app") verifyApp(app, contract);

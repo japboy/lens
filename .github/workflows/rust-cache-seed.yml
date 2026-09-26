@@ -7,14 +7,25 @@ on:
     paths:
       - .cargo/config.toml
       - .github/workflows/code-quality.yml
-      - .github/workflows/native-quality.yml
-      - .github/workflows/linux-common.yml
+      - .github/workflows/macos-verification.yml
+      - .github/workflows/shared-rust-verification.yml
       - .github/workflows/rust-cache-seed.yml
       - Cargo.toml
       - Cargo.lock
       - mise.lock
       - mise.toml
       - package.json
+      - scripts/macos-build-contract.ts
+      - scripts/macos-bundle-build.ts
+      - scripts/workspace-policy.ts
+      - scripts/run-workspace-variant.ts
+      - scripts/release/bundle.ts
+      - scripts/release/version.ts
+      - mise-tasks/inspect/features.ts
+      - mise-tasks/verify/macos-bundle.ts
+      - apps/desktop/src-tauri/tauri.conf.json
+      - apps/desktop/src-tauri/tauri.macos.conf.json
+      - apps/desktop/src-tauri/tauri.release.conf.json
       - rust-toolchain
       - rust-toolchain.toml
       - apps/desktop/src-tauri/**/.cargo/config.toml
@@ -22,7 +33,7 @@ on:
       - packages/**/Cargo.toml
   workflow_dispatch:
     inputs:
-      linux_common:
+      shared_rust:
         description: Run bounded Linux common verification instead of seeding native caches.
         type: boolean
         default: false
@@ -36,21 +47,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  native-quality:
-    name: native-dependency-cache-seed
-    if: github.ref == 'refs/heads/main' && !inputs.linux_common
-    uses: ./.github/workflows/native-quality.yml
+  frontend-verification:
+    name: Verify cache seed source and frontend
+    if: github.ref == 'refs/heads/main' && !inputs.shared_rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: "v2026.9.8"
+          sha256: ff182b17e78d2ae09b5ae3ff3c032eed061e6c2a6b2d4a03ce959d4d74c4b7dd
+          cache: false
+          install: true
+
+      - run: pnpm install --frozen-lockfile
+      - run: mise run verify:portable
+      - run: node scripts/frontend-artifact.ts write
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cache-frontend-${{ github.sha }}
+          path: |
+            apps/desktop/.build/webview
+            target/ci/frontend-manifest.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  macos-dependency-cache-seed:
+    name: macOS dependency cache seed
+    needs: frontend-verification
+    if: github.ref == 'refs/heads/main' && !inputs.shared_rust
+    uses: ./.github/workflows/macos-verification.yml
     with:
       save_cache: true
+      seed_bundle_cache: true
+      frontend_artifact: cache-frontend-${{ github.sha }}
 
   linux-dependency-cache-seed:
-    if: github.ref == 'refs/heads/main' && !inputs.linux_common
-    uses: ./.github/workflows/linux-common.yml
+    needs: frontend-verification
+    if: github.ref == 'refs/heads/main' && !inputs.shared_rust
+    uses: ./.github/workflows/shared-rust-verification.yml
     with:
       save_cache: true
+      frontend_artifact: cache-frontend-${{ github.sha }}
 
   reject-untrusted-cache-seed:
-    if: github.ref != 'refs/heads/main' && !inputs.linux_common
+    if: github.ref != 'refs/heads/main' && !inputs.shared_rust
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -58,6 +104,6 @@ jobs:
           echo '::error::Native dependency caches may only be seeded from main.'
           exit 1
 
-  linux-common:
-    if: github.event_name == 'workflow_dispatch' && inputs.linux_common
-    uses: ./.github/workflows/linux-common.yml
+  shared-rust-verification:
+    if: github.event_name == 'workflow_dispatch' && inputs.shared_rust
+    uses: ./.github/workflows/shared-rust-verification.yml

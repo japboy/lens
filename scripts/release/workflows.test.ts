@@ -5,7 +5,7 @@ import { planChanges } from "../ci-plan.ts";
 const release = readFileSync(".github/workflows/release.yml", "utf8");
 const automation = readFileSync(".github/workflows/release-please.yml", "utf8");
 const cli = readFileSync("scripts/release/cli.ts", "utf8");
-const native = readFileSync(".github/workflows/native-quality.yml", "utf8");
+const native = readFileSync(".github/workflows/macos-verification.yml", "utf8");
 
 describe("release workflow authority and recovery", () => {
   it("routes release publication through the durable publisher", () => {
@@ -118,6 +118,9 @@ describe("release workflow authority and recovery", () => {
     "scripts/release/lifecycle.ts",
     ".github/workflows/release.yml",
   ])("requires full verification for %s", (path) => {
-    expect(planChanges([{ path, before: "old", after: "new" }])).toBe("full");
+    expect(planChanges([{ path, before: "old", after: "new" }]).requirements).toEqual({
+      sharedRust: true,
+      macos: "dmg",
+    });
   });
 });

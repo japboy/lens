@@ -97,8 +97,9 @@ jobs:
     needs: [preflight, portable]
     permissions:
       contents: read
-    uses: ./.github/workflows/linux-common.yml
+    uses: ./.github/workflows/shared-rust-verification.yml
     with:
+      release_tag: ${{ inputs.tag }}
       source_sha: ${{ needs.preflight.outputs.source_sha }}
       frontend_artifact: ${{ needs.portable.outputs.frontend_artifact }}
       save_cache: false
@@ -107,13 +108,12 @@ jobs:
     needs: [preflight, portable]
     permissions:
       contents: read
-    uses: ./.github/workflows/native-quality.yml
+    uses: ./.github/workflows/macos-verification.yml
     with:
       source_sha: ${{ needs.preflight.outputs.source_sha }}
       frontend_artifact: ${{ needs.portable.outputs.frontend_artifact }}
-      native_mode: bundle
+      verification_mode: dmg
       controller_sha: ${{ inputs.controller_sha }}
-      bundle_kind: dmg
       release_tag: ${{ inputs.tag }}
       previous_tag: ${{ needs.preflight.outputs.previous_tag }}
       save_cache: false

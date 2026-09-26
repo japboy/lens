@@ -42,7 +42,7 @@ export function planGitChanges(root: string, base: string, head: string) {
     before: readAt(base, path),
     after: readAt(head, path),
   }));
-  return { base, head, plan: planChanges(changes), paths };
+  return { base, head, ...planChanges(changes), paths };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
@@ -53,6 +53,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     process.env.BASE_SHA ?? "",
     process.env.HEAD_SHA ?? "",
   );
-  appendFileSync(process.env.GITHUB_OUTPUT, `plan=${result.plan}\n`);
+  appendFileSync(
+    process.env.GITHUB_OUTPUT,
+    `shared_rust=${result.requirements.sharedRust}\nmacos=${result.requirements.macos}\n`,
+  );
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
