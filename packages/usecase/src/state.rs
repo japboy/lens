@@ -258,6 +258,37 @@ pub fn reconcile_lens_after_context_refresh(
     }
 }
 
+/// The configuration transaction owns recovery after revoking old run authority.
+/// This also handles cancellation that settled immediately before the transaction.
+pub fn reconcile_lens_after_execution_config_change(lens: &mut LensState) {
+    if !matches!(
+        lens.stage,
+        LensStage::Connecting | LensStage::Transforming | LensStage::Cancelled
+    ) {
+        return;
+    }
+    let error = "Execution settings changed. Retry to start a new Agent session.".to_string();
+    lens.stage = LensStage::Failed;
+    // Configuration values can return to their old value (A → B → A). Removing
+    // the old run identity prevents its cancelled callback from regaining authority.
+    lens.agent = None;
+    lens.pending_representation = None;
+    lens.error = Some(error.clone());
+    if let Some(live) = lens.live.as_mut() {
+        live.freshness = if live.lifecycle != LensMonitoringLifecycle::Watching
+            || live.health == LensSourceHealth::Unavailable
+        {
+            LensFreshness::Unverified
+        } else if lens.representation.is_some() {
+            LensFreshness::Stale
+        } else {
+            LensFreshness::None
+        };
+        live.last_outcome = Some(LensRefreshOutcome::Failed);
+        live.error = Some(error);
+    }
+}
+
 pub fn refresh_projection_transition_is_valid(
     previous: &ProjectionRef,
     next: &ProjectionRef,
@@ -401,6 +432,44 @@ mod tests {
         assert_eq!(pending.take(), Some(2));
         assert_eq!(coalesce_agent_turn(&mut pending, 4, true), Err(4));
         assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn execution_config_recovery_survives_unchanged_observation_and_retains_settled_output() {
+        for stage in [
+            LensStage::Connecting,
+            LensStage::Transforming,
+            LensStage::Cancelled,
+        ] {
+            let mut lens = canonical_state(7);
+            lens.stage = stage;
+            let projection = lens.projection.clone().unwrap();
+            lens.representation = Some(representation(projection.clone(), 7));
+            lens.pending_representation = Some(LensPendingRepresentation {
+                turn_id: Uuid::from_u128(12),
+                target_projection: projection,
+                base_representation_id: None,
+            });
+            let settled = lens.representation.clone();
+            reconcile_lens_after_execution_config_change(&mut lens);
+            assert_eq!(lens.stage, LensStage::Failed);
+            assert!(lens.pending_representation.is_none());
+            assert_eq!(lens.representation, settled);
+            assert_eq!(lens.live.as_ref().unwrap().freshness, LensFreshness::Stale);
+            reconcile_lens_after_context_refresh(
+                &mut lens,
+                8,
+                LensSourceHealth::Healthy,
+                LensContextRefreshOutcome::Unchanged,
+            );
+            assert_eq!(lens.stage, LensStage::Failed);
+            assert!(lens.error.as_deref().unwrap().contains("Retry"));
+        }
+        let mut settled = canonical_state(7);
+        settled.stage = LensStage::Completed;
+        let before = settled.clone();
+        reconcile_lens_after_execution_config_change(&mut settled);
+        assert_eq!(settled, before);
     }
 
     #[test]
@@ -864,6 +933,39 @@ mod tests {
         assert!(agent_run_has_authority(&snapshot, key, &config));
         snapshot.lens.agent.as_mut().expect("active run").run_id = Uuid::from_u128(3);
         assert!(!agent_run_has_authority(&snapshot, key, &config));
+    }
+
+    #[test]
+    fn restored_execution_config_does_not_restore_revoked_run_authority() {
+        let config = AppConfig::new("/A".into());
+        let mut snapshot = AppSnapshot::new(config.clone());
+        snapshot.lens = canonical_state(1);
+        snapshot.lens.stage = LensStage::Transforming;
+        let key = AgentRunKey {
+            operation_id: snapshot.lens.operation_id.unwrap(),
+            run_id: Uuid::from_u128(12),
+        };
+        snapshot.lens.agent = Some(AgentRunState {
+            run_id: key.run_id,
+            input_projection: snapshot.lens.projection.clone(),
+            kind: AgentKind::Codex,
+            adapter_name: "fixture".into(),
+            adapter_version: "1".into(),
+            session_id: None,
+            session_mode_id: None,
+            auth_methods: vec![],
+            received_updates: 0,
+            progress_text: None,
+            stop_reason: None,
+            authentication_message: None,
+        });
+        assert!(agent_run_has_authority(&snapshot, key, &config));
+        reconcile_lens_after_execution_config_change(&mut snapshot.lens);
+        snapshot.config.working_directory = "/B".into();
+        reconcile_lens_after_execution_config_change(&mut snapshot.lens);
+        snapshot.config = config.clone();
+        assert!(!agent_run_has_authority(&snapshot, key, &config));
+        assert_eq!(snapshot.lens.stage, LensStage::Failed);
     }
 
     #[test]

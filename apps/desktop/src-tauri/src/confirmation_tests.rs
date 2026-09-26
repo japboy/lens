@@ -47,6 +47,8 @@ enum Scenario {
     StopDuringPrompt,
     SwitchDuringPrompt,
     ConfigFailureDuringPrompt,
+    ConfigTimeoutDuringPrompt,
+    ConfigTransportFailureDuringPrompt,
     StopDuringExtraction,
 }
 
@@ -482,8 +484,21 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                 .on_receive_request(
                     async move |request: SetSessionConfigOptionRequest,
                                 responder: Responder<SetSessionConfigOptionResponse>,
-                                _| {
+                                connection: ConnectionTo<Client>| {
                         configure.record(Effect::Configure);
+                        if configure.scenario == Scenario::ConfigTransportFailureDuringPrompt {
+                            return Err(agent_client_protocol::Error::internal_error()
+                                .data("fixture transport task failed"));
+                        }
+                        if configure.scenario == Scenario::ConfigTimeoutDuringPrompt {
+                            return connection.spawn(async move {
+                                // Retain the responder so only the real client timeout settles it.
+                                std::future::pending::<()>().await;
+                                responder.respond(SetSessionConfigOptionResponse::new(
+                                    Fixture::options(),
+                                ))
+                            });
+                        }
                         if configure.scenario == Scenario::CandidateSetupFailure
                             || (configure.scenario == Scenario::ConfigFailureDuringPrompt
                                 && configure
@@ -530,10 +545,15 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                 .filter(|effect| matches!(effect, Effect::Prompt(_)))
                                 .count()
                                 == 1;
-                        if matches!(
-                            prompt.scenario,
-                            Scenario::StopDuringPrompt | Scenario::ConfigFailureDuringPrompt
-                        ) || first_switch_prompt
+                        if matches!(prompt.scenario, Scenario::StopDuringPrompt)
+                            || (first_connection
+                                && matches!(
+                                    prompt.scenario,
+                                    Scenario::ConfigFailureDuringPrompt
+                                        | Scenario::ConfigTimeoutDuringPrompt
+                                        | Scenario::ConfigTransportFailureDuringPrompt
+                                ))
+                            || first_switch_prompt
                         {
                             let fixture = prompt.clone();
                             let sender = connection.clone();
@@ -1255,8 +1275,31 @@ fn stop_during_preview_dismissal_rejects_confirmation_before_source_work() {
 }
 
 #[test]
-fn failed_config_request_drops_active_prompt_without_leaving_quit_confirmation() {
-    let harness = setup(Scenario::ConfigFailureDuringPrompt);
+fn rejected_config_request_finalizes_active_prompt_and_allows_retry() {
+    assert_config_failure_settles_turn(Scenario::ConfigFailureDuringPrompt, false);
+}
+
+#[test]
+fn timed_out_config_request_finalizes_active_prompt_and_allows_retry() {
+    assert_config_failure_settles_turn(Scenario::ConfigTimeoutDuringPrompt, false);
+}
+
+#[test]
+fn transport_failure_finalizes_active_prompt_and_allows_retry() {
+    assert_config_failure_settles_turn(Scenario::ConfigTransportFailureDuringPrompt, false);
+}
+
+#[test]
+fn rejected_config_request_cannot_finalize_a_superseding_run() {
+    assert_config_failure_settles_turn(Scenario::ConfigFailureDuringPrompt, true);
+}
+
+fn start_held_prompt(
+    harness: &Harness,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<Result<Value, Value>>,
+) {
     let window = harness.window.clone();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let invocation = std::thread::spawn(move || {
@@ -1276,9 +1319,40 @@ fn failed_config_request_drops_active_prompt_without_leaving_quit_confirmation()
         .await
         .unwrap();
     });
+    // Seed a private pending candidate as retained-output refreshes do. Cleanup
+    // must clear it even when the prompt future is dropped before publishing output.
+    {
+        let state = harness.app.state::<AppState>();
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.lens.pending_representation = Some(LensPendingRepresentation {
+            turn_id: snapshot.lens.agent.as_ref().unwrap().run_id,
+            target_projection: snapshot.lens.projection.clone().unwrap(),
+            base_representation_id: None,
+        });
+    }
+    (invocation, receiver)
+}
+
+fn assert_config_failure_settles_turn(scenario: Scenario, supersede: bool) {
+    let harness = setup(scenario);
+    let (invocation, receiver) = start_held_prompt(&harness);
     let state = harness.app.state::<AppState>();
     assert!(crate::quit::has_pending_work(&state).unwrap());
+    assert!(state.lens().unwrap().pending_representation.is_some());
     let controls = state.session_controls.lock().unwrap().clone().unwrap();
+    let newer = supersede.then(|| {
+        let newer = Uuid::new_v4();
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.lens.agent.as_mut().unwrap().run_id = newer;
+        snapshot
+            .lens
+            .pending_representation
+            .as_mut()
+            .unwrap()
+            .turn_id = newer;
+        newer
+    });
+    let before = state.lens().unwrap();
     let snapshot = controls.snapshot().unwrap();
     controls
         .queue_change(
@@ -1288,24 +1362,93 @@ fn failed_config_request_drops_active_prompt_without_leaving_quit_confirmation()
             "safe".into(),
         )
         .unwrap();
-    // The provider deliberately never finishes the prompt. A real failed ACP
-    // configuration request makes controls.serve win and drop the production actor.
+    // The provider never finishes its first prompt. Rejection/timeout drops the
+    // actor through the real ACP control service, then the connection finalizer settles Lens.
     assert!(receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(std::time::Duration::from_secs(40))
         .unwrap()
         .is_err());
     invocation.join().unwrap();
     tauri::async_runtime::block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while controls.snapshot().unwrap().active {
+            loop {
+                let closed = !controls.snapshot().unwrap().active;
+                let settled = if supersede {
+                    // The actor's outer cleanup clears the old generation after finalization.
+                    !state.agent_control.has_active_session()
+                } else {
+                    state.lens().unwrap().stage == LensStage::Failed
+                        && !state.agent_control.has_pending_work().unwrap()
+                };
+                if closed && settled {
+                    break;
+                }
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
     });
-    assert!(!state.agent_control.has_pending_work().unwrap());
-    assert!(!crate::quit::has_pending_work(&state).unwrap());
+    let lens = state.lens().unwrap();
+    if let Some(newer) = newer {
+        assert_eq!(lens.stage, before.stage);
+        assert_eq!(lens.pending_representation, before.pending_representation);
+        assert_eq!(lens.agent.as_ref().unwrap().run_id, newer);
+        assert!(!state.agent_control.has_pending_work().unwrap());
+    } else {
+        assert_eq!(lens.stage, LensStage::Failed);
+        assert!(lens.pending_representation.is_none());
+        assert!(!lens.error.as_deref().unwrap().is_empty());
+        assert!(!crate::quit::has_pending_work(&state).unwrap());
+        let retried = invoke(&harness.window, "retry_lens_transform");
+        assert_eq!(
+            retried.stage,
+            LensStage::Completed,
+            "retry error: {:?}",
+            retried.error
+        );
+    }
+    invoke(&harness.window, "stop_lens");
+}
+
+#[test]
+fn working_directory_change_settles_before_and_after_cancellation_completion() {
+    for cancel_before_change in [false, true] {
+        let harness = setup(Scenario::ConfigFailureDuringPrompt);
+        let (invocation, receiver) = start_held_prompt(&harness);
+        let state = harness.app.state::<AppState>();
+        assert!(state.lens().unwrap().pending_representation.is_some());
+        if cancel_before_change {
+            state.agent_control.cancel_active().unwrap();
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.lens().unwrap().stage, LensStage::Cancelled);
+        }
+        let directory = tempfile::tempdir().unwrap();
+        crate::commands::update_working_directory(harness.app.handle(), directory.path().into())
+            .unwrap();
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.config.working_directory, directory.path());
+        assert_eq!(snapshot.lens.stage, LensStage::Failed);
+        assert!(snapshot.lens.pending_representation.is_none());
+        if !cancel_before_change {
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+        }
+        invocation.join().unwrap();
+        assert_eq!(state.lens().unwrap().stage, LensStage::Failed);
+        assert!(!state.agent_control.has_pending_work().unwrap());
+        // Source identity/content is unchanged; explicit retry must start a new session.
+        assert_eq!(
+            invoke(&harness.window, "retry_lens_transform").stage,
+            LensStage::Completed
+        );
+        invoke(&harness.window, "stop_lens");
+    }
 }
 
 #[test]

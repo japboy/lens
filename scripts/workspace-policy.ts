@@ -73,7 +73,7 @@ export const MEMBERS: readonly Member[] = [
         "tokio",
         "uuid",
       ],
-      dev: ["pretty_assertions", "tauri", "toml"],
+      dev: ["pretty_assertions", "tauri", "tokio", "toml"],
       build: ["tauri-build", "serde_json", "toml"],
     },
   },

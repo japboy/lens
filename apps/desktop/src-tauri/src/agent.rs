@@ -1376,6 +1376,11 @@ pub(crate) async fn run_persistent_session_actor<R: tauri::Runtime>(
         if !*shutdown.borrow() {
             match mailbox.take_pending() {
                 Ok(Some(turn)) => {
+                    if let Err(close_error) = mailbox.close(error) {
+                        eprintln!(
+                            "Unable to close the failed Agent session mailbox: {close_error}"
+                        );
+                    }
                     let applied = fail_unstarted_turn(
                         &app,
                         &identity,
@@ -1449,7 +1454,14 @@ async fn run_persistent_session<R: tauri::Runtime>(
         identity.effective_working_directory.clone(),
         EnvironmentPurpose::Session,
     );
-    agent_client_protocol::Client
+    // A transport or control-service failure can drop the prompt future. Keep its
+    // identity outside the connection future so every exit can finalize Lens state.
+    let finalizer_app = app.clone();
+    let finalizer_config = identity.config.clone();
+    let finalizer_mailbox = Arc::clone(&mailbox);
+    let mut active_turn = None;
+    let active_turn_slot = &mut active_turn;
+    let result = agent_client_protocol::Client
         .builder()
         .name("lens")
         .connect_with(process, |connection: ConnectionTo<Agent>| async move {
@@ -1580,6 +1592,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     }
                 };
                 let mut run = prepared.run;
+                *active_turn_slot = Some((run.key, run.cancellation.clone()));
                 let state = app.state::<AppState>();
                 let _run_lifetime = state.agent_control.run_lifetime(run.key);
                 let turn = prepared.turn;
@@ -1614,6 +1627,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     .map_err(state_error)?;
                 match result {
                     Ok(definitive) => {
+                        *active_turn_slot = None;
                         turn.complete(Ok(AgentSessionTurnCompletion::Finished));
                         if definitive {
                             applied_projection = Some(target_projection);
@@ -1622,6 +1636,8 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         }
                     }
                     Err(error) => {
+                        // Recovery is visible only after this session rejects reuse.
+                        mailbox.close("Agent session turn failed").map_err(state_error)?;
                         finish_agent_run_error(
                             &app,
                             run.key,
@@ -1631,6 +1647,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                             cancelled,
                         )
                         .map_err(state_error)?;
+                        *active_turn_slot = None;
                         turn.complete(Ok(AgentSessionTurnCompletion::Finished));
                         return Err(error);
                     }
@@ -1642,7 +1659,27 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 result = controls.serve(&app, &connection, control_requests) => result,
             }
         })
-        .await
+        .await;
+    if let Some((key, cancellation)) = active_turn {
+        // Make retry admission start a new session before publishing recovery.
+        // Otherwise a fast retry can enter the old actor's still-open mailbox.
+        finalizer_mailbox
+            .close("Agent session ended during its active turn")
+            .map_err(state_error)?;
+        let error = result.as_ref().err().cloned().unwrap_or_else(|| {
+            state_error("Agent session ended before its active turn completed".into())
+        });
+        finish_agent_run_error(
+            &finalizer_app,
+            key,
+            &finalizer_config,
+            finalizer_config.agent,
+            &error,
+            *cancellation.borrow(),
+        )
+        .map_err(state_error)?;
+    }
+    result
 }
 
 async fn wait_for_agent_turn_slot(
@@ -1715,9 +1752,9 @@ fn prompt_mode(
             applied_projection: applied_projection.clone(),
         });
     }
-    if applied_projection.revision < target_projection.revision
-        && applied_projection.digest != target_projection.digest
-    {
+    // Coalescing may skip B between A1 and A3. Revision ordering remains valid
+    // even when the latest content happens to match the applied digest.
+    if applied_projection.revision < target_projection.revision {
         return Ok(AgentPromptMode::SourceCheckpoint {
             base_projection: applied_projection.clone(),
         });
@@ -3358,6 +3395,68 @@ mod tests {
             }
         );
         assert!(prompt_mode(&Some(second), &projection_ref("Regressed", 1)).is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cadence_coalesced_return_to_applied_content_sends_latest_checkpoint() {
+        use std::future::Future;
+        let (projection, applied) = sample_projection(&sample_input("A"), &[]);
+        let (changed, changed_ref) = sample_projection(&sample_input("B"), &[]);
+        let changed_ref =
+            ProjectionRef::new(std::num::NonZeroU64::new(2).unwrap(), changed_ref.digest);
+        let returned = ProjectionRef::new(
+            std::num::NonZeroU64::new(3).unwrap(),
+            applied.digest.clone(),
+        );
+        let mut cadence = AgentTurnCadence::default();
+        cadence.record_start(Instant::now());
+        let (_shutdown, mut shutdown) = watch::channel(false);
+        let wait = wait_for_agent_turn_slot(&cadence, &mut shutdown);
+        tokio::pin!(wait);
+        std::future::poll_fn(|cx| {
+            assert!(wait.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let mailbox = AgentSessionMailbox::new();
+        let (second, coalesced) = AgentSessionTurn::new(2, changed_ref, changed);
+        mailbox.replace(second).unwrap();
+        let (third, completed) = AgentSessionTurn::new(3, returned.clone(), projection);
+        mailbox.replace(third).unwrap();
+        assert_eq!(
+            coalesced.await.unwrap().unwrap(),
+            AgentSessionTurnCompletion::Coalesced
+        );
+        wait.await.unwrap();
+        let turn = mailbox.take_pending().unwrap().unwrap();
+        let mode = prompt_mode(&Some(applied.clone()), &turn.projection_ref).unwrap();
+        let blocks = build_prompt_blocks(
+            &AgentPromptTemplate::default(),
+            &turn.projection,
+            &turn.projection_ref,
+            &mode,
+            &PromptCapabilities::default(),
+        )
+        .unwrap();
+        let ContentBlock::Text(checkpoint) = &blocks[1] else {
+            panic!("checkpoint JSON");
+        };
+        let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint.text).unwrap();
+        assert_eq!(checkpoint["base_projection"]["revision"], 1);
+        assert_eq!(checkpoint["target_projection"]["revision"], 3);
+        assert_eq!(
+            checkpoint["base_projection"]["digest"],
+            checkpoint["target_projection"]["digest"]
+        );
+        turn.complete(Ok(AgentSessionTurnCompletion::Finished));
+        assert_eq!(
+            completed.await.unwrap().unwrap(),
+            AgentSessionTurnCompletion::Finished
+        );
+        assert!(!mailbox.is_closed());
+        assert!(prompt_mode(&Some(returned.clone()), &projection_ref("C", 4)).is_ok());
+        assert!(prompt_mode(&Some(returned.clone()), &applied).is_err());
+        assert!(prompt_mode(&Some(returned), &projection_ref("conflicting", 3)).is_err());
     }
 
     #[test]

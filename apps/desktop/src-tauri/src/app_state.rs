@@ -340,6 +340,11 @@ impl AgentControl {
         Ok(true)
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_active_session(&self) -> bool {
+        self.session.lock().expect("Agent session state").is_some()
+    }
+
     pub(crate) fn finish_session(&self, generation: Uuid) -> Result<bool, String> {
         let mut session = self
             .session
