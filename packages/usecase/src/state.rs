@@ -446,7 +446,7 @@ mod tests {
             let projection = lens.projection.clone().unwrap();
             lens.representation = Some(representation(projection.clone(), 7));
             lens.pending_representation = Some(LensPendingRepresentation {
-                turn_id: Uuid::new_v4(),
+                turn_id: Uuid::from_u128(12),
                 target_projection: projection,
                 base_representation_id: None,
             });
@@ -943,7 +943,7 @@ mod tests {
         snapshot.lens.stage = LensStage::Transforming;
         let key = AgentRunKey {
             operation_id: snapshot.lens.operation_id.unwrap(),
-            run_id: Uuid::new_v4(),
+            run_id: Uuid::from_u128(12),
         };
         snapshot.lens.agent = Some(AgentRunState {
             run_id: key.run_id,
