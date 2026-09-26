@@ -263,7 +263,7 @@ it("restores an in-flight Codex update from parent properties after remount", as
   );
 });
 
-it.each(["failed", "history_selected", "unselected"] as const)(
+it.each(["failed", "unselected"] as const)(
   "shows the external candidate at %s without claiming readiness",
   async (stage) => {
     const { element } = await mount(stage);
@@ -381,13 +381,6 @@ it("disables editing while pending and uses advertised logout capability", async
   await element.updateComplete;
   expect(button(element, "Sign Out…")).toBeDefined();
 });
-it("lets a history-selected managed agent verify its connection", async () => {
-  const { element, intents } = await mount("history_selected");
-  element.selection = { ...element.selection!, candidate: "claude" };
-  await element.updateComplete;
-  button(element, "Verify connection").click();
-  expect(intents.at(-1)).toEqual({ type: "select", agent: "claude" });
-});
 it("accepts Browse for an empty new command draft", async () => {
   const { element, intents } = await mount();
   button(element, "Add preset").click();
@@ -468,7 +461,7 @@ it("resets saved edits and unsaved drafts only after acceptance and invalidates 
   expect(command(element).value).toBe("goose");
 });
 
-it.each(["unselected", "failed", "authentication_required", "history_selected"] as const)(
+it.each(["unselected", "failed", "authentication_required"] as const)(
   "can explicitly verify the current managed choice at %s without selecting another agent",
   async (stage) => {
     const { element, intents } = await mount(stage);

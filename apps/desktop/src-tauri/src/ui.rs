@@ -397,7 +397,6 @@ pub(crate) struct TrayMenuPresentation {
     target_selection_active: bool,
     live_lens_active: bool,
     agent_selection_enabled: bool,
-    agent_verification_required: bool,
     claude_checked: bool,
     codex_checked: bool,
     selected_agent: Option<AgentKind>,
@@ -415,12 +414,7 @@ pub(crate) struct NativeTrayOutput;
 
 impl TrayMenuPresentation {
     fn derive(agent_selection: &AgentSelectionState, config: &AppConfig, lens: &LensState) -> Self {
-        let selected =
-            if agent_selection.stage == crate::model::AgentSelectionStage::HistorySelected {
-                agent_selection.candidate
-            } else {
-                agent_selection.selected_agent()
-            };
+        let selected = agent_selection.selected_agent();
         let target_selection_active = lens.stage == LensStage::Selecting;
         let live_lens_active = lens.live.is_some();
         Self {
@@ -432,13 +426,10 @@ impl TrayMenuPresentation {
             agent_selection_enabled: matches!(
                 agent_selection.stage,
                 crate::model::AgentSelectionStage::Unselected
-                    | crate::model::AgentSelectionStage::HistorySelected
                     | crate::model::AgentSelectionStage::AuthenticationRequired
                     | crate::model::AgentSelectionStage::Selected
                     | crate::model::AgentSelectionStage::Failed
             ),
-            agent_verification_required: agent_selection.stage
-                == crate::model::AgentSelectionStage::HistorySelected,
             claude_checked: selected == Some(AgentKind::Claude),
             codex_checked: selected == Some(AgentKind::Codex),
             selected_agent: selected,
@@ -495,14 +486,9 @@ fn agent_menu_entries(config: &AppConfig, view: &TrayMenuPresentation) -> Vec<Ag
                 .as_ref()
                 .map(|profile| profile.name.as_str())
                 .unwrap_or_else(|| crate::session_view::agent_label(agent));
-            let suffix = if checked && view.agent_verification_required {
-                " — Verify to Start"
-            } else {
-                ""
-            };
             AgentMenuEntry {
                 agent,
-                label: format!("{}{suffix}", menu_safe_path(name)),
+                label: menu_safe_path(name),
                 checked,
                 enabled: view.agent_selection_enabled,
                 profile,
@@ -1865,32 +1851,27 @@ mod tests {
     fn tray_agent_status_and_managed_checks_share_one_selection() {
         let config = AppConfig::new(PathBuf::from("/tmp"));
         let external = &config.external_agents[0];
-        for stage in [
-            AgentSelectionStage::Selected,
-            AgentSelectionStage::HistorySelected,
+        for agent in [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::External(external.id),
         ] {
-            for agent in [
-                AgentKind::Claude,
-                AgentKind::Codex,
-                AgentKind::External(external.id),
-            ] {
-                let state = AgentSelectionState {
-                    stage,
-                    candidate: Some(agent),
-                    ..Default::default()
-                };
-                let view = TrayMenuPresentation::derive(&state, &config, &LensState::default());
-                assert_eq!(view.claude_checked, agent == AgentKind::Claude);
-                assert_eq!(view.codex_checked, agent == AgentKind::Codex);
-                assert!(!(view.claude_checked && view.codex_checked));
-                assert_eq!(view.selected_agent, Some(agent));
-                let entries = agent_menu_entries(&config, &view);
-                assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
-                assert_eq!(
-                    entries.iter().find(|entry| entry.checked).unwrap().agent,
-                    agent
-                );
-            }
+            let state = AgentSelectionState {
+                stage: AgentSelectionStage::Selected,
+                candidate: Some(agent),
+                ..Default::default()
+            };
+            let view = TrayMenuPresentation::derive(&state, &config, &LensState::default());
+            assert_eq!(view.claude_checked, agent == AgentKind::Claude);
+            assert_eq!(view.codex_checked, agent == AgentKind::Codex);
+            assert!(!(view.claude_checked && view.codex_checked));
+            assert_eq!(view.selected_agent, Some(agent));
+            let entries = agent_menu_entries(&config, &view);
+            assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
+            assert_eq!(
+                entries.iter().find(|entry| entry.checked).unwrap().agent,
+                agent
+            );
         }
         let view = TrayMenuPresentation::derive(
             &AgentSelectionState::default(),
@@ -1981,7 +1962,6 @@ mod tests {
                 target_selection_active: false,
                 live_lens_active: false,
                 agent_selection_enabled: true,
-                agent_verification_required: false,
                 claude_checked: false,
                 codex_checked: true,
                 selected_agent: Some(AgentKind::Codex),
@@ -2017,19 +1997,6 @@ mod tests {
                 )
             );
         }
-
-        let history_selected = AgentSelectionState {
-            stage: AgentSelectionStage::HistorySelected,
-            candidate: Some(AgentKind::Claude),
-            ..AgentSelectionState::default()
-        };
-        let history =
-            TrayMenuPresentation::derive(&history_selected, &config, &LensState::default());
-        assert!(history.claude_checked);
-        assert!(!history.codex_checked);
-        assert!(history.agent_selection_enabled);
-        assert!(history.agent_verification_required);
-        assert!(!history.select_target_enabled);
 
         let selecting = LensState {
             stage: LensStage::Selecting,
