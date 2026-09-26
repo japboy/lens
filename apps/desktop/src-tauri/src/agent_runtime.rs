@@ -12,7 +12,10 @@ use std::{
     fs::{self, File},
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
@@ -1477,11 +1480,10 @@ async fn ensure_node_runtime<R: tauri::Runtime>(
         runtime.total_bytes = None;
     })?;
 
-    let staging_root = root.join(".staging").join(Uuid::new_v4().to_string());
+    let staging = StagingCleanup::create(root, "Node")?;
+    let staging_root = &staging.path;
     let archive_path = staging_root.join(NODE_ARCHIVE_NAME);
-    fs::create_dir_all(&staging_root)
-        .map_err(|error| format!("unable to create Node staging directory: {error}"))?;
-    let result = async {
+    async {
         download_node_archive(app, operation_id, &archive_path).await?;
         update_agent_runtime(app, operation_id, |runtime| {
             runtime.stage = AgentRuntimeStage::Verifying;
@@ -1493,6 +1495,7 @@ async fn ensure_node_runtime<R: tauri::Runtime>(
             &extraction_root,
             NODE_ARCHIVE_ROOT,
             "Node.js",
+            staging.clone(),
         )
         .await?;
         let extracted_node = extraction_root.join(NODE_ARCHIVE_ROOT);
@@ -1522,9 +1525,7 @@ async fn ensure_node_runtime<R: tauri::Runtime>(
             Err(error) => Err(format!("unable to activate managed Node runtime: {error}")),
         }
     }
-    .await;
-    cleanup_staging(root, &staging_root);
-    result
+    .await
 }
 
 async fn verify_node_runtime(node_root: &Path) -> Result<(), String> {
@@ -1555,39 +1556,70 @@ async fn download_node_archive<R: tauri::Runtime>(
     destination: &Path,
 ) -> Result<(), String> {
     let client = http_client()?;
-    let mut response = client
+    let response = client
         .get(NODE_ARCHIVE_URL)
         .send()
         .await
         .map_err(|error| format!("unable to download Node.js: {error}"))?
         .error_for_status()
         .map_err(|error| format!("Node.js download returned an error: {error}"))?;
+    download_archive_response::<R, Sha256>(
+        app,
+        operation_id,
+        response,
+        destination,
+        ArchiveDownloadPolicy {
+            label: "Node.js",
+            max_bytes: NODE_ARCHIVE_MAX_BYTES,
+            checksum: NODE_ARCHIVE_SHA256,
+        },
+    )
+    .await
+}
+
+struct ArchiveDownloadPolicy {
+    label: &'static str,
+    max_bytes: u64,
+    checksum: &'static str,
+}
+
+async fn download_archive_response<R: tauri::Runtime, D: Digest>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    mut response: reqwest::Response,
+    destination: &Path,
+    policy: ArchiveDownloadPolicy,
+) -> Result<(), String> {
+    let label = policy.label;
     let total = response.content_length();
-    if total.is_some_and(|size| size > NODE_ARCHIVE_MAX_BYTES) {
-        return Err("Node.js archive exceeds the approved size limit".into());
+    if total.is_some_and(|size| size > policy.max_bytes) {
+        return Err(format!("{label} archive exceeds the approved size limit"));
     }
     update_agent_runtime(app, operation_id, |runtime| runtime.total_bytes = total)?;
 
-    let mut file = tokio::fs::File::create(destination)
-        .await
-        .map_err(|error| format!("unable to create Node.js download: {error}"))?;
-    let mut hasher = Sha256::new();
+    // A deferred blocking open could race staging removal after this future is
+    // cancelled. Open the local file before yielding; subsequent async writes
+    // retain only its inode and cannot add directory entries during cleanup.
+    let file = File::create(destination)
+        .map_err(|error| format!("unable to create {label} download: {error}"))?;
+    let mut file = tokio::fs::File::from_std(file);
+    let mut hasher = D::new();
     let mut downloaded = 0_u64;
     let mut last_published = 0_u64;
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| format!("unable to read Node.js download: {error}"))?
+        .map_err(|error| format!("unable to read {label} download: {error}"))?
     {
         downloaded = downloaded
             .checked_add(chunk.len() as u64)
-            .ok_or_else(|| "Node.js download size overflow".to_string())?;
-        if downloaded > NODE_ARCHIVE_MAX_BYTES {
-            return Err("Node.js archive exceeds the approved size limit".into());
+            .ok_or_else(|| format!("{label} download size overflow"))?;
+        if downloaded > policy.max_bytes {
+            return Err(format!("{label} archive exceeds the approved size limit"));
         }
         file.write_all(&chunk)
             .await
-            .map_err(|error| format!("unable to write Node.js download: {error}"))?;
+            .map_err(|error| format!("unable to write {label} download: {error}"))?;
         hasher.update(&chunk);
         if downloaded.saturating_sub(last_published) >= 1024 * 1024 {
             update_agent_runtime(app, operation_id, |runtime| {
@@ -1598,15 +1630,15 @@ async fn download_node_archive<R: tauri::Runtime>(
     }
     file.flush()
         .await
-        .map_err(|error| format!("unable to flush Node.js download: {error}"))?;
+        .map_err(|error| format!("unable to flush {label} download: {error}"))?;
     update_agent_runtime(app, operation_id, |runtime| {
         runtime.downloaded_bytes = downloaded
     })?;
-    let digest = hasher.finalize();
-    let actual = hex_digest(&digest);
-    if actual != NODE_ARCHIVE_SHA256 {
+    let actual = hex_digest(&hasher.finalize());
+    if actual != policy.checksum {
         return Err(format!(
-            "Node.js archive checksum mismatch: expected {NODE_ARCHIVE_SHA256}, got {actual}"
+            "{label} archive checksum mismatch: expected {}, got {actual}",
+            policy.checksum
         ));
     }
     Ok(())
@@ -1617,10 +1649,14 @@ async fn extract_approved_archive(
     destination: &Path,
     expected_root: &'static str,
     label: &'static str,
+    staging: Arc<StagingCleanup>,
 ) -> Result<(), String> {
     let archive = archive.to_path_buf();
     let destination = destination.to_path_buf();
     tokio::task::spawn_blocking(move || {
+        // A started blocking worker outlives cancellation of its JoinHandle.
+        // Keep its directory until the last writer has exited (including panic).
+        let _staging = staging;
         extract_approved_archive_blocking(&archive, &destination, expected_root, label)
     })
     .await
@@ -1703,19 +1739,24 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
         runtime.total_bytes = None;
     })?;
 
-    let staging_root = root.join(".staging").join(Uuid::new_v4().to_string());
+    let staging = StagingCleanup::create(root, "pnpm")?;
+    let staging_root = &staging.path;
     let archive_path = staging_root.join(PNPM_ARCHIVE_NAME);
-    fs::create_dir_all(&staging_root)
-        .map_err(|error| format!("unable to create pnpm staging directory: {error}"))?;
-    let result = async {
+    async {
         download_pnpm_archive(app, operation_id, &archive_path).await?;
         update_agent_runtime(app, operation_id, |runtime| {
             runtime.stage = AgentRuntimeStage::Verifying;
             runtime.message = Some("Verifying and extracting pnpm…".into());
         })?;
         let extraction_root = staging_root.join("extracted");
-        extract_approved_archive(&archive_path, &extraction_root, PNPM_ARCHIVE_ROOT, "pnpm")
-            .await?;
+        extract_approved_archive(
+            &archive_path,
+            &extraction_root,
+            PNPM_ARCHIVE_ROOT,
+            "pnpm",
+            staging.clone(),
+        )
+        .await?;
         let extracted_pnpm = extraction_root.join(PNPM_ARCHIVE_ROOT);
         verify_pnpm_runtime_payload(node_root, &extracted_pnpm).await?;
         let pnpm_record = PnpmInstallRecord {
@@ -1745,9 +1786,7 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
             Err(error) => Err(format!("unable to activate managed pnpm runtime: {error}")),
         }
     }
-    .await;
-    cleanup_staging(root, &staging_root);
-    result
+    .await
 }
 
 async fn verify_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
@@ -1800,66 +1839,41 @@ async fn download_pnpm_archive<R: tauri::Runtime>(
     destination: &Path,
 ) -> Result<(), String> {
     let client = http_client()?;
-    let mut response = client
+    let response = client
         .get(PNPM_ARCHIVE_URL)
         .send()
         .await
         .map_err(|error| format!("unable to download pnpm from Takumi Guard: {error}"))?
         .error_for_status()
         .map_err(|error| format!("Takumi Guard pnpm download returned an error: {error}"))?;
-    let total = response.content_length();
-    if total.is_some_and(|size| size > PNPM_ARCHIVE_MAX_BYTES) {
-        return Err("pnpm archive exceeds the approved size limit".into());
-    }
-    update_agent_runtime(app, operation_id, |runtime| runtime.total_bytes = total)?;
-
-    let mut file = tokio::fs::File::create(destination)
-        .await
-        .map_err(|error| format!("unable to create pnpm download: {error}"))?;
-    let mut hasher = Sha512::new();
-    let mut downloaded = 0_u64;
-    let mut last_published = 0_u64;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("unable to read pnpm download: {error}"))?
-    {
-        downloaded = downloaded
-            .checked_add(chunk.len() as u64)
-            .ok_or_else(|| "pnpm download size overflow".to_string())?;
-        if downloaded > PNPM_ARCHIVE_MAX_BYTES {
-            return Err("pnpm archive exceeds the approved size limit".into());
-        }
-        file.write_all(&chunk)
-            .await
-            .map_err(|error| format!("unable to write pnpm download: {error}"))?;
-        hasher.update(&chunk);
-        if downloaded.saturating_sub(last_published) >= 1024 * 1024 {
-            update_agent_runtime(app, operation_id, |runtime| {
-                runtime.downloaded_bytes = downloaded
-            })?;
-            last_published = downloaded;
-        }
-    }
-    file.flush()
-        .await
-        .map_err(|error| format!("unable to flush pnpm download: {error}"))?;
-    update_agent_runtime(app, operation_id, |runtime| {
-        runtime.downloaded_bytes = downloaded
-    })?;
-    let digest = hasher.finalize();
-    let actual = hex_digest(&digest);
-    if actual != PNPM_ARCHIVE_SHA512 {
-        return Err(format!(
-            "pnpm archive checksum mismatch: expected {PNPM_ARCHIVE_SHA512}, got {actual}"
-        ));
-    }
-    Ok(())
+    download_archive_response::<R, Sha512>(
+        app,
+        operation_id,
+        response,
+        destination,
+        ArchiveDownloadPolicy {
+            label: "pnpm",
+            max_bytes: PNPM_ARCHIVE_MAX_BYTES,
+            checksum: PNPM_ARCHIVE_SHA512,
+        },
+    )
+    .await
 }
 
 struct StagingCleanup {
     root: PathBuf,
     path: PathBuf,
+}
+impl StagingCleanup {
+    fn create(root: &Path, label: &str) -> Result<Arc<Self>, String> {
+        let staging = Arc::new(Self {
+            root: root.to_owned(),
+            path: root.join(".staging").join(Uuid::new_v4().to_string()),
+        });
+        fs::create_dir_all(&staging.path)
+            .map_err(|error| format!("unable to create {label} staging directory: {error}"))?;
+        Ok(staging)
+    }
 }
 impl Drop for StagingCleanup {
     fn drop(&mut self) {
@@ -2451,6 +2465,233 @@ fn display_name(kind: AgentKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn wait_until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("runtime staging test did not reach its expected state");
+    }
+
+    async fn cancel_archive_download<D: Digest>(name: &str, policy: ArchiveDownloadPolicy) {
+        let app = tauri::test::mock_builder()
+            .manage(crate::test_support::state())
+            .manage(crate::ui::TrayPresentation::<tauri::test::MockRuntime>(
+                Arc::new(NoopTray),
+            ))
+            .build(crate::product_context())
+            .unwrap();
+        let operation = Uuid::new_v4();
+        publish_agent_runtime(
+            app.handle(),
+            AgentRuntimeState {
+                operation_id: Some(operation),
+                stage: AgentRuntimeStage::Downloading,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let root = root();
+        let staging = StagingCleanup::create(&root, policy.label).unwrap();
+        let path = staging.path.clone();
+        let destination = path.join(name);
+        // A bounded local HTTP response leaves the production writer awaiting
+        // its last chunk after a partial archive has actually reached disk.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048577\r\n\r\n")
+                .await
+                .unwrap();
+            stream.write_all(&vec![0; 1024 * 1024]).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let response = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        {
+            let download = async {
+                let _staging = staging;
+                download_archive_response::<_, D>(
+                    app.handle(),
+                    operation,
+                    response,
+                    &destination,
+                    policy,
+                )
+                .await
+            };
+            tokio::pin!(download);
+            tokio::select! {
+                result = &mut download => panic!("download finished before cancellation: {result:?}"),
+                () = wait_until(|| {
+                    app.state::<AppState>().snapshot().unwrap()
+                        .agent_runtime.downloaded_bytes == 1024 * 1024
+                        && fs::metadata(&destination).is_ok_and(|file| file.len() > 0)
+                }) => {}
+            }
+            assert!(path.is_dir());
+        }
+        assert!(!path.exists(), "cancelled download left staging behind");
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_node_download_removes_partial_archive() {
+        cancel_archive_download::<Sha256>(
+            NODE_ARCHIVE_NAME,
+            ArchiveDownloadPolicy {
+                label: "Node.js",
+                max_bytes: NODE_ARCHIVE_MAX_BYTES,
+                checksum: NODE_ARCHIVE_SHA256,
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_pnpm_download_removes_partial_archive() {
+        cancel_archive_download::<Sha512>(
+            PNPM_ARCHIVE_NAME,
+            ArchiveDownloadPolicy {
+                label: "pnpm",
+                max_bytes: PNPM_ARCHIVE_MAX_BYTES,
+                checksum: PNPM_ARCHIVE_SHA512,
+            },
+        )
+        .await;
+    }
+
+    fn archive_fixture(expected_root: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(7);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("{expected_root}/payload"),
+            &b"payload"[..],
+        )
+        .unwrap();
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn completed_extraction_keeps_payload_until_installer_releases_staging() {
+        for expected_root in [NODE_ARCHIVE_ROOT, PNPM_ARCHIVE_ROOT] {
+            let root = root();
+            let staging = StagingCleanup::create(&root, "test").unwrap();
+            let path = staging.path.clone();
+            let archive = path.join("archive.tgz");
+            let destination = path.join("extracted");
+            fs::write(&archive, archive_fixture(expected_root)).unwrap();
+            extract_approved_archive(
+                &archive,
+                &destination,
+                expected_root,
+                "test",
+                staging.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                fs::read(destination.join(expected_root).join("payload")).unwrap(),
+                b"payload"
+            );
+            drop(staging);
+            assert!(!path.exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    async fn cancel_archive_extraction(name: &str, expected_root: &'static str) {
+        let root = root();
+        let staging = StagingCleanup::create(&root, "test").unwrap();
+        let weak = Arc::downgrade(&staging);
+        let path = staging.path.clone();
+        let archive = path.join(name);
+        let destination = path.join("extracted");
+        // Reading this FIFO blocks the actual extraction worker after it has
+        // created the destination. No artificial sleeps or test-only worker
+        // implementation are needed to cancel during a live blocking read.
+        assert!(std::process::Command::new("/usr/bin/mkfifo")
+            .arg(&archive)
+            .status()
+            .unwrap()
+            .success());
+        let bytes = archive_fixture(expected_root);
+        struct ExtractionInput {
+            file: File,
+            bytes: Vec<u8>,
+        }
+        impl Drop for ExtractionInput {
+            fn drop(&mut self) {
+                use std::io::Write;
+                // Also release the blocking reader if an assertion unwinds.
+                let _ = self.file.write_all(&self.bytes);
+            }
+        }
+        let input = ExtractionInput {
+            file: fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&archive)
+                .unwrap(),
+            bytes,
+        };
+        let worker_archive = archive.clone();
+        let worker_destination = destination.clone();
+        let install = tokio::spawn(async move {
+            extract_approved_archive(
+                &worker_archive,
+                &worker_destination,
+                expected_root,
+                "test",
+                staging,
+            )
+            .await
+        });
+        wait_until(|| destination.is_dir()).await;
+        install.abort();
+        assert!(install.await.unwrap_err().is_cancelled());
+        assert!(
+            path.is_dir(),
+            "active extraction lost its staging directory"
+        );
+        assert!(weak.upgrade().is_some());
+
+        // Supplying the archive lets the detached production worker finish.
+        // The open FIFO remains writable even if a regressed cleanup unlinks it.
+        drop(input);
+        wait_until(|| weak.upgrade().is_none() && !path.exists()).await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_node_extraction_keeps_staging_until_worker_exits() {
+        cancel_archive_extraction(NODE_ARCHIVE_NAME, NODE_ARCHIVE_ROOT).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_pnpm_extraction_keeps_staging_until_worker_exits() {
+        cancel_archive_extraction(PNPM_ARCHIVE_NAME, PNPM_ARCHIVE_ROOT).await;
+    }
+
     fn copy_fixture(source: &Path, destination: &Path) {
         fs::create_dir_all(destination).unwrap();
         for entry in fs::read_dir(source).unwrap() {
