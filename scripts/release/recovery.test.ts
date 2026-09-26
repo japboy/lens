@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,7 +11,6 @@ import { RELEASE_WORKFLOW, RECEIPT_NAME, verifyArtifactV2, promoteArtifactV2 } f
 import type { ArtifactManifestV2 } from "./receipt.ts";
 import { resumeRelease, verifyBuildProvenance, verifyPublishedRelease } from "./resume.ts";
 import type { OriginalArtifact, RemoteAsset } from "./resume.ts";
-import { publishReleaseV2 } from "./publisher.ts";
 import { publishDurableRelease, restoreDurableArtifact } from "./durable.ts";
 import { BUNDLE_NAME, createBundle, restoreBundle } from "./recovery-bundle.ts";
 
@@ -149,8 +148,20 @@ function fixture() {
       expect(sha).toBe(controller);
     },
   };
-  const publish = (enabled = true, immutable = true) =>
-    publishReleaseV2(api, directory, admitted, provenance, enabled, immutable);
+  const publish = (enabled = true, immutable = true) => {
+    if (release.draft && !existsSync(join(directory, BUNDLE_NAME))) {
+      const candidate = verifyArtifactV2(directory, { ...admitted, repository: "owner/repo" });
+      writeFileSync(join(directory, BUNDLE_NAME), createBundle(directory, candidate));
+    }
+    return publishDurableRelease(
+      api,
+      directory,
+      admitted,
+      { ...provenance, verifyAttestation: () => undefined },
+      enabled,
+      immutable,
+    );
+  };
   return {
     directory,
     manifest,
@@ -217,27 +228,32 @@ describe("schema 2 artifact and Actions provenance", () => {
       f.close();
     }
   });
-  it.each([
-    "expired",
-    "controller",
-    "branch",
-    "repository",
-    "event",
-    "workflow",
-    "attempt",
-    "verification",
-  ])("rejects %s provenance conflicts before upload", async (fault) => {
+  it.each(["controller", "branch", "repository", "event", "workflow", "attempt", "verification"])(
+    "rejects %s provenance conflicts before upload",
+    async (fault) => {
+      const f = fixture();
+      try {
+        if (fault === "controller") f.run.head_sha = source;
+        if (fault === "branch") f.run.head_branch = "feature";
+        if (fault === "repository") f.run.head_repository.full_name = "fork/repo";
+        if (fault === "event") f.run.event = "pull_request_target";
+        if (fault === "workflow") f.run.path = ".github/workflows/other.yml";
+        if (fault === "attempt") f.run.run_attempt = 3;
+        if (fault === "verification") f.verification.conclusion = "skipped";
+        await expect(f.publish()).rejects.toThrow(/.+/u);
+        expect(f.writes).toEqual([]);
+      } finally {
+        f.close();
+      }
+    },
+  );
+  it("rejects an expired Actions artifact when selecting retained transport", async () => {
     const f = fixture();
     try {
-      if (fault === "expired") f.artifact.expired = true;
-      if (fault === "controller") f.run.head_sha = source;
-      if (fault === "branch") f.run.head_branch = "feature";
-      if (fault === "repository") f.run.head_repository.full_name = "fork/repo";
-      if (fault === "event") f.run.event = "pull_request_target";
-      if (fault === "workflow") f.run.path = ".github/workflows/other.yml";
-      if (fault === "attempt") f.run.run_attempt = 3;
-      if (fault === "verification") f.verification.conclusion = "skipped";
-      await expect(f.publish()).rejects.toThrow(/.+/u);
+      f.artifact.expired = true;
+      await expect(
+        verifyBuildProvenance(f.api.request, f.manifest, "456", f.provenance),
+      ).rejects.toThrow(/.+/u);
       expect(f.writes).toEqual([]);
     } finally {
       f.close();
@@ -511,11 +527,12 @@ describe("draft and published finite recovery", () => {
       f.close();
     }
   });
-  it("uploads exactly DMG/checksum/receipt, preserves RP metadata and verifies terminal state without Actions", async () => {
+  it("uploads exactly bundle/DMG/checksum/receipt, preserves RP metadata and verifies terminal state without Actions", async () => {
     const f = fixture();
     try {
       expect(await f.publish()).toBe("published");
       expect(f.remote.map((asset) => asset.name)).toEqual([
+        BUNDLE_NAME,
         "Lens_0.1.0_aarch64.dmg",
         "SHA256SUMS",
         RECEIPT_NAME,
@@ -615,7 +632,7 @@ describe("draft and published finite recovery", () => {
         state: "legacy-published",
       });
       await expect(
-        publishReleaseV2(
+        publishDurableRelease(
           f.api,
           f.directory,
           { ...admitted, legacy: true },
@@ -644,7 +661,7 @@ describe("draft and published finite recovery", () => {
       f.close();
     }
   });
-  it("writes a source-bound receipt with actual original artifact/run identities", async () => {
+  it("writes a source-bound receipt with original build and durable bundle identities", async () => {
     const f = fixture();
     try {
       expect(await f.publish(false)).toBe("draft");
@@ -652,17 +669,79 @@ describe("draft and published finite recovery", () => {
         f.remote.find((asset) => asset.name === RECEIPT_NAME)!.bytes.toString("utf8"),
       );
       expect(receipt).toMatchObject({
-        schema: 2,
+        schema: 3,
         releaseId: 50,
         pullRequest: 18,
         source,
         controller,
         runId: "123",
         runAttempt: "2",
-        artifactId: "456",
+        verificationAttempt: "2",
+        signingAttempt: "2",
+        bundle: { name: BUNDLE_NAME, sha256: sha256(readFileSync(join(f.directory, BUNDLE_NAME))) },
       });
+      expect(receipt.artifactId).toBeUndefined();
       expect(readFileSync(join(f.directory, "release-manifest.json"), "utf8")).not.toContain(
         '"artifactId"',
+      );
+    } finally {
+      f.close();
+    }
+  });
+});
+
+describe("historical schema 2 published receipts", () => {
+  it("verifies the original three-asset contract without local artifacts, Actions or publication writes", async () => {
+    const f = fixture();
+    try {
+      const receipt = {
+        schema: 2,
+        repository: "owner/repo",
+        tag: admitted.tag,
+        source,
+        controller,
+        workflow: RELEASE_WORKFLOW,
+        runId: "123",
+        runAttempt: "2",
+        verificationAttempt: "2",
+        version: admitted.version,
+        pullRequest: admitted.pullRequest,
+        releaseId: admitted.releaseId,
+        artifactId: "456",
+        assets: f.manifest.assets,
+      };
+      for (const name of f.manifest.assets.map((asset) => asset.name)) {
+        const bytes = readFileSync(join(f.directory, name));
+        f.remote.push({
+          id: f.remote.length + 1,
+          name,
+          bytes,
+          size: bytes.length,
+          state: "uploaded",
+          digest: `sha256:${sha256(bytes)}`,
+        });
+      }
+      const bytes = Buffer.from(JSON.stringify(receipt));
+      f.remote.push({
+        id: 3,
+        name: RECEIPT_NAME,
+        bytes,
+        size: bytes.length,
+        state: "uploaded",
+        digest: `sha256:${sha256(bytes)}`,
+      });
+      f.release.draft = false;
+      f.release.immutable = true;
+      f.flags.forbidActions = true;
+      expect((await verifyPublishedRelease(f.api, admitted, "owner/repo")).schema).toBe(2);
+      expect((await resumeRelease(f.api, admitted, "owner/repo")).state).toBe("published");
+      expect(
+        await publishDurableRelease(f.api, "no-local-artifact", admitted, f.provenance, true, true),
+      ).toBe("already-published");
+      expect(f.writes).toEqual([]);
+      f.remote[0]!.bytes = Buffer.from("corrupted");
+      await expect(verifyPublishedRelease(f.api, admitted, "owner/repo")).rejects.toThrow(
+        "bytes conflict",
       );
     } finally {
       f.close();
