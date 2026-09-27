@@ -8,7 +8,7 @@
     "@types/node": "24.13.4",
     "oxfmt": "0.68.0",
     "oxlint": "1.83.0",
-    "release-please": "17.6.0",
+    "release-please": "17.11.2",
     "typescript": "7.0.2",
     "typescript-config": "workspace:*",
     "vitest": "5.0.0",
