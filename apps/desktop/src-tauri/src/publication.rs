@@ -373,6 +373,72 @@ mod tests {
         state
     }
     #[test]
+    fn representation_clones_share_image_storage_and_overlay_keeps_only_metadata() {
+        let state = crate::test_support::state();
+        let representation = crate::model::LensRepresentation {
+            prompt_execution_revision: 7,
+            representation_id: Uuid::from_u128(2),
+            context_id: Uuid::from_u128(3),
+            context_revision: 11,
+            projection: serde_json::from_value(serde_json::json!({
+                "revision": 5,
+                "digest": "a".repeat(64),
+            }))
+            .unwrap(),
+            run_id: Uuid::from_u128(4),
+            output_blocks: vec![image_block()].into(),
+        };
+        let cloned = representation.clone();
+        // A full representation clone must retain the same allocation, including
+        // its multi-megabyte image string, before publication strips its body.
+        assert!(Arc::ptr_eq(
+            &cloned.output_blocks,
+            &representation.output_blocks
+        ));
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.lens.operation_id = Some(Uuid::from_u128(1));
+            snapshot.lens.representation = Some(cloned);
+        }
+
+        let snapshot = state.snapshot().unwrap();
+        assert!(Arc::ptr_eq(
+            &snapshot.lens.representation.as_ref().unwrap().output_blocks,
+            &representation.output_blocks
+        ));
+        let wire = window_snapshot(&state, "lens-overlay").unwrap();
+        let metadata = wire.snapshot.lens.representation.as_ref().unwrap();
+        assert_eq!(
+            metadata.prompt_execution_revision,
+            representation.prompt_execution_revision
+        );
+        assert_eq!(metadata.representation_id, representation.representation_id);
+        assert_eq!(metadata.context_id, representation.context_id);
+        assert_eq!(metadata.context_revision, representation.context_revision);
+        assert_eq!(metadata.projection, representation.projection);
+        assert_eq!(metadata.run_id, representation.run_id);
+        assert!(metadata.output_blocks.is_empty());
+        assert!(serde_json::to_vec(&wire).unwrap().len() < 64 * 1024);
+
+        let content = output(&state, wire.output_ref.as_deref().unwrap()).unwrap();
+        assert!(content.output_blocks.is_empty());
+        let image_ref = content.representation.as_ref().unwrap()["output_blocks"][0]["image_ref"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            image(&state, image_ref).unwrap().data.as_str(),
+            "x".repeat(2 * 1024 * 1024)
+        );
+
+        let publication = state.publication.0.lock().unwrap();
+        let retained = publication.output.as_ref().unwrap();
+        assert!(Arc::ptr_eq(
+            &retained.representation.as_ref().unwrap().output_blocks,
+            &representation.output_blocks
+        ));
+    }
+
+    #[test]
     fn window_events_are_body_free_and_image_identity_survives_text_updates() {
         let state = image_state();
         let wire = window_snapshot(&state, "lens-overlay").unwrap();
