@@ -966,7 +966,7 @@ describe("Lens rich Agent output", () => {
     }
   });
 
-  it("resumes a paused live operation", async () => {
+  it("shows Resume pending before IPC completes, rejects duplicates, and permits retry after failure", async () => {
     snapshot.lens = {
       ...completedLens,
       live: {
@@ -977,21 +977,60 @@ describe("Lens rich Agent output", () => {
       },
     };
     const { invoke } = await import("@tauri-apps/api/core");
-    const element = await createPage("overlay");
-    await vi.waitFor(() => {
-      expect(
-        Array.from(viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? []).some(
-          (button) => button.textContent?.trim() === "Resume Updates",
-        ),
-      ).toBe(true);
+    const mocked = vi.mocked(invoke);
+    const original = mocked.getMockImplementation()!;
+    const requests: { resolve: () => void; reject: (error: Error) => void }[] = [];
+    mocked.mockImplementation(async (command, ...args) => {
+      if (command === "resume_lens")
+        return new Promise<void>((resolve, reject) => requests.push({ resolve, reject }));
+      return original(command, ...args);
     });
-    const resume = Array.from(
-      viewRoot(element, "lens-overlay-view")?.querySelectorAll("button") ?? [],
-    ).find((button) => button.textContent?.trim() === "Resume Updates");
-    resume?.click();
-    await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("resume_lens", { operationId });
-    });
+    try {
+      const page = await createPage("overlay");
+      const root = viewRoot(page, "lens-overlay-view")!;
+      await vi.waitFor(() => expect(root.textContent).toContain("Resume Updates"));
+      const resume = [...root.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Resume Updates",
+      )!;
+      resume.click();
+      await vi.waitFor(() => {
+        expect(resume.textContent).toContain("Resuming Updates…");
+        expect(resume.disabled).toBe(true);
+        expect(resume.getAttribute("aria-busy")).toBe("true");
+      });
+      expect(mocked).toHaveBeenCalledWith("resume_lens", { operationId });
+      resume.click();
+      page.dispatchEvent(new CustomEvent("lens-overlay-intent", { detail: { type: "resume" } }));
+      expect(requests).toHaveLength(1);
+      expect(closeCurrentWindow).not.toHaveBeenCalled();
+
+      requests[0].reject(new Error("Resume failed"));
+      await vi.waitFor(() => {
+        expect(root.querySelector('[role="alert"]')?.textContent).toContain("Resume failed");
+        expect(resume.textContent?.trim()).toBe("Resume Updates");
+        expect(resume.disabled).toBe(false);
+        expect(resume.getAttribute("aria-busy")).toBe("false");
+      });
+      expect(closeCurrentWindow).not.toHaveBeenCalled();
+
+      resume.click();
+      await vi.waitFor(() => {
+        expect(requests).toHaveLength(2);
+        expect(resume.textContent).toContain("Resuming Updates…");
+        expect(resume.disabled).toBe(true);
+        expect(root.textContent).not.toContain("Resume failed");
+      });
+      requests[1].resolve();
+      await vi.waitFor(() => {
+        expect(resume.textContent?.trim()).toBe("Resume Updates");
+        expect(resume.disabled).toBe(false);
+        expect(resume.getAttribute("aria-busy")).toBe("false");
+      });
+      expect(mocked.mock.calls.filter(([command]) => command === "resume_lens")).toHaveLength(2);
+      expect(closeCurrentWindow).not.toHaveBeenCalled();
+    } finally {
+      mocked.mockImplementation(original);
+    }
   });
 
   it("keeps the window open when Stop fails", async () => {
