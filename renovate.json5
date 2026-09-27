@@ -79,7 +79,7 @@
     {
       description: "Build/test-only Cargo libraries share the tooling group; crates also used at runtime stay in the application group.",
       matchManagers: ["cargo"],
-      matchPackageNames: ["toml", "pretty_assertions"],
+      matchPackageNames: ["cc", "toml", "pretty_assertions"],
       groupName: "Development tooling",
     },
     {
