@@ -102,6 +102,8 @@ export class OverlayPage extends ReactiveElement {
     view.loadResponseBlock = this.responseHistory.loadBlock;
     view.requestResponseMedia = this.responseHistory.requestMedia;
     view.retryResponseMedia = this.retryResponseMedia;
+    view.retrySnapshotResource = this.retrySnapshotResource;
+    view.requestSource = this.requestSource;
     this.htmlOutput.synchronize(
       !this.sessionView.view ||
         isHistoryView(this.sessionView.view) ||
@@ -121,10 +123,18 @@ export class OverlayPage extends ReactiveElement {
             this.snapshots.message(),
           ),
           interactionSubmission: this.interactionSubmission,
+          sourceResource: this.snapshots.resources.sourceState,
+          outputResource: this.snapshots.resources.outputState,
         }
       : undefined;
   }
 
+  private readonly requestSource = (active: boolean): void => {
+    this.snapshots.resources.setSourceDemand(active);
+  };
+  private readonly retrySnapshotResource = (kind: "source" | "output"): void => {
+    this.snapshots.resources.retry(kind);
+  };
   private readonly retryResponseMedia = async (id: string): Promise<void> => {
     await this.responseHistory.retryMedia(id);
     await this.updateComplete;

@@ -32,7 +32,20 @@ export interface AboutDocuments {
   notice: string;
 }
 
+export interface LensSourceResource {
+  source_ref: string;
+  context?: AppSnapshot["lens"]["context"];
+  input?: AppSnapshot["lens"]["input"];
+}
+export interface LensOutputResource {
+  output_ref: string;
+  output_blocks: LensOutputBlock[];
+}
+
 export interface WebviewPort {
+  getLensSource(sourceRef: string): Promise<LensSourceResource>;
+  getLensOutput(outputRef: string): Promise<LensOutputResource>;
+  getLensImage(imageRef: string): Promise<{ image_ref: string; data: string }>;
   getSessionView(): Promise<SessionView>;
   getSessionBlock(request: {
     generation: string;
@@ -115,6 +128,9 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  getLensSource: (sourceRef) => invoke("get_lens_source", { sourceRef }),
+  getLensOutput: (outputRef) => invoke("get_lens_output", { outputRef }),
+  getLensImage: (imageRef) => invoke("get_lens_image", { imageRef }),
   getSessionView: () => invoke<SessionView>("get_session_view"),
   getSessionBlock: (request) => invoke("get_session_block", { request }),
   subscribeToSessionView: (listener) =>
@@ -165,9 +181,9 @@ export const tauriWebviewPort: WebviewPort = {
     await invoke("respond_agent_interaction", { operationId, instanceId, interactionId, response });
   },
   async subscribeToAppSnapshot(listener) {
-    return listen<AppSnapshot>("app-state-changed", ({ payload }) => listener(payload));
+    return listen<AppSnapshot>("window-app-state-changed", ({ payload }) => listener(payload));
   },
-  getAppSnapshot: () => invoke<AppSnapshot>("get_app_snapshot"),
+  getAppSnapshot: () => invoke<AppSnapshot>("get_window_snapshot"),
   openScreenRecordingSettings: () => invoke<void>("open_screen_recording_settings"),
   getAccessibilityPermission: () => invoke<boolean>("accessibility_permission"),
   requestAccessibilityPermission: () => invoke<boolean>("request_accessibility_permission"),

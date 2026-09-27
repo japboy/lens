@@ -61,7 +61,7 @@ export class LensAgentSettings extends LitElement {
       if (typeof this.selection?.candidate === "string")
         this.managedSelection = this.selection.candidate;
       this.editingId =
-        typeof this.selection?.candidate === "object"
+        this.selection?.candidate != null && typeof this.selection.candidate === "object"
           ? this.selection.candidate.external
           : undefined;
     }
@@ -559,7 +559,8 @@ export class LensAgentSettings extends LitElement {
     this.drafts = remaining;
     this.argumentDrafts = remainingArguments;
     const candidate = this.selection?.candidate;
-    this.editingId = typeof candidate === "object" ? candidate.external : undefined;
+    this.editingId =
+      candidate != null && typeof candidate === "object" ? candidate.external : undefined;
     if (typeof candidate === "string") this.managedSelection = candidate;
     this.draftRevision += 1;
   }

@@ -584,6 +584,29 @@ async fn concurrent_settings_change_rejects_candidate_publication() {
         Some("11111111-1111-4111-8111-111111111111")
     );
 }
+
+#[tokio::test]
+async fn superseded_runtime_operation_rejects_verified_update_without_annotating_new_work() {
+    let h = Harness::new(Scenario::Normal, defaults(&[]));
+    let verified = h.verify().await.unwrap();
+    h.app
+        .state::<AppState>()
+        .runtime
+        .write()
+        .unwrap()
+        .agent_runtime
+        .operation_id = Some(Uuid::new_v4());
+    let before = h.app.state::<AppState>().snapshot().unwrap();
+    let disk = h.config_on_disk();
+    let selector = read_selector(h.root.path(), AgentKind::Codex).unwrap();
+    assert!(commit_verified_update(h.app.handle(), &h.candidate, verified).is_err());
+    assert_eq!(h.app.state::<AppState>().snapshot().unwrap(), before);
+    assert_eq!(h.config_on_disk(), disk);
+    assert_eq!(
+        read_selector(h.root.path(), AgentKind::Codex).unwrap(),
+        selector
+    );
+}
 #[tokio::test]
 async fn stale_preview_from_retired_runtime_cannot_overwrite_updated_catalog() {
     let h = Harness::new(Scenario::Normal, defaults(&[]));

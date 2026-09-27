@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn admission_is_disjoint_before_and_after_startup() {
         for command in [
-            "get_app_snapshot",
+            "get_window_snapshot",
             "set_agent",
             "update_prompt_presets",
             "select_lens_target",

@@ -2,6 +2,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SessionView } from "../application/session-document";
+import type { LensOverlayView } from "./lens-overlay-view";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../application/view-models";
 import type {
@@ -78,6 +79,87 @@ afterEach(() => {
 });
 
 describe("component property and event contracts", () => {
+  it("derives the Interpretation media cue from committed descriptors before bodies load", async () => {
+    const element = document.createElement("lens-overlay-view") as LensOverlayView;
+    const { output_blocks, ...identity } = representation("response", 1, "Previous inline body");
+    element.active = true;
+    element.model = {
+      platform: "macos",
+      lens: {
+        ...liveLens({ ...identity, output_blocks }),
+        output_blocks: [],
+      },
+      pending: false,
+      cancelPending: false,
+      message: "",
+    };
+    element.responseHistory = {
+      scopeId: "operation",
+      responses: [
+        {
+          id: "response",
+          sequence: 1,
+          blocks: [
+            { type: "image", block_index: 0, mime_type: "image/png", byte_length: 4 },
+            { type: "markdown", block_index: 1, byte_length: 4 },
+          ],
+        },
+      ],
+      media: [],
+      htmlContents: new Map(),
+      mediaErrors: new Map(),
+      capacityReached: false,
+    };
+    document.body.append(element);
+    await element.updateComplete;
+    element.model = {
+      ...element.model,
+      lens: {
+        ...element.model.lens,
+        representation: { ...identity, output_blocks: [] },
+        response_history: {
+          responses: [
+            {
+              ...identity,
+              sequence: 1,
+              block_count: 2,
+              retained_bytes: 8,
+              blocks: [
+                { type: "image", block_index: 0, mime_type: "image/png", byte_length: 4 },
+                { type: "markdown", block_index: 1, byte_length: 4 },
+              ],
+            },
+          ],
+          retained_bytes: 8,
+          capacity_reached: false,
+        },
+      },
+    };
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector<import("./lens-agent-output").LensAgentOutput>(
+        "lens-agent-output",
+      )?.lens.representation?.output_blocks,
+    ).toEqual([]);
+    expect(
+      element.shadowRoot?.querySelector(".overlay-shell")?.getAttribute("data-media-cue"),
+    ).toBe("true");
+    element.responseHistory = {
+      ...element.responseHistory,
+      responses: [
+        {
+          id: "response",
+          sequence: 1,
+          blocks: [{ type: "markdown", block_index: 0, byte_length: 4 }],
+        },
+      ],
+    };
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector(".overlay-shell")?.getAttribute("data-media-cue"),
+    ).toBe("false");
+  });
+
   it("leaves target-selection entrance motion outside the WebView content", async () => {
     const element = document.createElement("lens-target-selection-view") as HTMLElement & {
       model: TargetSelectionViewModel;
@@ -460,6 +542,7 @@ describe("component property and event contracts", () => {
     };
     const readyModel: OverlayViewModel = {
       platform: "macos",
+      sourceMetadata: { has_input: true, quality: "full" },
       lens: {
         operation_id: "operation",
         stage: "ready",

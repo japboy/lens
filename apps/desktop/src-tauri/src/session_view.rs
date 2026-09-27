@@ -88,6 +88,7 @@ pub(crate) struct SessionViewStore {
 #[derive(Default)]
 struct DisplayNotifications {
     scheduled: bool,
+    actor_owned: bool,
     pending: Option<DisplayChange>,
 }
 
@@ -99,8 +100,7 @@ struct DisplayChange {
 }
 
 impl DisplayNotifications {
-    /// Returns true only for the caller that must install a flush task.
-    fn push(&mut self, change: DisplayChange) -> bool {
+    fn record(&mut self, change: DisplayChange) {
         match self.pending.as_mut() {
             Some(pending) if pending.generation == change.generation => {
                 if pending.index != change.index {
@@ -109,6 +109,12 @@ impl DisplayNotifications {
             }
             _ => self.pending = Some(change),
         }
+    }
+
+    /// Returns true only for the caller that must install a flush task.
+    fn push(&mut self, change: DisplayChange) -> bool {
+        self.actor_owned = false;
+        self.record(change);
         if self.scheduled {
             false
         } else {
@@ -124,6 +130,10 @@ impl DisplayNotifications {
 
     fn take(&mut self, generation: Uuid) -> Option<DisplayChange> {
         self.scheduled = false;
+        // A fallback timer installed before this turn cannot steal its shared tick.
+        if self.actor_owned {
+            return None;
+        }
         self.pending
             .take()
             .filter(|pending| pending.generation == generation)
@@ -158,6 +168,13 @@ impl SessionViewStore {
 
     pub fn phase(&self) -> Result<ViewPhase, String> {
         self.inner.lock().map(|view| view.phase).map_err(lock_error)
+    }
+
+    pub(crate) fn configuration_authority(
+        &self,
+    ) -> Result<(Uuid, Option<Uuid>, ViewPhase), String> {
+        let view = self.inner.lock().map_err(lock_error)?;
+        Ok((view.generation, view.operation_id, view.phase))
     }
     #[cfg(test)]
     pub fn view(&self) -> Result<SessionView, String> {
@@ -223,16 +240,14 @@ pub(crate) fn history_enabled<R: Runtime>(app: &AppHandle<R>) -> Result<bool, St
 
 pub(crate) fn emit<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let state = app.state::<AppState>();
-    // Keep lifecycle publication ordered with mutations and timer flushes.
-    let view = state.session_view.inner.lock().map_err(lock_error)?;
-    let mut display = state.session_view.display.lock().map_err(lock_error)?;
-    display.supersede();
-    app.emit_to(
-        crate::ui::LENS_WINDOW_LABEL,
-        "session-view-changed",
-        view.wire(None),
-    )
-    .map_err(|error| error.to_string())
+    let wire = {
+        let view = state.session_view.inner.lock().map_err(lock_error)?;
+        let mut display = state.session_view.display.lock().map_err(lock_error)?;
+        display.supersede();
+        view.wire(None)
+    };
+    app.emit_to(crate::ui::LENS_WINDOW_LABEL, "session-view-changed", wire)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -317,9 +332,18 @@ pub(crate) fn start_live<R: Runtime>(
     emit(app)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum DisplayCadence {
+    /// The active turn's AgentProgress timer publishes transcript and output together.
+    Actor,
+    /// Updates received outside an active turn own one bounded display timer.
+    Timer,
+}
+
 fn mutate_live<R: Runtime>(
     app: &AppHandle<R>,
     session_id: &str,
+    cadence: DisplayCadence,
     update: impl FnOnce(&mut SessionDocument) -> Result<(), String>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -357,23 +381,28 @@ fn mutate_live<R: Runtime>(
         }
         view.entry_revisions[index] = revision;
     }
-    let schedule = state
-        .session_view
-        .display
-        .lock()
-        .map_err(lock_error)?
-        .push(DisplayChange {
+    let schedule = {
+        let mut display = state.session_view.display.lock().map_err(lock_error)?;
+        let change = DisplayChange {
             generation: view.generation,
             base_revision,
             index: changed,
-        });
+        };
+        match cadence {
+            DisplayCadence::Timer => display.push(change),
+            DisplayCadence::Actor => {
+                display.actor_owned = true;
+                display.record(change);
+                false
+            }
+        }
+    };
     drop(view);
     drop(snapshot);
     if schedule {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(16)).await;
-            if let Err(error) = flush_display(&app) {
+            if let Err(error) = flush_after_delay(&app).await {
                 eprintln!("Unable to publish session display update: {error}");
             }
         });
@@ -381,15 +410,54 @@ fn mutate_live<R: Runtime>(
     Ok(())
 }
 
+async fn flush_after_delay<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    flush_display(app)
+}
+
+/// Flush accepted transcript data at an interaction or turn boundary. Keep the
+/// existing timer reserved so a subsequent chunk cannot install a second timer.
+pub(crate) fn flush_live<R: Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    session_id: &str,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let wire = {
+        let snapshot = state.runtime.read().map_err(lock_error)?;
+        let view = state.session_view.inner.lock().map_err(lock_error)?;
+        if snapshot.lens.operation_id != Some(operation_id)
+            || view.operation_id != Some(operation_id)
+            || view.session_id.as_deref() != Some(session_id)
+            || view.phase != ViewPhase::Live
+        {
+            return Ok(());
+        }
+        let mut display = state.session_view.display.lock().map_err(lock_error)?;
+        let Some(change) = display
+            .pending
+            .take()
+            .filter(|change| change.generation == view.generation)
+        else {
+            return Ok(());
+        };
+        view.wire(change.index.map(|index| (change.base_revision, index)))
+    };
+    app.emit_to(crate::ui::LENS_WINDOW_LABEL, "session-view-changed", wire)
+        .map_err(|error| error.to_string())
+}
+
 fn flush_display<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let view = state.session_view.inner.lock().map_err(lock_error)?;
-    let mut display = state.session_view.display.lock().map_err(lock_error)?;
-    let Some(change) = display.take(view.generation) else {
-        return Ok(());
+    let wire = {
+        let view = state.session_view.inner.lock().map_err(lock_error)?;
+        let mut display = state.session_view.display.lock().map_err(lock_error)?;
+        let Some(change) = display.take(view.generation) else {
+            return Ok(());
+        };
+        // Only the final manifest/entry descriptor is built; no history body is cloned.
+        view.wire(change.index.map(|index| (change.base_revision, index)))
     };
-    // Only the final manifest/entry descriptor is built; no history body is cloned.
-    let wire = view.wire(change.index.map(|index| (change.base_revision, index)));
     app.emit_to(crate::ui::LENS_WINDOW_LABEL, "session-view-changed", wire)
         .map_err(|error| error.to_string())
 }
@@ -399,7 +467,9 @@ pub(crate) fn append_prompt<R: Runtime>(
     session_id: &str,
     prompt: &[ContentBlock],
 ) -> Result<(), String> {
-    mutate_live(app, session_id, |document| document.append_prompt(prompt))?;
+    mutate_live(app, session_id, DisplayCadence::Actor, |document| {
+        document.append_prompt(prompt)
+    })?;
     report_history_write(app, record_live_metadata(app, session_id, None));
     Ok(())
 }
@@ -408,6 +478,15 @@ pub(crate) fn record_live<R: Runtime>(
     session_id: &str,
     update: SessionUpdate,
 ) -> Result<(), String> {
+    record_live_with_cadence(app, session_id, update, DisplayCadence::Timer)
+}
+
+pub(crate) fn record_live_with_cadence<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    update: SessionUpdate,
+    cadence: DisplayCadence,
+) -> Result<(), String> {
     let info = match &update {
         SessionUpdate::SessionInfoUpdate(info) => Some(InfoPatch {
             title: metadata_patch(info.title.clone()),
@@ -415,7 +494,9 @@ pub(crate) fn record_live<R: Runtime>(
         }),
         _ => None,
     };
-    mutate_live(app, session_id, |document| document.record_update(update))?;
+    mutate_live(app, session_id, cadence, |document| {
+        document.record_update(update)
+    })?;
     if let Some(info) = info {
         report_history_write(app, record_live_metadata(app, session_id, Some(info)));
     }
@@ -572,7 +653,9 @@ fn merge_listings(
 }
 
 /// Caller holds admission while changing configuration and invalidating its history scope.
-pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub(crate) fn invalidate_working_directory_state<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let cwd = crate::store::effective_working_directory(&state.config()?);
     *state.session_view.catalog.lock().map_err(lock_error)? = HistoryCatalog {
@@ -591,6 +674,12 @@ pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Re
         };
     }
     drop(view);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    invalidate_working_directory_state(app)?;
     emit(app)?;
     crate::ui::sync_history_menu(app)
 }

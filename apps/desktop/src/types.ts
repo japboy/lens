@@ -359,7 +359,7 @@ export interface AgentSelectionState {
   agent_default?: string | null;
   operation_id?: string;
   stage: AgentSelectionStage;
-  candidate?: AgentKind;
+  candidate?: AgentKind | null;
   auth_methods: AgentAuthMethod[];
   message?: string;
   error?: string;
@@ -404,6 +404,7 @@ export interface LensImageOutputBlock extends LensOutputBlockBase {
   type: "image";
   mime_type: string;
   data: string;
+  image_ref?: string;
   uri?: string;
 }
 
@@ -507,6 +508,9 @@ export interface LensState {
 }
 
 export interface AppSnapshot {
+  source_ref: string | null;
+  source_metadata: { has_input: boolean; quality: ExtractionQuality | null } | null;
+  output_ref: string | null;
   revision: number;
   config: AppConfig;
   agent_selection: AgentSelectionState;

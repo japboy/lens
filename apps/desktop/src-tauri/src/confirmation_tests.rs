@@ -33,6 +33,8 @@ const OPERATION: Uuid = Uuid::from_u128(7);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     Success,
+    ProgressBurst(usize),
+    ProgressBurstFailure(usize),
     HtmlPublication(StopReason),
     NativeUnavailable,
     ObserverUnavailable,
@@ -575,12 +577,25 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                             // HTML-only turns must not depend on a text chunk for completion.
                             return responder.respond(PromptResponse::new(stop_reason));
                         }
-                        connection.send_notification(SessionNotification::new(
-                            request.session_id,
-                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                                ContentBlock::Text(TextContent::new("Fixture interpretation")),
-                            )),
-                        ))?;
+                        let chunks = match prompt.scenario {
+                            Scenario::ProgressBurst(chunks)
+                            | Scenario::ProgressBurstFailure(chunks) => chunks,
+                            _ => 1,
+                        };
+                        for _ in 0..chunks {
+                            connection.send_notification(SessionNotification::new(
+                                request.session_id.clone(),
+                                SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                    ContentBlock::Text(TextContent::new("Fixture interpretation")),
+                                )),
+                            ))?;
+                        }
+                        if matches!(prompt.scenario, Scenario::ProgressBurstFailure(_)) {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("fixture failed after accepted content"),
+                            );
+                        }
                         responder.respond(PromptResponse::new(StopReason::EndTurn))
                     },
                     agent_client_protocol::on_receive_request!(),
@@ -784,8 +799,12 @@ fn setup(scenario: Scenario) -> Harness {
     let recorded = snapshots.clone();
     let handle = app.handle().clone();
     let checked_initial_media = std::sync::atomic::AtomicBool::new(false);
-    let listener = app.listen_any("app-state-changed", move |event| {
-        let snapshot: AppSnapshot = serde_json::from_str(event.payload()).unwrap();
+    let listener = app.listen_any("window-app-state-changed", move |event| {
+        // This integration harness records canonical state at notification time.
+        // Window wire payload and deferred-resource atomicity have separate publication tests.
+        let wire: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+        let snapshot = handle.state::<AppState>().snapshot().unwrap();
+        assert!(u64::from(snapshot.revision) >= wire["revision"].as_u64().unwrap());
         if let Some(context) = &snapshot.lens.context {
             if context.revision == 1
                 && snapshot.lens.stage == LensStage::Ready
@@ -815,10 +834,140 @@ fn setup(scenario: Scenario) -> Harness {
 }
 
 fn invoke(window: &tauri::WebviewWindow<MockRuntime>, command: &str) -> LensState {
-    serde_json::from_value(
-        crate::shell_tests::invoke(window, command, json!({"operationId":OPERATION})).unwrap(),
-    )
-    .unwrap()
+    let acknowledgement =
+        crate::shell_tests::invoke(window, command, json!({"operationId":OPERATION})).unwrap();
+    assert!(
+        acknowledgement.is_null(),
+        "mutating commands acknowledge without retransmitting content"
+    );
+    window.state::<AppState>().lens().unwrap()
+}
+
+#[test]
+fn real_actor_flushes_accepted_progress_before_transport_failure() {
+    let chunks = 256;
+    let harness = setup(Scenario::ProgressBurstFailure(chunks));
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(result.stage, LensStage::Failed);
+    assert_eq!(result.agent.as_ref().unwrap().received_updates, chunks);
+    assert!(
+        matches!(result.output_blocks.as_slice(), [LensOutputBlock::Markdown { text, .. }] if text == &"Fixture interpretation".repeat(chunks))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert_eq!(
+        harness.app.state::<AppState>().lens().unwrap().stage,
+        LensStage::Failed
+    );
+}
+
+#[test]
+fn real_actor_coalesces_progress_bursts_and_flushes_complete_terminal_output() {
+    let chunks = 256;
+    let harness = setup(Scenario::ProgressBurst(chunks));
+    tauri::WebviewWindowBuilder::new(&harness.app, ui::LENS_WINDOW_LABEL, Default::default())
+        .build()
+        .unwrap();
+    let events = Arc::new(Mutex::new(Vec::<(std::time::Instant, Value)>::new()));
+    let recorded = events.clone();
+    let listener = harness
+        .app
+        .listen_any("window-app-state-changed", move |event| {
+            let wire: Value = serde_json::from_str(event.payload()).unwrap();
+            if wire["lens"]["agent"].is_object() {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((std::time::Instant::now(), wire));
+            }
+        });
+    let transcript_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let recorded_transcript = transcript_events.clone();
+    let transcript_listener = harness
+        .app
+        .listen_any("session-view-changed", move |event| {
+            recorded_transcript
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+    let start = std::time::Instant::now();
+    let result = invoke(&harness.window, "confirm_lens_targets");
+    let elapsed = start.elapsed();
+    let transcript_before_wait = transcript_events.lock().unwrap().len();
+    assert_eq!(result.stage, LensStage::Completed);
+    assert_eq!(result.agent.as_ref().unwrap().received_updates, chunks);
+    let representation = result.representation.as_ref().unwrap();
+    assert!(
+        matches!(representation.output_blocks.as_slice(), [LensOutputBlock::Markdown { text, .. }] if text == &"Fixture interpretation".repeat(chunks))
+    );
+    let events_before_wait = events.lock().unwrap().len();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let recorded = events.lock().unwrap().clone();
+    let progress: Vec<_> = recorded
+        .iter()
+        .filter(|(_, wire)| {
+            wire["lens"]["stage"] == "transforming"
+                && wire["lens"]["agent"]["received_updates"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)
+        })
+        .collect();
+    assert!(
+        progress.len() <= elapsed.as_millis() as usize / 100 + 1,
+        "{} progress events in {elapsed:?}",
+        progress.len()
+    );
+    assert!(
+        progress.len() < chunks,
+        "burst was published once per notification"
+    );
+    assert!(progress
+        .windows(2)
+        .all(
+            |pair| pair[0].1["lens"]["agent"]["received_updates"].as_u64()
+                < pair[1].1["lens"]["agent"]["received_updates"].as_u64()
+        ));
+    let terminal = recorded
+        .iter()
+        .rfind(|(_, wire)| wire["lens"]["stage"] == "completed")
+        .unwrap();
+    assert_eq!(terminal.1["lens"]["agent"]["received_updates"], chunks);
+    assert!(
+        !recorded[events_before_wait..]
+            .iter()
+            .any(|(_, wire)| wire["lens"]["stage"] == "transforming"),
+        "late timer overwrote terminal output"
+    );
+    let transcript = transcript_events.lock().unwrap().clone();
+    assert_eq!(
+        transcript.len(),
+        transcript_before_wait,
+        "late transcript timer after terminal"
+    );
+    let live_events = transcript
+        .iter()
+        .filter(|wire| wire["phase"] == "live")
+        .count();
+    assert!(
+        live_events <= elapsed.as_millis() as usize / 100 + 2,
+        "{live_events} transcript events in {elapsed:?}"
+    );
+    let document = harness
+        .app
+        .state::<AppState>()
+        .session_view
+        .view()
+        .unwrap()
+        .document
+        .unwrap();
+    let last = document.entries.last().unwrap();
+    assert!(
+        matches!(last, crate::session_document::DocumentEntry::Message { blocks, .. }
+        if matches!(&blocks[0], crate::session_document::DocumentBlock::Markdown { text }
+            if text == &"Fixture interpretation".repeat(chunks)))
+    );
+    harness.app.unlisten(transcript_listener);
+    harness.app.unlisten(listener);
 }
 
 #[test]
@@ -1443,11 +1592,12 @@ fn adapter_defaults_fallback_keeps_running_prompt_and_reuses_its_physical_sessio
         .unwrap()
         .unwrap();
     invocation.join().unwrap();
-    assert_eq!(
-        serde_json::from_value::<LensState>(result).unwrap().stage,
-        LensStage::Completed
+    assert!(
+        result.is_null(),
+        "mutation IPC returns a body-free acknowledgement"
     );
     let completed = state.lens().unwrap();
+    assert_eq!(completed.stage, LensStage::Completed);
     let controls = completed.session_controls.unwrap();
     assert_eq!(controls.instance_id, before.instance_id);
     assert_eq!(controls.configured_mode.as_deref(), Some("safe"));
@@ -1598,15 +1748,17 @@ fn stop_during_agent_prompt_revokes_publication_and_releases_observation() {
     // must finish in this interval, rather than racing the final state publication.
     fixture.finish_prompt.notify_one();
     let result = receiver.recv_timeout(std::time::Duration::from_secs(5));
+    let stopped_lens = app.state::<AppState>().lens().unwrap();
     let (lock, condition) = &fixture.finish_release;
     *lock.lock().unwrap() = true;
     condition.notify_one();
     assert_eq!(stopping.join().unwrap(), LensState::default());
     invocation.join().unwrap();
-    // An acknowledged turn can return the stopped snapshot; a closed actor mailbox
-    // reports cancellation. Neither response may contain a late interpretation.
+    // An acknowledged turn returns no body; inspect canonical state while Stop
+    // still held cleanup. A closed actor mailbox instead reports cancellation.
     if let Ok(result) = result.unwrap() {
-        let lens = serde_json::from_value::<LensState>(result).unwrap();
+        assert!(result.is_null());
+        let lens = stopped_lens;
         assert_eq!(lens.operation_id, Some(OPERATION));
         assert_eq!(
             lens.live.unwrap().lifecycle,

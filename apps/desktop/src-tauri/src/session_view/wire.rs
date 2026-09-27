@@ -59,11 +59,15 @@ fn deferred_block(
     kind: &str,
     length: usize,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut descriptor = serde_json::json!({
         "type":"deferred", "entry_id":entry_id(entry), "block_index":index,
         "content_type":kind, "byte_length":length, "revision":revision,
         "append_only": matches!(entry, DocumentEntry::Message { .. }) && kind == "markdown"
-    })
+    });
+    if let Some(DocumentBlock::Image { mime_type, .. }) = blocks(entry).get(index) {
+        descriptor["mime_type"] = serde_json::Value::String(mime_type.clone());
+    }
+    descriptor
 }
 
 fn entry_id(entry: &DocumentEntry) -> &str {
@@ -293,7 +297,6 @@ pub(crate) struct BlockResponse {
     block: DocumentBlock,
 }
 
-#[tauri::command]
 pub(crate) fn get_session_block<R: Runtime>(
     webview: tauri::Webview<R>,
     state: tauri::State<'_, AppState>,

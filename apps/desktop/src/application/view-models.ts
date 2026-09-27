@@ -1,4 +1,5 @@
 import type { DesktopPlatform } from "../presentation-context";
+import type { ResourceState } from "./snapshot-resources";
 import type { SettingsDestination } from "../agent-prompt-template";
 import type {
   AgentRuntimeState,
@@ -41,6 +42,8 @@ export interface SettingsViewModel {
   updateAgent?: ManagedAgentKind;
   permission: AccessibilityPermissionState;
   pending: boolean;
+  pendingDestinations?: SettingsDestination[];
+  feedbackByDestination?: Partial<Record<SettingsDestination, SettingsFeedback>>;
   promptSynchronization: PromptSynchronization;
   lensStageLabel: string;
   feedback: SettingsFeedback;
@@ -61,11 +64,15 @@ export interface InteractionSubmission {
 }
 
 export interface OverlayViewModel {
+  sourceResource?: ResourceState;
+  sourceMetadata?: AppSnapshot["source_metadata"];
+  outputResource?: ResourceState;
   interactionSubmission?: InteractionSubmission;
   platform: DesktopPlatform;
   lens: LensState;
   pending: boolean;
   cancelPending: boolean;
+  lifecyclePending?: "pause" | "resume" | "close";
   message: string;
 }
 
@@ -121,10 +128,56 @@ function connectionFeedback(connection: SnapshotConnectionState): SettingsFeedba
   }
 }
 
+function settingsPendingMessage(command: SettingsCommandType): string {
+  switch (command) {
+    case "preview-agent-model":
+      return "Loading model options…";
+    case "save-agent-defaults":
+      return "Saving session defaults…";
+    case "select-agent":
+      return "Verifying connection…";
+    case "update-managed-agent":
+      return "Updating Agent…";
+    case "choose-external-executable":
+      return "Choosing executable…";
+    case "save-external-agent":
+      return "Saving Agent preset…";
+    case "delete-external-agent":
+      return "Deleting Agent preset…";
+    case "reset-agent-presets":
+      return "Resetting Agent presets…";
+    case "authenticate-agent-selection":
+      return "Authenticating Agent…";
+    case "reauthenticate-agent-selection":
+      return "Reauthenticating Agent…";
+    case "sign-out-agent-selection":
+      return "Signing out…";
+    case "choose-directory":
+      return "Choosing working directory…";
+    case "request-accessibility-permission":
+      return "Requesting Accessibility permission…";
+    case "open-screen-recording-settings":
+      return "Opening Screen Recording settings…";
+    case "update-prompt-presets":
+      return "Saving prompt presets…";
+    case "save-agent-prompt-template":
+      return "Saving prompt template…";
+    case "reset-agent-prompt-template":
+      return "Resetting prompt template…";
+  }
+}
+
 export function settingsFeedback(
   command: CommandState,
   connection?: SnapshotConnectionState,
 ): SettingsFeedback {
+  if (command.stage === "pending" && command.command.scope === "settings") {
+    return {
+      stage: "status",
+      target: settingsFeedbackTarget(command.command.type),
+      message: settingsPendingMessage(command.command.type),
+    };
+  }
   if (
     (command.stage === "succeeded" || command.stage === "failed") &&
     command.command.scope === "settings"
@@ -144,26 +197,53 @@ export function settingsViewModel(
   permission: AccessibilityPermissionState,
   command: CommandState,
   connection: SnapshotConnectionState,
+  commands: CommandState[] = [command],
 ): SettingsViewModel {
   const lens = snapshot.lens;
+  const pendingDestinations = new Set<SettingsDestination>();
+  const feedbackByDestination: Partial<Record<SettingsDestination, SettingsFeedback>> = {};
+  for (const state of commands) {
+    if (state.stage === "idle" || state.command.scope !== "settings") continue;
+    const destination = settingsFeedbackTarget(state.command.type);
+    feedbackByDestination[destination] = settingsFeedback(state);
+    if (state.stage === "pending") {
+      pendingDestinations.add(destination);
+      if (destination === "connection" || destination === "session-defaults") {
+        pendingDestinations.add("connection");
+        pendingDestinations.add("session-defaults");
+      }
+    }
+  }
+  const updateCommand = commands.find((state) =>
+    isPendingCommand(state, "settings", "update-managed-agent"),
+  );
+  const promptCommand =
+    commands.find(
+      (state) =>
+        state.stage !== "idle" &&
+        state.command.scope === "settings" &&
+        settingsFeedbackTarget(state.command.type) === "prompt-presets",
+    ) ?? command;
   return {
     platform,
     config: snapshot.config,
     agentSelection: snapshot.agent_selection,
     agentRuntime: snapshot.agent_runtime,
-    updatePending: isPendingCommand(command, "settings", "update-managed-agent"),
+    updatePending: Boolean(updateCommand),
     updateAgent:
-      command.stage === "pending" &&
-      command.command.scope === "settings" &&
-      command.command.type === "update-managed-agent"
-        ? command.command.agent
+      updateCommand?.stage === "pending" &&
+      updateCommand.command.scope === "settings" &&
+      updateCommand.command.type === "update-managed-agent"
+        ? updateCommand.command.agent
         : undefined,
     permission,
     pending: command.stage === "pending",
+    pendingDestinations: [...pendingDestinations],
+    feedbackByDestination,
     promptSynchronization:
-      command.stage === "succeeded" &&
-      command.command.scope === "settings" &&
-      command.command.type === "reset-agent-prompt-template"
+      promptCommand.stage === "succeeded" &&
+      promptCommand.command.scope === "settings" &&
+      promptCommand.command.type === "reset-agent-prompt-template"
         ? "accept-parent-value"
         : "preserve-local-draft",
     lensStageLabel: STAGE_LABEL[lens.stage],
@@ -195,7 +275,16 @@ export function overlayViewModel(
     platform,
     lens: snapshot.lens,
     pending: command.stage === "pending",
+    sourceMetadata: snapshot.source_metadata,
     cancelPending: isPendingCommand(command, "overlay", "cancel"),
+    lifecyclePending:
+      command.stage === "pending" &&
+      command.command.scope === "overlay" &&
+      (command.command.type === "pause" ||
+        command.command.type === "resume" ||
+        command.command.type === "close")
+        ? command.command.type
+        : undefined,
     message: presentationMessage(command, connectionMessage),
   };
 }

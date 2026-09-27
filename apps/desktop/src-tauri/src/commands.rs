@@ -71,12 +71,6 @@ const MAX_SELECTION_PREVIEW_LONG_EDGE: u32 = 480;
 const MAX_SELECTION_PREVIEW_PIXELS: u32 = 230_400;
 const MAX_SELECTION_PREVIEW_BYTES: u32 = 1024 * 1024;
 
-#[tauri::command]
-pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    state.snapshot()
-}
-
-#[tauri::command]
 pub fn get_html_output<R: tauri::Runtime>(
     webview: tauri::Webview<R>,
     state: State<'_, AppState>,
@@ -134,7 +128,6 @@ fn response_representation(
         .ok_or_else(|| "Response is no longer available".into())
 }
 
-#[tauri::command]
 pub fn get_response_block<R: tauri::Runtime>(
     webview: tauri::Webview<R>,
     state: State<'_, AppState>,
@@ -189,30 +182,27 @@ pub async fn save_external_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,
 ) -> Result<AgentSelectionState, String> {
-    let (kind, revision) = save_external_agent_configuration(&app, profile)?;
-    agent::select_agent_guarded(app, kind, Some(revision)).await
+    let saved = crate::command_work::configuration(app.clone(), move |app| {
+        save_external_agent_configuration(&app, profile)
+    })
+    .await?;
+    agent::select_saved_agent(app, saved).await
 }
 
 pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
     app: &AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,
-) -> Result<(AgentKind, u32), String> {
+) -> Result<agent::SavedAgentSelection, String> {
     let profile = profile.parse()?;
     crate::external_agent::validate_profile(&profile)?;
     let kind = AgentKind::External(profile.id);
     let state = app.state::<AppState>();
-    let saved_revision;
+    let saved;
     {
-        let _admission = state
-            .session_view
-            .admission
-            .lock()
-            .map_err(|_| "Session admission is unavailable")?;
-        state.session_view.ensure_not_loading()?;
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "Application state is unavailable")?;
+        let transaction = state.store.writer.begin()?;
+        let (snapshot, authority) = transaction.prepare_admitted(&state, false)?;
+        let previous = snapshot.config.clone();
+        let selection = snapshot.agent_selection.clone();
         if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
             return Err("Wait for Agent logout to complete before changing executables.".into());
         }
@@ -230,45 +220,50 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
             config.external_agents.push(profile);
         }
         config.agent = kind;
-        let revision = next_revision(&snapshot)?;
-        state
-            .store
-            .save(&config)
-            .map_err(|_| "Unable to save Agent preset")?;
-        state.agent_control.cancel_active()?;
-        snapshot.config = config;
-        snapshot.agent_selection = AgentSelectionState {
-            candidate: Some(kind),
-            ..Default::default()
-        };
-        snapshot.revision = revision;
-        drop(snapshot);
-        crate::session_view::invalidate_working_directory(app)?;
-        crate::session_controls::close_active(app);
-        saved_revision = state.snapshot()?.revision;
+        let (snapshot, (), admission) =
+            transaction.commit_admitted(&state, &previous, config, authority, |latest| {
+                if latest.agent_selection != selection {
+                    return Err("Agent selection changed while saving settings".into());
+                }
+                state.agent_control.cancel_active()?;
+                latest.agent_selection = AgentSelectionState {
+                    operation_id: Some(Uuid::new_v4()),
+                    candidate: Some(kind),
+                    ..Default::default()
+                };
+                Ok(())
+            })?;
+        crate::session_view::invalidate_working_directory_state(app)?;
+        let controls = state
+            .session_controls
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        drop(admission);
+        drop(transaction);
+        if let Some(controls) = controls {
+            controls.close(app);
+        }
+        saved = agent::SavedAgentSelection::new(&snapshot);
     }
+    crate::session_view::emit(app)?;
+    crate::ui::sync_history_menu(app)?;
     emit_app_snapshot(app, state.snapshot()?, true)?;
-    Ok((kind, saved_revision))
+    Ok(saved)
 }
 
-#[tauri::command]
 pub fn delete_external_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     id: Uuid,
 ) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
     let affected;
+    let controls;
     {
-        let _admission = state
-            .session_view
-            .admission
-            .lock()
-            .map_err(|_| "Session admission unavailable")?;
-        state.session_view.ensure_not_loading()?;
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "Application state unavailable")?;
+        let transaction = state.store.writer.begin()?;
+        let (snapshot, authority) = transaction.prepare_admitted(&state, false)?;
+        let previous = snapshot.config.clone();
+        let selection = snapshot.agent_selection.clone();
         if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
             return Err("Wait for Agent logout to complete before deleting Agent presets.".into());
         }
@@ -283,44 +278,48 @@ pub fn delete_external_agent<R: tauri::Runtime>(
         if config.agent == AgentKind::External(id) {
             config.agent = AgentKind::Claude;
         }
-        let revision = next_revision(&snapshot)?;
-        state
-            .store
-            .save(&config)
-            .map_err(|_| "Unable to remove Agent preset")?;
-        if affected {
-            state.agent_control.cancel_active()?;
-        }
-        snapshot.config = config;
-        if affected {
-            snapshot.agent_selection = AgentSelectionState::default();
-        }
-        snapshot.revision = revision;
-        drop(snapshot);
-        crate::session_view::invalidate_working_directory(&app)?;
+        let (_, (), admission) =
+            transaction.commit_admitted(&state, &previous, config, authority, |latest| {
+                if latest.agent_selection != selection {
+                    return Err("Agent selection changed while saving settings".into());
+                }
+                if affected {
+                    state.agent_control.cancel_active()?;
+                    latest.agent_selection = AgentSelectionState::default();
+                }
+                Ok(())
+            })?;
+        crate::session_view::invalidate_working_directory_state(&app)?;
+        controls = if affected {
+            state
+                .session_controls
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+        } else {
+            None
+        };
+        drop(admission);
+        drop(transaction);
     }
-    if affected {
-        crate::session_controls::close_active(&app);
+    if let Some(controls) = controls {
+        controls.close(&app);
     }
+    crate::session_view::emit(&app)?;
+    crate::ui::sync_history_menu(&app)?;
     emit_app_snapshot(&app, state.snapshot()?, true)?;
     state.config()
 }
 
-#[tauri::command]
 pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<AppConfig, String> {
     let state = app.state::<AppState>();
     let affected;
+    let controls;
     {
-        let _admission = state
-            .session_view
-            .admission
-            .lock()
-            .map_err(|_| "Session admission unavailable")?;
-        state.session_view.ensure_not_loading()?;
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "Application state unavailable")?;
+        let transaction = state.store.writer.begin()?;
+        let (snapshot, authority) = transaction.prepare_admitted(&state, false)?;
+        let previous = snapshot.config.clone();
+        let selection = snapshot.agent_selection.clone();
         if snapshot.agent_selection.stage == crate::model::AgentSelectionStage::SigningOut {
             return Err("Wait for Agent logout to complete before resetting Agent presets.".into());
         }
@@ -334,33 +333,42 @@ pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<App
         if affected {
             config.agent = AgentKind::Claude;
         }
-        let revision = next_revision(&snapshot)?;
-        state
-            .store
-            .save(&config)
-            .map_err(|_| "Unable to reset Agent presets")?;
-        if affected {
-            state.agent_control.cancel_active()?;
-        }
-        snapshot.config = config;
-        if affected {
-            snapshot.agent_selection = AgentSelectionState {
-                candidate: Some(AgentKind::Claude),
-                ..Default::default()
-            };
-        }
-        snapshot.revision = revision;
-        drop(snapshot);
-        crate::session_view::invalidate_working_directory(&app)?;
+        let (_, (), admission) =
+            transaction.commit_admitted(&state, &previous, config, authority, |latest| {
+                if latest.agent_selection != selection {
+                    return Err("Agent selection changed while saving settings".into());
+                }
+                if affected {
+                    state.agent_control.cancel_active()?;
+                    latest.agent_selection = AgentSelectionState {
+                        candidate: Some(AgentKind::Claude),
+                        ..Default::default()
+                    };
+                }
+                Ok(())
+            })?;
+        crate::session_view::invalidate_working_directory_state(&app)?;
+        controls = if affected {
+            state
+                .session_controls
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+        } else {
+            None
+        };
+        drop(admission);
+        drop(transaction);
     }
-    if affected {
-        crate::session_controls::close_active(&app);
+    if let Some(controls) = controls {
+        controls.close(&app);
     }
+    crate::session_view::emit(&app)?;
+    crate::ui::sync_history_menu(&app)?;
     emit_app_snapshot(&app, state.snapshot()?, true)?;
     state.config()
 }
 
-#[tauri::command]
 pub fn set_working_directory<R: tauri::Runtime>(
     path: String,
     app: AppHandle<R>,
@@ -368,7 +376,6 @@ pub fn set_working_directory<R: tauri::Runtime>(
     update_working_directory(&app, PathBuf::from(path))
 }
 
-#[tauri::command]
 pub fn set_agent_prompt_template<R: tauri::Runtime>(
     agent_prompt_template: AgentPromptTemplate,
     app: AppHandle<R>,
@@ -386,7 +393,6 @@ pub fn set_agent_prompt_template<R: tauri::Runtime>(
     )
 }
 
-#[tauri::command]
 pub fn reset_agent_prompt_template<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<AppConfig, String> {
@@ -395,7 +401,6 @@ pub fn reset_agent_prompt_template<R: tauri::Runtime>(
 
 /// Catalog edits are atomic persisted state changes. Changing the selected identity or its
 /// effective instructions revokes the current Agent session; unrelated edits do not.
-#[tauri::command]
 pub fn update_prompt_presets<R: tauri::Runtime>(
     change: usecase::prompt_presets::PromptPresetMutation,
     app: AppHandle<R>,
@@ -424,11 +429,9 @@ pub(crate) fn commit_prompt_presets<R: tauri::Runtime>(
     change: usecase::prompt_presets::PromptPresetMutation,
 ) -> Result<(AppSnapshot, Option<Uuid>), String> {
     let state = app.state::<AppState>();
-    let mut snapshot = state
-        .runtime
-        .write()
-        .map_err(|_| "application state lock is poisoned")?;
-    let mut next = snapshot.config.clone();
+    let transaction = state.store.writer.begin()?;
+    let previous = state.config()?;
+    let mut next = previous.clone();
     let creation_id = matches!(
         &change,
         usecase::prompt_presets::PromptPresetMutation::Create { .. }
@@ -438,18 +441,16 @@ pub(crate) fn commit_prompt_presets<R: tauri::Runtime>(
         .prompt_presets
         .apply_with_creation_id(change, creation_id)?;
     next.sync_prompt_template()?;
-    if next == snapshot.config {
-        return Ok((snapshot.clone(), None));
+    if next == previous {
+        return Ok((state.snapshot()?, None));
     }
-    let changed = !snapshot.config.same_execution_config(&next);
-    let revision = next_revision(&snapshot)?;
-    // Validation and persistence must succeed before any currently running work is cancelled.
-    state.store.save(&next).map_err(|error| error.to_string())?;
-    snapshot.config = next;
-    snapshot.revision = revision;
-    let restart = if changed {
+    let changed = !previous.same_execution_config(&next);
+    let execution_revision = next.prompt_presets.execution_revision;
+    transaction.commit(&state, &previous, next, |snapshot| {
+        if !changed {
+            return Ok(None);
+        }
         state.agent_control.cancel_active()?;
-        let execution_revision = snapshot.config.prompt_presets.execution_revision;
         let lens = &mut snapshot.lens;
         lens.prompt_execution_revision = execution_revision;
         lens.pending_representation = None;
@@ -474,14 +475,11 @@ pub(crate) fn commit_prompt_presets<R: tauri::Runtime>(
             if let Some(live) = lens.live.as_mut() {
                 live.freshness = LensFreshness::Stale;
             }
-            lens.operation_id
+            Ok(lens.operation_id)
         } else {
-            None
+            Ok(None)
         }
-    } else {
-        None
-    };
-    Ok((snapshot.clone(), restart))
+    })
 }
 
 pub fn update_working_directory<R: tauri::Runtime>(
@@ -492,13 +490,10 @@ pub fn update_working_directory<R: tauri::Runtime>(
         return Err("working directory must be an existing absolute directory".into());
     }
     let state = app.state::<AppState>();
-    let admission = state
-        .session_view
-        .admission
-        .lock()
-        .map_err(|_| "Session view state is unavailable".to_string())?;
-    if state.config()?.working_directory == directory {
-        return state.config();
+    let transaction = state.store.writer.begin()?;
+    let (expected, authority) = transaction.prepare_admitted(&state, true)?;
+    if expected.config.working_directory == directory {
+        return Ok(expected.config);
     }
     let was_history = matches!(
         state.session_view.phase()?,
@@ -506,15 +501,25 @@ pub fn update_working_directory<R: tauri::Runtime>(
             | crate::session_view::ViewPhase::Ready
             | crate::session_view::ViewPhase::Failed
     );
-    let snapshot = update_config(app, |config| config.working_directory = directory)?;
+    let mut next = expected.config.clone();
+    next.working_directory = directory;
+    let (snapshot, (), admission) =
+        transaction.commit_admitted(&state, &expected.config, next, authority, |latest| {
+            state.agent_control.cancel_active()?;
+            usecase::state::reconcile_lens_after_execution_config_change(&mut latest.lens);
+            Ok(())
+        })?;
     let config = snapshot.config.clone();
-    crate::session_view::invalidate_working_directory(app)?;
+    crate::session_view::invalidate_working_directory_state(app)?;
+    drop(admission);
+    drop(transaction);
+    crate::session_view::emit(app)?;
+    crate::ui::sync_history_menu(app)?;
     if was_history {
         if let Some(window) = app.get_webview_window(crate::ui::LENS_WINDOW_LABEL) {
             window.close().map_err(|error| error.to_string())?;
         }
     }
-    drop(admission);
     emit_app_snapshot(app, snapshot, true)?;
     let history_app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -523,33 +528,6 @@ pub fn update_working_directory<R: tauri::Runtime>(
         }
     });
     Ok(config)
-}
-
-fn update_config<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    update: impl FnOnce(&mut AppConfig),
-) -> Result<AppSnapshot, String> {
-    let state = app.state::<AppState>();
-    let snapshot = {
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "application state lock is poisoned".to_string())?;
-        let mut next = snapshot.config.clone();
-        update(&mut next);
-        let revision = next_revision(&snapshot)?;
-        state.store.save(&next).map_err(|error| error.to_string())?;
-        if !snapshot.config.same_execution_config(&next) {
-            // Submission and completion also take runtime authority. Revoke the
-            // old execution and settle its UI state in this same transaction.
-            let _ = state.agent_control.cancel_active()?;
-            usecase::state::reconcile_lens_after_execution_config_change(&mut snapshot.lens);
-        }
-        snapshot.config = next;
-        snapshot.revision = revision;
-        snapshot.clone()
-    };
-    Ok(snapshot)
 }
 
 /// The destination is fixed in the shell; the WebView cannot supply arbitrary URLs.
@@ -782,10 +760,10 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         },
         selection: None,
         target_set: Some(refreshed_target_set.clone()),
-        context: Some(context),
-        input,
+        context: Some(context.into()),
+        input: input.map(Into::into),
         projection: projection_ref,
-        output_blocks: Vec::new(),
+        output_blocks: Vec::new().into(),
         representation: None,
         response_history: Default::default(),
         pending_representation: None,
@@ -1185,7 +1163,6 @@ fn store_target_selection_payload<R: tauri::Runtime>(
     Ok(())
 }
 
-#[tauri::command]
 pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
     let operation_id = Uuid::new_v4();
@@ -1274,7 +1251,6 @@ pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
     .await
 }
 
-#[tauri::command]
 pub async fn add_lens_target<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1331,7 +1307,6 @@ pub async fn add_lens_target<R: tauri::Runtime>(
     }
 }
 
-#[tauri::command]
 pub async fn remove_lens_target<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1383,7 +1358,6 @@ pub async fn remove_lens_target<R: tauri::Runtime>(
     publish_target_selection(&app, operation_id, selection).await
 }
 
-#[tauri::command]
 pub async fn confirm_lens_targets<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1448,7 +1422,6 @@ impl<R: tauri::Runtime> ConfirmationHost for DesktopConfirmation<R> {
     }
 }
 
-#[tauri::command]
 pub async fn retry_lens_transform<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1467,7 +1440,6 @@ fn can_retry_agent_transform(stage: LensStage, has_input: bool) -> bool {
     has_input && matches!(stage, LensStage::AuthenticationRequired | LensStage::Failed)
 }
 
-#[tauri::command]
 pub fn pause_lens<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1475,7 +1447,6 @@ pub fn pause_lens<R: tauri::Runtime>(
     live_runtime::pause(&app, operation_id)
 }
 
-#[tauri::command]
 pub fn resume_lens<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1483,7 +1454,6 @@ pub fn resume_lens<R: tauri::Runtime>(
     live_runtime::resume(&app, operation_id)
 }
 
-#[tauri::command]
 pub fn stop_lens<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1530,7 +1500,6 @@ pub fn stop_lens<R: tauri::Runtime>(
     app.state::<AppState>().lens()
 }
 
-#[tauri::command]
 pub async fn authenticate_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1561,7 +1530,6 @@ pub async fn sign_out_agent_selection<R: tauri::Runtime>(
     agent::sign_out_selection(app).await
 }
 
-#[tauri::command]
 pub fn cancel_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1627,30 +1595,34 @@ pub async fn preview_agent_model<R: tauri::Runtime>(
         ..Default::default()
     };
     let validated = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
-    let snapshot = crate::agent_runtime::with_current_runtime(&validated.runtime, || {
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "Application state is unavailable")?;
-        if snapshot.config != expected.config
-            || snapshot.agent_selection != expected.agent_selection
-        {
-            return Err("Agent settings changed during model lookup".into());
-        }
-        let revision = next_revision(&snapshot)?;
-        let catalog_revision = snapshot
-            .agent_selection
-            .catalog_revision
-            .checked_add(1)
-            .ok_or("Agent catalog revision exhausted")?;
-        snapshot.revision = revision;
-        snapshot.agent_selection.config_options = validated.options;
-        snapshot.agent_selection.catalog_revision = catalog_revision;
-        snapshot.agent_selection.catalog_model = value;
-        Ok(snapshot.clone())
-    })?;
-    emit_app_snapshot(&app, snapshot, true)?;
-    Ok(())
+    crate::command_work::configuration(app, move |app| {
+        let state = app.state::<AppState>();
+        let snapshot = crate::agent_runtime::with_current_runtime(&validated.runtime, || {
+            let mut snapshot = state
+                .runtime
+                .write()
+                .map_err(|_| "Application state is unavailable")?;
+            if snapshot.config != expected.config
+                || snapshot.agent_selection != expected.agent_selection
+            {
+                return Err("Agent settings changed during model lookup".into());
+            }
+            let revision = next_revision(&snapshot)?;
+            let catalog_revision = snapshot
+                .agent_selection
+                .catalog_revision
+                .checked_add(1)
+                .ok_or("Agent catalog revision exhausted")?;
+            snapshot.revision = revision;
+            snapshot.agent_selection.config_options = validated.options;
+            snapshot.agent_selection.catalog_revision = catalog_revision;
+            snapshot.agent_selection.catalog_model = value;
+            Ok(snapshot.clone())
+        })?;
+        emit_app_snapshot(&app, snapshot, true)?;
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1791,7 +1763,6 @@ mod tests {
     }
 }
 
-#[tauri::command]
 pub fn set_session_option<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1810,7 +1781,6 @@ pub fn set_session_option<R: tauri::Runtime>(
     controls.publish(&app)
 }
 
-#[tauri::command]
 pub fn respond_agent_interaction<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
@@ -1842,43 +1812,41 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
         return Err("Agent selection changed".into());
     }
     let validated = agent::validate_agent_defaults(&app, &expected.config, &defaults).await?;
-    let snapshot = crate::agent_runtime::with_current_runtime(&validated.runtime, || {
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "Application state is unavailable")?;
-        if snapshot.config != expected.config
-            || snapshot.agent_selection != expected.agent_selection
-        {
-            return Err("Agent settings changed during validation".into());
-        }
-        let revision = next_revision(&snapshot)?;
-        let catalog_revision = snapshot
-            .agent_selection
-            .catalog_revision
-            .checked_add(1)
-            .ok_or("Agent catalog revision exhausted")?;
-        let catalog_model =
-            crate::session_controls::explicit_model(&defaults, validated.options.as_deref());
-        let mut config = snapshot.config.clone();
-        config.agent_preferences.set(config.agent, defaults);
-        state
-            .store
-            .save(&config)
-            .map_err(|_| "Unable to save Agent defaults")?;
-        // Stale/rejected/unsaved drafts cannot cancel the admitted live session.
-        if let Err(error) = state.agent_control.cancel_active() {
-            state.store.save(&snapshot.config).map_err(|rollback|
-                format!("Unable to cancel the old Agent session: {error}; restoring defaults failed: {rollback}"))?;
-            return Err(error);
-        }
-        snapshot.config = config;
-        snapshot.agent_selection.config_options = validated.options;
-        snapshot.agent_selection.catalog_revision = catalog_revision;
-        snapshot.agent_selection.catalog_model = catalog_model;
-        snapshot.revision = revision;
-        Ok(snapshot.clone())
-    })?;
-    emit_app_snapshot(&app, snapshot, true)?;
-    Ok(())
+    crate::command_work::configuration(app, move |app| {
+        let state = app.state::<AppState>();
+        let transaction = state.store.writer.begin()?;
+        let snapshot = crate::agent_runtime::with_current_runtime(&validated.runtime, || {
+            let current = state.snapshot()?;
+            if current.config != expected.config
+                || current.agent_selection != expected.agent_selection
+            {
+                return Err("Agent settings changed during validation".into());
+            }
+            let catalog_revision = current
+                .agent_selection
+                .catalog_revision
+                .checked_add(1)
+                .ok_or("Agent catalog revision exhausted")?;
+            let catalog_model =
+                crate::session_controls::explicit_model(&defaults, validated.options.as_deref());
+            let mut config = current.config.clone();
+            config.agent_preferences.set(config.agent, defaults);
+            transaction
+                .commit(&state, &current.config, config, |latest| {
+                    if latest.agent_selection != expected.agent_selection {
+                        return Err("Agent settings changed while saving defaults".into());
+                    }
+                    state.agent_control.cancel_active()?;
+                    latest.agent_selection.config_options = validated.options;
+                    latest.agent_selection.catalog_revision = catalog_revision;
+                    latest.agent_selection.catalog_model = catalog_model;
+                    Ok(())
+                })
+                .map(|(snapshot, ())| snapshot)
+        })?;
+        drop(transaction);
+        emit_app_snapshot(&app, snapshot, true)?;
+        Ok(())
+    })
+    .await
 }

@@ -48,12 +48,20 @@ export class ConversationRenderCache {
     const task = this.schedule(async () => {
       if (signal?.aborted || generation !== this.generation)
         throw new Error("Conversation content superseded");
-      const body =
-        block.type === "deferred"
+      // Conversation deliberately omits image previews. Never load or serialize image bytes.
+      const metadata =
+        block.type === "image"
+          ? { type: "image" as const, mime_type: block.mime_type, data: "" }
+          : block.type === "deferred" && block.content_type === "image" && block.mime_type
+            ? { type: "image" as const, mime_type: block.mime_type, data: "" }
+            : undefined;
+      const body: DocumentBlock =
+        metadata ||
+        (block.type === "deferred"
           ? await (loader
               ? loader(block)
               : Promise.reject(new Error("Conversation body loader unavailable")))
-          : block;
+          : block);
       if (signal?.aborted || generation !== this.generation)
         throw new Error("Conversation content superseded");
       if (body.type === "deferred") throw new Error("Conversation body was not resolved");

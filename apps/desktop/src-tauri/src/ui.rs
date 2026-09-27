@@ -870,16 +870,22 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             }
             id if id.starts_with("prompt_preset:") => {
                 let id = id.trim_start_matches("prompt_preset:").to_string();
-                if let Err(error) = commands::update_prompt_presets(
-                    usecase::prompt_presets::PromptPresetMutation::Select { id },
-                    app.clone(),
-                ) {
-                    let _ = sync_prompt_preset_menu(app);
-                    app.dialog()
-                        .message(format!("Unable to change prompt preset: {error}"))
-                        .title("Lens")
-                        .show(|_| {});
-                }
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = crate::command_work::update_prompt_presets(
+                        handle.clone(),
+                        usecase::prompt_presets::PromptPresetMutation::Select { id },
+                    )
+                    .await
+                    {
+                        let _ = sync_prompt_preset_menu(&handle);
+                        handle
+                            .dialog()
+                            .message(format!("Unable to change prompt preset: {error}"))
+                            .title("Lens")
+                            .show(|_| {});
+                    }
+                });
             }
             "about" => {
                 if let Err(error) = show_about(app) {
@@ -1364,9 +1370,15 @@ fn choose_working_directory<R: tauri::Runtime>(app: &AppHandle<R>) {
                     return;
                 }
             };
-            if let Err(error) = commands::update_working_directory(&handle, directory) {
-                eprintln!("Unable to update Working Directory: {error}");
-            }
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::command_work::configuration(handle, move |app| {
+                    commands::update_working_directory(&app, directory)
+                })
+                .await
+                {
+                    eprintln!("Unable to update Working Directory: {error}");
+                }
+            });
         });
 }
 

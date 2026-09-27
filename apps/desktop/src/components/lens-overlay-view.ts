@@ -1798,6 +1798,10 @@ export class LensOverlayView extends LitElement {
   }
 
   protected willUpdate(changed: PropertyValues<this>): void {
+    if (this.sourceInput !== this.model?.lens.input) {
+      this.sourceInput = undefined;
+      this.sourceText = "";
+    }
     const previousView = changed.has("sessionView") ? changed.get("sessionView") : this.sessionView;
     const previousModel = changed.has("model") ? changed.get("model") : this.model;
     const previousScope = isHistoryView(previousView)
@@ -1877,9 +1881,9 @@ export class LensOverlayView extends LitElement {
     if (isHistoryView(this.sessionView)) return this.renderHistory();
     const model = this.model;
     const lens = model?.lens;
-    const context = lens?.context;
+    const sourceQuality = model?.sourceMetadata?.quality;
     const targets = lens?.target_set?.targets ?? [];
-    const sourceJson = lens ? lensSourceJson(lens) : "";
+    const sourceJson = this.activeTab === "source" && lens ? this.sourceJson(lens) : "";
     const activeAgent = lens?.agent;
     const authenticationMethods = lens ? supportedAuthMethods(lens) : [];
     const targetLabels = targets.map(({ facts }) =>
@@ -1902,7 +1906,7 @@ export class LensOverlayView extends LitElement {
         : "No source context is available.";
     const canCancel = lens?.stage === "connecting" || lens?.stage === "transforming";
     const canRetry =
-      Boolean(lens?.input) &&
+      model?.sourceMetadata?.has_input &&
       (lens?.stage === "authentication_required" || lens?.stage === "failed");
     const liveStatus = lensLiveStatus(lens?.live);
     const displayLens = lens ? this.lensWithDisplayedRepresentation(lens) : undefined;
@@ -1919,10 +1923,13 @@ export class LensOverlayView extends LitElement {
     const outputMedia = displayLens
       ? composeOutputMedia(lensOutputPresentation(displayLens))
       : { media: [], narrative: [] };
+    const historyBlocks = this.responseHistory?.responses.flatMap((response) => response.blocks);
     const hasMediaCue =
       this.activeTab === "interpretation" &&
-      outputMedia.media.length > 0 &&
-      outputMedia.narrative.length > 0;
+      (historyBlocks?.length
+        ? historyBlocks.some((block) => block.type === "image" || block.type === "html") &&
+          historyBlocks.some((block) => block.type !== "image" && block.type !== "html")
+        : outputMedia.media.length > 0 && outputMedia.narrative.length > 0);
 
     return html`
       <div
@@ -1969,9 +1976,11 @@ export class LensOverlayView extends LitElement {
                     data-lens-button-role="normal"
                     class="overlay-header-action"
                     data-tauri-drag-region="false"
+                    ?disabled=${Boolean(model?.lifecyclePending)}
+                    aria-busy=${model?.lifecyclePending === "pause"}
                     @click=${() => this.emit({ type: "pause" })}
                   >
-                    Pause Updates
+                    ${model?.lifecyclePending === "pause" ? "Pausing Updates…" : "Pause Updates"}
                   </button>`
                 : lens?.live?.lifecycle === "paused"
                   ? html`<button
@@ -1979,9 +1988,11 @@ export class LensOverlayView extends LitElement {
                       data-lens-button-role="normal"
                       class="overlay-header-action"
                       data-tauri-drag-region="false"
+                      ?disabled=${Boolean(model?.lifecyclePending)}
+                      aria-busy=${model?.lifecyclePending === "resume"}
                       @click=${() => this.emit({ type: "resume" })}
                     >
-                      Resume Updates
+                      ${model?.lifecyclePending === "resume" ? "Resuming Updates…" : "Resume Updates"}
                     </button>`
                   : nothing
             }
@@ -2058,8 +2069,8 @@ export class LensOverlayView extends LitElement {
                 </div>`
           }
           ${
-            context
-              ? html`<span class="quality quality-${context.quality}">${context.quality}</span>`
+            sourceQuality
+              ? html`<span class="quality quality-${sourceQuality}">${sourceQuality}</span>`
               : nothing
           }
         </footer>
@@ -2187,7 +2198,41 @@ export class LensOverlayView extends LitElement {
     </button>`;
   }
 
+  private sourceInput: LensState["input"];
+  private sourceText = "";
+
+  private sourceJson(lens: LensState): string {
+    if (lens.input !== this.sourceInput) {
+      this.sourceInput = lens.input;
+      this.sourceText = lensSourceJson(lens);
+    }
+    return this.sourceText;
+  }
+
+  @property({ attribute: false }) retrySnapshotResource:
+    | ((kind: "source" | "output") => void)
+    | undefined;
+
+  private renderResourceState(
+    state: OverlayViewModel["sourceResource"],
+    label: "source" | "output",
+  ) {
+    if (state?.stage === "loading") return html`<p role="status">Loading ${label}…</p>`;
+    if (state?.stage === "failed")
+      return html`<p role="alert">Unable to load ${label}: ${state.message}</p>
+        <button
+          type="button"
+          data-lens-button-role="normal"
+          @click=${() => this.retrySnapshotResource?.(label)}
+        >
+          Retry
+        </button>`;
+    return nothing;
+  }
+
   private renderHeader(actions: unknown = nothing, closeLabel = "Close Lens") {
+    const closing = this.model?.lifecyclePending === "close";
+    if (closing) closeLabel = "Closing Lens…";
     return html`<header class="overlay-header" data-tauri-drag-region="deep">
       <div class="overlay-brand">
         <img class="overlay-app-icon" src=${appIconUrl} alt="" />
@@ -2197,14 +2242,16 @@ export class LensOverlayView extends LitElement {
         ${actions}<button
           type="button"
           class="close-button"
-          ?disabled=${!this.active}
+          ?disabled=${!this.active || closing}
+          aria-busy=${closing}
           data-tauri-drag-region="false"
           aria-label=${closeLabel}
           title=${closeLabel}
           @click=${() => this.emit({ type: "close" })}
         >
-          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          <i class=${closing ? "fa-solid fa-spinner" : "fa-solid fa-xmark"} aria-hidden="true"></i>
         </button>
+        ${closing ? html`<span role="status">Closing Lens…</span>` : nothing}
       </div>
     </header>`;
   }
@@ -2319,6 +2366,7 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="interpretation-tab"
           tabindex="0"
         >
+          ${this.renderResourceState(this.model?.outputResource, "output")}
           <lens-agent-output
             .lens=${displayLens}
             .history=${this.responseHistory}
@@ -2337,6 +2385,7 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="source-tab"
           tabindex="0"
         >
+          ${this.renderResourceState(this.model?.sourceResource, "source")}
           ${
             sourceJson
               ? html`<div class="lens-content source-view">
@@ -2350,7 +2399,7 @@ export class LensOverlayView extends LitElement {
                   </section>
                 </div>`
               : html`<div class="lens-content">
-                  <p class="empty-state">No normalized source data is available.</p>
+                  ${this.model?.sourceResource?.stage === "loading" || this.model?.sourceResource?.stage === "failed" ? nothing : html`<p class="empty-state">No normalized source data is available.</p>`}
                 </div>`
           }
         </section>`;
@@ -2433,7 +2482,10 @@ export class LensOverlayView extends LitElement {
     dispatchComponentEvent(this, OVERLAY_INTENT_EVENT, intent);
   }
 
+  @property({ attribute: false }) requestSource: ((active: boolean) => void) | undefined;
+
   protected updated(): void {
+    this.requestSource?.(this.activeTab === "source" || this.activeTab === "diagnostics");
     // A removed/cached Hero cannot bubble its final fullscreen event to this owner.
     if (this.mediaFullscreen && !this.fullscreenOwner?.isConnected) this.mediaFullscreen = false;
   }
@@ -2512,11 +2564,11 @@ export class LensOverlayView extends LitElement {
       return;
     }
     if (!representation) return;
-    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
-      return;
-    }
     if (lens.response_history) {
       this.displayedRepresentation = representation;
+      return;
+    }
+    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
       return;
     }
     this.acceptRepresentation(representation, this.interpretationHasFocus());

@@ -413,41 +413,60 @@ pub async fn select_agent<R: tauri::Runtime>(
     select_agent_guarded(app, candidate, None).await
 }
 
-pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
+/// Authority captured by the configuration commit, independent of streaming revisions.
+pub(crate) struct SavedAgentSelection {
+    config: AppConfig,
+    selection: AgentSelectionState,
+}
+
+impl SavedAgentSelection {
+    pub(crate) fn new(snapshot: &crate::model::AppSnapshot) -> Self {
+        Self {
+            config: snapshot.config.clone(),
+            selection: snapshot.agent_selection.clone(),
+        }
+    }
+}
+
+pub(crate) async fn select_saved_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    saved: SavedAgentSelection,
+) -> Result<AgentSelectionState, String> {
+    select_agent_if(app, saved.config.agent, move |snapshot| {
+        snapshot.config == saved.config && snapshot.agent_selection == saved.selection
+    })
+    .await
+}
+
+async fn select_agent_if<R: tauri::Runtime>(
     app: AppHandle<R>,
     candidate: AgentKind,
-    expected_revision: Option<u32>,
+    accepts: impl FnOnce(&crate::model::AppSnapshot) -> bool + Send,
 ) -> Result<AgentSelectionState, String> {
     let operation_id = Uuid::new_v4();
-    {
+    let (snapshot, already_selected) = {
         let state = app.state::<AppState>();
-        let _history_admission = state
+        let _admission = state
             .session_view
             .admission
             .lock()
             .map_err(|_| "Session admission is unavailable")?;
-        app.state::<AppState>().session_view.ensure_not_loading()?;
-        if expected_revision.is_some_and(|revision| {
-            state
-                .snapshot()
-                .map(|snapshot| snapshot.revision != revision)
-                .unwrap_or(true)
-        }) {
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if !accepts(&snapshot) {
             return Err("Agent selection changed; choose the Agent again.".into());
         }
-        let current = current_agent_selection(&app)?;
-        if current.stage == AgentSelectionStage::SigningOut {
+        if snapshot.agent_selection.stage == AgentSelectionStage::SigningOut {
             return Err("wait for the current Agent logout to complete".into());
         }
-        if current.selected_agent() == Some(candidate) {
-            crate::ui::sync_tray_menu(&app)?;
-            return Ok(current);
-        }
-        let _ = app.state::<AppState>().agent_control.cancel_active()?;
-
-        publish_agent_selection(
-            &app,
-            AgentSelectionState {
+        let already_selected = snapshot.agent_selection.selected_agent() == Some(candidate);
+        if !already_selected {
+            let revision = next_revision(&snapshot)?;
+            state.agent_control.cancel_active()?;
+            snapshot.agent_selection = AgentSelectionState {
                 operation_id: Some(operation_id),
                 stage: AgentSelectionStage::Checking,
                 candidate: Some(candidate),
@@ -456,11 +475,17 @@ pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
                     agent_display_name(candidate)
                 )),
                 ..AgentSelectionState::default()
-            },
-        )?;
+            };
+            snapshot.revision = revision;
+        }
+        (snapshot.clone(), already_selected)
+    };
+    if already_selected {
+        crate::ui::sync_tray_menu(&app)?;
+        return Ok(snapshot.agent_selection);
     }
-
-    let expected_config = app.state::<AppState>().config()?;
+    let expected_config = snapshot.config.clone();
+    emit_app_snapshot(&app, snapshot, true)?;
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
@@ -473,6 +498,17 @@ pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
         }
     };
     finish_agent_selection_probe(app, operation_id, candidate, descriptor, expected_config).await
+}
+
+pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    candidate: AgentKind,
+    expected_revision: Option<u32>,
+) -> Result<AgentSelectionState, String> {
+    select_agent_if(app, candidate, move |snapshot| {
+        expected_revision.is_none_or(|revision| snapshot.revision == revision)
+    })
+    .await
 }
 
 pub async fn restore_agent_selection<R: tauri::Runtime>(
@@ -557,7 +593,10 @@ async fn finish_agent_selection_probe<R: tauri::Runtime>(
     });
     match result {
         Ok(()) => {
-            complete_agent_selection(&app, operation_id, candidate, &expected_config)?;
+            crate::command_work::configuration(app.clone(), move |app| {
+                complete_agent_selection(&app, operation_id, candidate, &expected_config)
+            })
+            .await?;
         }
         Err(error) if error.code == ErrorCode::AuthRequired => {
             update_agent_selection(&app, operation_id, |selection| {
@@ -852,12 +891,15 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .iter()
                 .map(auth_method_model)
                 .collect::<Vec<_>>();
-            crate::agent_runtime::with_current_runtime(&catalog_runtime, || {
-                update_agent_selection(&app, operation_id, |selection| {
-                    selection.auth_methods = auth_methods;
-                    selection.supports_logout = supports_logout;
+            let authentication_runtime = catalog_runtime.clone();
+            crate::command_work::configuration(app.clone(), move |app| {
+                crate::agent_runtime::with_current_runtime(&authentication_runtime, || {
+                    update_agent_selection(&app, operation_id, |selection| {
+                        selection.auth_methods = auth_methods;
+                        selection.supports_logout = supports_logout;
+                    })
                 })
-            }).map_err(state_error)?;
+            }).await.map_err(state_error)?;
             if claude_authenticated == Some(false) {
                 return Err(Error::auth_required());
             }
@@ -883,7 +925,10 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                     catalog_model = model_defaults.choices.first().map(|choice| choice.value.clone());
                 }
             }
-            let snapshot = crate::agent_runtime::with_current_runtime(&catalog_runtime, || {
+            let modes = session.modes().map(|m| m.available_modes.clone()).unwrap_or_default();
+            let agent_default = session_controls::advertised_mode(session.config_options(), session.modes()).ok().flatten();
+            let snapshot = crate::command_work::configuration(app.clone(), move |app| {
+            crate::agent_runtime::with_current_runtime(&catalog_runtime, || {
                 let state = app.state::<AppState>();
                 let mut snapshot = state.runtime.write().map_err(|_| "Application state is unavailable")?;
                 if snapshot.config != expected_config || snapshot.agent_selection.operation_id != Some(operation_id) {
@@ -895,11 +940,12 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 selection.catalog_generation = Some(Uuid::new_v4());
                 selection.catalog_revision = 1;
                 selection.catalog_model = catalog_model;
-                selection.modes = session.modes().map(|m| m.available_modes.clone()).unwrap_or_default();
-                selection.agent_default = session_controls::advertised_mode(session.config_options(), session.modes()).ok().flatten();
+                selection.modes = modes;
+                selection.agent_default = agent_default;
                 snapshot.revision = revision;
                 Ok(snapshot.clone())
-            }).map_err(state_error)?;
+            })
+            }).await.map_err(state_error)?;
             emit_app_snapshot(&app, snapshot, true).map_err(state_error)?;
             Ok(())
         })
@@ -910,6 +956,8 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
 pub(crate) struct VerifiedManagedRuntime {
     pub expected_config: AppConfig,
     pub expected_selection: AgentSelectionState,
+    pub expected_runtime_operation: Option<Uuid>,
+    pub expected_runtime_agent: Option<AgentKind>,
     pub options: Option<Vec<agent_client_protocol::schema::v1::SessionConfigOption>>,
     pub modes: Vec<agent_client_protocol::schema::v1::SessionMode>,
     pub agent_default: Option<String>,
@@ -933,6 +981,8 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
     let config = expected.config;
     let verified_config = config.clone();
     let expected_selection = expected.agent_selection;
+    let expected_runtime_operation = expected.agent_runtime.operation_id;
+    let expected_runtime_agent = expected.agent_runtime.agent;
     let cwd = crate::store::effective_working_directory(&config);
     let publisher = HttpPublisher::start()
         .await
@@ -1001,6 +1051,8 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
                 return Ok(VerifiedManagedRuntime {
                     expected_config: config,
                     expected_selection,
+                    expected_runtime_operation,
+                    expected_runtime_agent,
                     options: resolved.options,
                     modes: session
                         .modes()
@@ -1183,59 +1235,65 @@ fn complete_agent_selection<R: tauri::Runtime>(
     expected_config: &AppConfig,
 ) -> Result<bool, String> {
     let state = app.state::<AppState>();
-    let (snapshot, persistence_error) = {
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "application state lock is poisoned".to_string())?;
-        if snapshot.agent_selection.operation_id != Some(operation_id)
-            || snapshot.agent_selection.candidate != Some(candidate)
-        {
-            return Ok(false);
-        }
-        if !snapshot.config.same_execution_config(expected_config)
-            || !snapshot
-                .config
-                .same_agent_execution(expected_config, candidate)
-        {
-            snapshot.agent_selection.stage = AgentSelectionStage::Failed;
-            snapshot.agent_selection.error =
+    let transaction = state.store.writer.begin()?;
+    let expected = state.snapshot()?;
+    if expected.agent_selection.operation_id != Some(operation_id)
+        || expected.agent_selection.candidate != Some(candidate)
+    {
+        return Ok(false);
+    }
+    if !expected.config.same_execution_config(expected_config)
+        || !expected
+            .config
+            .same_agent_execution(expected_config, candidate)
+    {
+        drop(transaction);
+        update_agent_selection(app, operation_id, |selection| {
+            selection.stage = AgentSelectionStage::Failed;
+            selection.error =
                 Some("Agent settings changed during verification. Verify the Agent again.".into());
-            snapshot.agent_selection.message = None;
-            snapshot.revision = next_revision(&snapshot)?;
-            let stale = snapshot.clone();
-            drop(snapshot);
-            emit_app_snapshot(app, stale, true)?;
-            return Ok(false);
+            selection.message = None;
+        })?;
+        return Ok(false);
+    }
+    let mut next = expected.config.clone();
+    next.agent = candidate;
+    let committed = transaction.commit(&state, &expected.config, next, |latest| {
+        if latest.agent_selection != expected.agent_selection {
+            return Err("Agent selection changed while saving settings".into());
         }
-        let mut next_config = snapshot.config.clone();
-        next_config.agent = candidate;
-        let revision = next_revision(&snapshot)?;
-        let persistence_error = state
-            .store
-            .save(&next_config)
-            .err()
-            .map(|error| format!("unable to persist Agent selection: {error}"));
-        if let Some(error) = persistence_error.as_ref() {
-            snapshot.agent_selection.stage = AgentSelectionStage::Failed;
-            snapshot.agent_selection.message = None;
-            snapshot.agent_selection.error = Some(error.clone());
-        } else {
-            snapshot.config = next_config;
-            snapshot.agent_selection.stage = AgentSelectionStage::Selected;
-            snapshot.agent_selection.message = Some(format!(
-                "{} is ready and selected.",
-                agent_display_name(candidate)
-            ));
-            snapshot.agent_selection.error = None;
+        latest.agent_selection.stage = AgentSelectionStage::Selected;
+        latest.agent_selection.message = Some(format!(
+            "{} is ready and selected.",
+            agent_display_name(candidate)
+        ));
+        latest.agent_selection.error = None;
+        Ok(())
+    });
+    drop(transaction);
+    let snapshot = match committed {
+        Ok((snapshot, ())) => snapshot,
+        Err(error) => {
+            let error = format!("unable to persist Agent selection: {error}");
+            let failed = {
+                let mut latest = state
+                    .runtime
+                    .write()
+                    .map_err(|_| "Application state is unavailable")?;
+                if latest.agent_selection != expected.agent_selection {
+                    return Ok(false);
+                }
+                latest.revision = next_revision(&latest)?;
+                latest.agent_selection.stage = AgentSelectionStage::Failed;
+                latest.agent_selection.message = None;
+                latest.agent_selection.error = Some(error.clone());
+                latest.clone()
+            };
+            emit_app_snapshot(app, failed, true)?;
+            return Err(error);
         }
-        snapshot.revision = revision;
-        (snapshot.clone(), persistence_error)
     };
     emit_app_snapshot(app, snapshot, true)?;
-    if let Some(error) = persistence_error {
-        return Err(error);
-    }
     Ok(true)
 }
 
@@ -1669,8 +1727,10 @@ async fn run_persistent_session<R: tauri::Runtime>(
             app.state::<AgentServices<R>>().0.confirm_ready(&descriptor.runtime()).map_err(state_error)?;
             agent_runtime::publish_confirmed_version(&app, &descriptor.runtime()).map_err(state_error)?;
             *startup = SessionStartup::Ready;
-            confirm_agent_selection_after_session(&app, identity.config.agent, &identity.config)
-                .map_err(state_error)?;
+            let readiness_config = identity.config.clone();
+            crate::command_work::configuration(app.clone(), move |app| {
+                confirm_agent_selection_after_session(&app, readiness_config.agent, &readiness_config)
+            }).await.map_err(state_error)?;
 
             let session_id_text = session_id.to_string();
             let session_metadata = AgentSessionMetadata {
@@ -1911,7 +1971,7 @@ fn prepare_agent_turn<R: tauri::Runtime>(
             initial_streaming = lens.representation.is_none();
             lens.stage = LensStage::Transforming;
             if initial_streaming {
-                lens.output_blocks.clear();
+                lens.output_blocks = Default::default();
                 lens.pending_representation = None;
             } else {
                 lens.pending_representation = Some(LensPendingRepresentation {
@@ -2377,12 +2437,12 @@ fn finish_prompt_response(
     {
         lens.stage = LensStage::Failed;
         lens.error = Some(error.into());
-        lens.output_blocks.clear();
+        lens.output_blocks = Default::default();
         finish_retained_representation(lens, Some(LensRefreshOutcome::Failed), Some(error.into()));
         return;
     }
     lens.representation = Some(representation);
-    lens.output_blocks.clear();
+    lens.output_blocks = Default::default();
     lens.stage = LensStage::Completed;
     lens.error = None;
     let freshness = retained_representation_freshness(lens);
@@ -2473,7 +2533,11 @@ async fn run_session_turn<R: tauri::Runtime>(
         .block_task();
     tokio::pin!(prompt_response);
     let mut candidate = AgentOutputCandidate::default();
+    let mut progress = crate::publication::AgentProgress::new();
+    // The outgoing prompt is already canonical and shares this turn's display clock.
+    progress.record(false);
 
+    let result = async {
     loop {
         tokio::select! {
             biased;
@@ -2491,6 +2555,21 @@ async fn run_session_turn<R: tauri::Runtime>(
                     return Err(Error::request_cancelled());
                 }
             }
+            output_dirty = progress.tick() => {
+                if let Some(output_dirty) = output_dirty {
+                    crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
+                        .map_err(state_error)?;
+                    let streaming_blocks = (initial_streaming && output_dirty).then(|| candidate.blocks());
+                    update_lens_state_for_run(app, key, &identity.config, |lens| {
+                        if let Some(agent) = lens.agent.as_mut() {
+                            agent.received_updates = candidate.received_updates;
+                            agent.progress_text = candidate.progress_text();
+                        }
+                        if let Some(blocks) = streaming_blocks { lens.output_blocks = blocks.into(); }
+                    }).map_err(state_error)?;
+
+                }
+            }
             message = session.read_update() => {
                 if let SessionMessage::SessionMessage(dispatch) = message? {
                     let output_changed =
@@ -2503,28 +2582,15 @@ async fn run_session_turn<R: tauri::Runtime>(
                                 return Err(error);
                             }
                         };
-                    let streaming_blocks = (initial_streaming && output_changed).then(|| candidate.blocks());
-                    {
-                        let _ = update_lens_state_for_run(
-                            app,
-                            key,
-                            &identity.config,
-                            |lens| {
-                                if let Some(agent) = lens.agent.as_mut() {
-                                    agent.received_updates = candidate.received_updates;
-                                    agent.progress_text = candidate.progress_text();
-                                }
-                                if let Some(blocks) = streaming_blocks {
-                                    lens.output_blocks = blocks;
-                                }
-                            },
-                        )
-                        .map_err(state_error)?;
-                    }
+                    // The canonical transcript and candidate consume every notification.
+                    // Presentation has one latest-value slot, drained at most every 100 ms.
+                    progress.record(output_changed);
                 }
             }
             response = &mut prompt_response => {
                 let stop_reason = response?.stop_reason;
+                crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
+                    .map_err(state_error)?;
                 let stop_reason_text = stop_reason_text(stop_reason);
                 let cancelled = stop_reason == StopReason::Cancelled
                     || *cancellation.borrow()
@@ -2535,17 +2601,25 @@ async fn run_session_turn<R: tauri::Runtime>(
                         candidate.accept_published_html(published)?;
                     }
                 }
+                // Terminal commit owns the candidate even if subsequent event delivery fails.
+                progress.take_pending();
                 let _ = update_lens_state_for_run(
                     app,
                     key,
                     &identity.config,
                     |lens| {
+                        // A terminal result flushes the last candidate immediately; no timer
+                        // survives this turn to overwrite the terminal state.
+                        if let Some(agent) = lens.agent.as_mut() {
+                            agent.received_updates = candidate.received_updates;
+                            agent.progress_text = candidate.progress_text();
+                        }
                         finish_prompt_response(
                             lens,
                             key,
                             target_projection,
                             target_context_revision,
-                            candidate,
+                            std::mem::take(&mut candidate),
                             stop_reason_text,
                             cancelled,
                         );
@@ -2560,6 +2634,38 @@ async fn run_session_turn<R: tauri::Runtime>(
             }
         }
     }
+    }.await;
+    if let Err(error) =
+        crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
+    {
+        eprintln!("Unable to flush terminal session display: {error}");
+    }
+    if result.is_err() {
+        if let Some(output_dirty) = progress.take_pending() {
+            // Preserve all accepted partial content on error/cancellation. Authority
+            // rejects a stopped/replaced operation; this never changes lifecycle stage.
+            let blocks = (initial_streaming && output_dirty).then(|| candidate.blocks());
+            if let Err(error) = update_lens_state_for_run(app, key, &identity.config, |lens| {
+                if lens
+                    .live
+                    .as_ref()
+                    .is_some_and(|live| live.lifecycle == LensMonitoringLifecycle::Stopped)
+                {
+                    return;
+                }
+                if let Some(agent) = lens.agent.as_mut() {
+                    agent.received_updates = candidate.received_updates;
+                    agent.progress_text = candidate.progress_text();
+                }
+                if let Some(blocks) = blocks {
+                    lens.output_blocks = blocks.into();
+                }
+            }) {
+                eprintln!("Unable to flush terminal Agent progress: {error}");
+            }
+        }
+    }
+    result
 }
 
 async fn run_authentication<R: tauri::Runtime>(
@@ -2671,11 +2777,20 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
             use agent_client_protocol::schema::v1::SessionUpdate;
-            crate::session_view::record_live(
-                app,
-                &notification.session_id.to_string(),
-                notification.update.clone(),
-            )
+            if candidate.is_some() {
+                crate::session_view::record_live_with_cadence(
+                    app,
+                    &notification.session_id.to_string(),
+                    notification.update.clone(),
+                    crate::session_view::DisplayCadence::Actor,
+                )
+            } else {
+                crate::session_view::record_live(
+                    app,
+                    &notification.session_id.to_string(),
+                    notification.update.clone(),
+                )
+            }
             .map_err(state_error)?;
             controls.record_tool(&notification.update)?;
             match &notification.update {
@@ -2695,12 +2810,21 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
         })
         .await
         .if_request(async |request: RequestPermissionRequest, responder| {
+            crate::session_view::flush_live(
+                app,
+                controls.snapshot().map_err(state_error)?.operation_id,
+                &request.session_id.to_string(),
+            )
+            .map_err(state_error)?;
             controls.receive_permission(app, request, responder, connection)
         })
         .await
         .if_request(
             async |request: agent_client_protocol::schema::v1::CreateElicitationRequest,
                    responder| {
+                let authority = controls.snapshot().map_err(state_error)?;
+                crate::session_view::flush_live(app, authority.operation_id, &authority.session_id)
+                    .map_err(state_error)?;
                 controls.receive_elicitation(app, request, responder, connection)
             },
         )
@@ -3789,7 +3913,7 @@ mod tests {
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
             stage: LensStage::Transforming,
-            context: Some(sample_context(7)),
+            context: Some(sample_context(7).into()),
             projection: Some(target_projection.clone()),
             representation: Some(old_representation.clone()),
             pending_representation: Some(LensPendingRepresentation {
@@ -3882,9 +4006,9 @@ mod tests {
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
             stage: LensStage::Transforming,
-            context: Some(sample_context(3)),
+            context: Some(sample_context(3).into()),
             projection: Some(target_projection.clone()),
-            output_blocks: streamed.clone(),
+            output_blocks: streamed.clone().into(),
             live: Some(crate::model::LensLiveState {
                 lifecycle: LensMonitoringLifecycle::Watching,
                 health: LensSourceHealth::Healthy,
@@ -3928,7 +4052,7 @@ mod tests {
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
             stage: LensStage::Transforming,
-            context: Some(sample_context(3)),
+            context: Some(sample_context(3).into()),
             projection: Some(latest_projection),
             live: Some(crate::model::LensLiveState {
                 lifecycle: LensMonitoringLifecycle::Watching,
@@ -4049,7 +4173,7 @@ mod tests {
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
             stage: LensStage::Transforming,
-            context: Some(sample_context(2)),
+            context: Some(sample_context(2).into()),
             projection: Some(target_projection.clone()),
             representation: Some(old_representation.clone()),
             pending_representation: Some(LensPendingRepresentation {
@@ -4115,7 +4239,7 @@ mod tests {
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
             stage: LensStage::Transforming,
-            context: Some(sample_context(1)),
+            context: Some(sample_context(1).into()),
             projection: Some(projection.clone()),
             representation: Some(representation.clone()),
             live: Some(crate::model::LensLiveState {
@@ -4165,7 +4289,7 @@ mod tests {
         let projection = projection_ref("Source", 2);
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
-            context: Some(sample_context(2)),
+            context: Some(sample_context(2).into()),
             projection: Some(projection.clone()),
             ..LensState::default()
         };
@@ -4178,7 +4302,7 @@ mod tests {
         for (run, text) in [(10, "first"), (11, "second")] {
             lens.agent = Some(sample_run_state(Uuid::from_u128(run), projection.clone()));
             if run == 10 {
-                lens.output_blocks = output(text);
+                lens.output_blocks = output(text).into();
             }
             finish_prompt_response(
                 &mut lens,
@@ -4269,7 +4393,7 @@ mod tests {
         let projection = projection_ref("Source", 1);
         let mut lens = LensState {
             operation_id: Some(Uuid::nil()),
-            context: Some(sample_context(1)),
+            context: Some(sample_context(1).into()),
             projection: Some(projection.clone()),
             live: Some(crate::model::LensLiveState {
                 lifecycle: LensMonitoringLifecycle::Watching,

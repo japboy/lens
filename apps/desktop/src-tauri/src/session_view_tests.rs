@@ -15,6 +15,257 @@ fn app(state: AppState) -> tauri::App<MockRuntime> {
     .unwrap()
 }
 
+fn live_display_app() -> (tauri::App<MockRuntime>, Uuid) {
+    let state = test_support::state();
+    let operation = Uuid::new_v4();
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot.lens.operation_id = Some(operation);
+        snapshot.lens.stage = LensStage::Transforming;
+    }
+    *state.session_view.inner.lock().unwrap() = SessionView {
+        phase: ViewPhase::Live,
+        operation_id: Some(operation),
+        session_id: Some("display-session".into()),
+        generation: Uuid::new_v4(),
+        document: Some(SessionDocument::default()),
+        ..Default::default()
+    };
+    (app(state), operation)
+}
+
+fn display_chunk() -> SessionUpdate {
+    use agent_client_protocol::schema::v1::{ContentChunk, TextContent};
+    SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new("x"))))
+}
+
+#[tokio::test(start_paused = true)]
+async fn actor_display_uses_progress_clock_and_retains_every_chunk() {
+    use tauri::Listener;
+    let (app, operation) = live_display_app();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = count.clone();
+    app.listen_any("session-view-changed", move |_| {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mut progress = crate::publication::AgentProgress::new();
+    // Even a provider with no first token must display the already accepted prompt.
+    append_prompt(
+        app.handle(),
+        "display-session",
+        &[ContentBlock::Text(
+            agent_client_protocol::schema::v1::TextContent::new("prompt"),
+        )],
+    )
+    .unwrap();
+    progress.record(false);
+    assert!(
+        !app.state::<AppState>()
+            .session_view
+            .display
+            .lock()
+            .unwrap()
+            .scheduled
+    );
+    tokio::time::advance(Duration::from_millis(99)).await;
+    tokio::select! {
+        biased;
+        _ = progress.tick() => panic!("prompt published before its shared deadline"),
+        _ = std::future::ready(()) => {}
+    }
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(progress.tick().await, Some(false));
+    flush_live(app.handle(), operation, "display-session").unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    for _ in 0..1000 {
+        record_live_with_cadence(
+            app.handle(),
+            "display-session",
+            display_chunk(),
+            DisplayCadence::Actor,
+        )
+        .unwrap();
+        progress.record(true);
+    }
+    assert!(
+        !app.state::<AppState>()
+            .session_view
+            .display
+            .lock()
+            .unwrap()
+            .scheduled
+    );
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    tokio::time::advance(Duration::from_millis(100)).await;
+    assert_eq!(progress.tick().await, Some(true));
+    flush_live(app.handle(), operation, "display-session").unwrap();
+    let view = app.state::<AppState>().session_view.view().unwrap();
+    assert!(matches!(&view.document.unwrap().entries[1],
+        crate::session_document::DocumentEntry::Message { blocks, .. }
+        if matches!(&blocks[0], crate::session_document::DocumentBlock::Markdown {text} if text == &"x".repeat(1000))));
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    // A terminal/interaction flush is immediate and does not produce a duplicate tick.
+    record_live_with_cadence(
+        app.handle(),
+        "display-session",
+        display_chunk(),
+        DisplayCadence::Actor,
+    )
+    .unwrap();
+    flush_live(app.handle(), operation, "display-session").unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    flush_live(app.handle(), operation, "display-session").unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn display_fallback_waits_100ms_and_critical_flush_preserves_single_timer() {
+    use tauri::Listener;
+    let (app, operation) = live_display_app();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = count.clone();
+    let handle = app.handle().clone();
+    app.listen_any("session-view-changed", move |_| {
+        let state = handle.state::<AppState>();
+        assert!(state.runtime.try_write().is_ok());
+        assert!(state.session_view.inner.try_lock().is_ok());
+        assert!(state.session_view.display.try_lock().is_ok());
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    record_live_with_cadence(
+        app.handle(),
+        "display-session",
+        display_chunk(),
+        DisplayCadence::Actor,
+    )
+    .unwrap();
+    // Run the production fallback timer future on the paused test clock.
+    {
+        let state = app.state::<AppState>();
+        let mut display = state.session_view.display.lock().unwrap();
+        display.actor_owned = false;
+        display.scheduled = true;
+    }
+    let handle = app.handle().clone();
+    let timer = tokio::spawn(async move { flush_after_delay(&handle).await.unwrap() });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(99)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    flush_live(app.handle(), operation, "display-session").unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        app.state::<AppState>()
+            .session_view
+            .display
+            .lock()
+            .unwrap()
+            .scheduled
+    );
+    tokio::time::advance(Duration::from_millis(1)).await;
+    timer.await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        !app.state::<AppState>()
+            .session_view
+            .display
+            .lock()
+            .unwrap()
+            .scheduled
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn old_fallback_timer_cannot_publish_an_active_turn_early() {
+    use tauri::Listener;
+    let (app, operation) = live_display_app();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = count.clone();
+    app.listen_any("session-view-changed", move |_| {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let handle = app.handle().clone();
+    let timer = tokio::spawn(async move { flush_after_delay(&handle).await.unwrap() });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(50)).await;
+    let mut progress = crate::publication::AgentProgress::new();
+    record_live_with_cadence(
+        app.handle(),
+        "display-session",
+        display_chunk(),
+        DisplayCadence::Actor,
+    )
+    .unwrap();
+    progress.record(false);
+    tokio::time::advance(Duration::from_millis(50)).await;
+    timer.await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(app
+        .state::<AppState>()
+        .session_view
+        .display
+        .lock()
+        .unwrap()
+        .pending
+        .is_some());
+    tokio::time::advance(Duration::from_millis(50)).await;
+    assert_eq!(progress.tick().await, Some(false));
+    flush_live(app.handle(), operation, "display-session").unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn stale_actor_cannot_flush_replacement_or_resurrect_closed_display() {
+    use tauri::Listener;
+    let (app, old_operation) = live_display_app();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = count.clone();
+    app.listen_any("session-view-changed", move |_| {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let new_operation = Uuid::new_v4();
+    app.state::<AppState>()
+        .runtime
+        .write()
+        .unwrap()
+        .lens
+        .operation_id = Some(new_operation);
+    app.state::<AppState>()
+        .session_view
+        .inner
+        .lock()
+        .unwrap()
+        .operation_id = Some(new_operation);
+    record_live_with_cadence(
+        app.handle(),
+        "display-session",
+        display_chunk(),
+        DisplayCadence::Actor,
+    )
+    .unwrap();
+    flush_live(app.handle(), old_operation, "display-session").unwrap();
+    flush_live(app.handle(), new_operation, "old-session").unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(app
+        .state::<AppState>()
+        .session_view
+        .display
+        .lock()
+        .unwrap()
+        .pending
+        .is_some());
+    app.state::<AppState>().session_view.clear().unwrap();
+    emit(app.handle()).unwrap();
+    flush_live(app.handle(), new_operation, "display-session").unwrap();
+    flush_display(app.handle()).unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        app.state::<AppState>().session_view.phase().unwrap(),
+        ViewPhase::Idle
+    );
+}
+
 fn monitoring(lifecycle: LensMonitoringLifecycle) -> LensState {
     LensState {
         operation_id: Some(Uuid::new_v4()),
