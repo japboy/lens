@@ -261,7 +261,7 @@ fn production_state_update_publishes_exactly_one_complete_revision_and_rejects_s
     let app = app(state);
     let window = window(&app);
     let (sender, receiver) = mpsc::channel();
-    let listener = app.listen_any("app-state-changed", move |event| {
+    let listener = app.listen_any("window-app-state-changed", move |event| {
         sender
             .send(serde_json::from_str::<Value>(event.payload()).unwrap())
             .unwrap();
@@ -278,7 +278,7 @@ fn production_state_update_publishes_exactly_one_complete_revision_and_rejects_s
         .unwrap();
     assert_eq!(
         event,
-        invoke(&window, "get_app_snapshot", json!({})).unwrap()
+        invoke(&window, "get_window_snapshot", json!({})).unwrap()
     );
     assert_eq!(event["revision"], 1);
     assert_eq!(event["agent_runtime"]["downloaded_bytes"], 42);

@@ -22,6 +22,8 @@ pub(crate) fn effective_working_directory(config: &AppConfig) -> PathBuf {
 #[derive(Debug)]
 pub struct ConfigStore {
     path: PathBuf,
+    pub(crate) writer: crate::configuration_writer::ConfigurationWriter,
+    pub(crate) command_workers: crate::command_work::WorkSlots,
 }
 
 #[derive(serde::Serialize)]
@@ -71,7 +73,11 @@ impl ConfigStore {
     }
 
     pub(crate) fn at_path(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            writer: Default::default(),
+            command_workers: Default::default(),
+        }
     }
 
     pub(crate) fn inspect_recovery(&self, message: String) -> RecoveryInfo {

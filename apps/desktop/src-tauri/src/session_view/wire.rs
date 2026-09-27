@@ -92,7 +92,13 @@ fn manifest_entry(entry: &DocumentEntry, revision: u64) -> serde_json::Value {
         .enumerate()
         .map(|(i, b)| {
             let (kind, length) = block_kind_length(b);
-            deferred(i, kind, length)
+            {
+                let mut descriptor = deferred(i, kind, length);
+                if let DocumentBlock::Image { mime_type, .. } = b {
+                    descriptor["mime_type"] = serde_json::Value::String(mime_type.clone());
+                }
+                descriptor
+            }
         })
         .collect();
     match entry {
@@ -293,7 +299,6 @@ pub(crate) struct BlockResponse {
     block: DocumentBlock,
 }
 
-#[tauri::command]
 pub(crate) fn get_session_block<R: Runtime>(
     webview: tauri::Webview<R>,
     state: tauri::State<'_, AppState>,

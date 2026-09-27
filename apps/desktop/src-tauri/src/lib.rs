@@ -7,9 +7,12 @@ mod agent_output;
 mod agent_preferences;
 mod agent_runtime;
 mod app_state;
+mod command_work;
 mod commands;
+mod configuration_writer;
 mod external_agent;
 mod html_preview;
+mod publication;
 mod settings_recovery;
 use usecase::confirm_targets;
 #[cfg(test)]
@@ -131,41 +134,45 @@ fn command_handler<R: tauri::Runtime>(
             about::get_about_info,
             about::get_about_documents,
             about::show_about,
-            commands::get_app_snapshot,
+            command_work::get_app_snapshot,
+            command_work::get_window_snapshot,
+            command_work::get_lens_source,
+            command_work::get_lens_output,
+            command_work::get_lens_image,
             session_view::get_session_view,
-            session_view::wire::get_session_block,
+            command_work::get_session_block,
             session_view::close_session_view,
-            commands::get_html_output,
-            commands::get_response_block,
+            command_work::get_html_output,
+            command_work::get_response_block,
             commands::set_agent,
             commands::update_managed_agent,
             commands::save_external_agent,
-            commands::delete_external_agent,
-            commands::reset_external_agents,
-            commands::set_working_directory,
-            commands::set_agent_prompt_template,
-            commands::update_prompt_presets,
-            commands::reset_agent_prompt_template,
+            command_work::delete_external_agent,
+            command_work::reset_external_agents,
+            command_work::set_working_directory,
+            command_work::set_agent_prompt_template,
+            command_work::update_prompt_presets,
+            command_work::reset_agent_prompt_template,
             commands::open_screen_recording_settings,
             commands::accessibility_permission,
             commands::request_accessibility_permission,
-            commands::select_lens_target,
-            commands::add_lens_target,
-            commands::remove_lens_target,
-            commands::confirm_lens_targets,
-            commands::retry_lens_transform,
-            commands::pause_lens,
-            commands::resume_lens,
-            commands::stop_lens,
-            commands::authenticate_agent,
+            command_work::select_lens_target,
+            command_work::add_lens_target,
+            command_work::remove_lens_target,
+            command_work::confirm_lens_targets,
+            command_work::retry_lens_transform,
+            command_work::pause_lens,
+            command_work::resume_lens,
+            command_work::stop_lens,
+            command_work::authenticate_agent,
             commands::authenticate_agent_selection,
             commands::reauthenticate_agent_selection,
             commands::sign_out_agent_selection,
-            commands::cancel_agent,
-            commands::set_session_option,
+            command_work::cancel_agent,
+            command_work::set_session_option,
             commands::set_agent_defaults,
             commands::preview_agent_model,
-            commands::respond_agent_interaction,
+            command_work::respond_agent_interaction,
             commands::show_settings,
         ]);
     move |invoke: tauri::ipc::Invoke<R>| {
@@ -849,9 +856,9 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
         operation_id: Some(operation_id),
         stage: model::LensStage::Completed,
         target_set: Some(target_set.clone()),
-        context: Some(context),
-        input: Some(input),
-        output_blocks: rich_output_validation_blocks()?,
+        context: Some(context.into()),
+        input: Some(input.into()),
+        output_blocks: rich_output_validation_blocks()?.into(),
         ..model::LensState::default()
     };
     if std::env::var("LENS_VALIDATE_RICH_OUTPUT").as_deref() == Ok("history") {

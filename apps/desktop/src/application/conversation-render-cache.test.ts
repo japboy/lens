@@ -13,6 +13,25 @@ const deferred: DeferredBlock = {
   byte_length: 100,
 };
 describe("visible conversation body cache", () => {
+  it("renders image MIME metadata without fetching or retaining its large body", async () => {
+    const cache = new ConversationRenderCache(100);
+    const loader = vi.fn<BlockLoader>();
+    const value = await cache.resolve(
+      "image",
+      { ...deferred, content_type: "image", mime_type: "image/png", byte_length: 20_000_000 },
+      loader,
+    );
+    expect(value.block).toEqual({ type: "image", mime_type: "image/png", data: "" });
+    expect(loader).not.toHaveBeenCalled();
+    expect(cache.retainedBytes).toBeLessThan(100);
+    const inline = await cache.resolve("inline", {
+      type: "image",
+      mime_type: "image/png",
+      data: "x".repeat(1_000_000),
+    });
+    expect(inline.block).toEqual(value.block);
+    expect(cache.retainedBytes).toBeLessThanOrEqual(100);
+  });
   it("returns HTML source unchanged without creating a worker or prepared preview", async () => {
     const worker = vi.fn<() => never>(() => {
       throw new Error("Unexpected worker");

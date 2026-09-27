@@ -191,7 +191,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         license: "Apache text\n<not-markup>",
         notice: "Original project by Yu Inao",
       };
-    if (command === "get_app_snapshot") return snapshot;
+    if (command === "get_window_snapshot") return snapshot;
     if (command === "get_session_view") return { revision: 0, phase: "idle" };
     if (command === "accessibility_permission") return true;
     return undefined;
@@ -262,7 +262,7 @@ describe("progressive DSD resources", () => {
       resolveSnapshot = resolve;
     });
     vi.mocked(invoke).mockImplementation((command) =>
-      command === "get_app_snapshot" ? pending : original(command),
+      command === "get_window_snapshot" ? pending : original(command),
     );
     try {
       const page = await createPage("settings");
@@ -290,8 +290,12 @@ describe("progressive DSD resources", () => {
       editor.dispatchEvent(new Event("input", { bubbles: true }));
       const listener = vi
         .mocked(listen)
-        .mock.calls.find(([event]) => event === "app-state-changed")?.[1];
-      listener?.({ event: "app-state-changed", id: 1, payload: { ...snapshot, revision: 2 } });
+        .mock.calls.find(([event]) => event === "window-app-state-changed")?.[1];
+      listener?.({
+        event: "window-app-state-changed",
+        id: 1,
+        payload: { ...snapshot, revision: 2 },
+      });
       await page.updateComplete;
       await (
         page.querySelector(
@@ -312,7 +316,7 @@ describe("progressive DSD resources", () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const original = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation((command) =>
-      command === "get_app_snapshot"
+      command === "get_window_snapshot"
         ? Promise.reject(new Error("Snapshot unavailable"))
         : original(command),
     );
@@ -731,6 +735,56 @@ describe("Lens rich Agent output", () => {
     expect(image?.getAttribute("alt")).toBe("Agent image 1 of 1");
   });
 
+  it("keeps Retry and source quality available without loading hidden source content", async () => {
+    snapshot.source_ref = "source-reference";
+    snapshot.output_ref = null;
+    snapshot.source_metadata = { has_input: true, quality: "full" };
+    snapshot.lens = {
+      ...completedLens,
+      stage: "failed",
+      input: undefined,
+      context: undefined,
+      error: "Failed",
+    };
+    try {
+      const page = await createPage("overlay");
+      const root = viewRoot(page, "lens-overlay-view")!;
+      await vi.waitFor(() => expect(root.textContent).toContain("Retry with Agent"));
+      expect(root.querySelector(".quality")?.textContent).toBe("full");
+      const { invoke } = await import("@tauri-apps/api/core");
+      expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "get_lens_source")).toBe(
+        false,
+      );
+    } finally {
+      delete snapshot.source_ref;
+      delete snapshot.output_ref;
+      delete snapshot.source_metadata;
+    }
+  });
+
+  it("serializes Source only on demand and reuses the immutable input", async () => {
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      const element = await createPage("overlay");
+      const view =
+        element.querySelector<import("./components/lens-overlay-view").LensOverlayView>(
+          "lens-overlay-view",
+        )!;
+      await vi.waitFor(() => expect(view.model).toBeDefined());
+      const calls = () =>
+        stringify.mock.calls.filter(([value]) => value === snapshot.lens.input).length;
+      expect(calls()).toBe(0);
+      view.shadowRoot!.querySelector<HTMLButtonElement>("#source-tab")!.click();
+      await view.updateComplete;
+      expect(calls()).toBe(1);
+      view.requestUpdate();
+      await view.updateComplete;
+      expect(calls()).toBe(1);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
   it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {
     const element = await createPage("overlay");
     await vi.waitFor(() => {
@@ -852,6 +906,66 @@ describe("Lens rich Agent output", () => {
     );
   });
 
+  it("shows pending lifecycle feedback before IPC completion and suppresses repeated Stop", async () => {
+    snapshot.lens = {
+      ...completedLens,
+      live: {
+        lifecycle: "watching",
+        health: "healthy",
+        freshness: "current",
+        agent_refresh_interval_seconds: 180,
+      },
+    };
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mocked = vi.mocked(invoke);
+    const original = mocked.getMockImplementation()!;
+    let finishPause!: () => void;
+    let finishStop!: () => void;
+    mocked.mockImplementation(async (command, ...args) => {
+      if (command === "pause_lens")
+        return new Promise<void>((resolve) => {
+          finishPause = resolve;
+        });
+      if (command === "stop_lens")
+        return new Promise<void>((resolve) => {
+          finishStop = resolve;
+        });
+      return original(command, ...args);
+    });
+    try {
+      const page = await createPage("overlay");
+      const root = viewRoot(page, "lens-overlay-view")!;
+      await vi.waitFor(() => expect(root.textContent).toContain("Pause Updates"));
+      const pause = [...root.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Pause Updates",
+      )!;
+      pause.click();
+      await vi.waitFor(() => {
+        expect(pause.textContent).toContain("Pausing Updates…");
+        expect(pause.disabled).toBe(true);
+      });
+      root.querySelector<HTMLButtonElement>('[aria-label="Stop Lens and Close"]')!.click();
+      await vi.waitFor(() => {
+        expect(
+          root.querySelector<HTMLButtonElement>('[aria-label="Closing Lens…"]')?.disabled,
+        ).toBe(true);
+        expect(root.textContent).toContain("Closing Lens…");
+      });
+      expect(closeCurrentWindow).not.toHaveBeenCalled();
+      const pageIntent = () =>
+        page.dispatchEvent(new CustomEvent("lens-overlay-intent", { detail: { type: "close" } }));
+      pageIntent();
+      expect(mocked.mock.calls.filter(([command]) => command === "stop_lens")).toHaveLength(1);
+      finishPause();
+      await Promise.resolve();
+      expect(closeCurrentWindow).not.toHaveBeenCalled();
+      finishStop();
+      await vi.waitFor(() => expect(closeCurrentWindow).toHaveBeenCalledOnce());
+    } finally {
+      mocked.mockImplementation(original);
+    }
+  });
+
   it("resumes a paused live operation", async () => {
     snapshot.lens = {
       ...completedLens,
@@ -918,7 +1032,7 @@ describe("Lens Settings", () => {
     const mockedInvoke = vi.mocked(invoke);
     const original = mockedInvoke.getMockImplementation()!;
     mockedInvoke.mockImplementation(async (command, ...arguments_) => {
-      if (command === "get_app_snapshot") throw new Error("Snapshot unavailable");
+      if (command === "get_window_snapshot") throw new Error("Snapshot unavailable");
       if (command === "open_screen_recording_settings")
         throw new Error("System Settings unavailable");
       return original(command, ...arguments_);
@@ -1186,7 +1300,7 @@ describe("Lens Settings", () => {
       );
       const listener = vi
         .mocked(listen)
-        .mock.calls.find(([event]) => event === "app-state-changed")?.[1];
+        .mock.calls.find(([event]) => event === "window-app-state-changed")?.[1];
       const updatedSelection = {
         ...snapshot.agent_selection,
         catalog_generation: "new",
@@ -1198,7 +1312,7 @@ describe("Lens Settings", () => {
         ),
       };
       listener?.({
-        event: "app-state-changed",
+        event: "window-app-state-changed",
         id: 1,
         payload: { ...snapshot, revision: 2, agent_selection: updatedSelection },
       });
@@ -1225,7 +1339,7 @@ describe("Lens Settings", () => {
       expect(effort.disabled).toBe(true);
       expect(model.value).toBe("first");
       listener?.({
-        event: "app-state-changed",
+        event: "window-app-state-changed",
         id: 1,
         payload: {
           ...snapshot,
@@ -1607,7 +1721,7 @@ it("recovery requires explicit prompt-only confirmation and sends the inspected 
         expectedDigest: "inspected-digest",
       }),
     );
-    expect(invoke).not.toHaveBeenCalledWith("get_app_snapshot");
+    expect(invoke).not.toHaveBeenCalledWith("get_window_snapshot");
   } finally {
     if (previous) mocked.mockImplementation(previous);
   }

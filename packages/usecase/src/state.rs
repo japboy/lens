@@ -402,8 +402,8 @@ pub fn prepare_context_refresh(
     let mut next = latest.clone();
     let context_revision = refresh.context.revision;
     next.target_set = Some(refresh.target_set);
-    next.context = Some(refresh.context);
-    next.input = Some(refresh.input);
+    next.context = Some(refresh.context.into());
+    next.input = Some(refresh.input.into());
     next.projection = Some(refresh.projection);
     reconcile_lens_after_context_refresh(
         &mut next,
@@ -542,7 +542,10 @@ mod tests {
                 0 => stale.operation_id = None,
                 1 => stale.operation_id = Some(Uuid::from_u128(3)),
                 2 => stale.context = None,
-                3 => stale.context.as_mut().unwrap().context_id = Uuid::from_u128(3),
+                3 => {
+                    std::sync::Arc::make_mut(stale.context.as_mut().unwrap()).context_id =
+                        Uuid::from_u128(3)
+                }
                 4 => stale.live = None,
                 5 => stale.live.as_mut().unwrap().lifecycle = LensMonitoringLifecycle::Paused,
                 _ => unreachable!(),
@@ -630,8 +633,8 @@ mod tests {
         let lens = LensState {
             operation_id: Some(targets.selection_id),
             stage: LensStage::Completed,
-            input: Some(LensInput::from_context(&context).unwrap()),
-            context: Some(context),
+            input: Some(LensInput::from_context(&context).unwrap().into()),
+            context: Some(context.into()),
             target_set: Some(targets),
             projection: Some(projection_ref(1, 'a')),
             representation: Some(LensRepresentation {
@@ -692,10 +695,11 @@ mod tests {
             assert!(!authority.admits(&revoked));
         }
         let mut revoked = lens.clone();
-        revoked.context.as_mut().unwrap().revision = 4;
+        std::sync::Arc::make_mut(revoked.context.as_mut().unwrap()).revision = 4;
         assert!(!authority.admits(&revoked));
         revoked = lens.clone();
-        revoked.context.as_mut().unwrap().context_id = Uuid::from_u128(99);
+        std::sync::Arc::make_mut(revoked.context.as_mut().unwrap()).context_id =
+            Uuid::from_u128(99);
         assert!(!authority.admits(&revoked));
         revoked = lens.clone();
         revoked.operation_id = Some(Uuid::from_u128(99));
@@ -712,8 +716,8 @@ mod tests {
         let lens = canonical_state(2);
         LensContextRefreshCommit {
             target_set: lens.target_set.unwrap(),
-            context: lens.context.unwrap(),
-            input: lens.input.unwrap(),
+            context: std::sync::Arc::unwrap_or_clone(lens.context.unwrap()),
+            input: std::sync::Arc::unwrap_or_clone(lens.input.unwrap()),
             projection: lens.projection.unwrap(),
             source_health: LensSourceHealth::Healthy,
             outcome: LensContextRefreshOutcome::Unchanged,
@@ -726,7 +730,8 @@ mod tests {
         latest.output_blocks = vec![LensOutputBlock::Markdown {
             message_id: Some("latest".into()),
             text: "Latest Agent output".into(),
-        }];
+        }]
+        .into();
         let before = latest.clone();
         let next = prepare_context_refresh(
             &latest,
@@ -754,8 +759,11 @@ mod tests {
         for change in [
             (|lens: &mut LensState| lens.operation_id = Some(Uuid::from_u128(9)))
                 as fn(&mut LensState),
-            |lens| lens.context.as_mut().unwrap().context_id = Uuid::from_u128(9),
-            |lens| lens.context.as_mut().unwrap().revision = 2,
+            |lens| {
+                std::sync::Arc::make_mut(lens.context.as_mut().unwrap()).context_id =
+                    Uuid::from_u128(9)
+            },
+            |lens| std::sync::Arc::make_mut(lens.context.as_mut().unwrap()).revision = 2,
             |lens| lens.live.as_mut().unwrap().lifecycle = LensMonitoringLifecycle::Paused,
             |lens| lens.live.as_mut().unwrap().lifecycle = LensMonitoringLifecycle::Stopped,
             |lens| lens.live = None,
@@ -1039,7 +1047,7 @@ mod tests {
         let lens = LensState {
             operation_id: Some(operation_id),
             target_set: Some(canonical_targets.clone()),
-            context: Some(context(context_id, 2)),
+            context: Some(context(context_id, 2).into()),
             live: Some(live_state(LensFreshness::Current, None, None)),
             ..LensState::default()
         };

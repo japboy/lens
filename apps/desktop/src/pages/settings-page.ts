@@ -110,6 +110,7 @@ export class SettingsPage extends ReactiveElement {
           this.accessibility.state,
           this.commands.state,
           this.snapshots.connection,
+          this.commands.states,
         )
       : undefined;
     view.feedback = settingsFeedback(this.commands.state);

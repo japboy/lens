@@ -128,8 +128,8 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
         snapshot.lens = LensState {
             operation_id: Some(operation_id),
             stage: LensStage::Ready,
-            context: Some(tests::sample_context(1)),
-            input: Some(input),
+            context: Some(tests::sample_context(1).into()),
+            input: Some(input.into()),
             projection: Some(projection_ref.clone()),
             ..Default::default()
         };

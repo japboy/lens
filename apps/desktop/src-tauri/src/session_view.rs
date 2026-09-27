@@ -159,6 +159,13 @@ impl SessionViewStore {
     pub fn phase(&self) -> Result<ViewPhase, String> {
         self.inner.lock().map(|view| view.phase).map_err(lock_error)
     }
+
+    pub(crate) fn configuration_authority(
+        &self,
+    ) -> Result<(Uuid, Option<Uuid>, ViewPhase), String> {
+        let view = self.inner.lock().map_err(lock_error)?;
+        Ok((view.generation, view.operation_id, view.phase))
+    }
     #[cfg(test)]
     pub fn view(&self) -> Result<SessionView, String> {
         self.inner
@@ -572,7 +579,9 @@ fn merge_listings(
 }
 
 /// Caller holds admission while changing configuration and invalidating its history scope.
-pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub(crate) fn invalidate_working_directory_state<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let cwd = crate::store::effective_working_directory(&state.config()?);
     *state.session_view.catalog.lock().map_err(lock_error)? = HistoryCatalog {
@@ -591,6 +600,12 @@ pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Re
         };
     }
     drop(view);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn invalidate_working_directory<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    invalidate_working_directory_state(app)?;
     emit(app)?;
     crate::ui::sync_history_menu(app)
 }

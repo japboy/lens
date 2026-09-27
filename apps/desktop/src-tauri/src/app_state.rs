@@ -12,7 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex, RwLock,
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, Notify};
 pub use usecase::state::{
     advance_revision, next_revision, AgentRunKey, LensContextRefreshCommit,
@@ -503,6 +503,7 @@ impl LensMediaStore {
 }
 
 pub struct AppState {
+    pub(crate) publication: crate::publication::PublicationStore,
     pub(crate) history_store: std::sync::OnceLock<Arc<crate::session_history_store::HistoryStore>>,
     pub(crate) history_storage_error: std::sync::OnceLock<String>,
     pub(crate) history_writer: std::sync::OnceLock<crate::history_writer::HistoryWriter>,
@@ -522,7 +523,7 @@ pub struct AppState {
 pub struct LensPromptMaterial {
     pub operation_id: Uuid,
     pub target_set: LensTargetSet,
-    pub input: LensInput,
+    pub input: Arc<LensInput>,
     pub projection: ProjectionRef,
     pub media: Vec<LensMediaPayload>,
     pub config: AppConfig,
@@ -535,6 +536,7 @@ impl AppState {
         config: AppConfig,
     ) -> Self {
         Self {
+            publication: crate::publication::PublicationStore::default(),
             session_view: crate::session_view::SessionViewStore::default(),
             history_store: std::sync::OnceLock::new(),
             history_storage_error: std::sync::OnceLock::new(),
@@ -559,15 +561,24 @@ impl AppState {
     }
 
     pub fn config(&self) -> Result<AppConfig, String> {
-        self.snapshot().map(|snapshot| snapshot.config)
+        self.runtime
+            .read()
+            .map(|snapshot| snapshot.config.clone())
+            .map_err(|_| "application state lock is poisoned".to_string())
     }
 
     pub fn agent_selection(&self) -> Result<AgentSelectionState, String> {
-        self.snapshot().map(|snapshot| snapshot.agent_selection)
+        self.runtime
+            .read()
+            .map(|snapshot| snapshot.agent_selection.clone())
+            .map_err(|_| "application state lock is poisoned".to_string())
     }
 
     pub fn lens(&self) -> Result<LensState, String> {
-        self.snapshot().map(|snapshot| snapshot.lens)
+        self.runtime
+            .read()
+            .map(|snapshot| snapshot.lens.clone())
+            .map_err(|_| "application state lock is poisoned".to_string())
     }
 
     /// Reads the complete Agent-bound input and its exact media revision under one lock order.
@@ -663,8 +674,7 @@ pub(crate) fn emit_app_snapshot<R: tauri::Runtime>(
     if sync_tray {
         crate::ui::sync_tray_menu(app)?;
     }
-    app.emit("app-state-changed", snapshot)
-        .map_err(|error| error.to_string())
+    crate::publication::publish(app, snapshot)
 }
 
 pub fn publish_agent_selection<R: tauri::Runtime>(

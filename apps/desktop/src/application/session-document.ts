@@ -8,6 +8,8 @@ export interface DeferredDocumentBlock {
   revision: number;
   byte_length: number;
   append_only?: boolean;
+  /** Image metadata is sufficient for the Conversation note; body retrieval is unnecessary. */
+  mime_type?: string;
 }
 export type DocumentBlock =
   | DeferredDocumentBlock

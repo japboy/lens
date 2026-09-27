@@ -55,6 +55,33 @@ function model(
   return settingsViewModel("macos", SNAPSHOT, PERMISSION, command, connection);
 }
 
+it("scopes Settings conflicts and preserves separate pending feedback", () => {
+  const connection: CommandState = {
+    stage: "pending",
+    command: { scope: "settings", type: "select-agent" },
+  };
+  const prompt: CommandState = {
+    stage: "pending",
+    command: { scope: "settings", type: "update-prompt-presets" },
+  };
+  const view = settingsViewModel("macos", SNAPSHOT, PERMISSION, connection, READY_CONNECTION, [
+    connection,
+    prompt,
+  ]);
+  expect(view.pendingDestinations).toEqual(["connection", "session-defaults", "prompt-presets"]);
+  expect(view.pendingDestinations).not.toContain("privacy-security");
+  expect(view.feedbackByDestination?.connection).toEqual({
+    stage: "status",
+    target: "connection",
+    message: "Verifying connection…",
+  });
+  expect(view.feedbackByDestination?.["prompt-presets"]).toEqual({
+    stage: "status",
+    target: "prompt-presets",
+    message: "Saving prompt presets…",
+  });
+});
+
 function succeeded(type: Exclude<SettingsIntent["type"], "open-about">): CommandState {
   return {
     stage: "succeeded",

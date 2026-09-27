@@ -1053,6 +1053,7 @@ fn commit_verified_update<R: tauri::Runtime>(
         })
         .collect::<Vec<_>>();
     let snapshot = {
+        let _transaction = state.store.writer.begin()?;
         let _selector_guard = selector_mutex()
             .lock()
             .map_err(|_| "runtime selector unavailable")?;
@@ -1061,16 +1062,16 @@ fn commit_verified_update<R: tauri::Runtime>(
         if !already_current && selector.candidate.as_deref() != Some(&install.id) {
             return Err("runtime candidate was superseded".into());
         }
-        let mut snapshot = state
-            .runtime
-            .write()
-            .map_err(|_| "Application state is unavailable")?;
+        let expected = state.snapshot()?;
+        let mut snapshot = expected.clone();
         if snapshot.config != verified.expected_config
             || snapshot.agent_selection != verified.expected_selection
+            || snapshot.agent_runtime.operation_id != verified.expected_runtime_operation
+            || snapshot.agent_runtime.agent != verified.expected_runtime_agent
         {
             return Err("Agent settings changed during update; check again".into());
         }
-        let revision = crate::app_state::next_revision(&snapshot)?;
+        let previous_selector = selector.clone();
         let mut config = snapshot.config.clone();
         config
             .agent_preferences
@@ -1092,25 +1093,61 @@ fn commit_verified_update<R: tauri::Runtime>(
                 }
             },
         )?;
+        let commit = (|| {
+            let mut latest = state
+                .runtime
+                .write()
+                .map_err(|_| "Application state is unavailable")?;
+            if latest.config != expected.config
+                || latest.agent_selection != expected.agent_selection
+                || latest.agent_runtime.operation_id != verified.expected_runtime_operation
+                || latest.agent_runtime.agent != verified.expected_runtime_agent
+            {
+                return Err("Agent settings changed while saving the managed update".to_string());
+            }
+            snapshot = latest.clone();
+            snapshot.config = config;
+            if snapshot.agent_runtime.agent == Some(runtime.kind) {
+                snapshot.agent_runtime.current_version = Some(runtime.adapter_version.clone());
+            }
+            if snapshot.agent_selection.selected_agent() == Some(runtime.kind) {
+                let selection = &mut snapshot.agent_selection;
+                selection.catalog_model = crate::session_controls::explicit_model(
+                    &verified.defaults,
+                    verified.options.as_deref(),
+                );
+                selection.config_options = verified.options;
+                selection.modes = verified.modes;
+                selection.agent_default = verified.agent_default;
+                selection.catalog_generation = Some(Uuid::new_v4());
+                selection.catalog_revision = 1;
+            }
+            snapshot.revision = crate::app_state::next_revision(&latest)?;
+            *latest = snapshot.clone();
+            Ok(snapshot.clone())
+        })();
+        let snapshot = match commit {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let selector_rollback = if already_current {
+                    Ok(())
+                } else {
+                    write_selector(&install.root, install.kind, &previous_selector)
+                };
+                let settings_rollback = state
+                    .store
+                    .save(&expected.config)
+                    .map_err(|error| error.to_string());
+                if let Err(rollback) = selector_rollback.and(settings_rollback) {
+                    return Err(format!(
+                        "{error}; restoring managed update failed: {rollback}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
         install.confirmed.store(true, Ordering::Release);
-        snapshot.config = config;
-        if snapshot.agent_runtime.agent == Some(runtime.kind) {
-            snapshot.agent_runtime.current_version = Some(runtime.adapter_version.clone());
-        }
-        if snapshot.agent_selection.selected_agent() == Some(runtime.kind) {
-            let selection = &mut snapshot.agent_selection;
-            selection.catalog_model = crate::session_controls::explicit_model(
-                &verified.defaults,
-                verified.options.as_deref(),
-            );
-            selection.config_options = verified.options;
-            selection.modes = verified.modes;
-            selection.agent_default = verified.agent_default;
-            selection.catalog_generation = Some(Uuid::new_v4());
-            selection.catalog_revision = 1;
-        }
-        snapshot.revision = revision;
-        snapshot.clone()
+        snapshot
     };
     // Activation has committed. Notification/retirement failures must not report rollback.
     if let Err(error) = crate::app_state::emit_app_snapshot(app, snapshot, true) {
@@ -1198,7 +1235,12 @@ async fn verify_and_confirm<R: tauri::Runtime>(
             return Err(error);
         }
     };
-    let removed = commit_verified_update(app, runtime, verified).inspect_err(|error| {
+    let commit_runtime = runtime.clone();
+    let removed = crate::command_work::configuration(app.clone(), move |app| {
+        commit_verified_update(&app, &commit_runtime, verified)
+    })
+    .await
+    .inspect_err(|error| {
         let _ = update_agent_runtime(app, operation, |state| {
             state.stage = AgentRuntimeStage::Failed;
             state.error = Some(error.clone());

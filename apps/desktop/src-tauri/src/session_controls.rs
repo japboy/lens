@@ -1,5 +1,5 @@
 //! Operation-scoped ACP controls. Protocol responders never cross the WebView boundary.
-use crate::app_state::{emit_app_snapshot, next_revision, update_lens_state, AppState};
+use crate::app_state::{emit_app_snapshot, next_revision, AppState};
 use agent_client_protocol::{schema::v1::*, Agent, ConnectionTo, Error, Responder};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -225,22 +225,30 @@ impl SessionControls {
     }
 
     pub fn publish<R: tauri::Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
-        // Serialize mutation/publication so a slower publisher cannot replace a newer snapshot.
-        let runtime = self.runtime.lock().map_err(|_| lock_error())?;
-        let snapshot = runtime.state.clone();
-        update_lens_state(app, snapshot.operation_id, |lens| {
-            if lens
-                .session_controls
-                .as_ref()
-                .is_some_and(|s| s.instance_id == snapshot.instance_id)
+        let state = app.state::<AppState>();
+        let snapshot = {
+            // Keep control mutation and canonical admission ordered, but never retain
+            // the control mutex through serialization or WebView event delivery.
+            let controls = self.runtime.lock().map_err(|_| lock_error())?;
+            let mut snapshot = state.runtime.write().map_err(|_| lock_error())?;
+            let Some(current) = snapshot.lens.session_controls.as_ref() else {
+                return Ok(());
+            };
+            if snapshot.lens.operation_id != Some(controls.state.operation_id)
+                || current.instance_id != controls.state.instance_id
+                || current == &controls.state
             {
-                if let Some(agent) = lens.agent.as_mut() {
-                    agent.session_mode_id = snapshot.effective_mode.clone();
-                }
-                lens.session_controls = Some(snapshot);
+                return Ok(());
             }
-        })?;
-        Ok(())
+            let revision = next_revision(&snapshot)?;
+            if let Some(agent) = snapshot.lens.agent.as_mut() {
+                agent.session_mode_id = controls.state.effective_mode.clone();
+            }
+            snapshot.lens.session_controls = Some(controls.state.clone());
+            snapshot.revision = revision;
+            snapshot.clone()
+        };
+        emit_app_snapshot(app, snapshot, false)
     }
     fn ensure_active(&self, runtime: &Runtime) -> Result<(), String> {
         if !runtime.state.active || *self.shutdown.borrow() {
@@ -1468,6 +1476,63 @@ mod tests {
         )
         .unwrap();
         (controls, shutdown)
+    }
+
+    #[test]
+    fn unchanged_controls_do_not_publish_and_delivery_releases_control_authority() {
+        use tauri::Listener;
+        let (controls, _shutdown) = controls();
+        let state = crate::test_support::state();
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.lens.operation_id = Some(controls.snapshot().unwrap().operation_id);
+            snapshot.lens.session_controls = Some(controls.snapshot().unwrap());
+        }
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        tauri::WebviewWindowBuilder::new(&app, "lens-overlay", Default::default())
+            .build()
+            .unwrap();
+        controls.publish(app.handle()).unwrap();
+        assert_eq!(app.state::<AppState>().snapshot().unwrap().revision, 0);
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let received = observed.clone();
+        let checked = controls.clone();
+        app.listen_any("window-app-state-changed", move |_| {
+            assert!(checked.runtime.try_lock().is_ok());
+            received.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        controls.runtime.lock().unwrap().state.effective_mode = Some("write".into());
+        controls.publish(app.handle()).unwrap();
+        assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(app.state::<AppState>().snapshot().unwrap().revision, 1);
+        controls.publish(app.handle()).unwrap();
+        assert_eq!(app.state::<AppState>().snapshot().unwrap().revision, 1);
+    }
+
+    #[test]
+    fn controls_cannot_publish_into_a_replaced_operation_even_with_retained_instance() {
+        let (controls, _shutdown) = controls();
+        let state = crate::test_support::state();
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.lens.operation_id = Some(Uuid::new_v4());
+            snapshot.lens.session_controls = Some(controls.snapshot().unwrap());
+        }
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        controls.runtime.lock().unwrap().state.effective_mode = Some("write".into());
+        controls.publish(app.handle()).unwrap();
+        let snapshot = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(snapshot.revision, 0);
+        assert_ne!(
+            snapshot.lens.session_controls.unwrap().effective_mode,
+            Some("write".into())
+        );
     }
     fn url_decision() -> InteractionDetails {
         InteractionDetails::Url {

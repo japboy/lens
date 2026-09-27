@@ -625,13 +625,13 @@ pub struct LensState {
     #[serde(default)]
     pub target_set: Option<domain::lens::LensTargetSet>,
     #[serde(default)]
-    pub context: Option<domain::lens::LensContext>,
+    pub context: Option<std::sync::Arc<domain::lens::LensContext>>,
     #[serde(default)]
-    pub input: Option<domain::lens::LensInput>,
+    pub input: Option<std::sync::Arc<domain::lens::LensInput>>,
     #[serde(default)]
     pub projection: Option<ProjectionRef>,
     #[serde(default)]
-    pub output_blocks: Vec<LensOutputBlock>,
+    pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
     #[serde(default)]
     pub representation: Option<LensRepresentation>,
     #[serde(default)]
@@ -662,7 +662,7 @@ impl Default for LensState {
             context: None,
             input: None,
             projection: None,
-            output_blocks: Vec::new(),
+            output_blocks: Vec::new().into(),
             representation: None,
             response_history: Default::default(),
             pending_representation: None,
