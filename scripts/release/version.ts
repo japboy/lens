@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MEMBERS } from "../workspace-policy.ts";
+import { cargoLockPackages, parseToml, tomlTable } from "./toml.ts";
 
 const cargoMembers = MEMBERS.filter((member) => member.ecosystem === "cargo");
 const pnpmFiles = MEMBERS.filter((member) => member.ecosystem === "pnpm").map((member) =>
@@ -27,20 +28,6 @@ export function tagVersion(tag: string): string {
   return stableVersion(tag.slice(1));
 }
 
-// Owned TOML fields use explicit declarations. Cargo remains the TOML/resolution
-// authority through metadata --locked and compilation in workspace verification.
-function section(content: string, name: string): string {
-  const parts = content.split(`[${name}]`);
-  if (parts.length !== 2) throw new Error(`Expected exactly one TOML [${name}] section`);
-  return parts[1]!.split(/^\[/mu)[0]!;
-}
-
-function declaration(content: string, field: string): string {
-  const values = [...content.matchAll(new RegExp(`^${field} = "([^"\\n]+)"$`, "gmu"))];
-  if (values.length !== 1) throw new Error(`Expected exactly one explicit TOML ${field}`);
-  return values[0]![1]!;
-}
-
 // Release Please owns manifests; Cargo resolves the lock in the following step.
 export function manifestVersionState(files: Readonly<Record<string, string>>): {
   version: string;
@@ -54,15 +41,23 @@ export function manifestVersionState(files: Readonly<Record<string, string>>): {
     throw new Error("Only one root release component is allowed");
   const mirrors: unknown[] = [
     ...pnpmFiles.map((path) => json(path).version),
-    declaration(section(files["Cargo.toml"]!, "workspace.package"), "version"),
+    tomlTable(
+      tomlTable(parseToml(files["Cargo.toml"]!, "Cargo.toml").workspace, "Cargo.toml: workspace")
+        .package,
+      "Cargo.toml: workspace.package",
+    ).version,
     ...(keys.length ? [manifest["."]] : []),
   ];
   for (const member of cargoMembers) {
     const path = join(member.directory, "Cargo.toml");
-    const content = section(files[path]!, "package");
+    const content = tomlTable(parseToml(files[path]!, path).package, `${path}: package`);
     if (
-      declaration(content, "name") !== member.name ||
-      content.match(/^version[^\n]*$/gmu)?.join("\n") !== "version.workspace = true"
+      content.name !== member.name ||
+      !content.version ||
+      typeof content.version !== "object" ||
+      Array.isArray(content.version) ||
+      Object.keys(content.version).length !== 1 ||
+      (content.version as Record<string, unknown>).workspace !== true
     )
       throw new Error(
         `${path}: expected the declared package identity and inherited workspace version`,
@@ -80,15 +75,16 @@ export function versionState(files: Readonly<Record<string, string>>): {
   bootstrapped: boolean;
 } {
   const state = manifestVersionState(files);
-  const entries = files["Cargo.lock"]!.split(/^\[\[package\]\]\s*$/mu).slice(1);
-  const local = entries.filter((entry) => !/^source\s*=/mu.test(entry));
+  const local = cargoLockPackages(files["Cargo.lock"]!).filter(
+    (entry) => entry.source === undefined,
+  );
   if (local.length !== cargoMembers.length)
     throw new Error("Expected exactly the workspace packages in local Cargo.lock entries");
   for (const member of cargoMembers) {
-    const matching = local.filter((entry) => declaration(entry, "name") === member.name);
+    const matching = local.filter((entry) => entry.name === member.name);
     if (matching.length !== 1)
       throw new Error(`Expected exactly one local ${member.name} Cargo.lock entry`);
-    if (stableVersion(declaration(matching[0]!, "version")) !== state.version)
+    if (stableVersion(matching[0]!.version) !== state.version)
       throw new Error("Workspace version mirrors disagree with Tauri authority");
   }
   return state;

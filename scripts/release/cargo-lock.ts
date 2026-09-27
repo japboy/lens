@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { relative, resolve } from "node:path";
+import { cargoLockPackages } from "./toml.ts";
 
 type Package = { id: string; name: string; source: string | null; manifest_path: string };
 type Metadata = {
@@ -87,25 +88,13 @@ function graphState(data: Metadata, root: string) {
   };
 }
 
-// Cargo generates quoted, single-line identity fields. Reject ambiguous source records.
-function sourcedInventory(lock: string): string[] {
+function sourcedInventory(lock: string, path: string): string[] {
   return sorted(
-    lock
-      .split(/^\[\[package\]\]\s*$/mu)
-      .slice(1)
-      .flatMap((entry) => {
-        const field = (name: string) => {
-          const matches = [...entry.matchAll(new RegExp(`^${name} = ("[^\\n]*")$`, "gmu"))];
-          if (matches.length > 1) throw new Error("Ambiguous Cargo lock identity");
-          return matches.length ? (JSON.parse(matches[0]![1]!) as string) : null;
-        };
-        const source = field("source");
-        if (source === null) return [];
-        const name = field("name");
-        const version = field("version");
-        if (!name || !version) throw new Error("Incomplete Cargo lock identity");
-        return [canonical({ name, version, source, checksum: field("checksum") })];
-      }),
+    cargoLockPackages(lock, path).flatMap(({ name, version, source, checksum }) =>
+      source === undefined
+        ? []
+        : [canonical({ name, version, source, checksum: checksum ?? null })],
+    ),
   );
 }
 
@@ -125,7 +114,10 @@ export function refreshCargoLock(
   const candidateLock = readFileSync(resolve(candidateRoot, "Cargo.lock"), "utf8");
   if (canonical(before) !== canonical(after))
     throw new Error("Cargo lock repair changed dependency resolution");
-  if (canonical(sourcedInventory(baselineLock)) !== canonical(sourcedInventory(candidateLock)))
+  if (
+    canonical(sourcedInventory(baselineLock, resolve(baselineRoot, "Cargo.lock"))) !==
+    canonical(sourcedInventory(candidateLock, resolve(candidateRoot, "Cargo.lock")))
+  )
     throw new Error("Cargo lock repair changed sourced package identities or checksums");
   return candidateLock;
 }
