@@ -132,7 +132,7 @@ const VOID_TAGS = new Set([
 
 /** A document-scoped source context, independent of Markdown paragraph boundaries.
  * This conservatively tracks explicit HTML tags, not browser tree-builder repairs. */
-export function excludeHtmlMath(tokens: TokensList | Token[]): void {
+export function excludeHtmlMath(parser: Marked, tokens: TokensList | Token[]): void {
   const openTags: string[] = [];
   const ignore = () => {};
   const tokenizer = new Tokenizer(
@@ -161,27 +161,19 @@ export function excludeHtmlMath(tokens: TokensList | Token[]): void {
       onWhitespaceCharacter: ignore,
     },
   );
-  function visit(children: TokensList | Token[]): void {
-    for (const token of children) {
-      if (token.type === "html") {
-        // Both block and inline HTML feed the same tokenizer. HTML comments,
-        // quoted attribute values and raw-text bodies cannot forge tag events.
-        tokenizer.write(token.raw, false);
-      } else if (
-        (token.type === "lensMath" || token.type === "lensMathBlock") &&
-        openTags.length > 0
-      ) {
-        token.literal = true;
-      }
-      if ("tokens" in token && Array.isArray(token.tokens)) visit(token.tokens);
-      if (token.type === "list") for (const item of token.items) visit(item.tokens);
-      if (token.type === "table") {
-        for (const cell of token.header) visit(cell.tokens);
-        for (const row of token.rows) for (const cell of row) visit(cell.tokens);
-      }
+  // Keep HTML context synchronous and in the configured parser's source traversal order.
+  parser.walkTokens(tokens, (token) => {
+    if (token.type === "html") {
+      // Both block and inline HTML feed the same tokenizer. HTML comments,
+      // quoted attribute values and raw-text bodies cannot forge tag events.
+      tokenizer.write(token.raw, false);
+    } else if (
+      (token.type === "lensMath" || token.type === "lensMathBlock") &&
+      openTags.length > 0
+    ) {
+      token.literal = true;
     }
-  }
-  visit(tokens);
+  });
   tokenizer.write("", true);
 }
 

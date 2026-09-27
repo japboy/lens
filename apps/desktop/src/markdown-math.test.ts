@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { Marked, type Token } from "marked";
 import { renderMarkdownFragment } from "./markdown";
-import { MATH_LIMITS, readMathSpan } from "./markdown-math";
+import { excludeHtmlMath, MATH_LIMITS, readMathSpan } from "./markdown-math";
 
 function render(source: string): HTMLDivElement {
   const host = document.createElement("div");
@@ -170,6 +171,69 @@ Text <!-- <div> --> \(outside\)`);
     expect(host.querySelector(":scope > div .katex")).toBeNull();
     expect(host.querySelectorAll(".katex")).toHaveLength(1);
     expect(host.querySelector(".katex annotation")?.textContent).toBe("outside");
+  });
+
+  it("preserves source order across nested lists, blockquotes and table cells", () => {
+    const host = render(String.raw`- <span>\(listHidden\)
+  - **\(nestedHidden\)**</span> \(nestedVisible\)
+
+> <span>\(quoteHidden\)</span> \(quoteVisible\)
+
+| <span>\(headerHidden\) | \(headerStillHidden\)</span> \(headerVisible\) |
+| --- | --- |
+| <span>\(cellHidden\) | \(cellStillHidden\)</span> \(cellVisible\) |`);
+    expect([...host.querySelectorAll(".katex annotation")].map((node) => node.textContent)).toEqual(
+      ["nestedVisible", "quoteVisible", "headerVisible", "cellVisible"],
+    );
+    for (const hidden of [
+      "listHidden",
+      "nestedHidden",
+      "quoteHidden",
+      "headerHidden",
+      "headerStillHidden",
+      "cellHidden",
+      "cellStillHidden",
+    ])
+      expect(host.textContent).toContain(String.raw`\(${hidden}\)`);
+  });
+
+  it("uses the local parser's extension child fields in synchronous source order", () => {
+    const parser = new Marked({ async: false });
+    parser.use({
+      extensions: [
+        {
+          name: "fixture",
+          childTokens: ["content"],
+          level: "block",
+          tokenizer: () => undefined,
+          renderer: () => "",
+        },
+      ],
+    });
+    const html = (raw: string): Token => ({ type: "html", raw, text: raw, block: false });
+    const math = (tex: string): Token & { literal?: boolean } => ({
+      type: "lensMath",
+      raw: String.raw`\(${tex}\)`,
+      tex,
+    });
+    const hidden = math("hidden");
+    const visible = math("visible");
+    const ignored = math("ignored");
+    const tokens: Token[] = [
+      {
+        type: "fixture",
+        raw: "",
+        content: [html("<span>"), [hidden, html("</span>"), visible]],
+        tokens: [html("<span>"), ignored],
+      },
+    ];
+    const outside = math("outside");
+    tokens.push(outside);
+    excludeHtmlMath(parser, tokens);
+    expect(hidden.literal).toBe(true);
+    expect(visible.literal).toBeUndefined();
+    expect(ignored.literal).toBeUndefined();
+    expect(outside.literal).toBeUndefined();
   });
 
   it("does not treat tag-like script text as HTML boundaries", () => {
