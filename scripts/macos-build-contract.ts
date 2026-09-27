@@ -12,6 +12,7 @@ export const MACOS_BUILD_CACHE_INPUTS = [
   "mise.lock",
   "package.json",
   "scripts/macos-build-contract.ts",
+  "scripts/macos-toolchain.ts",
   "scripts/macos-bundle-build.ts",
   "scripts/workspace-policy.ts",
   "scripts/run-workspace-variant.ts",

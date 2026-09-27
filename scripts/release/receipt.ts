@@ -115,7 +115,7 @@ export function packageArtifactV2(
       rustc: command("rustc", ["-vV"]),
       tauri: command("pnpm", ["--dir", "apps/desktop", "exec", "tauri", "--version"]),
       xcode: command("xcodebuild", ["-version"]),
-      sdk: command("xcrun", ["--show-sdk-version"]),
+      sdk: command("xcrun", ["--sdk", "macosx", "--show-sdk-version"]),
       os: command("sw_vers", []),
       runnerImage: process.env.ImageVersion ?? "local",
     },

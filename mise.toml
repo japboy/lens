@@ -104,7 +104,7 @@ run = "node scripts/run-workspace-variant.ts macos-production-check"
 description = "Lint native workspace targets after normal compilation"
 dir = "{{config_root}}"
 depends = ["check:rust"]
-run = "cargo clippy --locked --workspace --all-targets -- -D warnings"
+run = "node scripts/macos-toolchain.ts run cargo clippy --locked --workspace --all-targets -- -D warnings"
 
 [tasks."rust:test"]
 description = "Run native workspace tests after compilation and lint"
@@ -113,9 +113,9 @@ depends = ["rust:clippy"]
 run = [
   "node scripts/test-native-window-resolver.ts",
   "node scripts/run-workspace-variant.ts macos-test",
-  "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
-  "cargo test --locked -p adapter-output-mcp --test http --target aarch64-apple-darwin",
-  "cargo test --locked --workspace --doc --target aarch64-apple-darwin",
+  "node scripts/macos-toolchain.ts run cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
+  "node scripts/macos-toolchain.ts run cargo test --locked -p adapter-output-mcp --test http --target aarch64-apple-darwin",
+  "node scripts/macos-toolchain.ts run cargo test --locked --workspace --doc --target aarch64-apple-darwin",
 ]
 
 [tasks."check:rust:release"]

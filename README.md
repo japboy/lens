@@ -60,3 +60,23 @@ Markdown responses and static HTML previews support TeX math: use `\(...\)` for 
 ## Content access
 
 Lens reads the windows you explicitly select and sends their text and captured images to your chosen Agent. Available content depends on what each application exposes to macOS Accessibility. If readable content is unavailable, Lens attempts to use a window image instead. The macOS window picker handles authorization for selected-window capture without requiring a separate global Screen Recording grant. Privacy & Security in Lens Settings also provides access to the system’s Screen & System Audio Recording settings. Lens does not record audio.
+
+## Build from source
+
+Native development and release builds require an Apple silicon Mac with **Xcode 27.0
+(27A266a), including macOS SDK 27.0 (26A425)**. Install the tools pinned in `mise.toml`,
+then run `pnpm install --frozen-lockfile` and `mise run desktop:dev`. Use
+`mise run verify` for verification. The application still supports macOS 15.2 and
+later; the build SDK does not change that deployment target.
+
+With multiple Xcode installations, select the required one for the command:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer mise run desktop:dev
+```
+
+Lens validates the selected Xcode and SDK before native builds and rejects conflicting
+SDK or compiler overrides. It does not change the system's Xcode selection. CI uses
+the same versions, and bundle verification checks the SDK and minimum OS recorded in
+the executable. See [Apple's Xcode requirements](https://developer.apple.com/xcode/system-requirements)
+and [GitHub's Xcode 27 runner image](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md).

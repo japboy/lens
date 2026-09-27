@@ -74,6 +74,8 @@ async function fixture(fault?: "attach" | "signal" | "parse" | "verify" | "copy"
       )[args[1]!]!;
     }
     if (file === "lipo") return "arm64";
+    if (file === "/usr/bin/otool")
+      return "Load command 1\n      cmd LC_BUILD_VERSION\n platform 1\n minos 15.2\n sdk 27.0\n";
     if (file === "ditto") {
       if (fault === "copy") throw primary;
       const executable = join(args[1]!, "Contents/MacOS/lens");

@@ -108,7 +108,7 @@ describe("repository task ownership", () => {
 
   it("checks the managed Node build policy on both admitted test hosts", () => {
     expect(tasks.find((task) => task.name === "rust:test")!.run).toContain(
-      "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
+      "node scripts/macos-toolchain.ts run cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
     );
     expect(tasks.find((task) => task.name === "rust:test:linux")!.run).toContain(
       "cargo test --locked -p desktop --test node_policy --no-default-features --target x86_64-unknown-linux-gnu",
@@ -121,7 +121,7 @@ describe("repository task ownership", () => {
       ["rust:test:linux", "linux-common-test", "x86_64-unknown-linux-gnu"],
     ] as const) {
       const commands = tasks.find((task) => task.name === taskName)!.run;
-      const integration = `cargo test --locked -p adapter-output-mcp --test http --target ${target}`;
+      const integration = `${taskName === "rust:test" ? "node scripts/macos-toolchain.ts run " : ""}cargo test --locked -p adapter-output-mcp --test http --target ${target}`;
       expect(commands).toContain(integration);
       expect(commands.indexOf(integration)).toBeGreaterThan(
         commands.indexOf(`node scripts/run-workspace-variant.ts ${variant}`),

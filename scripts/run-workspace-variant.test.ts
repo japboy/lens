@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertBuildEnvironment, runVariant, selectVariant } from "./run-workspace-variant.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
 
+vi.mock("./macos-toolchain.ts", () => ({
+  macosToolchainEnvironment: () => ({ SDKROOT: "/checked-sdk" }),
+}));
+
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn<typeof execFileSync>() }));
 
 const execute = vi.mocked(execFileSync);
@@ -38,7 +42,7 @@ describe("explicit compiler variants", () => {
       expect(execute).toHaveBeenLastCalledWith(
         "cargo",
         variantArguments(selectVariant("macos-production-check")),
-        { cwd: root, stdio: "inherit" },
+        { cwd: root, stdio: "inherit", env: { SDKROOT: "/checked-sdk" } },
       );
     },
   );
@@ -70,7 +74,7 @@ describe("explicit compiler variants", () => {
     expect(execute).toHaveBeenLastCalledWith(
       "cargo",
       variantArguments(selectVariant("apple-portable-check")),
-      { cwd: root, stdio: "inherit" },
+      { cwd: root, stdio: "inherit", env: process.env },
     );
   });
 

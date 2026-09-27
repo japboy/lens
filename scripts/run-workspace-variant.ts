@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { inspectFeatureGraphs } from "../mise-tasks/inspect/features.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
 
+import { macosToolchainEnvironment } from "./macos-toolchain.ts";
+
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 export function selectVariant(id: string) {
@@ -35,7 +37,8 @@ export function runVariant(id: string, root = ROOT): void {
   process.stdout.write(
     `${JSON.stringify({ variant: id, host: report.host, arguments: args, graphDigest: report.variants[0]!.digest })}\n`,
   );
-  execFileSync("cargo", args, { cwd: root, stdio: "inherit" });
+  const env = variant.id.startsWith("macos-") ? macosToolchainEnvironment() : process.env;
+  execFileSync("cargo", args, { cwd: root, stdio: "inherit", env });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

@@ -4,6 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { macosToolchainEnvironment } from "./macos-toolchain.ts";
+
+const environment = macosToolchainEnvironment();
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const nativeRoot = join(repositoryRoot, "packages/adapter-platform-macos/native");
 const temporaryRoot = mkdtempSync(join(tmpdir(), "lens-window-resolver-tests-"));
@@ -12,6 +15,7 @@ const binary = join(temporaryRoot, "window-resolver-tests");
 function run(command: string, args: readonly string[], timeout: number): number {
   const result = spawnSync(command, args, {
     cwd: repositoryRoot,
+    env: environment,
     stdio: "inherit",
     timeout,
     killSignal: "SIGKILL",

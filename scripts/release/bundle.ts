@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertMachOBuildVersion } from "../macos-toolchain.ts";
 import { readVersion } from "./version.ts";
 
 export function bundleContract(root: string) {
@@ -55,6 +56,12 @@ export function verifyApp(bundle: string, contract: ReturnType<typeof bundleCont
     }).trim() !== "arm64"
   )
     throw new Error("Unexpected bundle architecture");
+  assertMachOBuildVersion(
+    execFileSync("/usr/bin/otool", ["-l", join(bundle, "Contents/MacOS/lens")], {
+      encoding: "utf8",
+    }),
+    contract.minimum,
+  );
   execFileSync("codesign", ["--verify", "--deep", "--strict", bundle], { stdio: "inherit" });
   const signature = spawnSync("codesign", ["-d", "--verbose=4", bundle], { encoding: "utf8" });
   if (

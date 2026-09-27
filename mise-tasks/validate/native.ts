@@ -8,6 +8,10 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { macosToolchainEnvironment } from "../../scripts/macos-toolchain.ts";
+
+const environment = macosToolchainEnvironment();
+
 interface ProbeResult {
   status: "passed" | "failed" | "permission_required";
 }
@@ -70,6 +74,7 @@ function runProbe(probe: Probe): number {
     ],
     {
       cwd: repositoryRoot,
+      env: environment,
       stdio: "inherit",
       timeout: compileTimeoutMilliseconds,
       killSignal: "SIGKILL",
