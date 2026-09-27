@@ -1020,6 +1020,7 @@ dependencies = [
  "pretty_assertions",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",

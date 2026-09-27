@@ -59,6 +59,7 @@ export const MEMBERS: readonly Member[] = [
         "libc",
         "reqwest",
         "rusqlite",
+        "semver",
         "serde",
         "serde_json",
         "serde_json_canonicalizer",
