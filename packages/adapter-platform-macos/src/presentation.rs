@@ -30,16 +30,16 @@ pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError>
 /// and each tooltip remains associated with its positional item.
 ///
 /// # Safety
-/// Call on the AppKit main thread with a live NSStatusItem borrowed for this call.
+/// Call on the AppKit main thread with a live root NSMenu borrowed for this call.
 pub unsafe fn set_menu_presentation(
-    status_item: *mut c_void,
+    root_menu: *mut c_void,
     submenu_index: usize,
     submenu_title: &str,
     items: &[port_platform::MenuPresentationItem],
 ) -> Result<(), PlatformError> {
     unsafe extern "C" {
         fn lens_set_menu_presentation(
-            status_item: *mut c_void,
+            root_menu: *mut c_void,
             submenu_index: usize,
             submenu_title: *const std::ffi::c_char,
             items_json: *const std::ffi::c_char,
@@ -56,7 +56,7 @@ pub unsafe fn set_menu_presentation(
     .map_err(invalid)?;
     // SAFETY: Strings live through the synchronous call; caller guarantees handle/thread affinity.
     if unsafe {
-        lens_set_menu_presentation(status_item, submenu_index, title.as_ptr(), json.as_ptr())
+        lens_set_menu_presentation(root_menu, submenu_index, title.as_ptr(), json.as_ptr())
     } {
         Ok(())
     } else {

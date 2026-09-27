@@ -13,8 +13,8 @@ typedef void (*LensPickerCallback)(const char *json, void *context);
 typedef void (*LensWindowTransitionCallback)(bool completed, void *context);
 typedef void (*LensWindowObservationCallback)(const char *json, void *context);
 
-/* Main-thread borrowed NSStatusItem. Validates all titles/count before setting any tooltip. */
-bool lens_set_menu_presentation(void *statusItemPointer, size_t submenuIndex,
+/* Main-thread borrowed root NSMenu. Validates all rows before setting images/tooltips. */
+bool lens_set_menu_presentation(void *rootMenuPointer, size_t submenuIndex,
                             const char *submenuTitle, const char *itemsJSON);
 
 bool lens_accessibility_is_trusted(void);

@@ -74,11 +74,10 @@ static void LensApplyMenuPresentation(NSMenu *menu, NSArray *values) {
     }
 }
 
-bool lens_set_menu_presentation(void *statusItemPointer, size_t submenuIndex,
+bool lens_set_menu_presentation(void *rootMenuPointer, size_t submenuIndex,
                                const char *submenuTitle, const char *itemsJSON) {
-    if (![NSThread isMainThread] || !statusItemPointer || !submenuTitle || !itemsJSON) return false;
-    NSStatusItem *statusItem = (__bridge NSStatusItem *)statusItemPointer;
-    NSMenu *root = statusItem.menu;
+    if (![NSThread isMainThread] || !rootMenuPointer || !submenuTitle || !itemsJSON) return false;
+    NSMenu *root = (__bridge NSMenu *)rootMenuPointer;
     if (!root || submenuIndex >= (size_t)root.numberOfItems) return false;
     NSMenuItem *parent = [root itemAtIndex:(NSInteger)submenuIndex];
     NSString *expectedTitle = [NSString stringWithUTF8String:submenuTitle];
