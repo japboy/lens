@@ -140,6 +140,18 @@ describe("Cargo-owned workspace lock refresh", () => {
     expect(() => refreshCargoLock(baseline, candidate, true)).toThrow(/checksum/iu);
   }, 120_000);
 
+  it("compares sourced identities structurally across equivalent TOML formatting", () => {
+    const { baseline, candidate, lock } = fixture("0.2.0");
+    bump(candidate, "0.3.0");
+    const formatted = lock
+      .replaceAll("[[package]]", "[[ package ]] # entry")
+      .replaceAll(/^source = "([^"\n]+)"$/gmu, "\"source\"='$1' # source")
+      .replaceAll(/^checksum = "([^"\n]+)"$/gmu, "\"checksum\"='$1' # checksum");
+    writeFileSync(join(baseline, "Cargo.lock"), formatted);
+    expect(refreshCargoLock(baseline, candidate, true)).toContain('version = "0.3.0"');
+    expect(readFileSync(join(baseline, "Cargo.lock"), "utf8")).toBe(formatted);
+  }, 120_000);
+
   it("requires a separate candidate", () => {
     expect(() => refreshCargoLock(tmpdir(), tmpdir(), true)).toThrow("isolated candidate");
   });

@@ -100,6 +100,69 @@ describe("workspace release authority", () => {
       expect(() => tagVersion(tag)).toThrow(/.+/u);
     },
   );
+  it("accepts equivalent TOML keys, whitespace, comments and inheritance tables", () => {
+    const changed = files();
+    changed["Cargo.toml"] = changed["Cargo.toml"]!.replace(
+      'version = "0.1.0"',
+      "\"version\"='0.1.0' # unchanged",
+    );
+    for (const member of cargo) {
+      const path = join(member.directory, "Cargo.toml");
+      changed[path] = changed[path]!.replace(
+        `name = "${member.name}"`,
+        `"name"='${member.name}' # identity`,
+      ).replace("version.workspace = true", "version={workspace=true} # inherited");
+    }
+    changed["Cargo.lock"] = changed["Cargo.lock"]!.replaceAll(
+      "[[package]]",
+      "[[ package ]] # package entry",
+    ).replaceAll('version = "0.1.0"', '"version"="0.1.0" # unchanged');
+    expect(versionState(changed)).toEqual({ version: "0.1.0", bootstrapped: false });
+  });
+  it.each([
+    "Cargo.toml",
+    "Cargo.lock",
+    ...cargo.map((member) => join(member.directory, "Cargo.toml")),
+  ])("rejects duplicate quoted keys and malformed TOML with the input path: %s", (path) => {
+    for (const malformed of [false, true]) {
+      const changed = files();
+      changed[path] = malformed
+        ? `${changed[path]}\n[unterminated`
+        : changed[path]!.replace(
+            /^(version = "[^"\n]+"|version.workspace = true)$/mu,
+            (line) => `${line}\n"version" = "0.1.0"`,
+          );
+      expect(() => versionState(changed)).toThrow(`${path}: invalid TOML`);
+    }
+  });
+  it.each(["name = 1", "version = 1", "source = false", 'source = ""', "checksum = 1"])(
+    "rejects wrongly typed or empty lock identity fields: %s",
+    (field) => {
+      const changed = files();
+      const key = field.split(" = ")[0]!;
+      changed["Cargo.lock"] +=
+        `\n[[package]]\n${key === "name" ? "" : 'name = "external"\n'}${key === "version" ? "" : 'version = "1.0.0"\n'}${key === "source" ? "" : 'source = "registry+fixture"\n'}${field}\n`;
+      expect(() => versionState(changed)).toThrow(`Cargo.lock: expected a nonempty package ${key}`);
+    },
+  );
+  it.each([
+    'version = "0.1.0"',
+    'version = { workspace = "true" }',
+    "version = { workspace = true, extra = true }",
+  ])("requires only a true workspace inheritance field: %s", (version) => {
+    const changed = files();
+    const path = join(cargo[0]!.directory, "Cargo.toml");
+    changed[path] = changed[path]!.replace("version.workspace = true", version);
+    expect(() => versionState(changed)).toThrow("identity and inherited");
+  });
+  it.each(["package = 1", "package = [1]", '[package]\nname = "domain"', "package = [1979-05-27]"])(
+    "rejects malformed lock package tables: %s",
+    (lock) => {
+      const changed = files();
+      changed["Cargo.lock"] = lock;
+      expect(() => versionState(changed)).toThrow(/Cargo.lock/u);
+    },
+  );
   it("compares unbounded stable numeric components without lexical ordering", () => {
     expect(tagVersion("v1.2.3")).toBe("1.2.3");
     expect(compareVersions("0.9.0", "0.10.0")).toBe(-1);

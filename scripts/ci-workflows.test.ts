@@ -261,10 +261,7 @@ describe("actual workflow admission", () => {
     ])
       expect(fallback.with[property]).toEqual(primary.with[property]);
     expect(nativeSteps.indexOf(fallback)).toBeLessThan(
-      nativeSteps.findIndex(
-        (step: { name?: string }) =>
-          step.name === "Run native verification without JavaScript dependencies",
-      ),
+      nativeSteps.findIndex((step: { name?: string }) => step.name === "Run native verification"),
     );
     // No commit/PR component: GitHub scopes saved caches to the merge ref.
     for (const cache of caches) {
@@ -488,6 +485,37 @@ describe("actual workflow admission", () => {
       expect(seedWorkflow.jobs[name].if).toContain("github.ref == 'refs/heads/main'");
     }
     expect(seedWorkflow.jobs["macos-dependency-cache-seed"].with.seed_bundle_cache).toBe(true);
+  });
+
+  it("installs current macOS source policy dependencies before any parser consumer", () => {
+    const index = (name: string) =>
+      nativeSteps.findIndex((step: { name?: string }) => step.name === name);
+    const admission = index("Admit the complete verification source capability");
+    const install = index("Install the pinned source build-policy dependencies");
+    expect(install).toBeGreaterThan(admission);
+    expect(nativeSteps[install]).toMatchObject({
+      if: "steps.source.outputs.generation == 'current'",
+      run: "pnpm install --frozen-lockfile --ignore-scripts",
+    });
+    for (const name of [
+      "Resolve the macOS build and cache contract",
+      "Run native verification",
+      "Populate packaged Rust dependency artifacts",
+      "Build and verify the native application bundle",
+    ])
+      expect(index(name)).toBeGreaterThan(install);
+    // Legacy source admission never selects the new parser installation. Its
+    // original verification and bundler installation remain independently owned.
+    expect(nativeSteps[index("Resolve the macOS build and cache contract")].if).toBe(
+      nativeSteps[install].if,
+    );
+    expect(nativeSteps[index("Install the pinned native bundler")].if).toBe(
+      "inputs.verification_mode != 'code'",
+    );
+    for (const path of ["scripts/release/toml.ts", "pnpm-lock.yaml"]) {
+      expect(MACOS_BUILD_CACHE_INPUTS).toContain(path);
+      expect(parse(seed).on.push.paths).toContain(path);
+    }
   });
 
   it("keeps packaged release linking distinct from the normal release check", () => {
