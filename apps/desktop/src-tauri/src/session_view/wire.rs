@@ -59,11 +59,15 @@ fn deferred_block(
     kind: &str,
     length: usize,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut descriptor = serde_json::json!({
         "type":"deferred", "entry_id":entry_id(entry), "block_index":index,
         "content_type":kind, "byte_length":length, "revision":revision,
         "append_only": matches!(entry, DocumentEntry::Message { .. }) && kind == "markdown"
-    })
+    });
+    if let Some(DocumentBlock::Image { mime_type, .. }) = blocks(entry).get(index) {
+        descriptor["mime_type"] = serde_json::Value::String(mime_type.clone());
+    }
+    descriptor
 }
 
 fn entry_id(entry: &DocumentEntry) -> &str {
@@ -92,13 +96,7 @@ fn manifest_entry(entry: &DocumentEntry, revision: u64) -> serde_json::Value {
         .enumerate()
         .map(|(i, b)| {
             let (kind, length) = block_kind_length(b);
-            {
-                let mut descriptor = deferred(i, kind, length);
-                if let DocumentBlock::Image { mime_type, .. } = b {
-                    descriptor["mime_type"] = serde_json::Value::String(mime_type.clone());
-                }
-                descriptor
-            }
+            deferred(i, kind, length)
         })
         .collect();
     match entry {
