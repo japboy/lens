@@ -123,37 +123,39 @@ impl ConfigStore {
             }
             Err(_) => return Err("Unable to back up the original settings.".into()),
         }
-        let temporary = self
-            .path
-            .with_extension(format!("json.recovery.{}", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<(), String> {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|_| "Unable to create recovery file")?;
-            file.set_permissions(
+        let parent = self.path.parent().ok_or("invalid config path")?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "Unable to create recovery file")?;
+        file.as_file()
+            .set_permissions(
                 fs::metadata(&self.path)
                     .map_err(|_| "Unable to inspect settings")?
                     .permissions(),
             )
             .map_err(|_| "Unable to preserve settings permissions")?;
-            file.write_all(
-                &serde_json::to_vec_pretty(&value).map_err(|_| "Unable to encode settings")?,
-            )
-            .map_err(|_| "Unable to write settings")?;
-            file.sync_all().map_err(|_| "Unable to sync settings")?;
-            if fs::read(&self.path).map_err(|_| "Unable to recheck settings")? != bytes {
-                return Err("The settings file changed. Reload before restoring prompts.".into());
-            }
-            fs::rename(&temporary, &self.path).map_err(|_| "Unable to replace settings")?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temporary);
-        }
-        result?;
+        file.write_all(
+            &serde_json::to_vec_pretty(&value).map_err(|_| "Unable to encode settings")?,
+        )
+        .map_err(|_| "Unable to write settings")?;
+        file.as_file()
+            .sync_all()
+            .map_err(|_| "Unable to sync settings")?;
+        self.publish_recovery(file, &bytes)?;
         Ok(config)
+    }
+
+    /// Recheck the inspected bytes immediately before replacing the settings.
+    fn publish_recovery(
+        &self,
+        file: tempfile::NamedTempFile,
+        expected_bytes: &[u8],
+    ) -> Result<(), String> {
+        if fs::read(&self.path).map_err(|_| "Unable to recheck settings")? != expected_bytes {
+            return Err("The settings file changed. Reload before restoring prompts.".into());
+        }
+        file.persist(&self.path)
+            .map_err(|_| "Unable to replace settings")?;
+        Ok(())
     }
 
     pub fn try_load(&self) -> Result<AppConfig, String> {
@@ -186,24 +188,14 @@ impl ConfigStore {
             .parent()
             .ok_or_else(|| io::Error::other("invalid config path"))?;
         fs::create_dir_all(parent)?;
-        let temporary = self
-            .path
-            .with_extension(format!("json.initial.{}", uuid::Uuid::new_v4()));
-        let result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
-            file.write_all(&serde_json::to_vec_pretty(config)?)?;
-            file.sync_all()?;
-            match fs::hard_link(&temporary, &self.path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-                Err(error) => Err(error),
-            }
-        })();
-        let _ = fs::remove_file(&temporary);
-        result
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(&serde_json::to_vec_pretty(config)?)?;
+        file.as_file().sync_all()?;
+        match file.persist_noclobber(&self.path) {
+            Ok(_) => Ok(()),
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error.error),
+        }
     }
 
     #[cfg(test)]
@@ -277,27 +269,16 @@ impl ConfigStore {
                 .expect("AppConfig serializes as an object")
                 .clone(),
         );
-        let temporary = self
-            .path
-            .with_extension(format!("json.tmp.{}", uuid::Uuid::new_v4()));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        let result = (|| {
-            match fs::metadata(&self.path) {
-                Ok(metadata) => file.set_permissions(metadata.permissions())?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            file.write_all(&serde_json::to_vec_pretty(&value)?)?;
-            file.sync_all()?;
-            fs::rename(&temporary, &self.path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        match fs::metadata(&self.path) {
+            Ok(metadata) => file.as_file().set_permissions(metadata.permissions())?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
-        result
+        file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+        file.as_file().sync_all()?;
+        file.persist(&self.path).map_err(|error| error.error)?;
+        Ok(())
     }
 }
 
@@ -342,6 +323,81 @@ mod tests {
         different.agent = crate::model::AgentKind::Codex;
         store.initialize_missing(&different).unwrap();
         assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_rechecks_bytes_and_cleans_prepared_file_before_publication() {
+        let (root, store) = store();
+        let original = b"inspected settings";
+        fs::write(&store.path, original).unwrap();
+        let mut file = tempfile::NamedTempFile::new_in(&root).unwrap();
+        file.write_all(b"recovered settings").unwrap();
+        file.as_file().sync_all().unwrap();
+        let temporary_path = file.path().to_owned();
+        fs::write(&store.path, b"concurrent edit").unwrap();
+        assert!(store
+            .publish_recovery(file, original)
+            .unwrap_err()
+            .contains("changed"));
+        assert_eq!(fs::read(&store.path).unwrap(), b"concurrent edit");
+        assert!(!temporary_path.exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_verifies_existing_backup_before_publication() {
+        let (root, store) = store();
+        let bytes = br#"{"prompt_presets":{"schema_version":1}}"#;
+        fs::write(&store.path, bytes).unwrap();
+        let digest = digest(bytes);
+        let backup = root.join(format!("settings.before-prompt-recovery.{digest}.json"));
+        fs::write(&backup, b"different original").unwrap();
+        assert!(store
+            .restore_prompt_presets(&digest)
+            .unwrap_err()
+            .contains("backup differs"));
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert_eq!(fs::read(&backup).unwrap(), b"different original");
+        fs::write(&backup, bytes).unwrap();
+        store.restore_prompt_presets(&digest).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_publication_preserves_existing_permissions_and_initializes_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, store) = store();
+        let mut config = store.try_load().unwrap();
+        assert_eq!(
+            fs::metadata(&store.path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::set_permissions(&store.path, fs::Permissions::from_mode(0o640)).unwrap();
+        config.agent = crate::model::AgentKind::Codex;
+        store.save(&config).unwrap();
+        assert_eq!(
+            fs::metadata(&store.path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let bytes = br#"{"prompt_presets":{"schema_version":1}}"#;
+        fs::write(&store.path, bytes).unwrap();
+        let digest = digest(bytes);
+        store.restore_prompt_presets(&digest).unwrap();
+        for path in [
+            &store.path,
+            &root.join(format!("settings.before-prompt-recovery.{digest}.json")),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
         fs::remove_dir_all(root).unwrap();
     }
 

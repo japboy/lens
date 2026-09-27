@@ -232,19 +232,16 @@ fn read_selector(root: &Path, kind: AgentKind) -> Result<Selector, String> {
 fn write_selector(root: &Path, kind: AgentKind, selector: &Selector) -> Result<(), String> {
     let dir = provider_root(root, kind)?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let path = dir.join(format!(".selector-{}.json", Uuid::new_v4()));
-    let result = (|| {
-        let mut file = File::create(&path).map_err(|error| error.to_string())?;
-        use std::io::Write;
-        file.write_all(&serde_json::to_vec(selector).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        fs::rename(&path, dir.join("selector.json")).map_err(|error| error.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(path);
-    }
-    result
+    let mut file = tempfile::NamedTempFile::new_in(&dir).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec(selector).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    file.as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    file.persist(dir.join("selector.json"))
+        .map_err(|error| error.error.to_string())?;
+    Ok(())
 }
 fn prune_installations(root: &Path, kind: AgentKind) -> Result<(), String> {
     let selector = read_selector(root, kind)?;
@@ -3726,6 +3723,46 @@ mod tests {
         assert!(!install_root(&root, kind, leased).unwrap().exists());
         assert!(install_root(&root, kind, previous).unwrap().exists());
         drop(candidate);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selector_publication_cleans_temporary_files_on_failure_and_replacement() {
+        let root = root();
+        let kind = AgentKind::Codex;
+        let dir = provider_root(&root, kind).unwrap();
+        let target = dir.join("selector.json");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("preserved"), b"existing destination").unwrap();
+        assert!(write_selector(&root, kind, &Selector::default()).is_err());
+        assert_eq!(
+            fs::read(target.join("preserved")).unwrap(),
+            b"existing destination"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&target).unwrap();
+        write_selector(&root, kind, &Selector::default()).unwrap();
+        let selector = Selector {
+            current: Some(Uuid::new_v4().to_string()),
+            ..Default::default()
+        };
+        write_selector(&root, kind, &selector).unwrap();
+        assert_eq!(read_selector(&root, kind).unwrap(), selector);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn selector_publication_uses_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root();
+        let kind = AgentKind::Codex;
+        write_selector(&root, kind, &Selector::default()).unwrap();
+        let path = provider_root(&root, kind).unwrap().join("selector.json");
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
