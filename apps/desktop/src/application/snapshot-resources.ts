@@ -51,7 +51,7 @@ export class SnapshotResources {
       this.sourceAttempt = undefined;
       this.sourceState = { stage: "idle" };
     }
-    if (!snapshot.output_ref || this.historyOwnsOutput(snapshot)) {
+    if (!snapshot.output_ref) {
       this.output = undefined;
       this.outputRunId = undefined;
       this.outputAttempt = undefined;
@@ -88,12 +88,9 @@ export class SnapshotResources {
   }
 
   project(snapshot: AppSnapshot): AppSnapshot {
-    // A committed representation carries its original projection identity. Provisional
-    // blocks may remain visible only within the same run, never under a replacement run.
-    const historyOwnsOutput = this.historyOwnsOutput(snapshot);
+    // Provisional blocks may remain visible only within the same run.
     const output =
       this.output?.output_ref === snapshot.output_ref ||
-      this.output?.representation ||
       (this.outputRunId !== undefined && this.outputRunId === snapshot.lens.agent?.run_id)
         ? this.output
         : undefined;
@@ -109,8 +106,7 @@ export class SnapshotResources {
           this.source && this.source.source_ref === snapshot.source_ref
             ? this.source.input
             : undefined,
-        output_blocks: historyOwnsOutput ? [] : (output?.output_blocks ?? []),
-        representation: historyOwnsOutput ? snapshot.lens.representation : output?.representation,
+        output_blocks: output?.output_blocks ?? [],
       },
     };
   }
@@ -141,73 +137,50 @@ export class SnapshotResources {
       });
   }
 
-  private historyOwnsOutput(snapshot = this.latest): boolean {
-    const representation = snapshot?.lens.representation;
-    return Boolean(
-      representation &&
-      snapshot?.lens.response_history?.responses.some(
-        (response) => response.representation_id === representation.representation_id,
-      ),
-    );
-  }
-
   private pumpOutput(): void {
     const ref = this.latest?.output_ref;
-    if (this.outputBusy || !ref || this.outputAttempt === ref || this.historyOwnsOutput()) return;
+    if (this.outputBusy || !ref || this.outputAttempt === ref) return;
     this.outputBusy = true;
     this.outputAttempt = ref;
     this.outputState = { stage: "loading" };
     const generation = this.generation;
-    const isCurrent = () =>
-      generation === this.generation &&
-      this.latest?.output_ref === ref &&
-      !this.historyOwnsOutput();
+    const isCurrent = () => generation === this.generation && this.latest?.output_ref === ref;
     void this.port
       .getLensOutput(ref)
       .then(async (resource) => {
         if (!isCurrent()) return;
         if (resource.output_ref !== ref) throw new Error("Output identity mismatch");
         const imageRefs = new Set(
-          [...resource.output_blocks, ...(resource.representation?.output_blocks ?? [])].flatMap(
-            (block) => (block.type === "image" && block.image_ref ? [block.image_ref] : []),
+          resource.output_blocks.flatMap((block) =>
+            block.type === "image" && block.image_ref ? [block.image_ref] : [],
           ),
         );
         const retained = this.pendingImages;
         for (const key of retained.keys()) {
           if (!imageRefs.has(key)) retained.delete(key);
         }
-        const hydrate = async (blocks: LensOutputBlock[]): Promise<LensOutputBlock[]> => {
-          const result: LensOutputBlock[] = [];
-          for (const block of blocks) {
-            if (!isCurrent()) return [];
-            if (block.type !== "image" || !block.image_ref) {
-              result.push(block);
-              continue;
-            }
-            let data = retained.get(block.image_ref) ?? this.images.get(block.image_ref);
-            if (data === undefined) {
-              const image = await this.port.getLensImage(block.image_ref);
-              if (image.image_ref !== block.image_ref) throw new Error("Image identity mismatch");
-              data = image.data;
-            }
-            if (generation !== this.generation || this.historyOwnsOutput()) return [];
-            // A newer text reference does not invalidate this immutable, operation-scoped image.
-            retained.set(block.image_ref, data);
-            result.push({ ...block, data });
+        const output_blocks: LensOutputBlock[] = [];
+        for (const block of resource.output_blocks) {
+          if (!isCurrent()) return;
+          if (block.type !== "image" || !block.image_ref) {
+            output_blocks.push(block);
+            continue;
           }
-          return result;
-        };
-        const output_blocks = await hydrate(resource.output_blocks);
-        const representation = resource.representation
-          ? {
-              ...resource.representation,
-              output_blocks: await hydrate(resource.representation.output_blocks),
-            }
-          : undefined;
+          let data = retained.get(block.image_ref) ?? this.images.get(block.image_ref);
+          if (data === undefined) {
+            const image = await this.port.getLensImage(block.image_ref);
+            if (image.image_ref !== block.image_ref) throw new Error("Image identity mismatch");
+            data = image.data;
+          }
+          if (generation !== this.generation || !this.latest?.output_ref) return;
+          // A newer text reference does not invalidate this immutable, operation-scoped image.
+          retained.set(block.image_ref, data);
+          output_blocks.push({ ...block, data });
+        }
         if (!isCurrent()) return;
         this.images = retained;
         this.pendingImages = new Map();
-        this.output = { ...resource, output_blocks, representation };
+        this.output = { ...resource, output_blocks };
         this.outputRunId = this.latest?.lens.agent?.run_id;
         this.outputState = { stage: "ready" };
       })

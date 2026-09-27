@@ -40,7 +40,6 @@ export interface LensSourceResource {
 export interface LensOutputResource {
   output_ref: string;
   output_blocks: LensOutputBlock[];
-  representation?: AppSnapshot["lens"]["representation"];
 }
 
 export interface WebviewPort {

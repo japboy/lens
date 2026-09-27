@@ -43,7 +43,7 @@ function committedSnapshot(revision = 1): AppSnapshot {
     block_count: 1,
     blocks: [{ type: "image", block_index: 0, mime_type: "image/png", byte_length: 4 }],
   };
-  const current = snapshot(revision, null, "committed-output");
+  const current = snapshot(revision, null, null);
   current.lens.representation = representation;
   current.lens.response_history = {
     responses: [response],
@@ -83,69 +83,79 @@ it("loads committed image bodies only through history demand and preserves publi
   const refresh = {
     ...current,
     revision: 2,
-    output_ref: "refresh-output",
     lens: { ...current.lens, stage: "transforming" as const },
   };
   resources.synchronize(refresh);
-  expect(resources.project(refresh).lens.representation).toBe(current.lens.representation);
   expect(resources.outputState.stage).toBe("idle");
+  const refreshed = resources.project(refresh).lens;
+  expect(refreshed.representation).toBe(current.lens.representation);
+  expect(refreshed.output_blocks).toEqual([]);
+  history.synchronize(refreshed);
+  history.requestMedia([responseBlockIdentity("op", "response", 0)]);
+  expect(port.getResponseBlock).toHaveBeenCalledTimes(1);
   expect(port.getLensOutput).not.toHaveBeenCalled();
   expect(port.getLensImage).not.toHaveBeenCalled();
 });
 
-it("discards a deferred provisional image when a committed manifest takes ownership", async () => {
-  const pending = deferred<{ image_ref: string; data: string }>();
-  const port = {
-    getLensOutput: vi.fn<WebviewPort["getLensOutput"]>(async (output_ref) => ({
-      output_ref,
-      output_blocks: [{ type: "image", mime_type: "image/png", image_ref: "image", data: "" }],
-    })),
-    getLensImage: vi
-      .fn<WebviewPort["getLensImage"]>()
-      .mockReturnValueOnce(pending.promise)
-      .mockResolvedValue({ image_ref: "image", data: "fresh" }),
-  };
+it.each([false, true])(
+  "discards a deferred provisional image after commit (replacement before completion: %s)",
+  async (replaceBeforeCompletion) => {
+    const pending = deferred<{ image_ref: string; data: string }>();
+    const port = {
+      getLensOutput: vi.fn<WebviewPort["getLensOutput"]>(async (output_ref) => ({
+        output_ref,
+        output_blocks: [{ type: "image", mime_type: "image/png", image_ref: "image", data: "" }],
+      })),
+      getLensImage: vi
+        .fn<WebviewPort["getLensImage"]>()
+        .mockReturnValueOnce(pending.promise)
+        .mockResolvedValue({ image_ref: "image", data: "fresh" }),
+    };
+    const changed = vi.fn<() => void>();
+    const resources = new SnapshotResources(port as unknown as WebviewPort, changed);
+    resources.synchronize(snapshot(1, null, "provisional"));
+    await vi.waitFor(() => expect(port.getLensImage).toHaveBeenCalledTimes(1));
+    const committed = committedSnapshot(2);
+    resources.synchronize(committed);
+    expect(resources.outputState.stage).toBe("idle");
+    expect(resources.project(committed).lens.representation).toBe(committed.lens.representation);
+    expect(resources.project(committed).lens.output_blocks).toEqual([]);
+    const replacement = snapshot(3, null, "new-provisional", "replacement");
+    if (replaceBeforeCompletion) resources.synchronize(replacement);
+    pending.resolve({ image_ref: "image", data: "stale" });
+    await vi.waitFor(() => expect(changed).toHaveBeenCalled());
+    if (!replaceBeforeCompletion) {
+      resources.synchronize(replacement);
+    }
+    await vi.waitFor(() => expect(resources.outputState.stage).toBe("ready"));
+    expect(port.getLensOutput.mock.calls).toEqual([["provisional"], ["new-provisional"]]);
+    expect(port.getLensImage).toHaveBeenCalledTimes(2);
+    expect(resources.project(replacement).lens.output_blocks[0]).toMatchObject({ data: "fresh" });
+  },
+);
+
+it("rejects a deferred provisional body after commit without replacing published metadata", async () => {
+  const pending = deferred<LensOutputResource>();
+  const getLensOutput = vi.fn<WebviewPort["getLensOutput"]>(() => pending.promise);
+  const getLensImage = vi.fn<WebviewPort["getLensImage"]>();
   const changed = vi.fn<() => void>();
-  const resources = new SnapshotResources(port as unknown as WebviewPort, changed);
+  const resources = new SnapshotResources(
+    { getLensOutput, getLensImage } as unknown as WebviewPort,
+    changed,
+  );
   resources.synchronize(snapshot(1, null, "provisional"));
-  await vi.waitFor(() => expect(port.getLensImage).toHaveBeenCalledTimes(1));
   const committed = committedSnapshot(2);
   resources.synchronize(committed);
-  pending.resolve({ image_ref: "image", data: "stale" });
+  pending.resolve({
+    output_ref: "provisional",
+    output_blocks: [{ type: "image", mime_type: "image/png", image_ref: "old", data: "" }],
+  });
   await vi.waitFor(() => expect(changed).toHaveBeenCalled());
-  expect(resources.outputState.stage).toBe("idle");
   expect(resources.project(committed).lens.representation).toBe(committed.lens.representation);
   expect(resources.project(committed).lens.output_blocks).toEqual([]);
-  const replacement = snapshot(3, null, "new-provisional", "replacement");
-  resources.synchronize(replacement);
-  await vi.waitFor(() => expect(resources.outputState.stage).toBe("ready"));
-  expect(port.getLensOutput.mock.calls).toEqual([["provisional"], ["new-provisional"]]);
-  expect(port.getLensImage).toHaveBeenCalledTimes(2);
-  expect(resources.project(replacement).lens.output_blocks[0]).toMatchObject({ data: "fresh" });
-});
-
-it("still hydrates a published representation when its manifest is unavailable", async () => {
-  const current = committedSnapshot();
-  current.lens.response_history = undefined;
-  const representation = {
-    ...current.lens.representation!,
-    output_blocks: [{ type: "markdown" as const, text: "retained output" }],
-  };
-  const resources = new SnapshotResources(
-    {
-      getLensOutput: async () => ({
-        output_ref: current.output_ref,
-        output_blocks: [],
-        representation,
-      }),
-    } as unknown as WebviewPort,
-    vi.fn<() => void>(),
-  );
-  resources.synchronize(current);
-  await vi.waitFor(() => expect(resources.outputState.stage).toBe("ready"));
-  expect(resources.project(current).lens.representation?.output_blocks).toEqual(
-    representation.output_blocks,
-  );
+  expect(resources.outputState.stage).toBe("idle");
+  expect(getLensOutput.mock.calls).toEqual([["provisional"]]);
+  expect(getLensImage).not.toHaveBeenCalled();
 });
 
 it("admits lightweight progress immediately while coalescing stale source requests", async () => {

@@ -63,7 +63,6 @@ pub struct LensSourceContent {
 pub struct LensOutputContent {
     pub output_ref: String,
     pub output_blocks: Arc<Vec<serde_json::Value>>,
-    pub representation: Option<Arc<serde_json::Value>>,
 }
 #[derive(Clone, Serialize)]
 pub struct LensImageContent {
@@ -73,7 +72,6 @@ pub struct LensImageContent {
 struct OutputSlot {
     operation_id: Option<Uuid>,
     blocks: Arc<Vec<LensOutputBlock>>,
-    representation_id: Option<Uuid>,
     content: LensOutputContent,
     images: BTreeMap<String, Arc<String>>,
 }
@@ -97,9 +95,7 @@ fn source_ref(lens: &LensState) -> Option<String> {
     ))
 }
 fn same_output(slot: &OutputSlot, lens: &LensState) -> bool {
-    slot.operation_id == lens.operation_id
-        && Arc::ptr_eq(&slot.blocks, &lens.output_blocks)
-        && slot.representation_id == lens.representation.as_ref().map(|r| r.representation_id)
+    slot.operation_id == lens.operation_id && Arc::ptr_eq(&slot.blocks, &lens.output_blocks)
 }
 fn wire_blocks(
     operation_id: Option<Uuid>,
@@ -132,32 +128,19 @@ fn prepare_output(
             return Ok(None);
         }
     }
-    if lens.output_blocks.is_empty() && lens.representation.is_none() {
+    // Committed representations are owned and served by response history.
+    if lens.output_blocks.is_empty() {
         return Ok(None);
     }
     // Hash/format potentially large changed content outside every shared guard.
     let mut images = BTreeMap::new();
     let blocks = wire_blocks(lens.operation_id, &lens.output_blocks, &mut images);
-    let representation = lens.representation.as_ref().map(|representation| {
-        let mut metadata = representation.clone();
-        metadata.output_blocks = Default::default();
-        let mut value = serde_json::to_value(metadata).expect("representation is serializable");
-        value["output_blocks"] = wire_blocks(
-            lens.operation_id,
-            &representation.output_blocks,
-            &mut images,
-        )
-        .into();
-        value
-    });
     Ok(Some(OutputSlot {
         operation_id: lens.operation_id,
         blocks: Arc::clone(&lens.output_blocks),
-        representation_id: lens.representation.as_ref().map(|r| r.representation_id),
         content: LensOutputContent {
             output_ref: Uuid::new_v4().to_string(),
             output_blocks: blocks.into(),
-            representation: representation.map(Arc::new),
         },
         images,
     }))
@@ -400,7 +383,7 @@ mod tests {
         state
     }
     #[test]
-    fn representation_clones_share_image_storage_and_overlay_keeps_only_metadata() {
+    fn committed_representation_shares_storage_and_retires_provisional_resources() {
         let state = crate::test_support::state();
         let representation = crate::model::LensRepresentation {
             prompt_execution_revision: 7,
@@ -416,8 +399,7 @@ mod tests {
             output_blocks: vec![image_block()].into(),
         };
         let cloned = representation.clone();
-        // A full representation clone must retain the same allocation, including
-        // its multi-megabyte image string, before publication strips its body.
+        // A representation clone shares its complete multi-megabyte image body.
         assert!(Arc::ptr_eq(
             &cloned.output_blocks,
             &representation.output_blocks
@@ -425,7 +407,23 @@ mod tests {
         {
             let mut snapshot = state.runtime.write().unwrap();
             snapshot.lens.operation_id = Some(Uuid::from_u128(1));
+            snapshot.lens.output_blocks = representation.output_blocks.clone();
+        }
+        let provisional = window_snapshot(&state, "lens-overlay").unwrap();
+        let output_ref = provisional.output_ref.unwrap();
+        let content = output(&state, &output_ref).unwrap();
+        let image_ref = content.output_blocks[0]["image_ref"].as_str().unwrap();
+        assert!(image(&state, image_ref).is_ok());
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot
+                .lens
+                .response_history
+                .append(cloned.clone(), None)
+                .unwrap();
             snapshot.lens.representation = Some(cloned);
+            snapshot.lens.output_blocks = Default::default();
+            snapshot.revision += 1;
         }
 
         let snapshot = state.snapshot().unwrap();
@@ -433,6 +431,20 @@ mod tests {
             &snapshot.lens.representation.as_ref().unwrap().output_blocks,
             &representation.output_blocks
         ));
+        let retained = snapshot
+            .lens
+            .response_history
+            .representation(representation.representation_id)
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &retained.output_blocks,
+            &representation.output_blocks
+        ));
+        assert_eq!(
+            retained.output_blocks.as_ref(),
+            representation.output_blocks.as_ref()
+        );
+
         let wire = window_snapshot(&state, "lens-overlay").unwrap();
         let metadata = wire.snapshot.lens.representation.as_ref().unwrap();
         assert_eq!(
@@ -446,16 +458,10 @@ mod tests {
         assert_eq!(metadata.run_id, representation.run_id);
         assert!(metadata.output_blocks.is_empty());
         assert!(serde_json::to_vec(&wire).unwrap().len() < 64 * 1024);
-
-        let content = output(&state, wire.output_ref.as_deref().unwrap()).unwrap();
-        assert!(content.output_blocks.is_empty());
-        let image_ref = content.representation.as_ref().unwrap()["output_blocks"][0]["image_ref"]
-            .as_str()
-            .unwrap();
-        assert_eq!(
-            image(&state, image_ref).unwrap().data.as_str(),
-            "x".repeat(2 * 1024 * 1024)
-        );
+        assert!(wire.output_ref.is_none());
+        assert!(state.publication.0.lock().unwrap().output.is_none());
+        assert!(output(&state, &output_ref).is_err());
+        assert!(image(&state, image_ref).is_err());
     }
 
     #[test]
