@@ -73,7 +73,7 @@ pub struct LensImageContent {
 struct OutputSlot {
     operation_id: Option<Uuid>,
     blocks: Arc<Vec<LensOutputBlock>>,
-    representation: Option<LensRepresentation>,
+    representation_id: Option<Uuid>,
     content: LensOutputContent,
     images: BTreeMap<String, Arc<String>>,
 }
@@ -99,8 +99,7 @@ fn source_ref(lens: &LensState) -> Option<String> {
 fn same_output(slot: &OutputSlot, lens: &LensState) -> bool {
     slot.operation_id == lens.operation_id
         && Arc::ptr_eq(&slot.blocks, &lens.output_blocks)
-        && slot.representation.as_ref().map(|r| r.representation_id)
-            == lens.representation.as_ref().map(|r| r.representation_id)
+        && slot.representation_id == lens.representation.as_ref().map(|r| r.representation_id)
 }
 fn wire_blocks(
     operation_id: Option<Uuid>,
@@ -154,7 +153,7 @@ fn prepare_output(
     Ok(Some(OutputSlot {
         operation_id: lens.operation_id,
         blocks: Arc::clone(&lens.output_blocks),
-        representation: lens.representation.clone(),
+        representation_id: lens.representation.as_ref().map(|r| r.representation_id),
         content: LensOutputContent {
             output_ref: Uuid::new_v4().to_string(),
             output_blocks: blocks.into(),
@@ -222,9 +221,37 @@ fn project(snapshot: &AppSnapshot, label: &str, output_ref: Option<String>) -> W
     }
 }
 fn same_projection(left: &WindowSnapshot, right: &WindowSnapshot) -> bool {
-    let mut left = left.clone();
-    left.snapshot.revision = right.snapshot.revision;
-    left == *right
+    // Exhaustive destructuring keeps new fields in the comparison contract.
+    let WindowSnapshot {
+        snapshot:
+            AppSnapshot {
+                revision: _,
+                config,
+                agent_runtime,
+                agent_selection,
+                lens,
+            },
+        source_ref,
+        source_metadata,
+        output_ref,
+    } = left;
+    (
+        config,
+        agent_runtime,
+        agent_selection,
+        lens,
+        source_ref,
+        source_metadata,
+        output_ref,
+    ) == (
+        &right.snapshot.config,
+        &right.snapshot.agent_runtime,
+        &right.snapshot.agent_selection,
+        &right.snapshot.lens,
+        &right.source_ref,
+        &right.source_metadata,
+        &right.output_ref,
+    )
 }
 pub fn publish<R: tauri::Runtime>(app: &AppHandle<R>, snapshot: AppSnapshot) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -429,13 +456,6 @@ mod tests {
             image(&state, image_ref).unwrap().data.as_str(),
             "x".repeat(2 * 1024 * 1024)
         );
-
-        let publication = state.publication.0.lock().unwrap();
-        let retained = publication.output.as_ref().unwrap();
-        assert!(Arc::ptr_eq(
-            &retained.representation.as_ref().unwrap().output_blocks,
-            &representation.output_blocks
-        ));
     }
 
     #[test]
