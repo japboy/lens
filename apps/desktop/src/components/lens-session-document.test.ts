@@ -1,3 +1,5 @@
+import { mediaFixture } from "../../tests/fixtures/media-parity";
+import { ResponseHistoryController } from "../application/response-history-controller";
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -220,6 +222,31 @@ describe("canonical session renderer", () => {
       expect(virtualizer.scrollTop).toBe(input === "programmatic" ? 252 : 240);
     },
   );
+  it("shows a session-specific empty answer for a ready replay with no response manifests", async () => {
+    const view = new LensOverlayView();
+    view.active = true;
+    view.sessionView = {
+      revision: 1,
+      phase: "ready",
+      generation: "empty",
+      interpretation: { responses: [] },
+      document: { entries: [] },
+    };
+    const fixture = mediaFixture("none");
+    const controller = new ResponseHistoryController(view, fixture.port, fixture.loadSessionBlock);
+    controller.synchronizeHistory(view.sessionView);
+    view.responseHistory = controller.presentation;
+    document.body.append(view);
+    await view.updateComplete;
+    const output =
+      view.shadowRoot!.querySelector<import("./lens-agent-output").LensAgentOutput>(
+        "lens-agent-output",
+      )!;
+    await output.updateComplete;
+    expect(output.textContent).toContain("No answer is available in this session.");
+    expect(output.textContent).not.toContain("Lens Targets");
+    expect(output.querySelector(".lens-response")).toBeNull();
+  });
   it("renders history without live controls or needing a live snapshot", async () => {
     const view = new LensOverlayView();
     view.active = true;
@@ -230,6 +257,16 @@ describe("canonical session renderer", () => {
       session_id: "saved",
       document: documentModel,
     };
+    const fixture = mediaFixture("single");
+    view.sessionView = {
+      ...view.sessionView!,
+      generation: "saved-generation",
+      interpretation: fixture.interpretation,
+    };
+    const controller = new ResponseHistoryController(view, fixture.port, fixture.loadSessionBlock);
+    controller.synchronizeHistory(view.sessionView);
+    view.responseHistory = controller.presentation;
+    view.loadResponseBlock = controller.loadBlock;
     document.body.append(view);
     await view.updateComplete;
     const output =
@@ -237,7 +274,7 @@ describe("canonical session renderer", () => {
         "lens-agent-output",
       )!;
     await output.updateComplete;
-    expect(output.presentation?.artifactIdentity).toBe("codex:saved");
+    expect(output.history?.scopeId).toBe("history:saved-generation");
     expect(output.querySelector("lens-output-media")).not.toBeNull();
     expect(view.shadowRoot!.querySelector(".overlay-shell .overlay-brand")).not.toBeNull();
     expect(view.shadowRoot!.querySelector(".overlay-footer")).not.toBeNull();
@@ -323,19 +360,26 @@ it("history keyboard navigation only visits the two available tabs", async () =>
   }
 });
 
-it("restored presentation identity changes reveal the first media", async () => {
+it("restored generation changes reset the history media reading position", async () => {
   const { LensAgentOutput } = await import("./lens-agent-output");
   const view = new LensAgentOutput();
-  view.presentation = {
-    identity: "first",
-    artifactIdentity: "first",
-    mode: "settled",
-    blocks: [{ type: "image", mime_type: "image/png", data: "aA==" }],
+  const fixture = mediaFixture("single");
+  const controller = new ResponseHistoryController(view, fixture.port, fixture.loadSessionBlock);
+  const session = {
+    revision: 1,
+    phase: "ready" as const,
+    generation: "first",
+    interpretation: fixture.interpretation,
   };
+  controller.synchronizeHistory(session);
+  view.history = controller.presentation;
+  view.loadResponseBlock = controller.loadBlock;
   document.body.append(view);
   await view.updateComplete;
   view.querySelector<HTMLElement>(".lens-output")!.scrollTop = 250;
-  view.presentation = { ...view.presentation, identity: "second", artifactIdentity: "second" };
+  controller.synchronizeHistory({ ...session, generation: "second" });
+  view.history = controller.presentation;
   await view.updateComplete;
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   expect(view.querySelector<HTMLElement>(".lens-output")!.scrollTop).toBe(0);
 });

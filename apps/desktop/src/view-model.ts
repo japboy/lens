@@ -153,10 +153,6 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/avif",
 ]);
 
-export function lensOutputBlocks(lens: LensState): LensOutputBlock[] {
-  return lens.representation?.output_blocks ?? lens.output_blocks;
-}
-
 export type LensOutputMode = "empty" | "initial-stream" | "settled";
 
 export interface LensOutputPresentation {
@@ -168,24 +164,9 @@ export interface LensOutputPresentation {
   readonly mode: LensOutputMode;
 }
 
+/** Initial output only; committed bodies belong to response history. */
 export function lensOutputPresentation(lens: LensState): LensOutputPresentation {
-  const representation = lens.representation;
-  if (representation) {
-    return {
-      blocks: representation.output_blocks,
-      ...(lens.operation_id
-        ? {
-            published: {
-              operationId: lens.operation_id,
-              representationId: representation.representation_id,
-            },
-          }
-        : {}),
-      identity: representation.representation_id,
-      mode: representation.output_blocks.length ? "settled" : "empty",
-    };
-  }
-  if (!lens.output_blocks.length) {
+  if (lens.representation || lens.response_history.responses.length || !lens.output_blocks.length) {
     return { blocks: [], identity: lens.operation_id, mode: "empty" };
   }
   return {

@@ -166,6 +166,7 @@ const snapshot: AppSnapshot = {
       quality: "full",
     },
     prompt_execution_revision: 1,
+    response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
     output_blocks: [
       { type: "markdown", message_id: "message-1", text: "Before image" },
       {
@@ -580,6 +581,7 @@ describe("Lens target selection preview", () => {
         ],
       },
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
     };
     const { invoke } = await import("@tauri-apps/api/core");

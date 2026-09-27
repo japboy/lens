@@ -1,36 +1,60 @@
 import { describe, expect, it } from "vitest";
-import { historyPresentation } from "./history-presentation";
-import { composeOutputMedia } from "../output-media";
-import { lensOutputPresentation } from "../view-model";
+import type { ReactiveControllerHost } from "lit";
+import { ResponseHistoryController } from "./response-history-controller";
 import { mediaCases, mediaFixture, artifact } from "../../tests/fixtures/media-parity";
 
-describe("normal/history media contract", () => {
-  it.each(mediaCases)("preserves %s media, ordering, and narrative", (choice) => {
+describe("live/replay media contract", () => {
+  it.each(mediaCases)("preserves %s media, ordering, and narrative", async (choice) => {
     const fixture = mediaFixture(choice);
-    const normal = lensOutputPresentation(fixture.lens);
-    const history = historyPresentation(fixture.document, "history");
-    expect(history.presentation.blocks.map((b) => b.type)).toEqual(
-      normal.blocks.map((b) => b.type),
-    );
-    expect(history.presentation.blocks.filter((b) => b.type !== "html")).toEqual(
-      normal.blocks.filter((b) => b.type !== "html"),
-    );
-    expect(normal.blocks.filter((b) => b.type === "image")).toHaveLength(
-      choice === "none" ? 0 : choice === "single" ? 1 : 3,
-    );
-    expect(normal.blocks.filter((b) => b.type === "html")).toHaveLength(choice === "mixed" ? 1 : 0);
-    expect(history.htmlContent?.status === "ready" ? history.htmlContent.content : undefined).toBe(
-      choice === "mixed" ? artifact : undefined,
-    );
-    expect(history.presentation.mode).toBe(normal.mode);
-    const normalMedia = composeOutputMedia(normal);
-    const historyMedia = composeOutputMedia(history.presentation);
-    expect(historyMedia.media.map((item) => item.kind)).toEqual(
-      normalMedia.media.map((item) => item.kind),
-    );
-    expect(normalMedia.media).toHaveLength(
-      choice === "none" ? 0 : choice === "single" ? 1 : choice === "mixed" ? 4 : 3,
-    );
-    expect(historyMedia.narrative).toEqual(normalMedia.narrative);
+    const host = { addController() {}, requestUpdate() {} } as unknown as ReactiveControllerHost;
+    const live = new ResponseHistoryController(host, fixture.port);
+    const replay = new ResponseHistoryController(host, fixture.port, fixture.loadSessionBlock);
+    live.synchronize(fixture.lens);
+    replay.synchronizeHistory({
+      revision: 1,
+      phase: "ready",
+      generation: "replay",
+      interpretation: fixture.interpretation,
+    });
+    const expected = fixture.lens.response_history.responses[0]!.blocks;
+    for (const controller of [live, replay]) {
+      const presentation = controller.presentation!;
+      expect(presentation.responses[0]!.blocks.map((block) => block.type)).toEqual(
+        expected.map((block) => block.type),
+      );
+      expect(presentation.media.map((media) => media.kind)).toEqual(
+        choice === "none"
+          ? []
+          : choice === "single"
+            ? ["image"]
+            : choice === "mixed"
+              ? ["image", "image", "image", "html"]
+              : ["image", "image", "image"],
+      );
+      controller.requestMedia(presentation.media.map((media) => media.id));
+      for (const block of expected.filter((block) => block.type === "markdown")) {
+        expect(
+          await controller.loadBlock(
+            presentation.scopeId,
+            presentation.responses[0]!.id,
+            block.block_index,
+          ),
+        ).toEqual(await fixture.port.getResponseBlock("", "", block.block_index));
+      }
+      await expect
+        .poll(
+          () =>
+            controller.presentation!.media.filter((media) => media.kind === "image" && media.source)
+              .length,
+        )
+        .toBe(choice === "none" ? 0 : choice === "single" ? 1 : 3);
+      const expectedHtml =
+        choice === "mixed"
+          ? [{ resourceId: "fixture-html", status: "ready", content: artifact }]
+          : [];
+      await expect
+        .poll(() => [...controller.presentation!.htmlContents.values()])
+        .toEqual(expectedHtml);
+    }
   });
 });

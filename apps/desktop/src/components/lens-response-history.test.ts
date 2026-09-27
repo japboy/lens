@@ -10,7 +10,7 @@ import type {
   ResponseManifest,
   LoadResponseBlock,
 } from "../application/response-history-controller";
-import type { LensOutputBlock } from "../types";
+import type { LensOutputBlock, LensResponseHistory } from "../types";
 
 let intersections: Array<{ callback: IntersectionObserverCallback; target: Element }> = [];
 let resizes: Array<{ callback: ResizeObserverCallback; target: Element }> = [];
@@ -98,6 +98,37 @@ async function mount(count = 1) {
   return element;
 }
 
+function nativeHistory(presentation: ResponseHistoryPresentation): LensResponseHistory {
+  const responses = presentation.responses.map((response) => ({
+    representation_id: response.id,
+    context_id: presentation.scopeId,
+    context_revision: response.sequence,
+    projection: { revision: response.sequence, digest: "fixture" },
+    run_id: `run-${response.sequence}`,
+    prompt_execution_revision: 1,
+    sequence: response.sequence,
+    blocks: [...response.blocks],
+    block_count: response.blocks.length,
+    retained_bytes: response.blocks.reduce(
+      (total, block) => total + ("byte_length" in block ? block.byte_length : 0),
+      0,
+    ),
+  }));
+  return {
+    responses,
+    retained_bytes: responses.reduce((total, response) => total + response.retained_bytes, 0),
+    capacity_reached: presentation.capacityReached,
+  };
+}
+
+function appendHistory(view: LensOverlayView, presentation: ResponseHistoryPresentation): void {
+  view.model = {
+    ...view.model!,
+    lens: { ...view.model!.lens, response_history: nativeHistory(presentation) },
+  };
+  view.responseHistory = presentation;
+}
+
 async function mountOverlay(count = 1) {
   const view = document.createElement("lens-overlay-view") as LensOverlayView;
   view.active = true;
@@ -110,6 +141,7 @@ async function mountOverlay(count = 1) {
       operation_id: "op",
       stage: "completed",
       prompt_execution_revision: 1,
+      response_history: nativeHistory(history(count)),
       output_blocks: [],
       live: {
         lifecycle: "watching",
@@ -456,6 +488,87 @@ describe("Overlay response update notification", () => {
 });
 
 describe("Overlay committed response presentation", () => {
+  it("presents successive responses automatically, retaining prior bodies and Interpretation focus", async () => {
+    const view = await mountOverlay();
+    const root = view.shadowRoot!;
+    const panel = root.querySelector<HTMLElement>("#interpretation-panel")!;
+    const first = root.querySelector("lens-response-block")!;
+    visible(first);
+    await vi.waitFor(() => expect(first.querySelector("h2")?.textContent).toBe("r1"));
+    const paragraph = first.querySelector("p");
+    panel.focus();
+    for (const count of [2, 3]) {
+      appendHistory(view, history(count));
+      await view.updateComplete;
+      const output = root.querySelector<LensAgentOutput>("lens-agent-output")!;
+      await output.updateComplete;
+      const latest = output.querySelectorAll("lens-response-block")[count - 1]!;
+      visible(latest);
+      await vi.waitFor(() => expect(latest.querySelector("h2")?.textContent).toBe(`r${count}`));
+      expect(
+        [...output.querySelectorAll("lens-response-block h2")].map((node) => node.textContent),
+      ).toEqual(Array.from({ length: count }, (_, index) => `r${index + 1}`));
+      expect(first.querySelector("p")).toBe(paragraph);
+      expect(root.activeElement).toBe(panel);
+      expect(root.querySelector(".lens-update-action")).toBeNull();
+    }
+    for (const stage of ["transforming", "failed"] as const) {
+      view.model = { ...view.model!, lens: { ...view.model!.lens, stage } };
+      await view.updateComplete;
+      expect(root.querySelectorAll(".lens-response")).toHaveLength(3);
+      expect(first.querySelector("p")).toBe(paragraph);
+      expect(root.activeElement).toBe(panel);
+    }
+  });
+
+  it("retains selected media and Interpretation focus across appends and deferred narrative growth", async () => {
+    const view = await mountOverlay(2);
+    const withMedia = (count: number): ResponseHistoryPresentation => {
+      const presentation = history(count);
+      return {
+        ...presentation,
+        responses: presentation.responses.map((response) => ({
+          ...response,
+          blocks: [
+            ...response.blocks,
+            { type: "image", block_index: 1, mime_type: "image/png", byte_length: 1 },
+          ],
+        })),
+        media: presentation.responses.map((response) => ({
+          kind: "image",
+          id: responseBlockIdentity("op", response.id, 1),
+          mimeType: "image/png",
+          source: "data:image/png;base64,aA==",
+        })),
+      };
+    };
+    appendHistory(view, withMedia(2));
+    await view.updateComplete;
+    const root = view.shadowRoot!;
+    const output = root.querySelector<LensAgentOutput>("lens-agent-output")!;
+    await output.updateComplete;
+    const media = output.querySelector<LensOutputMedia>("lens-output-media")!;
+    await media.updateComplete;
+    media.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await media.updateComplete;
+    const selected = media.querySelector('.output-media-slide[aria-hidden="false"]')!;
+    const panel = root.querySelector<HTMLElement>("#interpretation-panel")!;
+    panel.focus();
+    appendHistory(view, withMedia(3));
+    await view.updateComplete;
+    await output.updateComplete;
+    await media.updateComplete;
+    const latest = output.querySelectorAll("lens-response-block")[2]!;
+    visible(latest);
+    await vi.waitFor(() => expect(latest.querySelector("h2")?.textContent).toBe("r3"));
+    resize(output.querySelector(".lens-output-narrative")!, 1400);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(output.querySelector("lens-output-media")).toBe(media);
+    expect(media.querySelector('.output-media-slide[aria-hidden="false"]')).toBe(selected);
+    expect(selected.getAttribute("aria-label")).toBe("Media 2 of 3");
+    expect(root.activeElement).toBe(panel);
+  });
+
   it("loads only visible narrative bodies and preserves old Markdown nodes while appending responses", async () => {
     load.mockClear();
     const element = await mount();
@@ -514,6 +627,7 @@ describe("Overlay committed response presentation", () => {
       operation_id: "op",
       stage: "transforming",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [{ type: "markdown", text: "Provisional" }],
     };
     document.body.append(element);
@@ -560,6 +674,39 @@ describe("Overlay committed response presentation", () => {
     await Promise.resolve();
     expect(other.textContent).not.toContain("obsolete");
   });
+  it("restores the visible response anchor when deferred content above it grows", async () => {
+    const element = await mount(2);
+    const output = element.querySelector<HTMLElement>(".lens-output")!;
+    const [earlier, anchor] = element.querySelectorAll("lens-response-block");
+    let top = 250;
+    let anchorTop = 200;
+    Object.defineProperties(output, {
+      clientHeight: { get: () => 200 },
+      scrollHeight: { get: () => 1800 },
+      scrollTop: {
+        get: () => top,
+        set: (value: number) => {
+          top = value;
+        },
+      },
+    });
+    vi.spyOn(output, "getBoundingClientRect").mockImplementation(() => ({ top: 0 }) as DOMRect);
+    vi.spyOn(earlier!, "getBoundingClientRect").mockImplementation(
+      () => ({ top: -top, bottom: 200 - top }) as DOMRect,
+    );
+    vi.spyOn(anchor!, "getBoundingClientRect").mockImplementation(
+      () => ({ top: anchorTop - top, bottom: anchorTop + 200 - top }) as DOMRect,
+    );
+    output.dispatchEvent(new Event("scroll"));
+    element.history = history(3);
+    await element.updateComplete;
+    anchorTop = 500;
+    resize(element.querySelector(".lens-output-narrative")!, 1800);
+    await vi.waitFor(() => expect(top).toBe(550));
+    expect(anchor!.getBoundingClientRect().top).toBe(-50);
+    expect(element.querySelectorAll("lens-response-block")[1]).toBe(anchor);
+  });
+
   it("preserves reader offset on append and follows asynchronous content growth only from the end", async () => {
     const element = await mount();
     const output = element.querySelector(".lens-output") as HTMLElement;
@@ -591,5 +738,10 @@ describe("Overlay committed response presentation", () => {
     height = 2300;
     resize(element.querySelector(".lens-output-narrative")!, 2300);
     await vi.waitFor(() => expect(top).toBe(2100));
+    top = 500;
+    output.dispatchEvent(new Event("scroll"));
+    height = 350;
+    resize(element.querySelector(".lens-output-narrative")!, 350);
+    await vi.waitFor(() => expect(top).toBe(150));
   });
 });

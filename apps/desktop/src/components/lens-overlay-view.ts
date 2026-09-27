@@ -2,7 +2,6 @@ import type {
   ResponseHistoryPresentation,
   LoadResponseBlock,
 } from "../application/response-history-controller";
-import { historyPresentation } from "../application/history-presentation";
 import {
   isHistoryView,
   type SessionView,
@@ -26,9 +25,8 @@ import type { MediaPresentation } from "./events";
 import { customElement, property, state } from "lit/decorators.js";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel } from "../application/view-models";
-import type { LensRepresentation, LensState } from "../types";
+import type { LensState } from "../types";
 import { composeOutputMedia } from "../output-media";
-import type { HtmlOutputContent } from "../application/html-output-controller";
 import {
   accessibilityStyles,
   controlStyles,
@@ -62,12 +60,6 @@ const LENS_TABS = [
 ] as const;
 
 type LensTab = (typeof LENS_TABS)[number]["id"];
-
-interface InterpretationScrollPosition {
-  readonly top: number;
-  readonly wasAtBottom: boolean;
-  readonly hadMedia: boolean;
-}
 
 interface OverlayNotification {
   readonly title: string;
@@ -1745,7 +1737,6 @@ export class LensOverlayView extends LitElement {
   @property({ attribute: false }) requestResponseMedia:
     | ((ids: readonly string[]) => void)
     | undefined;
-  @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
 
   @property({ attribute: false })
   model: OverlayViewModel | undefined = initialOverlayState().model;
@@ -1754,13 +1745,6 @@ export class LensOverlayView extends LitElement {
   @state()
   private activeTab: LensTab = initialOverlayState().activeTab;
 
-  @state()
-  private displayedRepresentation: LensRepresentation | undefined;
-
-  private synchronizedOperationId: string | undefined;
-  private hasSynchronizedOperation = false;
-  private pendingScrollPosition: InterpretationScrollPosition | undefined;
-  private restoreInterpretationFocus = false;
   private notificationIdentity: string | undefined;
 
   @state()
@@ -1842,14 +1826,13 @@ export class LensOverlayView extends LitElement {
       if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
         this.activeTab = "interpretation";
       }
-      if (this.model) this.synchronizeRepresentation(this.model.lens);
     }
     if (!changed.has("model") && !changed.has("sessionView")) return;
     const history = isHistoryView(this.sessionView);
     const notification = history
       ? historyNotification(this.sessionView)
       : this.model
-        ? overlayNotification(this.lensWithDisplayedRepresentation(this.model.lens))
+        ? overlayNotification(this.model.lens)
         : undefined;
     const identity = history
       ? JSON.stringify([
@@ -1909,7 +1892,7 @@ export class LensOverlayView extends LitElement {
       model?.sourceMetadata?.has_input &&
       (lens?.stage === "authentication_required" || lens?.stage === "failed");
     const liveStatus = lensLiveStatus(lens?.live);
-    const displayLens = lens ? this.lensWithDisplayedRepresentation(lens) : undefined;
+    const displayLens = lens;
     const announcedStatus =
       (displayLens ? overlayNotification(displayLens) : undefined) ?? this.updateOnlyNotification();
     const interactive = Boolean(
@@ -2259,7 +2242,6 @@ export class LensOverlayView extends LitElement {
   private renderHistory() {
     const view = this.sessionView!;
     const identity = `${view.agent}:${view.session_id}${view.generation ? `:${view.generation}` : ""}`;
-    const output = historyPresentation(view.document, identity);
     const activeTab = this.activeTab === "conversation" ? "conversation" : "interpretation";
     const notification = historyNotification(view) ?? this.updateOnlyNotification();
     const showNotification = Boolean(notification && this.notificationVisibility === "open");
@@ -2297,14 +2279,12 @@ export class LensOverlayView extends LitElement {
                     ></lens-session-document>
                   </div>`
                 : html`<lens-agent-output
+                    .sessionKind=${"history"}
                     .history=${this.responseHistory}
                     .notificationContent=${this.notificationSurface()}
                     .loadResponseBlock=${this.loadResponseBlock}
                     .requestMedia=${this.requestResponseMedia}
                     .retryMedia=${this.retryResponseMedia}
-                    .presentation=${output.presentation}
-                    .htmlContent=${output.htmlContent}
-                    .htmlContents=${output.htmlContents}
                   ></lens-agent-output>`
               : nothing,
           )}
@@ -2374,7 +2354,6 @@ export class LensOverlayView extends LitElement {
             .loadResponseBlock=${this.loadResponseBlock}
             .requestMedia=${this.requestResponseMedia}
             .retryMedia=${this.retryResponseMedia}
-            .htmlContent=${this.htmlContent}
           ></lens-agent-output>
         </section>`;
       case "source":
@@ -2552,93 +2531,5 @@ export class LensOverlayView extends LitElement {
 
   private activateTab(tab: LensTab): void {
     this.activeTab = tab;
-  }
-
-  private synchronizeRepresentation(lens: LensState): void {
-    const operationId = lens.operation_id;
-    const representation = lens.representation;
-    if (!this.hasSynchronizedOperation || operationId !== this.synchronizedOperationId) {
-      this.hasSynchronizedOperation = true;
-      this.synchronizedOperationId = operationId;
-      this.displayedRepresentation = representation;
-      return;
-    }
-    if (!representation) return;
-    if (lens.response_history) {
-      this.displayedRepresentation = representation;
-      return;
-    }
-    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
-      return;
-    }
-    this.acceptRepresentation(representation, this.interpretationHasFocus());
-  }
-
-  private lensWithDisplayedRepresentation(lens: LensState): LensState {
-    const representation = this.displayedRepresentation;
-    if (!representation || representation === lens.representation) return lens;
-    return { ...lens, representation };
-  }
-
-  private interpretationHasFocus(): boolean {
-    const panel = this.renderRoot.querySelector<HTMLElement>("#interpretation-panel");
-    if (!panel) return false;
-    const activeElement = this.shadowRoot?.activeElement;
-    return Boolean(activeElement && panel.contains(activeElement));
-  }
-
-  private acceptRepresentation(
-    representation: LensRepresentation,
-    restoreInterpretationFocus = false,
-  ): void {
-    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
-      return;
-    }
-    this.pendingScrollPosition = this.captureInterpretationScrollPosition();
-    this.restoreInterpretationFocus ||= restoreInterpretationFocus;
-    this.displayedRepresentation = representation;
-    void this.updateComplete.then(() => this.restoreInterpretationPresentation());
-  }
-
-  private captureInterpretationScrollPosition(): InterpretationScrollPosition | undefined {
-    const output = this.renderRoot
-      .querySelector("lens-agent-output")
-      ?.querySelector<HTMLElement>(".lens-output");
-    if (!output) return undefined;
-    const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
-    return {
-      top: output.scrollTop,
-      wasAtBottom: maximum - output.scrollTop <= 36,
-      hadMedia: output.classList.contains("has-media"),
-    };
-  }
-
-  private async restoreInterpretationPresentation(): Promise<void> {
-    const outputComponent = this.renderRoot.querySelector<
-      HTMLElement & {
-        updateComplete: Promise<boolean>;
-      }
-    >("lens-agent-output");
-    await outputComponent?.updateComplete;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const output = outputComponent?.querySelector<HTMLElement>(".lens-output");
-    const position = this.pendingScrollPosition;
-    this.pendingScrollPosition = undefined;
-    if (output && position) {
-      const maximum = Math.max(0, output.scrollHeight - output.clientHeight);
-      output.scrollTop = output.classList.contains("has-media")
-        ? position.hadMedia
-          ? Math.min(position.top, maximum)
-          : 0
-        : position.wasAtBottom
-          ? maximum
-          : Math.min(position.top, maximum);
-    }
-    if (this.restoreInterpretationFocus) {
-      this.restoreInterpretationFocus = false;
-      this.renderRoot
-        .querySelector<HTMLElement>("#interpretation-panel")
-        ?.focus({ preventScroll: true });
-    }
   }
 }

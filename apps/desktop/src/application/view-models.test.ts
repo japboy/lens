@@ -45,7 +45,12 @@ const SNAPSHOT: AppSnapshot = {
   },
   agent_selection: { stage: "unselected", supports_logout: false, auth_methods: [] },
   agent_runtime: { stage: "not_installed", downloaded_bytes: 0 },
-  lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
+  lens: {
+    stage: "idle",
+    prompt_execution_revision: 1,
+    response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
+    output_blocks: [],
+  },
 };
 
 const PERMISSION: AccessibilityPermissionState = { stage: "allowed" };

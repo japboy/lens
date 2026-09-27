@@ -57,11 +57,12 @@ describe("output media composition", () => {
     );
   });
 
-  it("derives the gallery only from the published representation when a candidate exists", () => {
+  it("does not compose committed representations or private candidate bodies", () => {
     const output = lensOutputPresentation({
       operation_id: "operation",
       stage: "transforming",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [{ type: "image", mime_type: "image/png", data: "private candidate" }],
       representation: {
         representation_id: "published",
@@ -74,9 +75,6 @@ describe("output media composition", () => {
       },
     });
     expect(composeOutputMedia(output).media).toEqual([]);
-    expect(composeOutputMedia(output).narrative[0]?.block).toEqual({
-      type: "markdown",
-      text: "Published text only",
-    });
+    expect(composeOutputMedia(output).narrative).toEqual([]);
   });
 });

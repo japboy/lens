@@ -3,7 +3,7 @@ import type { LensOutputBlock, LensResponseBlockDescriptor, LensState } from "..
 import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
 import type { PresentedOutputMedia } from "../output-media";
 import { imageDataUrl } from "../view-model";
-import { MAX_HTML_OUTPUT_BYTES, type HtmlOutputContent } from "./html-output-controller";
+import { MAX_HTML_OUTPUT_BYTES, type HtmlOutputContent } from "./html-output-content";
 import type { WebviewPort } from "./webview-port";
 
 export const RESPONSE_BODY_CACHE_BYTES = 16 * 1024 * 1024;

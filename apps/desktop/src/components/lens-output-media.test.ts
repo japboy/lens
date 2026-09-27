@@ -1038,6 +1038,7 @@ describe("media and narrative composition", () => {
       operation_id: "operation",
       stage: "transforming",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [{ type: "markdown", text: "Initial prose" }],
     };
     document.body.append(element);
@@ -1070,6 +1071,7 @@ describe("media and narrative composition", () => {
     expect(output.scrollTop).toBe(240);
     element.lens = {
       operation_id: "next",
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       stage: "completed",
       prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "No media" }],

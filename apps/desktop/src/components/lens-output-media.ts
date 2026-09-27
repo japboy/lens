@@ -13,7 +13,7 @@ import type {
   PresentedOutputHtml,
   PresentedOutputMedia,
 } from "../output-media";
-import type { HtmlOutputContent } from "../application/html-output-controller";
+import type { HtmlOutputContent } from "../application/html-output-content";
 
 type PreparedHtml = {
   id: string;

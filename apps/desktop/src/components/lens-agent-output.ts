@@ -10,19 +10,13 @@ import type { LensOutputMedia } from "./lens-output-media";
 import { responseBlockIdentity } from "../application/response-history-controller";
 import "./lens-response-block";
 import { composeOutputMedia } from "../output-media";
-import type { HtmlOutputContent } from "../application/html-output-controller";
 import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
 import { externalMarkdownUrl } from "../markdown";
 import "../streaming-markdown";
 import type { StreamingMarkdownState } from "../streaming-markdown";
 import type { LensOutputBlock, LensState } from "../types";
-import {
-  imageDataUrl,
-  lensOutputPresentation,
-  type LensOutputMode,
-  type LensOutputPresentation,
-} from "../view-model";
+import { imageDataUrl, lensOutputPresentation, type LensOutputMode } from "../view-model";
 import {
   AGENT_OUTPUT_INTENT_EVENT,
   dispatchComponentEvent,
@@ -34,11 +28,13 @@ export type ResponseNavigationRegion = "media" | "narrative";
 @customElement("lens-agent-output")
 export class LensAgentOutput extends LitElement {
   @property({ attribute: false })
-  lens: LensState = { stage: "idle", prompt_execution_revision: 1, output_blocks: [] };
-  @property({ attribute: false }) presentation: LensOutputPresentation | undefined;
-  @property({ attribute: false }) htmlContent: HtmlOutputContent | undefined;
-  @property({ attribute: false }) htmlContents: ReadonlyMap<string, HtmlOutputContent> | undefined;
-
+  lens: LensState = {
+    stage: "idle",
+    prompt_execution_revision: 1,
+    output_blocks: [],
+    response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
+  };
+  @property({ attribute: false }) sessionKind: "live" | "history" = "live";
   @property({ attribute: false }) history: ResponseHistoryPresentation | undefined;
   @property({ attribute: false }) loadResponseBlock: LoadResponseBlock | undefined;
   @property({ attribute: false }) requestMedia: ((ids: readonly string[]) => void) | undefined;
@@ -87,22 +83,14 @@ export class LensAgentOutput extends LitElement {
       this.revealFirstMedia = false;
       return;
     }
-    if (!changed.has("lens") && !changed.has("presentation")) return;
-    const previousLens = changed.has("lens") ? changed.get("lens") : this.lens;
-    const previousPresentation = changed.has("presentation")
-      ? changed.get("presentation")
-      : this.presentation;
-    const previousOutput =
-      previousPresentation ?? (previousLens ? lensOutputPresentation(previousLens) : undefined);
-    const output = this.presentation ?? lensOutputPresentation(this.lens);
+    if (!changed.has("lens")) return;
+    const previousLens = changed.get("lens");
+    const previousOutput = previousLens ? lensOutputPresentation(previousLens) : undefined;
+    const output = lensOutputPresentation(this.lens);
     const hasMedia = composeOutputMedia(output).media.length > 0;
     const hadMedia = previousOutput ? composeOutputMedia(previousOutput).media.length > 0 : false;
     this.revealFirstMedia =
-      hasMedia &&
-      (!hadMedia ||
-        (this.presentation
-          ? previousOutput?.identity !== output.identity
-          : previousLens?.operation_id !== this.lens.operation_id));
+      hasMedia && (!hadMedia || previousLens?.operation_id !== this.lens.operation_id);
   }
 
   protected updated(): void {
@@ -129,7 +117,7 @@ export class LensAgentOutput extends LitElement {
 
   protected render() {
     if (this.history?.responses.length) return this.renderHistory();
-    const output = this.presentation ?? lensOutputPresentation(this.lens);
+    const output = lensOutputPresentation(this.lens);
     const { media, narrative } = composeOutputMedia(output);
     if (output.blocks.length) {
       return html`<div
@@ -137,7 +125,7 @@ export class LensAgentOutput extends LitElement {
         data-auto-scroll-container
         role="document"
       >
-        ${media.length ? html`<lens-output-media .media=${media} .htmlContent=${this.htmlContent} .htmlContents=${this.htmlContents} .notificationContent=${this.notificationContent}></lens-output-media>` : nothing}
+        ${media.length ? html`<lens-output-media .media=${media} .notificationContent=${this.notificationContent}></lens-output-media>` : nothing}
         ${
           media.length && narrative.length
             ? html`
@@ -181,7 +169,7 @@ export class LensAgentOutput extends LitElement {
         }
       </div>`;
     }
-    return this.presentation
+    return this.sessionKind === "history"
       ? html`<p class="empty-state">No answer is available in this session.</p>`
       : this.renderEmpty();
   }
