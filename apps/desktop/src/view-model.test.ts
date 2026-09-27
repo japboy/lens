@@ -12,7 +12,6 @@ import {
   isAgentRuntimeActive,
   lensLiveStatus,
   lensProgressSnackbar,
-  lensOutputBlocks,
   lensOutputPresentation,
   lensSourceJson,
   selectedAgent,
@@ -159,6 +158,7 @@ describe("Lens view model", () => {
     const lens = {
       stage: "transforming",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [
         { type: "markdown", message_id: "message-1", text: "Agent output" },
         {
@@ -171,20 +171,21 @@ describe("Lens view model", () => {
       input: lensInput("Accessibility input"),
     } satisfies LensState;
 
-    expect(lensOutputBlocks(lens)).toEqual(lens.output_blocks);
+    expect(lensOutputPresentation(lens).blocks).toEqual(lens.output_blocks);
     const imageBlock = lens.output_blocks[1];
     expect(imageBlock?.type).toBe("image");
     if (imageBlock?.type !== "image") throw new Error("expected image output block");
     expect(imageDataUrl(imageBlock)).toBe("data:image/png;base64,iVBORw0KGgo=");
-    expect(lensOutputBlocks({ ...lens, output_blocks: [] })).toEqual([]);
+    expect(lensOutputPresentation({ ...lens, output_blocks: [] }).blocks).toEqual([]);
   });
 
-  it("renders an atomic representation ahead of the compatibility stream", () => {
+  it("leaves committed representation rendering to history and suppresses candidate streams", () => {
     const lens = {
       operation_id: "operation",
       stage: "transforming",
       prompt_execution_revision: 1,
       output_blocks: [{ type: "markdown", text: "Private replacement stream" }],
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       representation: {
         representation_id: "representation-2",
         context_id: "operation",
@@ -196,12 +197,10 @@ describe("Lens view model", () => {
       },
     } satisfies LensState;
 
-    expect(lensOutputBlocks(lens)).toEqual(lens.representation.output_blocks);
     expect(lensOutputPresentation(lens)).toEqual({
-      published: { operationId: "operation", representationId: "representation-2" },
-      blocks: lens.representation.output_blocks,
-      identity: "representation-2",
-      mode: "settled",
+      blocks: [],
+      identity: "operation",
+      mode: "empty",
     });
     expect(lensOutputPresentation({ ...lens, representation: undefined })).toMatchObject({
       blocks: lens.output_blocks,
@@ -220,6 +219,7 @@ describe("Lens view model", () => {
     const lens = {
       stage: "ready",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
       context: {
         schema_version: 4,
@@ -294,6 +294,7 @@ describe("Lens view model", () => {
       operation_id: input.context_id,
       stage: "ready",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
       input,
     } satisfies LensState;
@@ -314,6 +315,7 @@ describe("Lens view model", () => {
     const lens = {
       stage: "authentication_required",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
       agent: {
         run_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",

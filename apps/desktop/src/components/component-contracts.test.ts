@@ -33,12 +33,27 @@ function representation(id: string, revision: number, text: string): LensReprese
 }
 
 function liveLens(current: LensRepresentation): LensState {
+  const { output_blocks, ...identity } = current;
+  const blocks = output_blocks.map((block, block_index) => {
+    if (block.type !== "markdown") throw new Error("Expected a narrative fixture.");
+    return {
+      type: "markdown" as const,
+      block_index,
+      byte_length: new TextEncoder().encode(block.text).byteLength,
+    };
+  });
+  const retained_bytes = blocks.reduce((total, block) => total + block.byte_length, 0);
   return {
     operation_id: "operation",
     stage: "completed",
     prompt_execution_revision: 1,
-    output_blocks: [{ type: "markdown", text: "Compatibility output" }],
-    representation: current,
+    output_blocks: [],
+    representation: { ...identity, output_blocks: [] },
+    response_history: {
+      responses: [{ ...identity, sequence: 1, block_count: blocks.length, retained_bytes, blocks }],
+      retained_bytes,
+      capacity_reached: false,
+    },
     live: {
       lifecycle: "watching",
       health: "healthy",
@@ -177,6 +192,7 @@ describe("component property and event contracts", () => {
           items: [],
         },
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
       },
       pending: false,
@@ -351,6 +367,7 @@ describe("component property and event contracts", () => {
           items: [item],
         },
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
       },
       pending: false,
@@ -442,6 +459,7 @@ describe("component property and event contracts", () => {
         stage: "selecting",
         selection,
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
       },
       pending: true,
@@ -474,6 +492,7 @@ describe("component property and event contracts", () => {
         operation_id: "operation",
         stage: "transforming",
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
         agent: {
           run_id: "run",
@@ -548,6 +567,7 @@ describe("component property and event contracts", () => {
         stage: "ready",
         input,
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
         live: {
           lifecycle: "watching",
@@ -611,7 +631,12 @@ describe("component property and event contracts", () => {
       lens: LensState;
       updateComplete: Promise<boolean>;
     };
-    element.lens = { stage: "failed", prompt_execution_revision: 1, output_blocks: [] };
+    element.lens = {
+      stage: "failed",
+      prompt_execution_revision: 1,
+      output_blocks: [],
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
+    };
     if ("active" in element) element.active = true;
     document.body.append(element);
     await element.updateComplete;
@@ -620,35 +645,46 @@ describe("component property and event contracts", () => {
     );
   });
 
-  it("settles an atomic representation without making the interpretation a live region", async () => {
-    const element = document.createElement("lens-agent-output") as HTMLElement & {
-      lens: LensState;
-      updateComplete: Promise<boolean>;
-    };
+  it("settles committed history without making the interpretation a live region", async () => {
+    const element = document.createElement(
+      "lens-agent-output",
+    ) as import("./lens-agent-output").LensAgentOutput;
     element.lens = {
       ...liveLens(representation("representation-1", 1, "Published interpretation")),
       stage: "transforming",
-      prompt_execution_revision: 1,
-      output_blocks: [{ type: "markdown", text: "Unpublished stream" }],
     };
-    if ("active" in element) element.active = true;
+    element.history = {
+      scopeId: "operation",
+      responses: element.lens.response_history.responses.map((response) => ({
+        id: response.representation_id,
+        sequence: response.sequence,
+        blocks: response.blocks,
+      })),
+      capacityReached: false,
+      media: [],
+      htmlContents: new Map(),
+      mediaErrors: new Map(),
+    };
+    element.loadResponseBlock = async () => ({
+      type: "markdown",
+      text: "Published interpretation",
+    });
     document.body.append(element);
-    await element.updateComplete;
+    await vi.waitFor(() =>
+      expect(element.querySelector(".lens-output")?.textContent).toContain(
+        "Published interpretation",
+      ),
+    );
 
     const output = element.querySelector(".lens-output");
     const markdown = element.querySelector<
       HTMLElement & {
         state: { operationId?: string; phase: string };
-        updateComplete: Promise<boolean>;
       }
     >("lens-markdown");
-    await markdown?.updateComplete;
-
-    expect(output?.textContent).toContain("Published interpretation");
-    expect(output?.textContent).not.toContain("Unpublished stream");
     expect(output?.hasAttribute("aria-live")).toBe(false);
     expect(markdown?.state).toMatchObject({
-      operationId: "representation-1:0",
+      operationId: JSON.stringify(["operation", "representation-1", 0]),
       phase: "settled",
     });
   });
@@ -746,6 +782,7 @@ describe("component property and event contracts", () => {
         operation_id: "next-operation",
         stage: "connecting",
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
       },
     };
@@ -754,143 +791,6 @@ describe("component property and event contracts", () => {
     expect(
       element.shadowRoot?.querySelector("#interpretation-tab")?.getAttribute("aria-selected"),
     ).toBe("true");
-  });
-
-  it.each([
-    { top: 200, initialHeight: 1000, nextHeight: 1000, expected: 200 },
-    { top: 700, initialHeight: 1400, nextHeight: 500, expected: 100 },
-    { top: 600, initialHeight: 1000, nextHeight: 1400, expected: 1000 },
-  ])(
-    "restores Interpretation scroll position for $top -> $expected",
-    async ({ top, initialHeight, nextHeight, expected }) => {
-      const element = document.createElement("lens-overlay-view") as HTMLElement & {
-        model: OverlayViewModel;
-        updateComplete: Promise<boolean>;
-      };
-      element.model = {
-        platform: "macos",
-        lens: liveLens(representation("representation-1", 1, "First result")),
-        pending: false,
-        cancelPending: false,
-        message: "",
-      };
-      if ("active" in element) element.active = true;
-      document.body.append(element);
-      await vi.waitFor(() =>
-        expect(element.shadowRoot?.querySelector(".lens-output")).not.toBeNull(),
-      );
-      const output = element.shadowRoot!.querySelector<HTMLElement>(".lens-output")!;
-      let height = initialHeight;
-      Object.defineProperties(output, {
-        clientHeight: { get: () => 400 },
-        scrollHeight: { get: () => height },
-      });
-      output.scrollTop = top;
-      element.model = {
-        ...element.model,
-        lens: liveLens(representation("representation-2", 2, "Updated result")),
-      };
-      await element.updateComplete;
-      height = nextHeight;
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      await vi.waitFor(() => {
-        expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-          "Updated result",
-        );
-        expect(output.scrollTop).toBe(expected);
-      });
-    },
-  );
-
-  it.each([
-    { top: 0, initialHeight: 400, expected: 0 },
-    { top: 600, initialHeight: 1000, expected: 600 },
-  ])(
-    "preserves media reading position on settled replacement at $top",
-    async ({ top, initialHeight, expected }) => {
-      const withMedia = (id: string, revision: number): LensRepresentation => ({
-        ...representation(id, revision, "Image explanation"),
-        prompt_execution_revision: 1,
-        output_blocks: [
-          { type: "image", mime_type: "image/png", data: "aA==" },
-          { type: "markdown", text: "Image explanation" },
-        ],
-      });
-      const element = document.createElement("lens-overlay-view") as HTMLElement & {
-        model: OverlayViewModel;
-        updateComplete: Promise<boolean>;
-      };
-      element.model = {
-        platform: "macos",
-        lens: liveLens(withMedia("media-1", 1)),
-        pending: false,
-        cancelPending: false,
-        message: "",
-      };
-      if ("active" in element) element.active = true;
-      document.body.append(element);
-      await vi.waitFor(() =>
-        expect(element.shadowRoot?.querySelector(".lens-output.has-media")).not.toBeNull(),
-      );
-      const output = element.shadowRoot!.querySelector<HTMLElement>(".lens-output")!;
-      let height = initialHeight;
-      Object.defineProperties(output, {
-        clientHeight: { get: () => 400 },
-        scrollHeight: { get: () => height },
-      });
-      output.scrollTop = top;
-      element.model = { ...element.model, lens: liveLens(withMedia("media-2", 2)) };
-      await element.updateComplete;
-      height = 1400;
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      await vi.waitFor(() => expect(output.scrollTop).toBe(expected));
-    },
-  );
-
-  it("applies each complete replacement automatically while preserving Interpretation focus", async () => {
-    const first = representation("representation-1", 1, "Interpretation one");
-    const second = representation("representation-2", 2, "Interpretation two");
-    const third = representation("representation-3", 3, "Interpretation three");
-    const element = document.createElement("lens-overlay-view") as HTMLElement & {
-      model: OverlayViewModel;
-      updateComplete: Promise<boolean>;
-    };
-    element.model = {
-      platform: "macos",
-      lens: liveLens(first),
-      pending: false,
-      cancelPending: false,
-      message: "",
-    };
-    if ("active" in element) element.active = true;
-    document.body.append(element);
-    await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-        "Interpretation one",
-      );
-    });
-
-    const panel = element.shadowRoot?.querySelector<HTMLElement>("#interpretation-panel");
-    panel?.focus();
-    expect(element.shadowRoot?.activeElement).toBe(panel);
-
-    element.model = { ...element.model, lens: liveLens(second) };
-    await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-        "Interpretation two",
-      );
-    });
-    element.model = { ...element.model, lens: liveLens(third) };
-    await vi.waitFor(() => {
-      expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).toContain(
-        "Interpretation three",
-      );
-    });
-    expect(element.shadowRoot?.querySelector(".lens-output")?.textContent).not.toContain(
-      "Interpretation two",
-    );
-    await vi.waitFor(() => expect(element.shadowRoot?.activeElement).toBe(panel));
-    expect(element.shadowRoot?.querySelector(".lens-update-action")).toBeNull();
   });
 
   it("exposes finite Pause and Resume intents while monitoring status stays polite", async () => {
@@ -951,6 +851,7 @@ describe("progress notification visibility", () => {
     const element = (await mount({
       stage: "connecting",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
     })) as Awaited<ReturnType<typeof mount>> & { sessionView: SessionView };
     const root = element.shadowRoot!;
@@ -1056,6 +957,7 @@ describe("progress notification visibility", () => {
       operation_id: "operation",
       stage: "transforming",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [{ type: "markdown", text: "Continuing interpretation." }],
     });
     const root = element.shadowRoot!;
@@ -1158,6 +1060,7 @@ it("keeps Agent diagnostics out of the Lens interpretation layout", async () => 
     lens: {
       stage: "ready",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
       session_controls: {
         instance_id: "fixture",

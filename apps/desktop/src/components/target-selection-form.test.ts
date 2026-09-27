@@ -17,6 +17,7 @@ async function mount(pending = false) {
       operation_id: "operation",
       stage: "selecting",
       prompt_execution_revision: 1,
+      response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
       selection: {
         selection_id: "operation",

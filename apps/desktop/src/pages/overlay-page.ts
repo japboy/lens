@@ -7,7 +7,6 @@ import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
 import { ResponseHistoryController } from "../application/response-history-controller";
-import { HtmlOutputController } from "../application/html-output-controller";
 import type { CommandIdentity } from "../application/command-state";
 import { overlayViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
@@ -27,7 +26,6 @@ export class OverlayPage extends ReactiveElement {
     this.port,
     this.sessionView.loadBlock,
   );
-  private readonly htmlOutput = new HtmlOutputController(this, this.port);
   private readonly platform = platformFromSearch(window.location.search);
   @state() private interactionSubmission: InteractionSubmission | undefined;
 
@@ -104,14 +102,6 @@ export class OverlayPage extends ReactiveElement {
     view.retryResponseMedia = this.retryResponseMedia;
     view.retrySnapshotResource = this.retrySnapshotResource;
     view.requestSource = this.requestSource;
-    this.htmlOutput.synchronize(
-      !this.sessionView.view ||
-        isHistoryView(this.sessionView.view) ||
-        snapshot?.lens.response_history
-        ? undefined
-        : snapshot?.lens,
-    );
-    view.htmlContent = this.htmlOutput.content;
     view.dataset.platform = this.platform;
     view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
     view.model = snapshot

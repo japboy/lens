@@ -3,11 +3,14 @@ import "./styles/document.css";
 import "./components/lens-overlay-view";
 import "./components/lens-agent-output";
 import "./components/lens-session-document";
+import { ResponseHistoryController } from "./application/response-history-controller";
+import type { ReactiveControllerHost } from "lit";
 import type { LensOverlayView } from "./components/lens-overlay-view";
 import { mediaCases, mediaFixture, type MediaCase } from "../tests/fixtures/media-parity";
 const normal = document.querySelector<LensOverlayView>("#normal")!;
 const history = document.querySelector<LensOverlayView>("#history")!;
 const select = document.querySelector<HTMLSelectElement>("#case")!;
+const controllers = new Map<LensOverlayView, ResponseHistoryController>();
 let revision = 0;
 function show(choice: MediaCase) {
   const fixture = mediaFixture(choice);
@@ -19,7 +22,6 @@ function show(choice: MediaCase) {
     cancelPending: false,
     message: "",
   };
-  normal.htmlContent = fixture.htmlContent;
   normal.sessionView = {
     revision,
     phase: "live",
@@ -35,7 +37,30 @@ function show(choice: MediaCase) {
     session_id: `fixture-${choice}`,
     generation: `qualification-${revision}`,
     document: fixture.document,
+    interpretation: fixture.interpretation,
   };
+  for (const [view, replay] of [
+    [normal, false],
+    [history, true],
+  ] as const) {
+    controllers.get(view)?.hostDisconnected();
+    const controller = new ResponseHistoryController(
+      {
+        addController: () => undefined,
+        requestUpdate: () => {
+          view.responseHistory = controller.presentation;
+        },
+      } as unknown as ReactiveControllerHost,
+      fixture.port,
+      fixture.loadSessionBlock,
+    );
+    controllers.set(view, controller);
+    if (replay) controller.synchronizeHistory(view.sessionView);
+    else controller.synchronize(view.model!.lens);
+    view.responseHistory = controller.presentation;
+    view.loadResponseBlock = controller.loadBlock;
+    view.requestResponseMedia = controller.requestMedia;
+  }
 }
 const requested = new URLSearchParams(location.search).get("media");
 select.value = mediaCases.includes(requested as MediaCase) ? requested! : "single";

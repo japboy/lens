@@ -500,7 +500,7 @@ export interface LensState {
   input?: LensInput;
   projection?: ProjectionRef;
   representation?: LensRepresentation;
-  response_history?: LensResponseHistory;
+  response_history: LensResponseHistory;
   live?: LensLiveState;
   output_blocks: LensOutputBlock[];
   agent?: AgentRunState;

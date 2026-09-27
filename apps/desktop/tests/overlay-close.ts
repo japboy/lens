@@ -62,7 +62,12 @@ const snapshot: AppSnapshot = {
     auth_methods: [],
   },
   agent_runtime: { stage: "ready", agent: "codex", downloaded_bytes: 0 },
-  lens: { stage: "idle", prompt_execution_revision: 1, output_blocks: [] },
+  lens: {
+    stage: "idle",
+    prompt_execution_revision: 1,
+    response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
+    output_blocks: [],
+  },
 };
 
 beforeEach(() => {
@@ -175,6 +180,7 @@ describe("overlay window dismissal", () => {
         stage: "completed",
         operation_id: operationId,
         prompt_execution_revision: 1,
+        response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
         output_blocks: [],
       },
     });

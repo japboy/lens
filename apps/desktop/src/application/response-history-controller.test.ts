@@ -8,6 +8,7 @@ import {
   responseBlockIdentity,
   RESPONSE_BODY_CACHE_BYTES,
 } from "./response-history-controller";
+import { MAX_HTML_OUTPUT_BYTES } from "./html-output-content";
 
 function response(id: string, sequence: number): LensResponseManifest {
   return {
@@ -72,6 +73,65 @@ const deferred = <T>() => {
 };
 
 describe("committed response history bodies", () => {
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, MAX_HTML_OUTPUT_BYTES + 1])(
+    "rejects invalid HTML descriptor size %s before IPC",
+    async (bytes) => {
+      const { controller, port } = setup();
+      const state = lens();
+      const descriptor = state.response_history.responses[0]!.blocks[1]!;
+      if (descriptor.type !== "html") throw new Error("Expected HTML");
+      descriptor.byte_length = bytes;
+      controller.synchronize(state);
+      const id = responseBlockIdentity("op", "r1", 1);
+      controller.requestMedia([id]);
+      await vi.waitFor(() =>
+        expect(controller.presentation?.htmlContents.get(id)?.status).toBe("failed"),
+      );
+      expect(port.getHtmlOutput).not.toHaveBeenCalled();
+      expect(controller.presentation?.responses).toHaveLength(1);
+    },
+  );
+  it.each([
+    ["\u3042", 3, "ready"],
+    ["\u3042", 1, "failed"],
+    ["x".repeat(MAX_HTML_OUTPUT_BYTES), MAX_HTML_OUTPUT_BYTES, "ready"],
+    ["x".repeat(MAX_HTML_OUTPUT_BYTES + 1), MAX_HTML_OUTPUT_BYTES, "failed"],
+  ] as const)("checks exact UTF-8 HTML bytes (case %#)", async (content, bytes, status) => {
+    const { controller, port } = setup();
+    const state = lens();
+    const descriptor = state.response_history.responses[0]!.blocks[1]!;
+    if (descriptor.type !== "html") throw new Error("Expected HTML");
+    descriptor.byte_length = bytes;
+    port.getHtmlOutput.mockResolvedValue(content);
+    controller.synchronize(state);
+    const id = responseBlockIdentity("op", "r1", 1);
+    controller.requestMedia([id]);
+    await vi.waitFor(() =>
+      expect(controller.presentation?.htmlContents.get(id)?.status).toBe(status),
+    );
+    expect(port.getHtmlOutput).toHaveBeenCalledExactlyOnceWith("op", "r1", "shared");
+  });
+  it.each(["stop", "replace", "disconnect"] as const)(
+    "rejects pending HTML results after %s",
+    async (action) => {
+      const { controller, port } = setup();
+      const pending = deferred<string>();
+      port.getHtmlOutput.mockReturnValueOnce(pending.promise);
+      controller.synchronize(lens());
+      const oldId = responseBlockIdentity("op", "r1", 1);
+      controller.requestMedia([oldId]);
+      expect(controller.presentation?.htmlContents.get(oldId)?.status).toBe("loading");
+      if (action === "disconnect") controller.hostDisconnected();
+      else controller.synchronize(action === "stop" ? undefined : lens("replacement"));
+      pending.resolve("abc");
+      await pending.promise;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(controller.presentation?.htmlContents.has(oldId)).toBeFalsy();
+      expect(controller.presentation?.scopeId).toBe(
+        action === "replace" ? "replacement" : undefined,
+      );
+    },
+  );
   it("reconstructs all ordered manifests after missed events without fetching bodies or duplicating snapshots", () => {
     const { controller, port } = setup();
     controller.synchronize(lens());
