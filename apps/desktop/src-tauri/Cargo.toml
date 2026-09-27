@@ -32,6 +32,7 @@ flate2 = "=1.1.9"
 libc = "=0.2.189"
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+semver = "=1.0.28"
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true

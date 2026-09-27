@@ -716,7 +716,10 @@ async fn resolve_at<R: tauri::Runtime>(
         let release = fetch_registry_release(kind).await?;
         let version = release.version().to_owned();
         if let Some(runtime) = &existing {
-            if version_order(&runtime.adapter_version, &version) != std::cmp::Ordering::Less {
+            let installed = parse_version(&runtime.adapter_version)
+                .ok_or("invalid installed Adapter version")?;
+            let available = parse_version(&version).ok_or("invalid registry version")?;
+            if !installed.cmp_precedence(&available).is_lt() {
                 return Ok((runtime.clone(), ResolutionStatus::Existing));
             }
         }
@@ -1293,79 +1296,15 @@ fn node_install_root(root: &Path) -> PathBuf {
 fn pnpm_install_root(root: &Path) -> PathBuf {
     root.join("pnpm").join(format!("v{PNPM_VERSION}"))
 }
-fn valid_version(version: &str) -> bool {
-    if version.is_empty() || version.len() > 128 {
-        return false;
-    }
-    let (release, build) = version
-        .split_once('+')
-        .map_or((version, None), |(a, b)| (a, Some(b)));
-    let (core, pre) = release
-        .split_once('-')
-        .map_or((release, None), |(a, b)| (a, Some(b)));
-    let numeric = |part: &str| {
-        !part.is_empty()
-            && part.bytes().all(|b| b.is_ascii_digit())
-            && (part.len() == 1 || !part.starts_with('0'))
-    };
-    let core: Vec<_> = core.split('.').collect();
-    if core.len() != 3 || !core.into_iter().all(numeric) {
-        return false;
-    }
-    let identifiers = |value: &str, prerelease: bool| {
-        value.split('.').all(|part| {
-            !part.is_empty()
-                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                && (!prerelease || !part.bytes().all(|b| b.is_ascii_digit()) || numeric(part))
-        })
-    };
-    pre.is_none_or(|value| identifiers(value, true))
-        && build.is_none_or(|value| identifiers(value, false))
+/// Managed provider versions have u64 core components and a 128-byte wire limit.
+/// Prerelease numeric identifiers remain unbounded within that total limit.
+fn parse_version(version: &str) -> Option<semver::Version> {
+    (version.len() <= 128)
+        .then(|| semver::Version::parse(version).ok())
+        .flatten()
 }
-fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let release = |s: &str| s.split('+').next().unwrap_or("").to_owned();
-    let a = release(a);
-    let b = release(b);
-    let split = |s: &str| {
-        let (core, pre) = s.split_once('-').map_or((s, None), |(a, b)| (a, Some(b)));
-        (
-            core.split('.').map(str::to_owned).collect::<Vec<_>>(),
-            pre.map(str::to_owned),
-        )
-    };
-    let (a, ap) = split(&a);
-    let (b, bp) = split(&b);
-    let number = |a: &str, b: &str| a.len().cmp(&b.len()).then_with(|| a.cmp(b));
-    for (a, b) in a.iter().zip(&b) {
-        let cmp = number(a, b);
-        if cmp != Ordering::Equal {
-            return cmp;
-        }
-    }
-    match (ap, bp) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(a), Some(b)) => {
-            let a: Vec<_> = a.split('.').collect();
-            let b: Vec<_> = b.split('.').collect();
-            for (a, b) in a.iter().zip(&b) {
-                let an = a.bytes().all(|c| c.is_ascii_digit());
-                let bn = b.bytes().all(|c| c.is_ascii_digit());
-                let cmp = match (an, bn) {
-                    (true, true) => number(a, b),
-                    (true, false) => Ordering::Less,
-                    (false, true) => Ordering::Greater,
-                    (false, false) => a.cmp(b),
-                };
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-            }
-            a.len().cmp(&b.len())
-        }
-    }
+fn valid_version(version: &str) -> bool {
+    parse_version(version).is_some()
 }
 enum RegistryRelease {
     Npm(String),
@@ -1678,18 +1617,16 @@ async fn migrate_legacy(root: &Path, kind: AgentKind) -> Result<(), String> {
     let mut entries = fs::read_dir(&dir)
         .map_err(|error| error.to_string())?
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_ok_and(|ty| ty.is_dir())
-                && valid_version(&entry.file_name().to_string_lossy())
+        .filter_map(|entry| {
+            if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
+                return None;
+            }
+            let version = parse_version(&entry.file_name().to_string_lossy())?;
+            Some((entry, version))
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|a, b| {
-        version_order(
-            &a.file_name().to_string_lossy(),
-            &b.file_name().to_string_lossy(),
-        )
-    });
-    for entry in entries.into_iter().rev() {
+    entries.sort_by(|(_, a), (_, b)| a.cmp_precedence(b));
+    for (entry, _) in entries.into_iter().rev() {
         let path = entry.path();
         let Ok(record) = read_record(&path, kind) else {
             continue;
@@ -2162,16 +2099,15 @@ impl<'a> CandidateRequest<'a> {
         }
     }
     fn selector(self) -> Result<Option<String>, String> {
-        if !valid_version(self.ceiling()) {
-            return Err("invalid registry version ceiling".into());
-        }
+        let ceiling_version =
+            parse_version(self.ceiling()).ok_or("invalid registry version ceiling")?;
         match self {
             #[cfg(test)]
             Self::Exact(_) => Ok(None),
             Self::Eligible { ceiling, after } => {
                 if let Some(after) = after {
-                    if !valid_version(after)
-                        || version_order(after, ceiling) != std::cmp::Ordering::Less
+                    if !parse_version(after)
+                        .is_some_and(|version| version.cmp_precedence(&ceiling_version).is_lt())
                     {
                         return Err("no newer registry candidate is available".into());
                     }
@@ -2184,17 +2120,21 @@ impl<'a> CandidateRequest<'a> {
         }
     }
     fn accepts(self, version: &str) -> bool {
-        valid_version(version)
-            && match self {
-                #[cfg(test)]
-                Self::Exact(expected) => version == expected,
-                Self::Eligible { ceiling, after } => {
-                    version_order(version, ceiling) != std::cmp::Ordering::Greater
-                        && after.is_none_or(|after| {
-                            version_order(version, after) == std::cmp::Ordering::Greater
-                        })
-                }
+        let Some(parsed) = parse_version(version) else {
+            return false;
+        };
+        match self {
+            #[cfg(test)]
+            Self::Exact(expected) => version == expected,
+            Self::Eligible { ceiling, after } => {
+                parse_version(ceiling)
+                    .is_some_and(|ceiling| !parsed.cmp_precedence(&ceiling).is_gt())
+                    && after.is_none_or(|after| {
+                        parse_version(after)
+                            .is_some_and(|after| parsed.cmp_precedence(&after).is_gt())
+                    })
             }
+        }
     }
 }
 
@@ -3843,6 +3783,19 @@ mod tests {
         };
         save(&record);
         assert!(read_record(&root, kind).is_ok());
+        record.adapter_version = "18446744073709551616.0.0".into();
+        fs::write(
+            root.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "dependencies": { record.adapter_name.clone(): record.adapter_version.clone() }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        save(&record);
+        assert!(read_record(&root, kind).is_err());
+        record.adapter_version = "1.2.3".into();
+        fs::write(root.join("package.json"), manifest(kind, "1.2.3").unwrap()).unwrap();
         record.schema_version = 4;
         save(&record);
         assert!(read_record(&root, kind).is_err());
@@ -3940,6 +3893,103 @@ mod tests {
     }
 
     #[test]
+    fn managed_version_numeric_domain_and_precedence_are_explicit() {
+        for version in [
+            "18446744073709551615.0.0",
+            "0.18446744073709551615.0",
+            "0.0.18446744073709551615",
+            "1.0.0-18446744073709551616",
+        ] {
+            assert!(valid_version(version), "{version}");
+        }
+        for version in [
+            "18446744073709551616.0.0",
+            "0.18446744073709551616.0",
+            "0.0.18446744073709551616",
+            "1.01.0",
+            "1.0.01",
+            "1.0.0-alpha..1",
+            "1.0.0-00",
+            "",
+        ] {
+            assert!(!valid_version(version), "{version}");
+        }
+        assert!(valid_version(&format!("1.0.0+{}", "a".repeat(122))));
+        assert!(!valid_version(&format!("1.0.0+{}", "a".repeat(123))));
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+        ];
+        for pair in ordered.windows(2) {
+            assert!(parse_version(pair[0])
+                .unwrap()
+                .cmp_precedence(&parse_version(pair[1]).unwrap())
+                .is_lt());
+        }
+        assert!(parse_version("1.0.0-18446744073709551616")
+            .unwrap()
+            .cmp_precedence(&parse_version("1.0.0-18446744073709551617").unwrap())
+            .is_lt());
+        let request = CandidateRequest::Eligible {
+            ceiling: "1.0.0+aaa",
+            after: None,
+        };
+        assert!(request.accepts("1.0.0+zzz"));
+        assert!(!CandidateRequest::Eligible {
+            ceiling: "2.0.0",
+            after: Some("1.0.0+aaa")
+        }
+        .accepts("1.0.0+zzz"));
+    }
+
+    #[test]
+    fn oversized_core_versions_are_rejected_at_managed_boundaries() {
+        let version = "18446744073709551616.0.0";
+        let kind = AgentKind::Codex;
+        let registry = serde_json::json!({"version":"1.0.0","agents":[{
+            "id":"codex-acp", "version":version,
+            "distribution":{"npx":{"package":format!("@agentclientprotocol/codex-acp@{version}")}}
+        }]});
+        assert!(validate_registry_entry(&serde_json::to_vec(&registry).unwrap(), kind).is_err());
+        assert!(manifest(kind, version).is_err());
+        let request = CandidateRequest::Eligible {
+            ceiling: version,
+            after: None,
+        };
+        assert!(request.selector().is_err());
+        assert!(!request.accepts("1.0.0"));
+        let request = CandidateRequest::Eligible {
+            ceiling: "2.0.0",
+            after: Some(version),
+        };
+        assert!(request.selector().is_err());
+        assert!(!request.accepts("1.0.0"));
+        assert!(!CandidateRequest::Eligible {
+            ceiling: "2.0.0",
+            after: None
+        }
+        .accepts(version));
+        let root = root();
+        write_selector(
+            &root,
+            kind,
+            &Selector {
+                current: Some(format!("legacy:{version}")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(read_selector(&root, kind).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn versions_and_registry_configuration_are_explicit() {
         for invalid in [
             "01.2.3",
@@ -3954,8 +4004,14 @@ mod tests {
         for valid in ["1.2.3", "0.0.0", "1.2.3-rc.1+build.01"] {
             assert!(valid_version(valid), "{valid}");
         }
-        assert!(version_order("1.10.0", "1.9.0").is_gt());
-        assert!(version_order("1.10.0", "1.10.0-rc.1").is_gt());
+        assert!(parse_version("1.10.0")
+            .unwrap()
+            .cmp_precedence(&parse_version("1.9.0").unwrap())
+            .is_gt());
+        assert!(parse_version("1.10.0")
+            .unwrap()
+            .cmp_precedence(&parse_version("1.10.0-rc.1").unwrap())
+            .is_gt());
         for extra in [
             serde_json::json!({"args":["--unsafe"]}),
             serde_json::json!({"env":{"NODE_OPTIONS":"--import=evil"}}),
