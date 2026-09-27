@@ -22,17 +22,17 @@ int main(void) {
     @autoreleasepool {
         NSArray<NSString *> *emoji = @[@"", @"", @"", @"", @"😀", @"😀a"];
         NSArray<NSString *> *ascii = @[@"", @"a", @"ab", @"abc", @"abc", @"abc"];
-        NSArray<NSString *> *japanese = @[@"", @"", @"", @"日", @"日", @"日"];
-        NSArray<NSString *> *mixed = @[@"", @"a", @"a", @"a", @"a日", @"a日"];
+        NSArray<NSString *> *japanese = @[@"", @"", @"", @"\u65e5", @"\u65e5", @"\u65e5"];
+        NSArray<NSString *> *mixed = @[@"", @"a", @"a", @"a", @"a\u65e5", @"a\u65e5"];
         for (NSUInteger budget = 0; budget <= 5; budget++) {
             CheckPrefix(@"😀a", budget, emoji[budget]);
             CheckPrefix(@"abc", budget, ascii[budget]);
-            CheckPrefix(@"日本", budget, japanese[budget]);
-            CheckPrefix(@"a日😀b", budget, mixed[budget]);
+            CheckPrefix(@"\u65e5\u672c", budget, japanese[budget]);
+            CheckPrefix(@"a\u65e5😀b", budget, mixed[budget]);
         }
-        CheckPrefix(@"日本", 6, @"日本");
-        CheckPrefix(@"a日😀b", 8, @"a日😀");
-        CheckPrefix(@"a日😀b", 9, @"a日😀b");
+        CheckPrefix(@"\u65e5\u672c", 6, @"\u65e5\u672c");
+        CheckPrefix(@"a\u65e5😀b", 8, @"a\u65e5😀");
+        CheckPrefix(@"a\u65e5😀b", 9, @"a\u65e5😀b");
         // Encodable prefixes may split a combining sequence; no grapheme promise.
         CheckPrefix(@"e\u0301x", 1, @"e");
         NSMutableArray<NSString *> *fragments = [NSMutableArray array];
