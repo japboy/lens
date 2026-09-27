@@ -12,6 +12,10 @@
     "icon": "openai"
   },
   {
+    "name": "ChatGPT",
+    "icon": "openai"
+  },
+  {
     "name": "OpenAI local",
     "icon": "openai"
   },
@@ -97,6 +101,6 @@
   },
   {
     "name": "Google",
-    "icon": "robot"
+    "icon": "google"
   }
 ]
