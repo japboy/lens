@@ -5,7 +5,8 @@
     "copilot": "brands/copilot.svg",
     "google": "brands/google.svg",
     "openai": "brands/openai.svg",
-    "robot": "solid/robot.svg"
+    "robot": "solid/robot.svg",
+    "x-twitter": "brands/x-twitter.svg"
   },
   "rules": [
     {
@@ -23,6 +24,10 @@
     {
       "containsAny": ["antigravity", "google"],
       "icon": "google"
+    },
+    {
+      "containsAny": ["grok"],
+      "icon": "x-twitter"
     }
   ],
   "fallback": "robot"

@@ -3,7 +3,7 @@
 use crate::{
     lens::{
         LensContentNode, LensDocumentProjection, LensInput, LensMediaCoverage,
-        LensMediaOmissionReason, LensMediaPayload, LensMediaScope, LensTargetSet,
+        LensMediaOmissionReason, LensMediaPayload, LensMediaScope, LensNodeKind, LensTargetSet,
         ProjectionOmission,
     },
     model::{Bounds, ExtractionQuality},
@@ -67,24 +67,28 @@ impl CanonicalProjection {
 /// Deterministic Agent-bound semantic projection and its exact prompt media.
 ///
 /// Transport identities, source revisions, screen origin, and operation-scoped media URIs are
-/// deliberately absent from the canonical payload. The canonical bytes are also the JSON sent to
-/// the Agent, so the digest and the Agent-visible structured observation cannot diverge.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// deliberately absent from the canonical payload. Desktop may add insignificant JSON whitespace
+/// for line-oriented Agent readers; it validates that canonicalizing transport JSON reproduces
+/// these exact bytes, so the digest still identifies the Agent-visible structured observation.
+#[derive(Debug, Clone, PartialEq)]
 pub struct LensAgentProjection {
     canonical: CanonicalProjection,
     prompt_media: Vec<LensMediaPayload>,
+    payload: LensAgentProjectionPayload,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct LensAgentProjectionPayload {
     schema_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery: Option<LensDeliveryCoverage>,
     sources: Vec<LensAgentProjectionSource>,
     media: Vec<LensAgentProjectionMedia>,
     media_omissions: Vec<LensAgentProjectionMediaOmission>,
     quality: ExtractionQuality,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct LensAgentProjectionSource {
     id: String,
     provenance: LensAgentProjectionSourceProvenance,
@@ -93,14 +97,14 @@ struct LensAgentProjectionSource {
     omissions: Vec<ProjectionOmission>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct LensAgentProjectionSourceProvenance {
     application: String,
     window_title: String,
     bundle_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct LensAgentProjectionMedia {
     id: String,
     source_id: String,
@@ -119,7 +123,7 @@ struct LensAgentProjectionMedia {
     sha256: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct LensAgentProjectionMediaOmission {
     source_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -370,18 +374,107 @@ impl LensAgentProjection {
             })
             .collect::<Result<Vec<_>, LensAgentProjectionError>>()?;
 
-        let canonical = CanonicalProjection::from_serializable(&LensAgentProjectionPayload {
+        let payload = LensAgentProjectionPayload {
             schema_version: 1,
+            delivery: None,
             sources,
             media: normalized_media,
             media_omissions,
             quality: input.quality,
-        })
-        .map_err(LensAgentProjectionError::Canonicalization)?;
+        };
+        let canonical = CanonicalProjection::from_serializable(&payload)
+            .map_err(LensAgentProjectionError::Canonicalization)?;
         Ok(Self {
             canonical,
             prompt_media,
+            payload,
         })
+    }
+
+    /// Derive exact delivery bytes from captured content without altering capture facts.
+    pub fn for_image_support(&self, image: bool) -> Result<Self, LensAgentProjectionError> {
+        if image || self.prompt_media.is_empty() {
+            return Ok(self.clone());
+        }
+        let mut payload = self.payload.clone();
+        let sources = payload
+            .sources
+            .iter_mut()
+            .map(|source| {
+                let meaningful_text = source
+                    .document
+                    .as_ref()
+                    .is_some_and(|document| document.nodes.iter().any(meaningful_content_text));
+                let omitted_media = payload
+                    .media
+                    .iter()
+                    .filter(|media| media.source_id == source.id)
+                    .map(|media| LensDeliveryOmission {
+                        id: media.id.clone(),
+                        reason: LensDeliveryOmissionReason::ImageNotSupported,
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(document) = source.document.as_mut() {
+                    for node in &mut document.nodes {
+                        node.media_refs.clear();
+                    }
+                }
+                let mode = if !meaningful_text {
+                    LensDeliveryMode::Unavailable
+                } else if omitted_media.is_empty() {
+                    LensDeliveryMode::Complete
+                } else {
+                    LensDeliveryMode::TextOnlyPartial
+                };
+                LensSourceDelivery {
+                    source_id: source.id.clone(),
+                    mode,
+                    omitted_media,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mode = if sources
+            .iter()
+            .all(|source| source.mode == LensDeliveryMode::Unavailable)
+        {
+            LensDeliveryMode::Unavailable
+        } else {
+            LensDeliveryMode::TextOnlyPartial
+        };
+        payload.media.clear();
+        payload.delivery = Some(LensDeliveryCoverage { mode, sources });
+        let canonical = CanonicalProjection::from_serializable(&payload)
+            .map_err(LensAgentProjectionError::Canonicalization)?;
+        Ok(Self {
+            canonical,
+            prompt_media: Vec::new(),
+            payload,
+        })
+    }
+
+    pub fn delivery(&self, source_projection: ProjectionRef) -> LensDelivery {
+        let coverage = self
+            .payload
+            .delivery
+            .clone()
+            .unwrap_or_else(|| LensDeliveryCoverage {
+                mode: LensDeliveryMode::Complete,
+                sources: self
+                    .payload
+                    .sources
+                    .iter()
+                    .map(|source| LensSourceDelivery {
+                        source_id: source.id.clone(),
+                        mode: LensDeliveryMode::Complete,
+                        omitted_media: Vec::new(),
+                    })
+                    .collect(),
+            });
+        LensDelivery {
+            projection: self.projection_ref(source_projection.revision),
+            source_projection,
+            coverage,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -405,6 +498,86 @@ impl LensAgentProjection {
     pub fn prompt_media(&self) -> &[LensMediaPayload] {
         &self.prompt_media
     }
+}
+
+/// Delivery policy is independent of capture quality and transport SDK types.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensDeliveryMode {
+    Complete,
+    TextOnlyPartial,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LensDeliveryOmissionReason {
+    ImageNotSupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensDeliveryOmission {
+    pub id: String,
+    pub reason: LensDeliveryOmissionReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensSourceDelivery {
+    pub source_id: String,
+    pub mode: LensDeliveryMode,
+    pub omitted_media: Vec<LensDeliveryOmission>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensDeliveryCoverage {
+    pub mode: LensDeliveryMode,
+    pub sources: Vec<LensSourceDelivery>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LensDelivery {
+    pub source_projection: ProjectionRef,
+    pub projection: ProjectionRef,
+    #[serde(flatten)]
+    pub coverage: LensDeliveryCoverage,
+}
+
+// Structural/chrome/control names do not establish usable source text. Image labels
+// already acquired as accessibility content can convey text, never pixel understanding.
+fn meaningful_content_text(node: &LensContentNode) -> bool {
+    if node.kind == LensNodeKind::Control {
+        return node
+            .role
+            .as_deref()
+            .is_some_and(crate::lens::is_text_entry_role)
+            && node
+                .value
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty());
+    }
+    let accepts_text = match node.kind {
+        LensNodeKind::Heading
+        | LensNodeKind::Paragraph
+        | LensNodeKind::ListItem
+        | LensNodeKind::Cell
+        | LensNodeKind::Link
+        | LensNodeKind::Text
+        | LensNodeKind::Image => true,
+        LensNodeKind::List
+        | LensNodeKind::Table
+        | LensNodeKind::Row
+        | LensNodeKind::Control
+        | LensNodeKind::Dialog
+        | LensNodeKind::Region
+        | LensNodeKind::Unknown => false,
+    };
+    accepts_text
+        && [&node.title, &node.value, &node.description]
+            .into_iter()
+            .any(|text| {
+                text.as_ref()
+                    .is_some_and(|text| text.chars().any(|c| !c.is_whitespace()))
+            })
 }
 
 fn normalize_projection_document(
@@ -911,6 +1084,153 @@ mod tests {
             LensAgentProjection::from_input(&input, &targets, &media),
             Err(LensAgentProjectionError::MediaMetadataMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn text_delivery_has_exact_canonical_coverage_and_ignores_omitted_pixels() {
+        let (input, targets, media) = agent_projection_fixture(
+            Uuid::from_u128(1),
+            1,
+            1,
+            7,
+            (0.0, 0.0),
+            "Revenue rose",
+            "aGVsbG8=",
+        );
+        let source = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
+        assert_eq!(source.for_image_support(true).unwrap(), source);
+        let text = source.for_image_support(false).unwrap();
+        assert!(text.prompt_media().is_empty());
+        let value: serde_json::Value = serde_json::from_str(text.json()).unwrap();
+        assert_eq!(value["media"], json!([]));
+        assert_eq!(value["delivery"]["mode"], "text_only_partial");
+        assert_eq!(
+            value["delivery"]["sources"][0]["omitted_media"],
+            json!([{"id":"source-0/media-0", "reason":"image_not_supported"}])
+        );
+        assert!(value["sources"][0]["document"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node.get("media_refs").is_none()));
+        assert_eq!(
+            CanonicalProjection::from_serializable(&value)
+                .unwrap()
+                .digest(),
+            text.digest()
+        );
+        let mut changed = media.clone();
+        changed[0].data = "d29ybGQ=".into();
+        let changed = LensAgentProjection::from_input(&input, &targets, &changed).unwrap();
+        assert_ne!(source.digest(), changed.digest());
+        assert_eq!(
+            text.digest(),
+            changed.for_image_support(false).unwrap().digest()
+        );
+        assert_ne!(text.digest(), source.digest());
+        let delivery = text.delivery(source.projection_ref(NonZeroU64::new(1).unwrap()));
+        assert_eq!(&delivery.source_projection.digest, source.digest());
+        assert_eq!(&delivery.projection.digest, text.digest());
+    }
+
+    #[test]
+    fn image_only_and_chrome_are_unavailable_but_editor_values_are_text() {
+        let (mut input, targets, media) =
+            agent_projection_fixture(Uuid::from_u128(1), 1, 1, 7, (0.0, 0.0), "", "aGVsbG8=");
+        let node = &mut input.sources[0].document.as_mut().unwrap().nodes[1];
+        node.value = None;
+        node.description = None;
+        for (kind, role, value, expected) in [
+            (
+                LensNodeKind::Image,
+                "AXImage",
+                "",
+                LensDeliveryMode::Unavailable,
+            ),
+            (
+                LensNodeKind::Region,
+                "AXWindow",
+                "Window title",
+                LensDeliveryMode::Unavailable,
+            ),
+            (
+                LensNodeKind::Control,
+                "AXButton",
+                "1",
+                LensDeliveryMode::Unavailable,
+            ),
+            (
+                LensNodeKind::Control,
+                "AXTextArea",
+                " \n\t",
+                LensDeliveryMode::Unavailable,
+            ),
+            (
+                LensNodeKind::Control,
+                "AXTextArea",
+                "Accessible editor content",
+                LensDeliveryMode::TextOnlyPartial,
+            ),
+            (
+                LensNodeKind::Text,
+                "AXStaticText",
+                "Source content",
+                LensDeliveryMode::TextOnlyPartial,
+            ),
+        ] {
+            let node = &mut input.sources[0].document.as_mut().unwrap().nodes[1];
+            node.kind = kind;
+            node.role = Some(role.into());
+            node.value = Some(value.into());
+            let source = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
+            let text = source.for_image_support(false).unwrap();
+            assert_eq!(
+                text.delivery(source.projection_ref(NonZeroU64::new(1).unwrap()))
+                    .coverage
+                    .mode,
+                expected,
+                "{role} {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_delivery_retains_every_source_and_explicit_unavailable_coverage() {
+        let context = Uuid::from_u128(1);
+        let (mut input, targets, mut media) =
+            agent_projection_fixture(context, 1, 1, 7, (0.0, 0.0), "Source text", "aGVsbG8=");
+        let (mut other, other_targets, other_media) =
+            agent_projection_fixture(context, 1, 1, 8, (0.0, 0.0), "", "aGVsbG8=");
+        other.sources[0].document = None;
+        other.media[0].source_node_id = None;
+        input.sources.extend(other.sources);
+        input.media.extend(other.media);
+        media.extend(other_media);
+        let targets = LensTargetSet::try_new(
+            context,
+            vec![
+                targets.targets[0].selected_window(),
+                other_targets.targets[0].selected_window(),
+            ],
+        )
+        .unwrap();
+        let source = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
+        let text = source.for_image_support(false).unwrap();
+        let delivery = text.delivery(source.projection_ref(NonZeroU64::new(1).unwrap()));
+        assert_eq!(delivery.coverage.mode, LensDeliveryMode::TextOnlyPartial);
+        assert_eq!(delivery.coverage.sources.len(), 2);
+        assert_eq!(delivery.coverage.sources[1].source_id, "source-1");
+        assert_eq!(
+            delivery.coverage.sources[1].mode,
+            LensDeliveryMode::Unavailable
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text.json()).unwrap()["sources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

@@ -496,8 +496,8 @@ it("blocks saving a legacy multiline argument instead of silently stripping it",
   expect(button(element, "Save and Verify").disabled).toBe(true);
 });
 
-it("renders both first-run external presets with managed agents in the single selector", async () => {
-  // Matches ExternalAgentProfile::{goose_preset,copilot_preset} used by AppConfig::new.
+it("renders all first-run external presets with managed agents in the single selector", async () => {
+  // Matches ExternalAgentProfile::bundled_presets used by AppConfig::new.
   const presets = [
     {
       id: "a14d73cb-951c-48ed-a305-3829750c88da",
@@ -506,6 +506,12 @@ it("renders both first-run external presets with managed agents in the single se
       args: ["--acp", "--stdio"],
     },
     { id: "6b57315e-9c13-4e4a-bf4c-e6bc33b10b21", name: "Goose", command: "goose", args: ["acp"] },
+    {
+      id: "09ebcfe5-a77e-4e6e-832f-f5e87f0a1310",
+      name: "Grok Build",
+      command: "grok",
+      args: ["agent", "stdio"],
+    },
   ];
   const element = new LensAgentSettings();
   element.selection = { stage: "unselected", supports_logout: false, auth_methods: [] };
@@ -525,6 +531,7 @@ it("renders both first-run external presets with managed agents in the single se
     "GitHub Copilot",
     "Google Antigravity",
     "Goose",
+    "Grok Build",
   ]);
   expect(intents).toEqual([]);
   await choose(element, presets[0]!.id);

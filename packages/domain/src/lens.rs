@@ -410,9 +410,10 @@ impl LensDocument {
                     id: node.id.clone(),
                     parent_id: node.parent_id.clone().filter(|id| included.contains(id)),
                     kind: node.kind,
-                    role: matches!(node.kind, LensNodeKind::Unknown | LensNodeKind::Image)
-                        .then(|| node.role.clone())
-                        .flatten(),
+                    role: (matches!(node.kind, LensNodeKind::Unknown | LensNodeKind::Image)
+                        || node.role.as_deref().is_some_and(is_text_entry_role))
+                    .then(|| node.role.clone())
+                    .flatten(),
                     subrole: node.subrole.clone(),
                     title: (!is_application_root)
                         .then(|| project_text(node.title.as_deref(), &mut truncated_fields))
@@ -518,6 +519,12 @@ fn normalize_kind(role: Option<&str>) -> LensNodeKind {
         "aximage" => LensNodeKind::Image,
         _ => LensNodeKind::Unknown,
     }
+}
+
+pub(crate) fn is_text_entry_role(role: &str) -> bool {
+    ["AXTextField", "AXTextArea", "AXComboBox"]
+        .iter()
+        .any(|known| role.eq_ignore_ascii_case(known))
 }
 
 fn project_text(value: Option<&str>, truncated: &mut bool) -> Option<String> {
@@ -1589,6 +1596,26 @@ mod tests {
                 child_id: "node-000001".into(),
             })
         );
+    }
+
+    #[test]
+    fn compact_projection_retains_only_text_entry_control_roles() {
+        for role in ["AXTextArea", "AXTextField", "AXComboBox", "AXButton"] {
+            let mut extraction = accessibility(ExtractionQuality::Full);
+            extraction.nodes[1].role = Some(role.into());
+            let document = LensDocument::from_accessibility(&lens_target(), &extraction)
+                .unwrap()
+                .unwrap();
+            let (projection, _) = document.project(&BTreeSet::new(), usize::MAX);
+            let node = projection
+                .nodes
+                .iter()
+                .find(|node| node.id == "node-000001")
+                .unwrap();
+            assert_eq!(node.kind, LensNodeKind::Control);
+            assert_eq!(node.value.as_deref(), Some("Repeated"));
+            assert_eq!(node.role.as_deref(), (role != "AXButton").then_some(role));
+        }
     }
 
     #[test]

@@ -39,7 +39,11 @@ pub struct ExternalAgentProfile {
 
 impl ExternalAgentProfile {
     pub fn bundled_presets() -> Vec<Self> {
-        vec![Self::copilot_preset(), Self::goose_preset()]
+        vec![
+            Self::copilot_preset(),
+            Self::goose_preset(),
+            Self::grok_preset(),
+        ]
     }
 
     pub fn copilot_preset() -> Self {
@@ -56,6 +60,14 @@ impl ExternalAgentProfile {
             name: "Goose".into(),
             command: "goose".into(),
             args: vec!["acp".into()],
+        }
+    }
+    pub fn grok_preset() -> Self {
+        Self {
+            id: Uuid::from_u128(0x09ebcfe5a77e4e6e832ff5e87f0a1310),
+            name: "Grok Build".into(),
+            command: "grok".into(),
+            args: vec!["agent".into(), "stdio".into()],
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -569,8 +581,33 @@ pub struct LensRepresentation {
     pub context_id: Uuid,
     pub context_revision: u64,
     pub projection: ProjectionRef,
+    #[serde(default)]
+    pub delivery: Option<domain::projection::LensDelivery>,
     pub run_id: Uuid,
     pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
+}
+
+impl LensRepresentation {
+    /// Current means current for the declared delivered coverage, not omitted pixels.
+    pub fn is_current_for(
+        &self,
+        source: &ProjectionRef,
+        delivery: Option<&domain::projection::LensDelivery>,
+        prompt_revision: u32,
+    ) -> bool {
+        self.prompt_execution_revision == prompt_revision
+            && (&self.projection == source
+                || self
+                    .delivery
+                    .as_ref()
+                    .zip(delivery)
+                    .is_some_and(|(previous, latest)| {
+                        &latest.source_projection == source
+                            && previous.projection.digest == latest.projection.digest
+                            && latest.coverage.mode
+                                != domain::projection::LensDeliveryMode::Unavailable
+                    }))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -631,6 +668,8 @@ pub struct LensState {
     #[serde(default)]
     pub projection: Option<ProjectionRef>,
     #[serde(default)]
+    pub delivery: Option<domain::projection::LensDelivery>,
+    #[serde(default)]
     pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
     #[serde(default)]
     pub representation: Option<LensRepresentation>,
@@ -662,6 +701,7 @@ impl Default for LensState {
             context: None,
             input: None,
             projection: None,
+            delivery: None,
             output_blocks: Vec::new().into(),
             representation: None,
             response_history: Default::default(),
@@ -1095,7 +1135,14 @@ mod tests {
         assert_eq!(copilot.name, "GitHub Copilot");
         assert_eq!(copilot.command, PathBuf::from("copilot"));
         assert_eq!(copilot.args, ["--acp", "--stdio"]);
-        for profile in [goose, copilot] {
+        let grok = ExternalAgentProfile::grok_preset();
+        assert_eq!(grok.id.to_string(), "09ebcfe5-a77e-4e6e-832f-f5e87f0a1310");
+        assert_ne!(grok.id, goose.id);
+        assert_ne!(grok.id, copilot.id);
+        assert_eq!(grok.name, "Grok Build");
+        assert_eq!(grok.command, PathBuf::from("grok"));
+        assert_eq!(grok.args, ["agent", "stdio"]);
+        for profile in [goose, copilot, grok] {
             profile.validate().unwrap();
         }
     }
@@ -1136,6 +1183,7 @@ mod tests {
             vec![
                 ExternalAgentProfile::copilot_preset(),
                 ExternalAgentProfile::goose_preset(),
+                ExternalAgentProfile::grok_preset(),
             ]
         );
     }
@@ -1148,6 +1196,7 @@ mod tests {
             vec![
                 ExternalAgentProfile::copilot_preset(),
                 ExternalAgentProfile::goose_preset(),
+                ExternalAgentProfile::grok_preset(),
             ]
         );
         for marker in [None, Some(0), Some(1), Some(99)] {

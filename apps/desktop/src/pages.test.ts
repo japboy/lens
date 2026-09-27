@@ -1825,6 +1825,7 @@ it.each(["cancel", "success", "failure"] as const)(
               args: ["--acp", "--stdio"],
             },
             { id: "preset-goose", name: "Goose", command: "goose", args: ["acp"] },
+            { id: "preset-grok", name: "Grok Build", command: "grok", args: ["agent", "stdio"] },
           ],
         };
         snapshot.revision++;
@@ -1874,7 +1875,14 @@ it.each(["cancel", "success", "failure"] as const)(
           ].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
-            ? ["ChatGPT Codex", "Claude Code", "GitHub Copilot", "Google Antigravity", "Goose"]
+            ? [
+                "ChatGPT Codex",
+                "Claude Code",
+                "GitHub Copilot",
+                "Google Antigravity",
+                "Goose",
+                "Grok Build",
+              ]
             : ["ChatGPT Codex", "Claude Code", "Google Antigravity", "New preset (unsaved)"],
         );
       });

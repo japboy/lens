@@ -54,6 +54,7 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
     state.runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation),
         representation: Some(LensRepresentation {
+            delivery: None,
             prompt_execution_revision: 1,
             representation_id: representation,
             context_id: Uuid::nil(),
@@ -127,6 +128,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
     let state = test_support::state();
     let operation = Uuid::from_u128(701);
     let old = LensRepresentation {
+        delivery: None,
         prompt_execution_revision: 1,
         representation_id: Uuid::from_u128(702),
         context_id: Uuid::nil(),
@@ -153,6 +155,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
         .into(),
     };
     let latest = LensRepresentation {
+        delivery: None,
         representation_id: Uuid::from_u128(704),
         run_id: Uuid::from_u128(705),
         output_blocks: vec![LensOutputBlock::Markdown {
@@ -531,6 +534,7 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
         let operation = Uuid::new_v4();
         {
             let mut snapshot = state.runtime.write().unwrap();
+            snapshot.lens.delivery = Some(test_support::delivery());
             snapshot.config.external_agents[0].command = "/custom/goose".into();
             snapshot.config.external_agents.push(ExternalAgentProfile {
                 id: custom_id,
@@ -585,6 +589,11 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
         let window = window(&app);
         let result = invoke(&window, "reset_external_agents", json!({})).unwrap();
         let after = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(
+            after.lens.delivery.is_none(),
+            external_selected || external_pending,
+            "reset only invalidates affected execution delivery"
+        );
         assert_eq!(
             after.config.external_agents,
             ExternalAgentProfile::bundled_presets()
@@ -898,6 +907,12 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
         )
         .build(crate::product_context())
         .unwrap();
+        app.state::<AppState>()
+            .runtime
+            .write()
+            .unwrap()
+            .lens
+            .delivery = Some(test_support::delivery());
         let id = Uuid::from_u128(702);
         let saved = crate::commands::save_external_agent_configuration(
             app.handle(),
@@ -909,6 +924,7 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
             },
         )
         .unwrap();
+        assert!(app.state::<AppState>().lens().unwrap().delivery.is_none());
         if reset {
             crate::commands::reset_external_agents(app.handle().clone()).unwrap();
         } else {

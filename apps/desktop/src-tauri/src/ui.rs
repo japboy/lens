@@ -1980,6 +1980,7 @@ mod tests {
                 "A second",
                 "ChatGPT Codex",
                 "Claude Code",
+                "GitHub Copilot",
                 "Google Antigravity",
                 "Z first"
             ]

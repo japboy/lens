@@ -1,4 +1,4 @@
-import type { AgentKind, LensResponseBlockDescriptor } from "../types";
+import type { AgentKind, LensDeliveryCoverage, LensResponseBlockDescriptor } from "../types";
 
 export interface DeferredDocumentBlock {
   type: "deferred";
@@ -37,6 +37,7 @@ export type HistoryResponseBlockDescriptor = LensResponseBlockDescriptor & {
 export interface HistoryResponseManifest {
   response_id: string;
   sequence: number;
+  delivery?: LensDeliveryCoverage;
   blocks: HistoryResponseBlockDescriptor[];
 }
 export interface HistoryInterpretation {

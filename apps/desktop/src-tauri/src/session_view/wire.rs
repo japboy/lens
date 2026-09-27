@@ -42,6 +42,8 @@ struct HistoryResponse {
     response_id: String,
     sequence: usize,
     blocks: Vec<HistoryBlock>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery: Option<usecase::live_sync::LensDeliveryCoverage>,
 }
 
 #[derive(Clone, Serialize)]
@@ -123,17 +125,18 @@ fn manifest_entry(entry: &DocumentEntry, revision: u64) -> serde_json::Value {
 fn history_interpretation(view: &SessionView, document: &SessionDocument) -> HistoryInterpretation {
     let mut responses = Vec::new();
     let mut current: Option<HistoryResponse> = None;
+    let mut delivery = None;
     for (entry_index, entry) in document.entries.iter().enumerate() {
-        if matches!(
-            entry,
-            DocumentEntry::Message {
-                role: MessageRole::User,
-                ..
-            }
-        ) {
+        if let DocumentEntry::Message {
+            role: MessageRole::User,
+            delivery: submitted,
+            ..
+        } = entry
+        {
             if let Some(response) = current.take() {
                 responses.push(response);
             }
+            delivery = submitted.clone();
             continue;
         }
         let assistant = matches!(
@@ -167,6 +170,7 @@ fn history_interpretation(view: &SessionView, document: &SessionDocument) -> His
                         response_id: format!("history:{}:{sequence}", view.generation),
                         sequence,
                         blocks: Vec::new(),
+                        delivery: delivery.clone(),
                     }
                 });
                 let block_index = response.blocks.len();
@@ -379,6 +383,7 @@ mod tests {
             DocumentEntry::Message {
                 id: "message:0".into(),
                 role: MessageRole::Assistant,
+                delivery: None,
                 blocks: vec![DocumentBlock::Markdown {
                     text: "\u{65e5}\u{672c}\u{8a9e}🙂tail".into(),
                 }],
@@ -428,6 +433,7 @@ mod tests {
         DocumentEntry::Message {
             id: id.into(),
             role,
+            delivery: None,
             blocks: vec![DocumentBlock::Markdown { text: text.into() }],
         }
     }
@@ -454,6 +460,43 @@ mod tests {
 
     fn interpretation(view: &SessionView) -> serde_json::Value {
         serde_json::to_value(view.wire(None)).unwrap()["interpretation"].clone()
+    }
+
+    #[test]
+    fn history_keeps_submitted_coverage_per_response_and_resets_unknown_turns() {
+        let mut user = message("u0", MessageRole::User, "partial input");
+        if let DocumentEntry::Message { delivery, .. } = &mut user {
+            *delivery = Some(
+                serde_json::from_value(serde_json::json!({
+                    "mode":"text_only_partial","sources":[{"source_id":"source-0",
+                    "mode":"text_only_partial","omitted_media":[{"id":"source-0/media-0",
+                    "reason":"image_not_supported"}]}]
+                }))
+                .unwrap(),
+            );
+        }
+        let view = history_view(vec![
+            user,
+            message("a0", MessageRole::Assistant, "partial answer"),
+            publication(
+                "p0",
+                ToolCallStatus::Completed,
+                Some("<p>partial artifact</p>"),
+            ),
+            message("u1", MessageRole::User, "legacy input"),
+            message("a1", MessageRole::Assistant, "legacy answer"),
+        ]);
+        let result = interpretation(&view);
+        assert_eq!(
+            result["responses"][0]["delivery"]["mode"],
+            "text_only_partial"
+        );
+        assert_eq!(
+            result["responses"][0]["blocks"].as_array().unwrap().len(),
+            2
+        );
+        assert!(result["responses"][1].get("delivery").is_none());
+        assert!(result["responses"][0].get("projection").is_none());
     }
 
     #[test]
@@ -583,6 +626,7 @@ mod tests {
                 DocumentEntry::Message {
                     id: "assistant-media".into(),
                     role: MessageRole::Assistant,
+                    delivery: None,
                     blocks: vec![DocumentBlock::Html {
                         text: "assistant HTML".into(),
                     }],

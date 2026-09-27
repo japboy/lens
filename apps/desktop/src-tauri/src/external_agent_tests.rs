@@ -41,7 +41,7 @@ fn app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
 #[tokio::test]
 #[ignore = "Explicit opt-in: sends one synthetic prompt through the installed Goose provider and production HTML publisher"]
 async fn installed_goose_persistent_actor_publishes_synthetic_html() {
-    installed_external_persistent_actor_publishes_synthetic_html(false).await;
+    installed_external_persistent_actor_publishes_synthetic_html(SyntheticAgent::Goose).await;
 }
 
 #[tokio::test]
@@ -50,17 +50,36 @@ async fn installed_goose_persistent_actor_publishes_synthetic_html() {
 // test-runner environment overrides. For isolated CLI state, pass a disposable
 // executable wrapper that sets COPILOT_HOME and execs the installed Copilot.
 async fn installed_copilot_persistent_actor_publishes_synthetic_html() {
-    installed_external_persistent_actor_publishes_synthetic_html(true).await;
+    installed_external_persistent_actor_publishes_synthetic_html(SyntheticAgent::Copilot).await;
 }
 
-async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: bool) {
+#[tokio::test]
+#[ignore = "Explicit opt-in: sends synthetic text and unsupported-image fallback through installed Grok and production HTML publisher"]
+async fn installed_grok_persistent_actor_publishes_text_fallback_html() {
+    installed_external_persistent_actor_publishes_synthetic_html(SyntheticAgent::Grok).await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SyntheticAgent {
+    Goose,
+    Copilot,
+    Grok,
+}
+
+async fn installed_external_persistent_actor_publishes_synthetic_html(agent: SyntheticAgent) {
     use crate::model::LensOutputBlock;
     use usecase::agent_preferences::{SavedChoice, ToolPolicies, ToolPolicy};
 
-    let executable = std::env::var_os(if copilot {
-        "LENS_COPILOT_EXECUTABLE"
-    } else {
-        "LENS_GOOSE_EXECUTABLE"
+    let helper = crate::agent_environment::test_helper_executable()
+        .expect("set LENS_TEST_AGENT_HELPER_EXECUTABLE to the built Lens binary for production self-exec helpers");
+    assert!(
+        helper.is_file(),
+        "the explicit Lens helper executable must exist"
+    );
+    let executable = std::env::var_os(match agent {
+        SyntheticAgent::Grok => "LENS_GROK_EXECUTABLE",
+        SyntheticAgent::Copilot => "LENS_COPILOT_EXECUTABLE",
+        SyntheticAgent::Goose => "LENS_GOOSE_EXECUTABLE",
     })
     .expect("set the explicitly requested installed Agent executable");
     struct TemporaryDirectory(PathBuf);
@@ -70,19 +89,31 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
         }
     }
     let directory = TemporaryDirectory(
-        std::env::temp_dir().join(format!("lens-goose-synthetic-turn-{}", Uuid::new_v4())),
+        std::env::temp_dir().join(format!("lens-external-synthetic-turn-{}", Uuid::new_v4())),
     );
     std::fs::create_dir_all(&directory.0).unwrap();
     let mut state = crate::test_support::state();
     state.store = crate::store::ConfigStore::at_path(directory.0.join("lens-settings.json"));
     let operation_id = Uuid::new_v4();
-    let input = tests::sample_input("Synthetic test fixture: Lens Goose publisher works.");
-    let (projection, projection_ref) = tests::sample_projection(&input, &[]);
+    let (input, media) = if agent == SyntheticAgent::Grok {
+        let (input, media) = tests::sample_input_with_media(
+            "Synthetic fixture: text fallback works. \u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30c6}\u{30ad}\u{30b9}\u{30c8}\u{3067}\u{3059}\u{3002}",
+        );
+        (input, vec![media])
+    } else {
+        (
+            tests::sample_input("Synthetic test fixture: Lens external publisher works."),
+            vec![],
+        )
+    };
+    let (projection, projection_ref) = tests::sample_projection(&input, &media);
     {
         let mut snapshot = state.runtime.write().unwrap();
         snapshot.config.agent = external();
         let mut connection = profile(executable.into());
-        if copilot {
+        if agent == SyntheticAgent::Grok {
+            connection.args = vec!["agent".into(), "stdio".into()];
+        } else if agent == SyntheticAgent::Copilot {
             connection.args = vec!["--acp".into(), "--stdio".into()];
         }
         snapshot.config.external_agents = vec![connection];
@@ -93,7 +124,7 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
             .external
             .entry(external_id())
             .or_default()
-            .choices = if copilot {
+            .choices = if agent != SyntheticAgent::Goose {
             vec![]
         } else {
             vec![SavedChoice {
@@ -115,7 +146,7 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
             ..ToolPolicies::default()
         };
         snapshot.config.agent_prompt_template = AgentPromptTemplate {
-            common: "This is a synthetic integration test. {turn_instruction} Use only the Lens HTML publication tool, exactly once, with the current turn_id supplied in the publication metadata. Publish a tiny complete static HTML document containing the exact text LENS_GOOSE_SYNTHETIC_OK. Do not use filesystem, shell, network retrieval, extension-management, or other tools. Do not inspect any files or settings. Do not include scripts or external resources. After successful publication, reply Done and end the turn.".into(),
+            common: "This is a synthetic integration test. {turn_instruction} Use only the Lens HTML publication tool, exactly once, with the current turn_id supplied in the publication metadata. Publish a tiny complete static HTML document containing the exact text LENS_EXTERNAL_SYNTHETIC_OK. Do not use filesystem, shell, network retrieval, extension-management, or other tools. Do not inspect any files or settings. Do not include scripts or external resources. After successful publication, reply Done and end the turn.".into(),
             full_projection: "The attached observation is synthetic test data.".into(),
             ..AgentPromptTemplate::default()
         };
@@ -157,13 +188,13 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
     let mut actor_finished = false;
     let result = tokio::select! {
         result = tokio::time::timeout(Duration::from_secs(120), completion) => {
-            result.map_err(|_| "synthetic Goose turn timed out".to_string())
+            result.map_err(|_| "synthetic external turn timed out".to_string())
                 .and_then(|result| result.map_err(|error| error.to_string()))
                 .and_then(|result| result)
         }
         _ = &mut actor => {
             actor_finished = true;
-            Err("Goose actor stopped before turn completion".into())
+            Err("external actor stopped before turn completion".into())
         }
     };
     // Shut down and reap the persistent connection before any assertion can panic.
@@ -171,10 +202,17 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
     if !actor_finished {
         tokio::time::timeout(Duration::from_secs(10), &mut actor)
             .await
-            .expect("Goose actor must stop after shutdown");
+            .expect("external actor must stop after shutdown");
     }
-    result.expect("synthetic Goose turn must complete");
     let lens = app.state::<AppState>().lens().unwrap();
+    if result.is_err() {
+        eprintln!(
+            "synthetic startup failure: stage={:?}, error_present={}",
+            lens.stage,
+            lens.error.is_some()
+        );
+    }
+    result.expect("synthetic external turn must complete");
     // Emit only fixed diagnostic labels and counts, never Agent text, arguments,
     // credentials, paths, transport headers, or URLs.
     let controls = lens.session_controls.as_ref();
@@ -199,7 +237,7 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
             "updates": lens.agent.as_ref().map(|agent| agent.received_updates),
             "html_blocks": blocks.iter().filter(|block| matches!(block, LensOutputBlock::Html { .. })).count(),
             "markdown_characters": markdown.chars().count(),
-            "response_mentions": (["done", "publish", "permission", "denied", "cancel", "error", "failed", "cannot", "unable", "lens_goose_synthetic_ok"].into_iter().filter(|word| markdown.contains(word)).collect::<Vec<_>>()),
+            "response_mentions": (["done", "publish", "permission", "denied", "cancel", "error", "failed", "cannot", "unable", "lens_external_synthetic_ok"].into_iter().filter(|word| markdown.contains(word)).collect::<Vec<_>>()),
             "approve_effective": controls.is_some_and(|state| state.effective_mode.as_deref() == Some("approve")),
             "permission_correlation_rejected": controls.and_then(|state| state.notice.as_deref()).is_some_and(|notice| notice.starts_with("Tool permission denied")),
             "control_notice_present": controls.is_some_and(|state| state.notice.is_some()),
@@ -209,6 +247,21 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
     assert_eq!(lens.stage, LensStage::Completed, "{:?}", lens.error);
     let representation = lens.representation.expect("committed representation");
     assert_eq!(representation.projection, projection_ref);
+    if agent == SyntheticAgent::Grok {
+        let delivery = representation
+            .delivery
+            .as_ref()
+            .expect("submitted delivery provenance");
+        assert_eq!(
+            delivery.coverage.mode,
+            crate::live_sync::LensDeliveryMode::TextOnlyPartial
+        );
+        assert_ne!(
+            delivery.projection.digest,
+            delivery.source_projection.digest
+        );
+        assert_eq!(delivery.coverage.sources[0].omitted_media.len(), 1);
+    }
     let html = representation
         .output_blocks
         .iter()
@@ -225,7 +278,7 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(copilot: b
         })
         .collect::<Vec<_>>();
     assert_eq!(html.len(), 1, "one production publisher artifact");
-    assert!(html[0].contains("LENS_GOOSE_SYNTHETIC_OK"));
+    assert!(html[0].contains("LENS_EXTERNAL_SYNTHETIC_OK"));
     let controls = lens.session_controls.expect("session controls snapshot");
     assert!(!controls.active, "actor shutdown closes its controls");
 }
@@ -395,6 +448,7 @@ fn deleting_unrelated_profile_preserves_selection_and_selected_delete_is_unverif
     let second_id = Uuid::from_u128(2);
     {
         let mut snapshot = state.runtime.write().unwrap();
+        snapshot.lens.delivery = Some(crate::test_support::delivery());
         let mut second = profile(executable.clone());
         second.id = second_id;
         snapshot.config.external_agents = vec![profile(executable.clone()), second];
@@ -407,6 +461,12 @@ fn deleting_unrelated_profile_preserves_selection_and_selected_delete_is_unverif
     }
     let application = app(state);
     crate::commands::delete_external_agent(application.handle().clone(), second_id).unwrap();
+    assert!(application
+        .state::<AppState>()
+        .lens()
+        .unwrap()
+        .delivery
+        .is_some());
     assert_eq!(
         application
             .state::<AppState>()
@@ -422,6 +482,12 @@ fn deleting_unrelated_profile_preserves_selection_and_selected_delete_is_unverif
     assert_eq!(result.agent, AgentKind::Claude);
     assert!(application
         .state::<AppState>()
+        .lens()
+        .unwrap()
+        .delivery
+        .is_none());
+    assert!(application
+        .state::<AppState>()
         .snapshot()
         .unwrap()
         .agent_selection
@@ -429,4 +495,43 @@ fn deleting_unrelated_profile_preserves_selection_and_selected_delete_is_unverif
         .is_none());
     assert!(executable.exists());
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn completing_agent_selection_clears_previous_agent_delivery_only_on_change() {
+    for same_agent in [false, true] {
+        let state = crate::test_support::state();
+        let operation = Uuid::new_v4();
+        {
+            let mut snapshot = state.runtime.write().unwrap();
+            snapshot.config.agent = if same_agent {
+                external()
+            } else {
+                AgentKind::Codex
+            };
+            snapshot.config.external_agents = vec![profile("/usr/bin/true".into())];
+            snapshot.agent_selection = AgentSelectionState {
+                operation_id: Some(operation),
+                candidate: Some(external()),
+                stage: AgentSelectionStage::Checking,
+                ..Default::default()
+            };
+            snapshot.lens.delivery = Some(crate::test_support::delivery());
+        }
+        let expected = state.config().unwrap();
+        let application = app(state);
+        assert!(
+            complete_agent_selection(application.handle(), operation, external(), &expected)
+                .unwrap()
+        );
+        assert_eq!(
+            application
+                .state::<AppState>()
+                .lens()
+                .unwrap()
+                .delivery
+                .is_some(),
+            same_agent
+        );
+    }
 }

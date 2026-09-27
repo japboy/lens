@@ -107,6 +107,7 @@ function nativeHistory(presentation: ResponseHistoryPresentation): LensResponseH
     run_id: `run-${response.sequence}`,
     prompt_execution_revision: 1,
     sequence: response.sequence,
+    delivery: response.delivery,
     blocks: [...response.blocks],
     block_count: response.blocks.length,
     retained_bytes: response.blocks.reduce(
@@ -744,4 +745,127 @@ describe("Overlay committed response presentation", () => {
     resize(element.querySelector(".lens-output-narrative")!, 350);
     await vi.waitFor(() => expect(top).toBe(150));
   });
+});
+
+it("retains each submitted response's text-only coverage across later complete responses and removes it in a new scope", async () => {
+  const element = await mount(2);
+  const first = element.history!.responses[0]!;
+  element.history = {
+    ...element.history!,
+    responses: [
+      {
+        ...first,
+        delivery: {
+          mode: "text_only_partial",
+          sources: [
+            {
+              source_id: "source-0",
+              mode: "text_only_partial",
+              omitted_media: [{ id: "image-0", reason: "image_not_supported" }],
+            },
+            {
+              source_id: "source-1",
+              mode: "unavailable",
+              omitted_media: [{ id: "image-1", reason: "image_not_supported" }],
+            },
+          ],
+        },
+      },
+      element.history!.responses[1]!,
+    ],
+  };
+  await element.updateComplete;
+  const coverage = element.querySelector('[aria-label="Response 1 input coverage"]')!;
+  expect(coverage.textContent).toContain("This response used text only");
+  expect(coverage.textContent?.replace(/\s+/g, " ")).toContain(
+    "Source 1: text only; images omitted",
+  );
+  expect(coverage.textContent?.replace(/\s+/g, " ")).toContain("Source 2: not interpreted");
+  expect(element.querySelector('[aria-label="Response 2 input coverage"]')).toBeNull();
+  element.history = history(1, "next-operation");
+  await element.updateComplete;
+  expect(element.querySelector(".lens-delivery-notice")).toBeNull();
+});
+
+it("shows a persistent unavailable-input explanation independently of notifications", async () => {
+  const view = await mountOverlay(0);
+  view.model = {
+    ...view.model!,
+    lens: {
+      ...view.model!.lens,
+      stage: "failed",
+      projection: { revision: 1, digest: "captured" },
+      delivery: {
+        mode: "unavailable",
+        projection: { revision: 1, digest: "delivered" },
+        source_projection: { revision: 1, digest: "captured" },
+        sources: [
+          {
+            source_id: "source-0",
+            mode: "unavailable",
+            omitted_media: [{ id: "image-0", reason: "image_not_supported" }],
+          },
+        ],
+      },
+    },
+  };
+  await view.updateComplete;
+  const notice = view.shadowRoot!.querySelector(".lens-delivery-notice")!;
+  expect(notice.textContent).toContain("Input unavailable to this agent");
+  expect(notice.textContent).toContain("Choose an image-capable agent");
+  expect(notice.closest(".lens-progress-region")).toBeNull();
+  expect(notice.querySelector("button")).toBeNull();
+  view.sessionView = { revision: 1, phase: "ready", generation: "other-session" };
+  await view.updateComplete;
+  expect(view.shadowRoot!.querySelector(".lens-delivery-notice")).toBeNull();
+  view.sessionView = undefined;
+  view.model = {
+    ...view.model!,
+    lens: { ...view.model!.lens, projection: { revision: 2, digest: "new-capture" } },
+  };
+  await view.updateComplete;
+  expect(view.shadowRoot!.querySelector(".lens-delivery-notice")).toBeNull();
+  view.model = { ...view.model!, lens: { ...view.model!.lens, delivery: undefined } };
+  await view.updateComplete;
+  expect(view.shadowRoot!.querySelector(".lens-delivery-notice")).toBeNull();
+});
+
+it("keeps committed response coverage in history independently of a newer partial input", async () => {
+  const view = await mountOverlay(1);
+  const priorHistory: ResponseHistoryPresentation = {
+    ...history(1),
+    responses: [
+      {
+        ...manifest(1),
+        delivery: {
+          mode: "text_only_partial",
+          sources: [{ source_id: "source-1", mode: "unavailable", omitted_media: [] }],
+        },
+      },
+    ],
+  };
+  appendHistory(view, priorHistory);
+  const delivery = {
+    mode: "text_only_partial" as const,
+    source_projection: { revision: 2, digest: "new-capture" },
+    projection: { revision: 2, digest: "new-text" },
+    sources: [{ source_id: "source-0", mode: "text_only_partial" as const, omitted_media: [] }],
+  };
+  view.model = {
+    ...view.model!,
+    lens: { ...view.model!.lens, projection: delivery.source_projection, delivery },
+  };
+  await view.updateComplete;
+  await view.shadowRoot!.querySelector<LensAgentOutput>("lens-agent-output")!.updateComplete;
+  const notices = [...view.shadowRoot!.querySelectorAll(".lens-delivery-notice")];
+  expect(notices).toHaveLength(2);
+  expect(notices[0]?.textContent).toContain("Only accessible text will be used");
+  expect(notices[1]?.textContent).toContain("This response used text only");
+  expect(notices[1]?.textContent?.replace(/\s+/g, " ")).toContain("Source 2: not interpreted");
+  expect(notices[1]?.closest('[aria-label="Response 1 input coverage"]')).not.toBeNull();
+  appendHistory(view, history(0));
+  await view.updateComplete;
+  await view.shadowRoot!.querySelector<LensAgentOutput>("lens-agent-output")!.updateComplete;
+  expect(view.shadowRoot!.querySelectorAll(".lens-delivery-notice")).toHaveLength(1);
+  expect(view.shadowRoot!.textContent).not.toContain("This response used text only");
 });

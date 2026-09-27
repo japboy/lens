@@ -210,9 +210,11 @@ pub fn reconcile_lens_after_context_refresh(
                 .as_ref()
                 .zip(lens.projection.as_ref())
                 .is_some_and(|(representation, projection)| {
-                    &representation.projection == projection
-                        && representation.prompt_execution_revision
-                            == lens.prompt_execution_revision
+                    representation.is_current_for(
+                        projection,
+                        lens.delivery.as_ref(),
+                        lens.prompt_execution_revision,
+                    )
                 });
             if representation_is_current {
                 lens.representation
@@ -261,6 +263,7 @@ pub fn reconcile_lens_after_context_refresh(
 /// The configuration transaction owns recovery after revoking old run authority.
 /// This also handles cancellation that settled immediately before the transaction.
 pub fn reconcile_lens_after_execution_config_change(lens: &mut LensState) {
+    lens.delivery = None;
     if !matches!(
         lens.stage,
         LensStage::Connecting | LensStage::Transforming | LensStage::Cancelled
@@ -638,6 +641,7 @@ mod tests {
             target_set: Some(targets),
             projection: Some(projection_ref(1, 'a')),
             representation: Some(LensRepresentation {
+                delivery: None,
                 context_id: Uuid::from_u128(2),
                 ..representation(projection_ref(1, 'a'), 1)
             }),
@@ -883,6 +887,7 @@ mod tests {
         context_revision: u64,
     ) -> crate::model::LensRepresentation {
         crate::model::LensRepresentation {
+            delivery: None,
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),

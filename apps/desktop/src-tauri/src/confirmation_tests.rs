@@ -36,6 +36,8 @@ enum Scenario {
     ProgressBurst(usize),
     ProgressBurstFailure(usize),
     HtmlPublication(StopReason),
+    TextOnlyHtml,
+    TextOnlyUnavailable,
     NativeUnavailable,
     ObserverUnavailable,
     AgentUnavailable,
@@ -129,7 +131,7 @@ impl Accessibility for Fixture {
         if self.scenario == Scenario::NativeUnavailable {
             return Err(PlatformError::Operation("fixture AX unavailable".into()));
         }
-        Ok(serde_json::from_value(json!({
+        let mut extraction = json!({
             "quality":"full", "resolved_window":{
                 "facts":{"title":"Observed document", "application_name":"Fixture",
                     "frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}},
@@ -145,7 +147,13 @@ impl Accessibility for Fixture {
                 "offscreen_text_nodes":0,"virtualization_signals":0,"truncated_nodes":false,
                 "truncated_text":false,"children_read_errors":0,"omitted_resource_refs":0,"resource_read_errors":0},
             "diagnostics":[]
-        })).unwrap())
+        });
+        if self.scenario == Scenario::TextOnlyUnavailable {
+            extraction["nodes"][0]["value"] = json!(" ");
+            extraction["nodes"][1]["description"] = Value::Null;
+            extraction["text"] = json!("");
+        }
+        Ok(serde_json::from_value(extraction).unwrap())
     }
 }
 
@@ -450,7 +458,13 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                                     && initialize.scenario
                                                         == Scenario::CandidateMissingHttp),
                                         ))
-                                        .prompt_capabilities(PromptCapabilities::new().image(true)),
+                                        .prompt_capabilities(PromptCapabilities::new().image(
+                                            !matches!(
+                                                initialize.scenario,
+                                                Scenario::TextOnlyHtml
+                                                    | Scenario::TextOnlyUnavailable
+                                            ),
+                                        )),
                                 ),
                         )
                     },
@@ -533,8 +547,10 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                                     .data("fixture provider prompt failure"),
                             );
                         }
-                        if matches!(prompt.scenario, Scenario::HtmlPublication(_))
-                            || prompt.scenario == Scenario::StopDuringPrompt
+                        if matches!(
+                            prompt.scenario,
+                            Scenario::HtmlPublication(_) | Scenario::TextOnlyHtml
+                        ) || prompt.scenario == Scenario::StopDuringPrompt
                         {
                             publish_fixture_html(&prompt, &prompt_value).await;
                         }
@@ -2006,4 +2022,84 @@ fn verify_preset_switch(scenario: PresetSwitch) {
             PresetSwitch::DifferentContent => "Lead with a concrete worked example",
             PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => "Lead with the central idea",
         }));
+}
+
+#[test]
+fn text_only_agent_uses_exact_delivery_through_real_actor_publisher_and_history() {
+    let harness = setup(Scenario::TextOnlyHtml);
+    let first = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(first.stage, LensStage::Completed);
+    let lens = harness.app.state::<AppState>().lens().unwrap();
+    let delivery = lens.delivery.as_ref().unwrap();
+    assert_eq!(
+        delivery.coverage.mode,
+        crate::live_sync::LensDeliveryMode::TextOnlyPartial
+    );
+    assert_ne!(
+        delivery.source_projection.digest,
+        delivery.projection.digest
+    );
+    assert!(
+        !lens.input.as_ref().unwrap().media.is_empty(),
+        "capture is preserved"
+    );
+    let representation = lens.representation.as_ref().unwrap();
+    assert_eq!(representation.delivery.as_ref(), Some(delivery));
+    assert_eq!(
+        lens.response_history.responses[0].delivery.as_ref(),
+        Some(delivery)
+    );
+    assert!(representation.output_blocks.iter().any(|block| matches!(block, LensOutputBlock::Html { text, .. } if text == "<h1>Fixture HTML</h1>")));
+    let effects = harness.fixture.effects.lock().unwrap();
+    let prompt = effects
+        .iter()
+        .find_map(|effect| {
+            if let Effect::Prompt(prompt) = effect {
+                Some(prompt)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(!prompt["prompt"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|block| block["type"] == "image"));
+    let value: Value = prompt["prompt"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|block| {
+            let value: Value = serde_json::from_str(block["text"].as_str()?).ok()?;
+            value.get("delivery").map(|_| value.clone())
+        })
+        .unwrap();
+    assert_eq!(
+        crate::live_sync::CanonicalProjection::from_serializable(&value)
+            .unwrap()
+            .digest(),
+        &delivery.projection.digest
+    );
+}
+
+#[test]
+fn image_only_text_agent_never_receives_a_prompt() {
+    let harness = setup(Scenario::TextOnlyUnavailable);
+    let first = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(first.stage, LensStage::Failed);
+    let lens = harness.app.state::<AppState>().lens().unwrap();
+    assert_eq!(
+        lens.delivery.as_ref().unwrap().coverage.mode,
+        crate::live_sync::LensDeliveryMode::Unavailable
+    );
+    assert!(lens.representation.is_none());
+    assert!(lens.error.as_deref().unwrap().contains("image-capable"));
+    assert!(!harness
+        .fixture
+        .effects
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|effect| matches!(effect, Effect::Prompt(_))));
 }

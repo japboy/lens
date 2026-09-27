@@ -2,6 +2,7 @@ import type {
   ResponseHistoryPresentation,
   LoadResponseBlock,
 } from "../application/response-history-controller";
+import { renderDeliveryNotice } from "../rendering/delivery-notice";
 import {
   isHistoryView,
   type SessionView,
@@ -123,6 +124,31 @@ export class LensOverlayView extends LitElement {
         border-top: 1px solid Separator;
         margin-top: 24px;
         padding-top: 16px;
+      }
+      .lens-delivery-notice {
+        flex: 0 0 auto;
+        padding: 10px 14px;
+        border-block-end: 1px solid Separator;
+        background: color-mix(in srgb, AccentColor 8%, Canvas);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .lens-delivery-notice p,
+      .lens-delivery-notice ul {
+        margin: 4px 0 0;
+      }
+      .lens-delivery-notice ul {
+        padding-inline-start: 18px;
+      }
+      .lens-response-coverage-heading {
+        display: block;
+        padding: 8px 14px 0;
+        font-size: 12px;
+      }
+      .lens-delivery-notices {
+        flex: 0 0 auto;
+        max-height: 30vh;
+        overflow: auto;
       }
       .lens-response-heading {
         font-size: 12px;
@@ -1893,6 +1919,12 @@ export class LensOverlayView extends LitElement {
       (lens?.stage === "authentication_required" || lens?.stage === "failed");
     const liveStatus = lensLiveStatus(lens?.live);
     const displayLens = lens;
+    const currentDelivery =
+      lens?.delivery &&
+      lens.delivery.source_projection.revision === lens.projection?.revision &&
+      lens.delivery.source_projection.digest === lens.projection?.digest
+        ? lens.delivery
+        : undefined;
     const announcedStatus =
       (displayLens ? overlayNotification(displayLens) : undefined) ?? this.updateOnlyNotification();
     const interactive = Boolean(
@@ -2000,6 +2032,13 @@ export class LensOverlayView extends LitElement {
         </nav>
 
         <main class="overlay-main">
+          ${renderDeliveryNotice(
+            currentDelivery,
+            "current",
+            lens?.target_set?.targets.map(
+              (target) => target.facts.title || target.facts.application_name,
+            ),
+          )}
           ${renderSnapshotFailure(this.snapshotStatus)}
           <div data-region-error="output"></div>
           <div data-region-error="session"></div>
@@ -2053,7 +2092,9 @@ export class LensOverlayView extends LitElement {
           }
           ${
             sourceQuality
-              ? html`<span class="quality quality-${sourceQuality}">${sourceQuality}</span>`
+              ? html`<span class="quality quality-${sourceQuality}" title="Source capture quality"
+                  >Capture: ${sourceQuality}</span
+                >`
               : nothing
           }
         </footer>

@@ -47,6 +47,8 @@ pub struct LensResponseManifest {
     pub context_id: Uuid,
     pub context_revision: u64,
     pub projection: ProjectionRef,
+    #[serde(default)]
+    pub delivery: Option<crate::live_sync::LensDelivery>,
     pub block_count: usize,
     pub retained_bytes: usize,
     pub blocks: Vec<LensResponseBlockDescriptor>,
@@ -149,6 +151,7 @@ impl LensResponseHistory {
             context_id: representation.context_id,
             context_revision: representation.context_revision,
             projection: representation.projection.clone(),
+            delivery: representation.delivery.clone(),
             block_count: blocks.len(),
             retained_bytes: 0,
             blocks,
@@ -218,6 +221,7 @@ mod tests {
     use super::*;
     fn response(run: u128, text: &str) -> LensRepresentation {
         LensRepresentation {
+            delivery: None,
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(run + 100),
             context_id: Uuid::from_u128(1),
