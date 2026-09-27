@@ -226,6 +226,10 @@ jobs:
           path: target/release-controller
           persist-credentials: false
 
+      - name: Install the pinned release controller dependencies
+        if: inputs.release_tag != ''
+        run: pnpm --dir target/release-controller install --frozen-lockfile --ignore-scripts
+
       - name: Package immutable source-bound release evidence
         if: inputs.release_tag != ''
         env:

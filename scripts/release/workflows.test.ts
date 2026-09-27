@@ -60,6 +60,35 @@ describe("release workflow authority and recovery", () => {
     ]);
   });
 
+  it("installs pinned controller dependencies before reading source TOML", () => {
+    const jobs = parse(release).jobs;
+    for (const mode of ["preflight", "publish"]) {
+      const steps = jobs[mode].steps as { run?: string }[];
+      const install = steps.findIndex(
+        (step) => step.run === "pnpm install --frozen-lockfile --ignore-scripts",
+      );
+      const operation = steps.findIndex(
+        (step) => step.run === `node scripts/release/cli.ts ${mode}`,
+      );
+      expect(install).toBeGreaterThanOrEqual(0);
+      expect(operation).toBeGreaterThan(install);
+    }
+    const steps = Object.values(parse(native).jobs).flatMap(
+      (job) => (job as { steps?: { run?: string; if?: string }[] }).steps ?? [],
+    );
+    const install = steps.findIndex(
+      (step) =>
+        step.run ===
+        "pnpm --dir target/release-controller install --frozen-lockfile --ignore-scripts",
+    );
+    const operation = steps.findIndex(
+      (step) => step.run === "node target/release-controller/scripts/release/cli.ts package",
+    );
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(operation).toBeGreaterThan(install);
+    expect(steps[install]!.if).toBe(steps[operation]!.if);
+  });
+
   it("routes release publication through the durable publisher", () => {
     const steps = parse(release).jobs.publish.steps as { run?: string }[];
     expect(steps.some((step) => step.run === "node scripts/release/cli.ts publish")).toBe(true);

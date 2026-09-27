@@ -1,6 +1,10 @@
-import { parse } from "@iarna/toml";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 export function parseToml(content: string, path: string): Record<string, unknown> {
+  // Bootstrap commands such as pr-title do not read TOML or need installed packages.
+  const { parse } = require("@iarna/toml") as typeof import("@iarna/toml");
   try {
     return parse(content);
   } catch (cause) {
