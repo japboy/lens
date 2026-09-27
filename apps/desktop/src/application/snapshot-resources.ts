@@ -51,7 +51,7 @@ export class SnapshotResources {
       this.sourceAttempt = undefined;
       this.sourceState = { stage: "idle" };
     }
-    if (!snapshot.output_ref) {
+    if (!snapshot.output_ref || this.historyOwnsOutput(snapshot)) {
       this.output = undefined;
       this.outputRunId = undefined;
       this.outputAttempt = undefined;
@@ -88,9 +88,9 @@ export class SnapshotResources {
   }
 
   project(snapshot: AppSnapshot): AppSnapshot {
-    if (snapshot.source_ref === undefined && snapshot.output_ref === undefined) return snapshot;
     // A committed representation carries its original projection identity. Provisional
     // blocks may remain visible only within the same run, never under a replacement run.
+    const historyOwnsOutput = this.historyOwnsOutput(snapshot);
     const output =
       this.output?.output_ref === snapshot.output_ref ||
       this.output?.representation ||
@@ -109,8 +109,8 @@ export class SnapshotResources {
           this.source && this.source.source_ref === snapshot.source_ref
             ? this.source.input
             : undefined,
-        output_blocks: output?.output_blocks ?? [],
-        representation: output?.representation,
+        output_blocks: historyOwnsOutput ? [] : (output?.output_blocks ?? []),
+        representation: historyOwnsOutput ? snapshot.lens.representation : output?.representation,
       },
     };
   }
@@ -141,17 +141,31 @@ export class SnapshotResources {
       });
   }
 
+  private historyOwnsOutput(snapshot = this.latest): boolean {
+    const representation = snapshot?.lens.representation;
+    return Boolean(
+      representation &&
+      snapshot?.lens.response_history?.responses.some(
+        (response) => response.representation_id === representation.representation_id,
+      ),
+    );
+  }
+
   private pumpOutput(): void {
     const ref = this.latest?.output_ref;
-    if (this.outputBusy || !ref || this.outputAttempt === ref) return;
+    if (this.outputBusy || !ref || this.outputAttempt === ref || this.historyOwnsOutput()) return;
     this.outputBusy = true;
     this.outputAttempt = ref;
     this.outputState = { stage: "loading" };
     const generation = this.generation;
+    const isCurrent = () =>
+      generation === this.generation &&
+      this.latest?.output_ref === ref &&
+      !this.historyOwnsOutput();
     void this.port
       .getLensOutput(ref)
       .then(async (resource) => {
-        if (generation !== this.generation || this.latest?.output_ref !== ref) return;
+        if (!isCurrent()) return;
         if (resource.output_ref !== ref) throw new Error("Output identity mismatch");
         const imageRefs = new Set(
           [...resource.output_blocks, ...(resource.representation?.output_blocks ?? [])].flatMap(
@@ -165,7 +179,7 @@ export class SnapshotResources {
         const hydrate = async (blocks: LensOutputBlock[]): Promise<LensOutputBlock[]> => {
           const result: LensOutputBlock[] = [];
           for (const block of blocks) {
-            if (generation !== this.generation || this.latest?.output_ref !== ref) return [];
+            if (!isCurrent()) return [];
             if (block.type !== "image" || !block.image_ref) {
               result.push(block);
               continue;
@@ -176,7 +190,7 @@ export class SnapshotResources {
               if (image.image_ref !== block.image_ref) throw new Error("Image identity mismatch");
               data = image.data;
             }
-            if (generation !== this.generation) return [];
+            if (generation !== this.generation || this.historyOwnsOutput()) return [];
             // A newer text reference does not invalidate this immutable, operation-scoped image.
             retained.set(block.image_ref, data);
             result.push({ ...block, data });
@@ -190,7 +204,7 @@ export class SnapshotResources {
               output_blocks: await hydrate(resource.representation.output_blocks),
             }
           : undefined;
-        if (generation !== this.generation || this.latest?.output_ref !== ref) return;
+        if (!isCurrent()) return;
         this.images = retained;
         this.pendingImages = new Map();
         this.output = { ...resource, output_blocks, representation };
@@ -198,8 +212,7 @@ export class SnapshotResources {
         this.outputState = { stage: "ready" };
       })
       .catch((error) => {
-        if (generation === this.generation && this.latest?.output_ref === ref)
-          this.outputState = { stage: "failed", message: String(error) };
+        if (isCurrent()) this.outputState = { stage: "failed", message: String(error) };
       })
       .finally(() => {
         this.outputBusy = false;

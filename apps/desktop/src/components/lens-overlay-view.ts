@@ -1881,7 +1881,7 @@ export class LensOverlayView extends LitElement {
     if (isHistoryView(this.sessionView)) return this.renderHistory();
     const model = this.model;
     const lens = model?.lens;
-    const sourceQuality = model?.sourceMetadata?.quality ?? lens?.context?.quality;
+    const sourceQuality = model?.sourceMetadata?.quality;
     const targets = lens?.target_set?.targets ?? [];
     const sourceJson = this.activeTab === "source" && lens ? this.sourceJson(lens) : "";
     const activeAgent = lens?.agent;
@@ -1906,7 +1906,7 @@ export class LensOverlayView extends LitElement {
         : "No source context is available.";
     const canCancel = lens?.stage === "connecting" || lens?.stage === "transforming";
     const canRetry =
-      (model?.sourceMetadata?.has_input ?? Boolean(lens?.input)) &&
+      model?.sourceMetadata?.has_input &&
       (lens?.stage === "authentication_required" || lens?.stage === "failed");
     const liveStatus = lensLiveStatus(lens?.live);
     const displayLens = lens ? this.lensWithDisplayedRepresentation(lens) : undefined;
@@ -1923,10 +1923,13 @@ export class LensOverlayView extends LitElement {
     const outputMedia = displayLens
       ? composeOutputMedia(lensOutputPresentation(displayLens))
       : { media: [], narrative: [] };
+    const historyBlocks = this.responseHistory?.responses.flatMap((response) => response.blocks);
     const hasMediaCue =
       this.activeTab === "interpretation" &&
-      outputMedia.media.length > 0 &&
-      outputMedia.narrative.length > 0;
+      (historyBlocks?.length
+        ? historyBlocks.some((block) => block.type === "image" || block.type === "html") &&
+          historyBlocks.some((block) => block.type !== "image" && block.type !== "html")
+        : outputMedia.media.length > 0 && outputMedia.narrative.length > 0);
 
     return html`
       <div
@@ -2561,11 +2564,11 @@ export class LensOverlayView extends LitElement {
       return;
     }
     if (!representation) return;
-    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
-      return;
-    }
     if (lens.response_history) {
       this.displayedRepresentation = representation;
+      return;
+    }
+    if (representation.representation_id === this.displayedRepresentation?.representation_id) {
       return;
     }
     this.acceptRepresentation(representation, this.interpretationHasFocus());

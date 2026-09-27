@@ -19,6 +19,9 @@ const port = vi.hoisted(() => ({
 vi.mock("../src/application/webview-port", () => ({ tauriWebviewPort: port }));
 
 const snapshot: AppSnapshot = {
+  source_ref: null,
+  source_metadata: { has_input: false, quality: null },
+  output_ref: null,
   revision: 1,
   config: {
     agent: "codex",

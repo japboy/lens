@@ -5,6 +5,9 @@ import { AppSnapshotController } from "./app-snapshot-controller";
 import type { WebviewPort } from "./webview-port";
 
 const snapshot = (revision: number): AppSnapshot => ({
+  source_ref: null,
+  source_metadata: null,
+  output_ref: null,
   revision,
   config: {
     agent: "codex",

@@ -508,10 +508,9 @@ export interface LensState {
 }
 
 export interface AppSnapshot {
-  /** Present on body-free window-scoped publications; omitted by legacy fixtures. */
-  source_ref?: string | null;
-  source_metadata?: { has_input: boolean; quality?: ExtractionQuality | null } | null;
-  output_ref?: string | null;
+  source_ref: string | null;
+  source_metadata: { has_input: boolean; quality: ExtractionQuality | null } | null;
+  output_ref: string | null;
   revision: number;
   config: AppConfig;
   agent_selection: AgentSelectionState;

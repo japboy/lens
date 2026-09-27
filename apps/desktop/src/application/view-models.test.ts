@@ -7,6 +7,9 @@ import { settingsViewModel } from "./view-models";
 import type { AppSnapshot } from "../types";
 
 const SNAPSHOT: AppSnapshot = {
+  source_ref: null,
+  source_metadata: null,
+  output_ref: null,
   revision: 1,
   config: {
     agent: "codex",

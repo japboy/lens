@@ -10,6 +10,9 @@ import type { AppSnapshot } from "./types";
 const operationId = "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d";
 
 const snapshot: AppSnapshot = {
+  source_ref: "fixture-source",
+  source_metadata: { has_input: true, quality: null },
+  output_ref: "fixture-output",
   revision: 1,
   config: {
     agent: "codex",
@@ -176,6 +179,24 @@ const snapshot: AppSnapshot = {
   },
 };
 const completedLens = snapshot.lens;
+function windowSnapshot(value = snapshot): AppSnapshot {
+  const overlay = Boolean(document.querySelector("lens-overlay-page"));
+  return {
+    ...value,
+    source_ref: overlay ? value.source_ref : null,
+    source_metadata: overlay ? value.source_metadata : null,
+    output_ref: overlay ? value.output_ref : null,
+    lens: {
+      ...value.lens,
+      context: undefined,
+      input: undefined,
+      output_blocks: [],
+      representation: value.lens.representation
+        ? { ...value.lens.representation, output_blocks: [] }
+        : undefined,
+    },
+  };
+}
 const closeCurrentWindow = vi.hoisted(() => vi.fn<() => Promise<void>>(async () => undefined));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -191,7 +212,19 @@ vi.mock("@tauri-apps/api/core", () => ({
         license: "Apache text\n<not-markup>",
         notice: "Original project by Yu Inao",
       };
-    if (command === "get_window_snapshot") return snapshot;
+    if (command === "get_window_snapshot") return windowSnapshot();
+    if (command === "get_lens_source")
+      return {
+        source_ref: snapshot.source_ref,
+        context: snapshot.lens.context,
+        input: snapshot.lens.input,
+      };
+    if (command === "get_lens_output")
+      return {
+        output_ref: snapshot.output_ref,
+        output_blocks: snapshot.lens.output_blocks,
+        representation: snapshot.lens.representation,
+      };
     if (command === "get_session_view") return { revision: 0, phase: "idle" };
     if (command === "accessibility_permission") return true;
     return undefined;
@@ -225,6 +258,9 @@ afterEach(() => {
   window.history.replaceState({}, "", "/?view=overlay&platform=macos");
   snapshot.revision = 1;
   snapshot.lens = completedLens;
+  snapshot.source_ref = "fixture-source";
+  snapshot.source_metadata = { has_input: true, quality: null };
+  snapshot.output_ref = "fixture-output";
   vi.clearAllMocks();
 });
 
@@ -283,7 +319,7 @@ describe("progressive DSD resources", () => {
         expect(root.querySelector("#agent-prompt-heading")?.closest("[hidden]")).toBeNull(),
       );
       const prompt = root.querySelector("lens-prompt-settings")!;
-      resolveSnapshot(snapshot);
+      resolveSnapshot(windowSnapshot());
       await vi.waitFor(() => expect(prompt.querySelector("textarea")).not.toBeNull());
       const editor = prompt.querySelector("textarea")!;
       editor.value = "Unsaved progressive draft\\n{turn_instruction}";
@@ -294,7 +330,7 @@ describe("progressive DSD resources", () => {
       listener?.({
         event: "window-app-state-changed",
         id: 1,
-        payload: { ...snapshot, revision: 2 },
+        payload: { ...windowSnapshot(), revision: 2 },
       });
       await page.updateComplete;
       await (
@@ -756,9 +792,9 @@ describe("Lens rich Agent output", () => {
         false,
       );
     } finally {
-      delete snapshot.source_ref;
-      delete snapshot.output_ref;
-      delete snapshot.source_metadata;
+      snapshot.source_ref = "fixture-source";
+      snapshot.output_ref = "fixture-output";
+      snapshot.source_metadata = { has_input: true, quality: null };
     }
   });
 
@@ -775,8 +811,7 @@ describe("Lens rich Agent output", () => {
         stringify.mock.calls.filter(([value]) => value === snapshot.lens.input).length;
       expect(calls()).toBe(0);
       view.shadowRoot!.querySelector<HTMLButtonElement>("#source-tab")!.click();
-      await view.updateComplete;
-      expect(calls()).toBe(1);
+      await vi.waitFor(() => expect(calls()).toBe(1));
       view.requestUpdate();
       await view.updateComplete;
       expect(calls()).toBe(1);
@@ -1353,7 +1388,7 @@ describe("Lens Settings", () => {
       listener?.({
         event: "window-app-state-changed",
         id: 1,
-        payload: { ...snapshot, revision: 2, agent_selection: updatedSelection },
+        payload: { ...windowSnapshot(), revision: 2, agent_selection: updatedSelection },
       });
       await vi.waitFor(() =>
         expect(model.options.some((option) => option.value === "third")).toBe(true),
@@ -1381,7 +1416,7 @@ describe("Lens Settings", () => {
         event: "window-app-state-changed",
         id: 1,
         payload: {
-          ...snapshot,
+          ...windowSnapshot(),
           revision: 3,
           agent_selection: {
             ...updatedSelection,
@@ -1770,6 +1805,7 @@ it.each(["cancel", "success", "failure"] as const)(
   "Agent Presets reset handles %s without implicitly launching an agent",
   async (outcome) => {
     const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
     const { confirm } = await import("@tauri-apps/plugin-dialog");
     const original = vi.mocked(invoke).getMockImplementation()!;
     const previousConfig = snapshot.config;
@@ -1789,6 +1825,11 @@ it.each(["cancel", "success", "failure"] as const)(
             { id: "preset-goose", name: "Goose", command: "goose", args: ["acp"] },
           ],
         };
+        snapshot.revision++;
+        const listener = vi
+          .mocked(listen)
+          .mock.calls.find(([event]) => event === "window-app-state-changed")?.[1];
+        listener?.({ event: "window-app-state-changed", id: 1, payload: windowSnapshot() });
         return snapshot.config;
       }
       return original(command);

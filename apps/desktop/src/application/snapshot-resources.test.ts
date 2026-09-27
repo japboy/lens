@@ -1,6 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { SnapshotResources } from "./snapshot-resources";
-import type { AppSnapshot } from "../types";
+import { ResponseHistoryController, responseBlockIdentity } from "./response-history-controller";
+import type { ReactiveControllerHost } from "lit";
+import type { AppSnapshot, LensRepresentation, LensResponseManifest } from "../types";
 import type { LensOutputResource, LensSourceResource, WebviewPort } from "./webview-port";
 
 function deferred<T>() {
@@ -19,9 +21,132 @@ const snapshot = (
   ({
     revision,
     source_ref,
+    source_metadata: { has_input: Boolean(source_ref), quality: null },
     output_ref,
     lens: { operation_id, stage: "transforming", output_blocks: [] },
   }) as unknown as AppSnapshot;
+
+function committedSnapshot(revision = 1): AppSnapshot {
+  const identity = {
+    representation_id: "response",
+    run_id: "run",
+    prompt_execution_revision: 1,
+    context_id: "context",
+    context_revision: 1,
+    projection: { revision: 1, digest: "digest" },
+  };
+  const representation: LensRepresentation = { ...identity, output_blocks: [] };
+  const response: LensResponseManifest = {
+    ...identity,
+    sequence: 1,
+    retained_bytes: 3,
+    block_count: 1,
+    blocks: [{ type: "image", block_index: 0, mime_type: "image/png", byte_length: 4 }],
+  };
+  const current = snapshot(revision, null, "committed-output");
+  current.lens.representation = representation;
+  current.lens.response_history = {
+    responses: [response],
+    retained_bytes: 3,
+    capacity_reached: false,
+  };
+  return current;
+}
+
+it("loads committed image bodies only through history demand and preserves published metadata during refresh", async () => {
+  const port = {
+    getLensOutput: vi.fn<WebviewPort["getLensOutput"]>(),
+    getLensImage: vi.fn<WebviewPort["getLensImage"]>(),
+    getResponseBlock: vi.fn<WebviewPort["getResponseBlock"]>(async () => ({
+      type: "image",
+      mime_type: "image/png",
+      data: "YWJj",
+    })),
+    getHtmlOutput: vi.fn<WebviewPort["getHtmlOutput"]>(),
+  };
+  const resources = new SnapshotResources(port as unknown as WebviewPort, vi.fn<() => void>());
+  const history = new ResponseHistoryController(
+    { addController() {}, requestUpdate() {} } as unknown as ReactiveControllerHost,
+    port,
+  );
+  const current = committedSnapshot();
+  resources.synchronize(current);
+  history.synchronize(resources.project(current).lens);
+  expect(port.getLensOutput).not.toHaveBeenCalled();
+  expect(port.getLensImage).not.toHaveBeenCalled();
+  expect(port.getResponseBlock).not.toHaveBeenCalled();
+  history.requestMedia([responseBlockIdentity("op", "response", 0)]);
+  await vi.waitFor(() =>
+    expect(history.presentation?.media[0]).toMatchObject({ source: "data:image/png;base64,YWJj" }),
+  );
+  expect(port.getResponseBlock.mock.calls).toEqual([["op", "response", 0]]);
+  const refresh = {
+    ...current,
+    revision: 2,
+    output_ref: "refresh-output",
+    lens: { ...current.lens, stage: "transforming" as const },
+  };
+  resources.synchronize(refresh);
+  expect(resources.project(refresh).lens.representation).toBe(current.lens.representation);
+  expect(resources.outputState.stage).toBe("idle");
+  expect(port.getLensOutput).not.toHaveBeenCalled();
+  expect(port.getLensImage).not.toHaveBeenCalled();
+});
+
+it("discards a deferred provisional image when a committed manifest takes ownership", async () => {
+  const pending = deferred<{ image_ref: string; data: string }>();
+  const port = {
+    getLensOutput: vi.fn<WebviewPort["getLensOutput"]>(async (output_ref) => ({
+      output_ref,
+      output_blocks: [{ type: "image", mime_type: "image/png", image_ref: "image", data: "" }],
+    })),
+    getLensImage: vi
+      .fn<WebviewPort["getLensImage"]>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue({ image_ref: "image", data: "fresh" }),
+  };
+  const changed = vi.fn<() => void>();
+  const resources = new SnapshotResources(port as unknown as WebviewPort, changed);
+  resources.synchronize(snapshot(1, null, "provisional"));
+  await vi.waitFor(() => expect(port.getLensImage).toHaveBeenCalledTimes(1));
+  const committed = committedSnapshot(2);
+  resources.synchronize(committed);
+  pending.resolve({ image_ref: "image", data: "stale" });
+  await vi.waitFor(() => expect(changed).toHaveBeenCalled());
+  expect(resources.outputState.stage).toBe("idle");
+  expect(resources.project(committed).lens.representation).toBe(committed.lens.representation);
+  expect(resources.project(committed).lens.output_blocks).toEqual([]);
+  const replacement = snapshot(3, null, "new-provisional", "replacement");
+  resources.synchronize(replacement);
+  await vi.waitFor(() => expect(resources.outputState.stage).toBe("ready"));
+  expect(port.getLensOutput.mock.calls).toEqual([["provisional"], ["new-provisional"]]);
+  expect(port.getLensImage).toHaveBeenCalledTimes(2);
+  expect(resources.project(replacement).lens.output_blocks[0]).toMatchObject({ data: "fresh" });
+});
+
+it("still hydrates a published representation when its manifest is unavailable", async () => {
+  const current = committedSnapshot();
+  current.lens.response_history = undefined;
+  const representation = {
+    ...current.lens.representation!,
+    output_blocks: [{ type: "markdown" as const, text: "retained output" }],
+  };
+  const resources = new SnapshotResources(
+    {
+      getLensOutput: async () => ({
+        output_ref: current.output_ref,
+        output_blocks: [],
+        representation,
+      }),
+    } as unknown as WebviewPort,
+    vi.fn<() => void>(),
+  );
+  resources.synchronize(current);
+  await vi.waitFor(() => expect(resources.outputState.stage).toBe("ready"));
+  expect(resources.project(current).lens.representation?.output_blocks).toEqual(
+    representation.output_blocks,
+  );
+});
 
 it("admits lightweight progress immediately while coalescing stale source requests", async () => {
   const old = deferred<LensSourceResource>();
