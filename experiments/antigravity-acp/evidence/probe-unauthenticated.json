@@ -1,0 +1,66 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "promptCapabilities": {
+          "image": true,
+          "audio": true,
+          "embeddedContext": true
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "sessionCapabilities": {
+          "list": {},
+          "resume": {}
+        },
+        "auth": {
+          "logout": {}
+        }
+      },
+      "authMethods": [
+        {
+          "id": "oauth-personal",
+          "name": "Log in with Google",
+          "description": "Log in with your Google account"
+        },
+        {
+          "id": "oauth-business",
+          "name": "Log in with Gemini Enterprise",
+          "description": "Log in with your Gemini Enterprise account"
+        },
+        {
+          "id": "gemini-api-key",
+          "name": "Gemini API key",
+          "description": "Use an API key with Gemini Developer API"
+        },
+        {
+          "id": "agent-platform",
+          "name": "Gemini Enterprise Agent Platform",
+          "description": "Use Gemini Enterprise Agent Platform (formerly Vertex AI) with Application Default Credentials or an API key"
+        }
+      ],
+      "agentInfo": {
+        "name": "antigravity-acp",
+        "title": "Google Antigravity",
+        "version": "1.2.1"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "error": {
+      "code": -32000,
+      "message": "Authentication required",
+      "data": {
+        "message": "No authentication method selected. Either call the `authenticate` method (supports oauth-personal, gemini-api-key, agent-platform), or set `auth.type` in settings.json (~/.gemini/antigravity-acp/settings.json) to one of: oauth-personal, gemini-api-key (requires GEMINI_API_KEY env var), oauth-business (Gemini Enterprise; requires gcp.project/location), agent-platform (formerly 'vertex-ai', still accepted; requires GOOGLE_API_KEY, or a project and location from GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION or gcp.project/gcp.location with Application Default Credentials)."
+      }
+    }
+  }
+]

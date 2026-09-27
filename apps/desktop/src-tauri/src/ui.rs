@@ -462,8 +462,6 @@ pub(crate) struct TrayMenuPresentation {
     target_selection_active: bool,
     live_lens_active: bool,
     agent_selection_enabled: bool,
-    claude_checked: bool,
-    codex_checked: bool,
     selected_agent: Option<AgentKind>,
     working_directory_text: String,
 }
@@ -495,8 +493,6 @@ impl TrayMenuPresentation {
                     | crate::model::AgentSelectionStage::Selected
                     | crate::model::AgentSelectionStage::Failed
             ),
-            claude_checked: selected == Some(AgentKind::Claude),
-            codex_checked: selected == Some(AgentKind::Codex),
             selected_agent: selected,
             working_directory_text: menu_safe_path(&config.working_directory.to_string_lossy()),
         }
@@ -532,7 +528,7 @@ impl AgentMenuState {
 }
 
 fn agent_menu_entries(config: &AppConfig, view: &TrayMenuPresentation) -> Vec<AgentMenuEntry> {
-    [AgentKind::Claude, AgentKind::Codex]
+    let mut entries: Vec<_> = AgentKind::MANAGED
         .into_iter()
         .map(|agent| (agent, None))
         .chain(
@@ -542,11 +538,7 @@ fn agent_menu_entries(config: &AppConfig, view: &TrayMenuPresentation) -> Vec<Ag
                 .map(|profile| (AgentKind::External(profile.id), Some(profile.clone()))),
         )
         .map(|(agent, profile)| {
-            let checked = match agent {
-                AgentKind::Claude => view.claude_checked,
-                AgentKind::Codex => view.codex_checked,
-                AgentKind::External(_) => view.selected_agent == Some(agent),
-            };
+            let checked = view.selected_agent == Some(agent);
             let name = profile
                 .as_ref()
                 .map(|profile| profile.name.as_str())
@@ -559,7 +551,12 @@ fn agent_menu_entries(config: &AppConfig, view: &TrayMenuPresentation) -> Vec<Ag
                 profile,
             }
         })
-        .collect()
+        .collect();
+    // Stable ASCII-folded Unicode scalar ordering matches the Settings selector.
+    // Sort raw names, independently of escaped menu labels and preset decorations.
+    entries
+        .sort_by_cached_key(|entry| history_agent_label(config, entry.agent).to_ascii_lowercase());
+    entries
 }
 
 fn select_agent_menu_choice<R: tauri::Runtime>(app: &AppHandle<R>, id: &str) {
@@ -1920,6 +1917,7 @@ mod tests {
         for agent in [
             AgentKind::Claude,
             AgentKind::Codex,
+            AgentKind::Antigravity,
             AgentKind::External(external.id),
         ] {
             let state = AgentSelectionState {
@@ -1928,9 +1926,6 @@ mod tests {
                 ..Default::default()
             };
             let view = TrayMenuPresentation::derive(&state, &config, &LensState::default());
-            assert_eq!(view.claude_checked, agent == AgentKind::Claude);
-            assert_eq!(view.codex_checked, agent == AgentKind::Codex);
-            assert!(!(view.claude_checked && view.codex_checked));
             assert_eq!(view.selected_agent, Some(agent));
             let entries = agent_menu_entries(&config, &view);
             assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
@@ -1945,11 +1940,13 @@ mod tests {
             &LensState::default(),
         );
         assert_eq!(view.selected_agent, None);
-        assert!(!view.claude_checked && !view.codex_checked);
+        assert!(agent_menu_entries(&config, &view)
+            .iter()
+            .all(|entry| !entry.checked));
     }
 
     #[test]
-    fn agent_menu_preserves_saved_order_and_rejects_stale_or_disabled_choices() {
+    fn agent_menu_sorts_names_and_rejects_stale_or_disabled_choices() {
         let mut config = AppConfig::new(PathBuf::from("/tmp"));
         config.external_agents.reverse();
         config.external_agents[0].name = "Z first".into();
@@ -1967,7 +1964,13 @@ mod tests {
                 .iter()
                 .map(|entry| entry.label.as_str())
                 .collect::<Vec<_>>(),
-            ["Claude Code", "ChatGPT Codex", "Z first", "A second"]
+            [
+                "A second",
+                "ChatGPT Codex",
+                "Claude Code",
+                "Google Antigravity",
+                "Z first"
+            ]
         );
         assert_eq!(entries.iter().filter(|entry| entry.checked).count(), 1);
         let generation = Uuid::new_v4();
@@ -1975,34 +1978,90 @@ mod tests {
             generation,
             entries: entries.clone(),
         };
-        let id = format!("agent_choice:{generation}:3");
+        let selected_index = entries
+            .iter()
+            .position(|entry| entry.agent == selected)
+            .unwrap();
+        let id = format!("agent_choice:{generation}:{selected_index}");
         assert_eq!(menu.choice(&id, &entries), Some(selected));
         assert_eq!(
-            menu.choice(&format!("agent_choice:{}:3", Uuid::new_v4()), &entries),
+            menu.choice(
+                &format!("agent_choice:{}:{selected_index}", Uuid::new_v4()),
+                &entries
+            ),
             None
         );
         assert_eq!(
             menu.choice(&format!("agent_choice:{generation}:999"), &entries),
             None
         );
-        for modification in 0..3 {
+        for modification in 0..4 {
             let mut changed = config.clone();
             match modification {
                 0 => {
                     changed.external_agents.remove(1);
                 }
                 1 => changed.external_agents[1].command = "replacement".into(),
-                _ => changed.external_agents[1].args.push("changed".into()),
+                2 => changed.external_agents[1].args.push("changed".into()),
+                _ => changed.external_agents[1].name = "Z renamed".into(),
             }
             assert_eq!(menu.choice(&id, &agent_menu_entries(&changed, &view)), None);
         }
         let mut disabled = entries;
-        disabled[3].enabled = false;
+        disabled[selected_index].enabled = false;
         let menu = AgentMenuState {
             generation,
             entries: disabled.clone(),
         };
         assert_eq!(menu.choice(&id, &disabled), None);
+    }
+
+    #[test]
+    fn agent_menu_sort_is_stable_ascii_folded_unicode_scalar_order() {
+        let mut config = AppConfig::new(PathBuf::from("/tmp"));
+        let names = [
+            "\u{1f600}",
+            "b",
+            "A",
+            "a",
+            "\u{e000}",
+            "\u{00c4}",
+            "\u{65e5}",
+        ];
+        config.external_agents = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| crate::model::ExternalAgentProfile {
+                id: Uuid::from_u128(index as u128 + 1),
+                name: name.into(),
+                command: "agent".into(),
+                args: vec![],
+            })
+            .collect();
+        let saved = config.clone();
+        let view = TrayMenuPresentation::derive(
+            &AgentSelectionState::default(),
+            &config,
+            &LensState::default(),
+        );
+        let entries = agent_menu_entries(&config, &view);
+        let external_names: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| entry.profile.as_ref().map(|profile| profile.name.as_str()))
+            .collect();
+        assert_eq!(
+            external_names,
+            [
+                "A",
+                "a",
+                "b",
+                "\u{00c4}",
+                "\u{65e5}",
+                "\u{e000}",
+                "\u{1f600}"
+            ]
+        );
+        assert_eq!(config, saved);
     }
 
     #[test]
@@ -2028,8 +2087,6 @@ mod tests {
                 target_selection_active: false,
                 live_lens_active: false,
                 agent_selection_enabled: true,
-                claude_checked: false,
-                codex_checked: true,
                 selected_agent: Some(AgentKind::Codex),
                 working_directory_text: "/Users/example/Work".into(),
             }
@@ -2051,8 +2108,7 @@ mod tests {
             let presentation =
                 TrayMenuPresentation::derive(&unauthenticated, &config, &LensState::default());
             assert!(!presentation.select_target_enabled);
-            assert!(!presentation.claude_checked);
-            assert!(!presentation.codex_checked);
+            assert_eq!(presentation.selected_agent, None);
             assert_eq!(
                 presentation.agent_selection_enabled,
                 matches!(

@@ -62,6 +62,7 @@ tokio = { version = "=1.53.1", features = [
   "time",
 ] }
 uuid.workspace = true
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tokio = { version = "=1.53.1", features = ["test-util"] }

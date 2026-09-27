@@ -22,6 +22,8 @@ use tauri::{AppHandle, Manager};
 use tokio::{io::AsyncWriteExt, process::Command};
 use uuid::Uuid;
 
+mod antigravity;
+
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const REGISTRY_SCHEMA_VERSION: &str = "1.0.0";
 const NODE_VERSION: &str = env!("LENS_NODE_VERSION");
@@ -86,12 +88,19 @@ fn selector_mutex() -> &'static std::sync::Mutex<()> {
     static VALUE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     &VALUE
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DistributionMethod {
+    Npm,
+    GoogleSignedArchive,
+}
+
 #[derive(Clone, Copy)]
 struct Provider {
     kind: AgentKind,
     registry_id: &'static str,
     adapter_name: &'static str,
     bin_name: &'static str,
+    distribution: DistributionMethod,
 }
 fn provider(kind: AgentKind) -> Result<Provider, String> {
     Ok(match kind {
@@ -100,12 +109,21 @@ fn provider(kind: AgentKind) -> Result<Provider, String> {
             registry_id: "claude-acp",
             adapter_name: "@agentclientprotocol/claude-agent-acp",
             bin_name: "claude-agent-acp",
+            distribution: DistributionMethod::Npm,
         },
         AgentKind::Codex => Provider {
             kind,
             registry_id: "codex-acp",
             adapter_name: "@agentclientprotocol/codex-acp",
             bin_name: "codex-acp",
+            distribution: DistributionMethod::Npm,
+        },
+        AgentKind::Antigravity => Provider {
+            kind,
+            registry_id: "antigravity-acp",
+            adapter_name: "antigravity-acp",
+            bin_name: "agy_acp_server.par",
+            distribution: DistributionMethod::GoogleSignedArchive,
         },
         AgentKind::External(_) => {
             return Err("External ACP is externally managed and has no managed distribution".into())
@@ -127,6 +145,8 @@ struct RegistryAgent {
 struct RegistryDistribution {
     #[serde(default)]
     npx: Option<RegistryNpxDistribution>,
+    #[serde(default)]
+    binary: Option<serde_json::Value>,
 }
 #[derive(Debug, Deserialize)]
 struct RegistryNpxDistribution {
@@ -615,11 +635,13 @@ enum ResolutionStatus {
     Existing,
     Candidate,
     UpdateBlockedByReleaseAgePolicy,
+    UpdateBlockedByArchiveAgePolicy,
 }
 
 enum CandidateInstallation {
     Installed(ResolvedAgentRuntime),
     BlockedByReleaseAgePolicy,
+    BlockedByArchiveAgePolicy,
 }
 
 fn select_candidate_or_existing(
@@ -628,6 +650,13 @@ fn select_candidate_or_existing(
 ) -> Result<(ResolvedAgentRuntime, ResolutionStatus), String> {
     match result {
         CandidateInstallation::Installed(runtime) => Ok((runtime, ResolutionStatus::Candidate)),
+        CandidateInstallation::BlockedByArchiveAgePolicy => existing
+            .cloned()
+            .map(|runtime| (runtime, ResolutionStatus::UpdateBlockedByArchiveAgePolicy))
+            .ok_or_else(|| {
+                "The official Antigravity archive has not met the 72-hour archive age policy."
+                    .into()
+            }),
         CandidateInstallation::BlockedByReleaseAgePolicy => existing
             .cloned()
             .map(|runtime| (runtime, ResolutionStatus::UpdateBlockedByReleaseAgePolicy))
@@ -638,6 +667,9 @@ fn select_candidate_or_existing(
 }
 
 fn policy_blocked_update_message(kind: AgentKind, version: &str) -> String {
+    if kind == AgentKind::Antigravity {
+        return format!("The official archive has not met the 72-hour archive age policy. Keeping verified Google Antigravity {version}.");
+    }
     format!(
         "The update could not be installed under the current release age policy. Keeping verified {} {version}.",
         display_name(kind)
@@ -681,7 +713,8 @@ async fn resolve_at<R: tauri::Runtime>(
         }
     }
     let result = async {
-        let version = fetch_registry_version(kind).await?;
+        let release = fetch_registry_release(kind).await?;
+        let version = release.version().to_owned();
         if let Some(runtime) = &existing {
             if version_order(&runtime.adapter_version, &version) != std::cmp::Ordering::Less {
                 return Ok((runtime.clone(), ResolutionStatus::Existing));
@@ -693,23 +726,30 @@ async fn resolve_at<R: tauri::Runtime>(
                 display_name(kind)
             ));
         }
-        let node = ensure_node_runtime(app, root, operation_id).await?;
-        let pnpm = ensure_pnpm_runtime(app, root, &node, operation_id).await?;
-        let candidate = install_requested_candidate(
-            app,
-            root,
-            &node,
-            &pnpm,
-            kind,
-            CandidateRequest::Eligible {
-                ceiling: &version,
-                after: existing
-                    .as_ref()
-                    .map(|runtime| runtime.adapter_version.as_str()),
-            },
-            operation_id,
-        )
-        .await?;
+        let candidate = match release {
+            RegistryRelease::Antigravity(release) => {
+                antigravity::install_candidate(app, root, &release, operation_id).await?
+            }
+            RegistryRelease::Npm(_) => {
+                let node = ensure_node_runtime(app, root, operation_id).await?;
+                let pnpm = ensure_pnpm_runtime(app, root, &node, operation_id).await?;
+                install_requested_candidate(
+                    app,
+                    root,
+                    &node,
+                    &pnpm,
+                    kind,
+                    CandidateRequest::Eligible {
+                        ceiling: &version,
+                        after: existing
+                            .as_ref()
+                            .map(|runtime| runtime.adapter_version.as_str()),
+                    },
+                    operation_id,
+                )
+                .await?
+            }
+        };
         select_candidate_or_existing(candidate, existing.as_ref())
     }
     .await;
@@ -853,7 +893,11 @@ pub async fn update_managed<R: tauri::Runtime>(
                 result.adapter_version,
                 update_defaults_notice(&removed)
             )
-        } else if status == ResolutionStatus::UpdateBlockedByReleaseAgePolicy {
+        } else if matches!(
+            status,
+            ResolutionStatus::UpdateBlockedByReleaseAgePolicy
+                | ResolutionStatus::UpdateBlockedByArchiveAgePolicy
+        ) {
             policy_blocked_update_message(kind, &result.adapter_version)
         } else {
             format!(
@@ -1323,7 +1367,25 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
 }
+enum RegistryRelease {
+    Npm(String),
+    Antigravity(antigravity::Release),
+}
+impl RegistryRelease {
+    fn version(&self) -> &str {
+        match self {
+            Self::Npm(version) => version,
+            Self::Antigravity(release) => &release.version,
+        }
+    }
+}
+
+#[cfg(test)]
 fn validate_registry_entry(bytes: &[u8], kind: AgentKind) -> Result<String, String> {
+    validate_registry_release(bytes, kind).map(|release| release.version().to_owned())
+}
+
+fn validate_registry_release(bytes: &[u8], kind: AgentKind) -> Result<RegistryRelease, String> {
     if bytes.len() > REGISTRY_MAX_BYTES {
         return Err("official ACP Registry response exceeds the supported size".into());
     }
@@ -1343,20 +1405,40 @@ fn validate_registry_entry(bytes: &[u8], kind: AgentKind) -> Result<String, Stri
     if entries.next().is_some() || !valid_version(&entry.version) {
         return Err("invalid or duplicate official ACP Registry entry".into());
     }
-    let distribution = entry
-        .distribution
-        .npx
-        .ok_or("Agent has no supported npm distribution")?;
-    if !distribution.args.is_empty()
-        || !distribution.env.is_empty()
-        || distribution.package != format!("{}@{}", provider.adapter_name, entry.version)
-    {
-        return Err("official ACP Registry package identity mismatch".into());
+    match provider.distribution {
+        DistributionMethod::Npm => {
+            let distribution = entry
+                .distribution
+                .npx
+                .ok_or("Agent has no supported npm distribution")?;
+            if !distribution.args.is_empty()
+                || !distribution.env.is_empty()
+                || distribution.package != format!("{}@{}", provider.adapter_name, entry.version)
+            {
+                return Err("official ACP Registry package identity mismatch".into());
+            }
+        }
+        DistributionMethod::GoogleSignedArchive => {
+            return antigravity::validate_distribution(&entry.version, &entry.distribution)
+                .map(RegistryRelease::Antigravity);
+        }
     }
-    Ok(entry.version)
+    Ok(RegistryRelease::Npm(entry.version))
 }
+#[cfg(test)]
 async fn fetch_registry_version(kind: AgentKind) -> Result<String, String> {
-    let mut response = http_client()?
+    fetch_registry_release(kind)
+        .await
+        .map(|release| release.version().to_owned())
+}
+async fn fetch_registry_release(kind: AgentKind) -> Result<RegistryRelease, String> {
+    let client = match provider(kind)?.distribution {
+        DistributionMethod::Npm => http_client()?,
+        DistributionMethod::GoogleSignedArchive => {
+            http_client_with_redirects(reqwest::redirect::Policy::none())?
+        }
+    };
+    let mut response = client
         .get(REGISTRY_URL)
         .timeout(Duration::from_secs(30))
         .send()
@@ -1377,9 +1459,12 @@ async fn fetch_registry_version(kind: AgentKind) -> Result<String, String> {
         }
         bytes.extend_from_slice(&chunk);
     }
-    validate_registry_entry(&bytes, kind)
+    validate_registry_release(&bytes, kind)
 }
 fn manifest(kind: AgentKind, version: &str) -> Result<Vec<u8>, String> {
+    if provider(kind)?.distribution != DistributionMethod::Npm {
+        return Err("binary distributions do not use an npm manifest".into());
+    }
     if !valid_version(version) {
         return Err("invalid exact Adapter version".into());
     }
@@ -1513,6 +1598,7 @@ async fn verify_runtime_paths(
                 ),
             ]
         }
+        AgentKind::Antigravity => return Err("Antigravity uses its signed archive verifier".into()),
         AgentKind::External(_) => {
             return Err("External ACP has no managed native dependencies".into())
         }
@@ -1524,6 +1610,7 @@ async fn verify_runtime_paths(
     let expected = match kind {
         AgentKind::Claude => version.to_owned(),
         AgentKind::Codex => format!("{} {version}", policy.adapter_name),
+        AgentKind::Antigravity => return Err("Antigravity uses ACP identity verification".into()),
         AgentKind::External(_) => return Err("External ACP has no managed adapter".into()),
     };
     verify_version_command(
@@ -1560,18 +1647,26 @@ async fn load_runtime(
     {
         return Err("managed installation is not a directory".into());
     }
-    let record = read_record(&path, kind)?;
-    let mut runtime = verify_runtime_paths(
-        &node_install_root(root),
-        &path,
-        kind,
-        &record.adapter_version,
-    )
-    .await?;
+    let mut runtime = match provider(kind)?.distribution {
+        DistributionMethod::GoogleSignedArchive => antigravity::verify_installed(&path).await?,
+        DistributionMethod::Npm => {
+            let record = read_record(&path, kind)?;
+            verify_runtime_paths(
+                &node_install_root(root),
+                &path,
+                kind,
+                &record.adapter_version,
+            )
+            .await?
+        }
+    };
     runtime.installation = Some(lease);
     Ok(runtime)
 }
 async fn migrate_legacy(root: &Path, kind: AgentKind) -> Result<(), String> {
+    if provider(kind)?.distribution != DistributionMethod::Npm {
+        return Ok(());
+    }
     let selector = read_selector(root, kind)?;
     if selector.current.is_some() || selector.candidate.is_some() {
         return Ok(());
@@ -2147,6 +2242,9 @@ async fn install_candidate<R: tauri::Runtime>(
     .await?
     {
         CandidateInstallation::Installed(runtime) => Ok(runtime),
+        CandidateInstallation::BlockedByArchiveAgePolicy => {
+            Err("The official archive has not met the 72-hour archive age policy.".into())
+        }
         CandidateInstallation::BlockedByReleaseAgePolicy => {
             Err("The Agent could not be installed under the current release age policy.".into())
         }
@@ -2442,6 +2540,7 @@ async fn verify_code_signature(
         "=anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\" and identifier \"{signing_identifier}\""
     );
     let output = Command::new("/usr/bin/codesign")
+        .kill_on_drop(true)
         .args(["--verify", "--strict", "--test-requirement"])
         .arg(requirement)
         .arg(path)
@@ -2585,8 +2684,12 @@ fn cleanup_staging(root: &Path, staging: &Path) {
 }
 
 fn http_client() -> Result<Client, String> {
+    http_client_with_redirects(reqwest::redirect::Policy::default())
+}
+fn http_client_with_redirects(policy: reqwest::redirect::Policy) -> Result<Client, String> {
     Client::builder()
         .https_only(true)
+        .redirect(policy)
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(300))
         .user_agent(concat!("Lens/", env!("CARGO_PKG_VERSION")))
@@ -2627,9 +2730,28 @@ fn display_name(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "Claude Code",
         AgentKind::Codex => "ChatGPT Codex",
+        AgentKind::Antigravity => "Google Antigravity",
         AgentKind::External(_) => "External ACP",
     }
 }
+#[cfg(test)]
+pub(crate) async fn resolve_antigravity_fixture(
+    root: &Path,
+) -> Result<ResolvedAgentRuntime, String> {
+    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let temp = fs::canonicalize(std::env::temp_dir()).map_err(|error| error.to_string())?;
+    if (!root.starts_with(&temp) && !root.starts_with("/private/tmp"))
+        || !root
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("lens-"))
+    {
+        return Err("Antigravity validation requires a disposable lens-* temporary root".into());
+    }
+    selected_runtime(&root, AgentKind::Antigravity, true)
+        .await?
+        .ok_or_else(|| "the disposable Antigravity fixture is not installed".into())
+}
+
 #[cfg(test)]
 #[path = "agent_update_tests.rs"]
 mod update_tests;

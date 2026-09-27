@@ -517,7 +517,12 @@ fn recovery_window_cannot_invoke_normal_commands_without_app_state() {
 
 #[test]
 fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_selection() {
-    for (external_selected, external_pending) in [(false, false), (true, false), (false, true)] {
+    for (managed, external_selected, external_pending) in
+        AgentKind::MANAGED.into_iter().flat_map(|managed| {
+            [(false, false), (true, false), (false, true)]
+                .map(|(selected, pending)| (managed, selected, pending))
+        })
+    {
         let state = test_support::state();
         let custom_id = Uuid::new_v4();
         let operation = Uuid::new_v4();
@@ -548,7 +553,7 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
             snapshot.config.agent = if external_selected {
                 AgentKind::External(custom_id)
             } else {
-                AgentKind::Codex
+                managed
             };
             snapshot.agent_selection = AgentSelectionState {
                 stage: if external_pending {
@@ -595,6 +600,10 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
             after.config.agent_preferences.codex,
             before.config.agent_preferences.codex
         );
+        assert_eq!(
+            after.config.agent_preferences.antigravity,
+            before.config.agent_preferences.antigravity
+        );
         assert!(!after
             .config
             .agent_preferences
@@ -624,7 +633,7 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
             assert_eq!(after.agent_selection.operation_id, None);
         } else {
             assert_eq!(after.agent_selection, before.agent_selection);
-            assert_eq!(after.config.agent, AgentKind::Codex);
+            assert_eq!(after.config.agent, managed);
         }
         assert_eq!(app.state::<AppState>().store.load(), after.config);
     }

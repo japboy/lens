@@ -1226,6 +1226,7 @@ fn agent_display_name(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Claude => "Claude Code",
         AgentKind::Codex => "ChatGPT Codex",
+        AgentKind::Antigravity => "Google Antigravity",
         AgentKind::External(_) => "External ACP",
     }
 }
@@ -4313,3 +4314,7 @@ mod tests {
 #[cfg(test)]
 #[path = "external_agent_tests.rs"]
 mod external_tests;
+
+#[cfg(test)]
+#[path = "antigravity_agent_tests.rs"]
+mod antigravity_tests;

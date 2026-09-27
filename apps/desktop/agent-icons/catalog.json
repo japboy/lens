@@ -4,7 +4,8 @@
     "claude": "brands/claude.svg",
     "openai": "brands/openai.svg",
     "copilot": "brands/copilot.svg",
-    "robot": "solid/robot.svg"
+    "robot": "solid/robot.svg",
+    "google": "brands/google.svg"
   },
   "rules": [
     {
@@ -18,6 +19,10 @@
     {
       "containsAny": ["copilot", "github"],
       "icon": "copilot"
+    },
+    {
+      "containsAny": ["antigravity"],
+      "icon": "google"
     }
   ],
   "fallback": "robot"

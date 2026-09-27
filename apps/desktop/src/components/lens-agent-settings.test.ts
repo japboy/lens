@@ -72,6 +72,70 @@ it("uses one Agent menu and keeps managed agents non-deletable", async () => {
   expect(button(element, "Delete Preset")).toBeUndefined();
   await choose(element, "codex");
   expect(button(element, "Delete Preset")).toBeUndefined();
+  await choose(element, "antigravity");
+  expect(command(element)).toBeNull();
+  expect(button(element, "Delete Preset")).toBeUndefined();
+});
+it("selects Antigravity as a managed runtime and preserves external presets", async () => {
+  const { element, intents } = await mount();
+  const presets = structuredClone(element.profiles);
+  await choose(element, "antigravity");
+  expect(intents.at(-1)).toEqual({ type: "select", agent: "antigravity" });
+  element.selection = { ...element.selection!, candidate: "antigravity" };
+  element.runtime = { agent: "antigravity", stage: "not_installed", downloaded_bytes: 0 };
+  await element.updateComplete;
+  expect(command(element)).toBeNull();
+  expect(button(element, "Delete Preset")).toBeUndefined();
+  button(element, "Install").click();
+  expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "antigravity" });
+  element.runtime = {
+    agent: "antigravity",
+    stage: "ready",
+    downloaded_bytes: 0,
+    current_version: "1.2.1",
+  };
+  await element.updateComplete;
+  button(element, "Update").click();
+  expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "antigravity" });
+  expect(element.profiles).toEqual(presets);
+});
+it("sorts all Agent choices without reordering saved presets or changing duplicate identities", async () => {
+  const element = new LensAgentSettings();
+  element.selection = { stage: "unselected", supports_logout: false, auth_methods: [] };
+  element.runtime = { stage: "not_installed", downloaded_bytes: 0 };
+  element.profiles = ["zulu", "alpha", "Alpha", "alpha", "\u{00c4}", "\u{10000}", "\u{e000}"].map(
+    (name, index) => ({
+      id: `profile-${index}`,
+      name,
+      command: index === 1 ? "/z-agent" : "/a-agent",
+      args: [],
+    }),
+  );
+  const saved = structuredClone(element.profiles);
+  const intents: AgentIntent[] = [];
+  element.addEventListener("lens-agent-intent", (event) =>
+    intents.push((event as CustomEvent<AgentIntent>).detail),
+  );
+  document.body.append(element);
+  await element.updateComplete;
+  const selector = element.querySelector<LensSelect>("lens-select")!;
+  expect(selector.options.map((option) => option.value)).toEqual([
+    "profile-1",
+    "profile-2",
+    "profile-3",
+    "codex",
+    "claude",
+    "antigravity",
+    "profile-0",
+    "profile-4",
+    "profile-6",
+    "profile-5",
+  ]);
+  expect(element.profiles).toEqual(saved);
+  expect(intents).toEqual([]);
+  await choose(element, "profile-3");
+  expect(intents).toEqual([{ type: "select", agent: { external: "profile-3" } }]);
+  expect(command(element).value).toBe("/a-agent");
 });
 it("keeps external ACP editing and runtime status in one Agent card", async () => {
   const { element } = await mount();
@@ -422,9 +486,10 @@ it("renders both first-run external presets with managed agents in the single se
   expect(element.querySelectorAll("lens-select")).toHaveLength(1);
   const selector = element.querySelector<LensSelect>("lens-select")!;
   expect(selector.options.map((option) => option.label)).toEqual([
-    "Claude Code",
     "ChatGPT Codex",
+    "Claude Code",
     "GitHub Copilot",
+    "Google Antigravity",
     "Goose",
   ]);
   expect(intents).toEqual([]);
@@ -455,7 +520,7 @@ it("resets saved edits and unsaved drafts only after acceptance and invalidates 
     element
       .querySelector<LensSelect>("lens-select")!
       .shadowRoot!.querySelectorAll('[role="option"]'),
-  ).toHaveLength(3);
+  ).toHaveLength(4);
   expect(intents).toHaveLength(count);
   await choose(element, "profile-1");
   expect(command(element).value).toBe("goose");

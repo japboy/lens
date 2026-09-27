@@ -10,6 +10,7 @@ enum AgentIcon {
     Openai,
     Copilot,
     Robot,
+    Google,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +50,7 @@ pub(crate) fn icon_png(name: &str) -> &'static [u8] {
         AgentIcon::Openai => include_bytes!("../../agent-icons/openai.png"),
         AgentIcon::Copilot => include_bytes!("../../agent-icons/copilot.png"),
         AgentIcon::Robot => include_bytes!("../../agent-icons/robot.png"),
+        AgentIcon::Google => include_bytes!("../../agent-icons/google.png"),
     }
 }
 

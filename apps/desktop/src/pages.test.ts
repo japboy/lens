@@ -1441,7 +1441,9 @@ describe("Lens Settings", () => {
       await agentMenu.updateComplete;
       agentMenu.shadowRoot!.querySelector<HTMLButtonElement>("button")!.click();
       await agentMenu.updateComplete;
-      agentMenu.shadowRoot!.querySelector<HTMLElement>('[data-index="0"]')!.click();
+      const claudeIndex = agentMenu.options.findIndex((option) => option.value === "claude");
+      expect(claudeIndex).toBeGreaterThanOrEqual(0);
+      agentMenu.shadowRoot!.querySelector<HTMLElement>(`[data-index="${claudeIndex}"]`)!.click();
 
       await vi.waitFor(() => {
         const feedback = settingsRoot?.querySelector(
@@ -1676,8 +1678,8 @@ it.each(["cancel", "success", "failure"] as const)(
           ].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
-            ? ["Claude Code", "ChatGPT Codex", "GitHub Copilot", "Goose"]
-            : ["Claude Code", "ChatGPT Codex", "New preset (unsaved)"],
+            ? ["ChatGPT Codex", "Claude Code", "GitHub Copilot", "Google Antigravity", "Goose"]
+            : ["ChatGPT Codex", "Claude Code", "Google Antigravity", "New preset (unsaved)"],
         );
       });
       expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());

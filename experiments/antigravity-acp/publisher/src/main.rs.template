@@ -1,0 +1,96 @@
+//! Private JSONL controller for the production HTTP publisher. Never tee stdout.
+use adapter_output_mcp::{HttpPublisher, ServerError, TurnPublication};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum Command {
+    Start,
+    Begin { turn_id: Uuid },
+    Finish,
+    Abort,
+    ValidateInitialize { response: Value },
+    Quit,
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), ServerError> {
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut output = tokio::io::stdout();
+    let mut publisher: Option<HttpPublisher> = None;
+    let mut turn: Option<TurnPublication> = None;
+    while let Some(line) = lines.next_line().await? {
+        let command = serde_json::from_str::<Command>(&line);
+        let quit = matches!(command, Ok(Command::Quit));
+        let result = match command {
+            Ok(command) => execute(command, &mut publisher, &mut turn).await,
+            Err(_) => Err("invalid controller command".into()),
+        };
+        let response = match result {
+            Ok(value) => value,
+            Err(error) => json!({"ok": false, "error": error.to_string()}),
+        };
+        output
+            .write_all(serde_json::to_string(&response)?.as_bytes())
+            .await?;
+        output.write_all(b"\n").await?;
+        output.flush().await?;
+        if quit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn execute(
+    command: Command,
+    publisher: &mut Option<HttpPublisher>,
+    turn: &mut Option<TurnPublication>,
+) -> Result<Value, ServerError> {
+    match command {
+        Command::Start => {
+            if publisher.is_some() {
+                return Err("publisher already started".into());
+            }
+            let instance = HttpPublisher::start().await?;
+            let response = json!({
+                "ok": true,
+                "endpoint_url": instance.endpoint_url(),
+                "authorization_header": instance.authorization_header(),
+            });
+            *publisher = Some(instance);
+            Ok(response)
+        }
+        Command::Begin { turn_id } => {
+            if turn.is_some() {
+                return Err("turn already active".into());
+            }
+            *turn = Some(
+                publisher
+                    .as_ref()
+                    .ok_or("publisher not started")?
+                    .begin_turn(turn_id)?,
+            );
+            Ok(json!({"ok": true}))
+        }
+        Command::Finish => {
+            let publication = turn.take().ok_or("no active turn")?.finish()?;
+            Ok(
+                json!({"ok": true, "publication": publication.map(|p| json!({"id": p.id, "html": p.html}))}),
+            )
+        }
+        Command::Abort => {
+            *turn = None;
+            Ok(json!({"ok": true}))
+        }
+        Command::ValidateInitialize { response } => {
+            let parsed: agent_client_protocol_schema::v1::InitializeResponse =
+                serde_json::from_value(response)?;
+            Ok(json!({"ok": true, "schema_version": "1.7.0", "parsed": parsed}))
+        }
+        Command::Quit => Ok(json!({"ok": true})),
+    }
+}
