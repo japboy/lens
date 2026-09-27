@@ -38,7 +38,7 @@ use agent_client_protocol::{
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Stdio},
@@ -50,6 +50,8 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+const CLAUDE_AUTH_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const CLAUDE_AUTH_STDOUT_MAX_BYTES: usize = 1024 * 1024;
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -815,7 +817,6 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
     let expected_config = app.state::<AppState>().config().map_err(state_error)?;
     let catalog_runtime = descriptor.runtime();
     let claude_authenticated = if descriptor.kind == AgentKind::Claude {
-        let status_descriptor = descriptor.clone();
         let home = crate::agent_environment::user_home()
             .map_err(|error| state_error(error.to_string()))?;
         let environment =
@@ -823,12 +824,9 @@ async fn probe_agent_authentication<R: tauri::Runtime>(
                 .await
                 .map_err(|error| state_error(error.to_string()))?;
         Some(
-            tauri::async_runtime::spawn_blocking(move || {
-                claude_cli_authentication_status(&status_descriptor, environment)
-            })
-            .await
-            .map_err(|error| state_error(error.to_string()))?
-            .map_err(state_error)?,
+            claude_cli_authentication_status(&descriptor, environment)
+                .await
+                .map_err(state_error)?,
         )
     } else {
         None
@@ -1047,21 +1045,38 @@ pub(crate) enum ManagedVerificationError {
     Retryable(String),
 }
 
-fn claude_cli_authentication_status(
+async fn claude_cli_authentication_status(
     descriptor: &AgentDescriptor,
     environment: crate::agent_environment::ResolvedEnvironment,
 ) -> Result<bool, String> {
+    let mut command = claude_authentication_command(descriptor, environment)?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("unable to inspect Claude Code authentication status: {error}"))?;
+    // The deadline covers waiting and output collection after synchronous spawn.
+    let deadline = tokio::time::Instant::now() + CLAUDE_AUTH_STATUS_TIMEOUT;
+    let stdout = child.stdout.take().expect("authentication stdout is piped");
+    let (process_status, stdout) = supervise_claude_authentication(child, stdout, deadline)
+        .await
+        .map_err(|_| "Claude Code authentication status supervisor stopped".to_string())??;
+    parse_claude_authentication_status(process_status, &stdout)
+}
+
+fn claude_authentication_command(
+    descriptor: &AgentDescriptor,
+    environment: crate::agent_environment::ResolvedEnvironment,
+) -> Result<tokio::process::Command, String> {
     if descriptor.kind != AgentKind::Claude {
         return Err("Claude Code authentication status requires the Claude Code adapter".into());
     }
-    let mut command = Command::new(&descriptor.command);
+    let mut command = tokio::process::Command::new(&descriptor.command);
     crate::agent_environment::bind_directory(
-        &mut command,
+        command.as_std_mut(),
         &environment.cwd,
         (environment.cwd_device, environment.cwd_inode),
     )
     .map_err(|error| error.to_string())?;
-    let mut child = command
+    command
         .args(&descriptor.args)
         .args(["--cli", "auth", "status", "--json"])
         .env_clear()
@@ -1070,33 +1085,89 @@ fn claude_cli_authentication_status(
         .env("NODE_PATH", "")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("unable to inspect Claude Code authentication status: {error}"))?;
-    let deadline = Instant::now() + CLAUDE_AUTH_STATUS_TIMEOUT;
-    let process_status = loop {
-        if let Some(status) = child.try_wait().map_err(|error| {
-            format!("unable to wait for Claude Code authentication status: {error}")
-        })? {
-            break status;
+        // Supplementary protection if the runtime itself shuts down.
+        .kill_on_drop(true);
+    Ok(command)
+}
+
+type ClaudeAuthenticationOutput = Result<(std::process::ExitStatus, Vec<u8>), String>;
+
+fn supervise_claude_authentication(
+    mut child: tokio::process::Child,
+    stdout: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    deadline: tokio::time::Instant,
+) -> tokio::sync::oneshot::Receiver<ClaudeAuthenticationOutput> {
+    let (mut sender, receiver) = tokio::sync::oneshot::channel();
+    // The supervisor owns the direct child even if its caller is cancelled.
+    // Closing the receiver requests cleanup; it never aborts the cleanup task.
+    tokio::spawn(async move {
+        let result = tokio::select! {
+            biased;
+            _ = sender.closed() => Err("Claude Code authentication status cancelled".into()),
+            result = tokio::time::timeout_at(deadline, collect_claude_authentication(&mut child, stdout)) => {
+                result.unwrap_or_else(|_| Err("Claude Code authentication status timed out".into()))
+            }
+        };
+        let result = if let Err(error) = result {
+            let cleanup_error =
+                match tokio::time::timeout(CLAUDE_AUTH_CLEANUP_TIMEOUT, child.kill()).await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(cleanup)) => Some(format!(
+                        "unable to terminate/reap authentication child: {cleanup}"
+                    )),
+                    Err(_) => {
+                        Some("authentication child cleanup timed out after 2 seconds".to_string())
+                    }
+                };
+            if let Some(cleanup_error) = cleanup_error {
+                // Preserve exceptional cleanup diagnostics even after caller cancellation.
+                eprintln!("{cleanup_error}");
+                Err(format!("{error}; {cleanup_error}"))
+            } else {
+                Err(error)
+            }
+        } else {
+            result
+        };
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+async fn collect_claude_authentication(
+    child: &mut tokio::process::Child,
+    stdout: impl tokio::io::AsyncRead + Unpin,
+) -> ClaudeAuthenticationOutput {
+    use tokio::io::AsyncReadExt;
+    let read = async {
+        let mut bytes = Vec::new();
+        stdout
+            .take((CLAUDE_AUTH_STDOUT_MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|error| {
+                format!("unable to read Claude Code authentication status: {error}")
+            })?;
+        if bytes.len() > CLAUDE_AUTH_STDOUT_MAX_BYTES {
+            return Err(format!("Claude Code authentication status stdout exceeds {CLAUDE_AUTH_STDOUT_MAX_BYTES} bytes"));
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("Claude Code authentication status timed out after 15 seconds".into());
-        }
-        std::thread::sleep(Duration::from_millis(50));
+        Ok(bytes)
     };
-    let mut stdout = Vec::new();
-    child
-        .stdout
-        .take()
-        .ok_or_else(|| "Claude Code authentication status stdout is unavailable".to_string())?
-        .read_to_end(&mut stdout)
-        .map_err(|error| format!("unable to read Claude Code authentication status: {error}"))?;
-    let status =
-        serde_json::from_slice::<ClaudeAuthenticationStatus>(&stdout).map_err(|error| {
-            format!("Claude Code authentication status returned invalid JSON: {error}")
-        })?;
+    let wait = async {
+        child.wait().await.map_err(|error| {
+            format!("unable to wait for Claude Code authentication status: {error}")
+        })
+    };
+    tokio::try_join!(wait, read)
+}
+
+fn parse_claude_authentication_status(
+    process_status: std::process::ExitStatus,
+    stdout: &[u8],
+) -> Result<bool, String> {
+    let status = serde_json::from_slice::<ClaudeAuthenticationStatus>(stdout).map_err(|error| {
+        format!("Claude Code authentication status returned invalid JSON: {error}")
+    })?;
     if status.logged_in && !process_status.success() {
         return Err(format!(
             "Claude Code authentication status reported logged in but exited with {process_status}"
@@ -4318,3 +4389,231 @@ mod external_tests;
 #[cfg(test)]
 #[path = "antigravity_agent_tests.rs"]
 mod antigravity_tests;
+
+#[cfg(test)]
+mod claude_authentication_tests {
+    use super::*;
+    use std::os::unix::{fs::MetadataExt, process::ExitStatusExt};
+    use tokio::time::{timeout, Instant as TokioInstant};
+
+    fn fixture(script: &str) -> tokio::process::Child {
+        tokio::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+
+    fn supervise(
+        mut child: tokio::process::Child,
+        limit: Duration,
+    ) -> (
+        u32,
+        tokio::sync::oneshot::Receiver<ClaudeAuthenticationOutput>,
+    ) {
+        let pid = child.id().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        (
+            pid,
+            supervise_claude_authentication(child, stdout, TokioInstant::now() + limit),
+        )
+    }
+
+    async fn assert_reaped(pid: u32) {
+        timeout(Duration::from_secs(3), async {
+            loop {
+                // kill(0) does not reap: a zombie remains visible until wait runs.
+                if unsafe { libc::kill(pid as i32, 0) } == -1 {
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::ESRCH)
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("direct child must terminate and be reaped");
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[tokio::test]
+    async fn stdout_above_pipe_capacity_is_drained_while_waiting() {
+        let (pid, receiver) = supervise(
+            fixture("/usr/bin/head -c 262144 /dev/zero"),
+            Duration::from_secs(5),
+        );
+        let (status, stdout) = receiver.await.unwrap().unwrap();
+        assert!(status.success());
+        assert_eq!(stdout.len(), 262144);
+        assert_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn hung_child_times_out_and_is_reaped() {
+        let (pid, receiver) = supervise(fixture("exec /bin/sleep 30"), Duration::from_millis(100));
+        let error = timeout(Duration::from_secs(3), receiver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(!error.contains("cleanup"), "{error}");
+        assert_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn inherited_stdout_is_inside_the_deadline() {
+        // Only the direct shell is owned; its descendant exits on its own shortly.
+        let (pid, receiver) =
+            supervise(fixture("/bin/sleep 2 & exit 0"), Duration::from_millis(100));
+        let error = timeout(Duration::from_secs(1), receiver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(!error.contains("cleanup"), "{error}");
+        assert_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_still_terminates_and_reaps() {
+        let (pid, receiver) = supervise(fixture("exec /bin/sleep 30"), Duration::from_secs(15));
+        tokio::task::yield_now().await;
+        drop(receiver);
+        assert_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn oversized_stdout_is_rejected_and_child_reaped() {
+        let (pid, receiver) = supervise(fixture("exec /usr/bin/yes x"), Duration::from_secs(5));
+        let error = receiver.await.unwrap().unwrap_err();
+        assert!(error.contains("stdout exceeds 1048576 bytes"), "{error}");
+        assert_reaped(pid).await;
+    }
+
+    struct FailedRead;
+    impl tokio::io::AsyncRead for FailedRead {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("fixture read error")))
+        }
+    }
+
+    #[tokio::test]
+    async fn read_error_terminates_and_reaps_the_child() {
+        let mut child = fixture("exec /bin/sleep 30");
+        let pid = child.id().unwrap();
+        drop(child.stdout.take());
+        let error = supervise_claude_authentication(
+            child,
+            FailedRead,
+            TokioInstant::now() + Duration::from_secs(5),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error.contains("unable to read"), "{error}");
+        assert_reaped(pid).await;
+    }
+
+    #[tokio::test]
+    async fn exact_stdout_limit_is_accepted() {
+        let (pid, receiver) = supervise(
+            fixture("exec /usr/bin/head -c 1048576 /dev/zero"),
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            receiver.await.unwrap().unwrap().1.len(),
+            CLAUDE_AUTH_STDOUT_MAX_BYTES
+        );
+        assert_reaped(pid).await;
+    }
+
+    #[test]
+    fn json_and_exit_contracts_are_preserved() {
+        let success = std::process::ExitStatus::from_raw(0);
+        let failure = std::process::ExitStatus::from_raw(256);
+        assert!(parse_claude_authentication_status(success, br#"{"loggedIn":true}"#).unwrap());
+        assert!(!parse_claude_authentication_status(failure, br#"{"loggedIn":false}"#).unwrap());
+        assert!(
+            parse_claude_authentication_status(failure, br#"{"loggedIn":true}"#)
+                .unwrap_err()
+                .contains("exited with")
+        );
+        for invalid in [b"not json".as_slice(), b"{}", br#"{"loggedIn":"true"}"#] {
+            assert!(parse_claude_authentication_status(success, invalid)
+                .unwrap_err()
+                .contains("invalid JSON"));
+        }
+    }
+
+    fn descriptor(script: String) -> AgentDescriptor {
+        AgentDescriptor {
+            kind: AgentKind::Claude,
+            adapter_name: "test",
+            adapter_version: "test".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            installation: None,
+        }
+    }
+
+    fn environment(path: &std::path::Path) -> crate::agent_environment::ResolvedEnvironment {
+        let metadata = path.metadata().unwrap();
+        crate::agent_environment::ResolvedEnvironment {
+            values: [
+                ("LENS_AUTH_FIXTURE", "retained"),
+                ("NODE_OPTIONS", "disallowed"),
+                ("NODE_PATH", "disallowed"),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect(),
+            cwd: path.into(),
+            generation: Uuid::new_v4(),
+            cwd_device: metadata.dev(),
+            cwd_inode: metadata.ino(),
+            purpose: EnvironmentPurpose::AccountStatus,
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_command_keeps_bound_cwd_and_restricted_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("marker"), b"fixture").unwrap();
+        let command = descriptor(r#"test -f marker && test "$LENS_AUTH_FIXTURE" = retained && test -z "$NODE_OPTIONS" && test -z "$NODE_PATH" && test -z "$HOME" && printf '{"loggedIn":true}'"#.into());
+        assert!(
+            claude_cli_authentication_status(&command, environment(dir.path()))
+                .await
+                .unwrap()
+        );
+        let mut invalid = environment(dir.path());
+        invalid.cwd_inode += 1;
+        assert!(claude_authentication_command(&command, invalid).is_err());
+        let original = dir.path().join("original");
+        let moved = dir.path().join("moved");
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("marker"), b"fixture").unwrap();
+        let mut bound = claude_authentication_command(&command, environment(&original)).unwrap();
+        fs::rename(&original, moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        // Spawn still uses the retained directory, not its replacement pathname.
+        assert!(bound.output().await.unwrap().status.success());
+    }
+}
