@@ -1,3 +1,4 @@
+import { MANAGED_AGENTS } from "../types";
 import { agentIcon } from "../agent-icons";
 import "./lens-select";
 import type { LensSelect } from "./lens-select";
@@ -13,6 +14,7 @@ import type {
 import {
   AGENT_RUNTIME_LABEL,
   agentLabel,
+  compareAgentNames,
   sameAgent,
   AGENT_SELECTION_LABEL,
   isAgentRuntimeActive,
@@ -171,21 +173,27 @@ export class LensAgentSettings extends LitElement {
             .disabled=${controlsDisabled}
             .value=${this.editingId ?? this.managedSelection}
             .options=${[
-              { value: "claude", label: agentLabel("claude"), icon: agentIcon("Claude") },
-              { value: "codex", label: agentLabel("codex"), icon: agentIcon("Codex") },
+              ...MANAGED_AGENTS.map((agent) => ({
+                value: agent,
+                sortName: agentLabel(agent),
+                label: agentLabel(agent),
+                icon: agentIcon(agentLabel(agent)),
+              })),
               ...Object.values(this.drafts).map((profile) => ({
                 value: profile.id,
+                sortName: profile.name || "New preset",
                 icon: agentIcon(profile.name),
                 label: `${profile.name || "New preset"}${this.profiles.some((saved) => saved.id === profile.id) ? (Object.values(this.drafts).filter((other) => other.name === profile.name).length > 1 ? ` — ${profile.command}` : "") : " (unsaved)"}`,
               })),
-            ]}
+            ].sort((left, right) => compareAgentNames(left.sortName, right.sortName))}
             @change=${(event: Event) => {
               const value = (event.target as LensSelect).value;
               this.draftRevision += 1;
               this.activeHelp = undefined;
-              this.editingId = value === "claude" || value === "codex" ? undefined : value;
-              if (!this.editingId) this.managedSelection = value as ManagedAgentKind;
-              if (!this.editingId) this.emit({ type: "select", agent: value as ManagedAgentKind });
+              const managed = MANAGED_AGENTS.find((agent) => agent === value);
+              this.editingId = managed ? undefined : value;
+              if (managed) this.managedSelection = managed;
+              if (managed) this.emit({ type: "select", agent: managed });
               else if (this.profiles.some((profile) => profile.id === value))
                 this.emit({ type: "select", agent: { external: value } });
             }}

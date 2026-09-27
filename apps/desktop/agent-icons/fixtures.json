@@ -12,6 +12,10 @@
     "icon": "openai"
   },
   {
+    "name": "ChatGPT",
+    "icon": "openai"
+  },
+  {
     "name": "OpenAI local",
     "icon": "openai"
   },
@@ -36,7 +40,7 @@
     "icon": "openai"
   },
   {
-    "name": "ＣＬＡＵＤＥ",
+    "name": "\uff23\uff2c\uff21\uff35\uff24\uff25",
     "icon": "robot"
   },
   {
@@ -44,7 +48,7 @@
     "icon": "claude"
   },
   {
-    "name": "cLaUKde",
+    "name": "cLaU\u212ade",
     "icon": "robot"
   },
   {
@@ -70,5 +74,33 @@
   {
     "name": "GitHub OpenAI",
     "icon": "openai"
+  },
+  {
+    "name": "Google Antigravity",
+    "icon": "google"
+  },
+  {
+    "name": "Antigravity",
+    "icon": "google"
+  },
+  {
+    "name": "My AnTiGrAvItY Agent",
+    "icon": "google"
+  },
+  {
+    "name": "Antigravity Claude",
+    "icon": "claude"
+  },
+  {
+    "name": "Antigravity Codex",
+    "icon": "openai"
+  },
+  {
+    "name": "Antigravity GitHub",
+    "icon": "copilot"
+  },
+  {
+    "name": "Google",
+    "icon": "google"
   }
 ]

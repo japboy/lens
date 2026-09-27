@@ -57,12 +57,13 @@ pub(crate) fn source(config: &AppConfig, agent: AgentKind) -> Result<HistorySour
         }
         AgentKind::Claude => "managed-claude-v1".into(),
         AgentKind::Codex => "managed-codex-v1".into(),
+        AgentKind::Antigravity => "managed-antigravity-v1".into(),
     };
     Ok(HistorySource { agent, invocation })
 }
 
 pub(crate) fn sources(config: &AppConfig) -> Result<Vec<HistorySource>, String> {
-    [AgentKind::Claude, AgentKind::Codex]
+    AgentKind::MANAGED
         .into_iter()
         .chain(
             config
@@ -104,4 +105,31 @@ pub(crate) fn now() -> String {
 pub(crate) fn directory(cwd: &Path) -> Result<&str, String> {
     cwd.to_str()
         .ok_or_else(|| "History requires a UTF-8 working directory".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_history_namespaces_are_stable_and_distinct_from_external_antigravity() {
+        let mut config = AppConfig::new("/fixture".into());
+        config.external_agents[0].name = "Google Antigravity".into();
+        let managed = [
+            (AgentKind::Claude, "managed-claude-v1"),
+            (AgentKind::Codex, "managed-codex-v1"),
+            (AgentKind::Antigravity, "managed-antigravity-v1"),
+        ];
+        for (agent, invocation) in managed {
+            assert_eq!(source(&config, agent).unwrap().invocation, invocation);
+        }
+        let all = sources(&config).unwrap();
+        assert_eq!(all.len(), 3 + config.external_agents.len());
+        assert_eq!(all[2].agent, AgentKind::Antigravity);
+        assert_ne!(all[2], all[3]);
+        assert_eq!(
+            all[3].agent,
+            AgentKind::External(config.external_agents[0].id)
+        );
+    }
 }

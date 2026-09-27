@@ -204,13 +204,15 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             .map(|value| match value.as_str() {
                 "claude" => model::AgentKind::Claude,
                 "codex" => model::AgentKind::Codex,
-                _ => panic!("LENS_VALIDATE_RUNTIME must be claude or codex"),
+                "antigravity" => model::AgentKind::Antigravity,
+                _ => panic!("LENS_VALIDATE_RUNTIME must be claude, codex or antigravity"),
             });
     let validation_agent = std::env::var("LENS_VALIDATE_AGENT")
         .ok()
         .and_then(|value| match value.as_str() {
             "claude" => Some(model::AgentKind::Claude),
             "codex" => Some(model::AgentKind::Codex),
+            "antigravity" => Some(model::AgentKind::Antigravity),
             _ => None,
         });
     let validation_cancel_after = std::env::var("LENS_VALIDATE_CANCEL_AFTER_MS")

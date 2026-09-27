@@ -1,4 +1,5 @@
-export type ManagedAgentKind = "claude" | "codex";
+export const MANAGED_AGENTS = ["claude", "codex", "antigravity"] as const;
+export type ManagedAgentKind = (typeof MANAGED_AGENTS)[number];
 export type AgentKind = ManagedAgentKind | { external: string };
 export interface ExternalAgentDraft {
   id: string;

@@ -4,7 +4,7 @@
 
 <h1 align="center">Lens</h1>
 
-Lens is a macOS menu bar app that helps you understand what you are reading. Select up to four application windows, and Claude or Codex turns their content into an **Interpretation**: a summary, an explanation, or another form suited to you.
+Lens is a macOS menu bar app that helps you understand what you are reading. Select up to four application windows, and an Agent such as ChatGPT Codex, Claude Code, or Google Antigravity turns their content into an **Interpretation**: a summary, an explanation, or another form suited to you.
 
 ## Why Lens?
 
@@ -25,16 +25,18 @@ Settings are stored in `~/Library/Application Support/com.github.japboy.lens/set
 You will need:
 
 - An Apple silicon Mac running macOS 15.2 or later.
-- Access to Claude or Codex and an internet connection.
+- Access to ChatGPT Codex, Claude Code, Google Antigravity, or another compatible Agent, and an internet connection.
 - Accessibility permission to read window content. The macOS window picker authorizes image capture for the windows you select.
 
 ## How to use
 
 1. Open Lens, then right-click its menu bar icon and choose **Settings...**.
-2. Under **Agent → Connection**, choose **Claude** or **Codex**. Lens downloads the required Agent software on first selection; follow the authentication prompts and allow the requested macOS permissions.
+2. Under **Agent → Connection**, choose **ChatGPT Codex**, **Claude Code**, or **Google Antigravity**. Lens downloads the required Agent software on first selection; follow the authentication prompts and allow the requested macOS permissions.
 3. Click the menu bar icon to select a window. Use **+** in the preview to add more windows, up to four, then click the checkmark to start.
 4. Read the result in **Interpretation**. Open **Source** to inspect the content sent to the Agent.
 5. Use **Pause Updates** and **Resume Updates** to control automatic updates. Close the Lens window to stop; click the menu bar icon again to select new windows.
+
+You can also connect any other Agent that supports the Agent Client Protocol (ACP) and HTTP MCP: install its CLI separately, then use **Add Preset** under **Settings → Agent → Connection** to configure its executable and arguments.
 
 Automatic updates are spaced at least three minutes apart.
 

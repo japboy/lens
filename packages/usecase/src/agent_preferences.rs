@@ -53,6 +53,7 @@ pub struct AgentDefaults {
 pub struct AgentPreferences {
     pub claude: AgentDefaults,
     pub codex: AgentDefaults,
+    pub antigravity: AgentDefaults,
     pub external: std::collections::BTreeMap<uuid::Uuid, AgentDefaults>,
 }
 impl AgentPreferences {
@@ -60,6 +61,7 @@ impl AgentPreferences {
         match kind {
             AgentKind::Claude => &self.claude,
             AgentKind::Codex => &self.codex,
+            AgentKind::Antigravity => &self.antigravity,
             AgentKind::External(id) => self.external.get(&id).unwrap_or_else(|| {
                 static DEFAULT: std::sync::LazyLock<AgentDefaults> =
                     std::sync::LazyLock::new(AgentDefaults::default);
@@ -71,6 +73,7 @@ impl AgentPreferences {
         match kind {
             AgentKind::Claude => self.claude = defaults,
             AgentKind::Codex => self.codex = defaults,
+            AgentKind::Antigravity => self.antigravity = defaults,
             AgentKind::External(id) => {
                 self.external.insert(id, defaults);
             }
@@ -81,6 +84,38 @@ impl AgentPreferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_preferences_gain_isolated_antigravity_defaults() {
+        let external_id = uuid::Uuid::from_u128(1);
+        let legacy = serde_json::json!({
+            "claude": {"choices":[{"config_id":"model","value":"claude-model"}]},
+            "codex": {"tools":{"execute":"allow"}},
+            "external": {external_id.to_string(): {"tools":{"edit":"allow"}}}
+        });
+        let mut preferences: AgentPreferences = serde_json::from_value(legacy).unwrap();
+        assert_eq!(preferences.antigravity, AgentDefaults::default());
+        let before = preferences.clone();
+        preferences.set(
+            AgentKind::Antigravity,
+            AgentDefaults {
+                choices: vec![SavedChoice {
+                    config_id: "model".into(),
+                    value: "gemini-model".into(),
+                }],
+                ..Default::default()
+            },
+        );
+        let restored: AgentPreferences =
+            serde_json::from_value(serde_json::to_value(&preferences).unwrap()).unwrap();
+        assert_eq!(restored, preferences);
+        assert_eq!(restored.claude, before.claude);
+        assert_eq!(restored.codex, before.codex);
+        assert_eq!(restored.external, before.external);
+        assert_eq!(
+            restored.get(AgentKind::Antigravity).choices[0].value,
+            "gemini-model"
+        );
+    }
     #[test]
     fn defaults_round_trip_without_changing_other_agents_or_legacy_policy() {
         let mut preferences: AgentPreferences = serde_json::from_str("{}").unwrap();

@@ -17,10 +17,13 @@ use crate::platform::WindowPickerReply;
 pub enum AgentKind {
     Claude,
     Codex,
+    Antigravity,
     External(Uuid),
 }
 
 impl AgentKind {
+    pub const MANAGED: [Self; 3] = [Self::Claude, Self::Codex, Self::Antigravity];
+
     pub fn is_external(self) -> bool {
         matches!(self, Self::External(_))
     }
@@ -1025,6 +1028,10 @@ mod tests {
     fn external_profiles_preserve_managed_wire_and_reject_invalid_catalogs() {
         assert_eq!(serde_json::to_value(AgentKind::Claude).unwrap(), "claude");
         assert_eq!(serde_json::to_value(AgentKind::Codex).unwrap(), "codex");
+        assert_eq!(
+            serde_json::to_value(AgentKind::Antigravity).unwrap(),
+            "antigravity"
+        );
         let id = Uuid::from_u128(1);
         let profile = ExternalAgentProfile {
             id,
@@ -1056,6 +1063,24 @@ mod tests {
         assert!(config.same_execution_config(&renamed));
         renamed.external_agents[0].args.push("--changed".into());
         assert!(!config.same_execution_config(&renamed));
+    }
+
+    #[test]
+    fn managed_antigravity_and_legacy_settings_preserve_agent_identity() {
+        for agent in AgentKind::MANAGED {
+            let mut config = AppConfig::new("/fixture".into());
+            config.agent = agent;
+            let mut wire = serde_json::to_value(&config).unwrap();
+            wire["agent_preferences"]
+                .as_object_mut()
+                .unwrap()
+                .remove("antigravity");
+            let restored =
+                AppConfig::decode_settings(&serde_json::to_vec(&wire).unwrap(), "/fixture".into())
+                    .unwrap();
+            assert_eq!(restored, config);
+            assert!(!restored.agent.is_external());
+        }
     }
     #[test]
     fn initial_external_profiles_have_stable_distinct_ids_and_literal_commands() {

@@ -18,7 +18,20 @@ import type {
 export const AGENT_LABEL: Record<ManagedAgentKind, string> = {
   claude: "Claude Code",
   codex: "ChatGPT Codex",
+  antigravity: "Google Antigravity",
 };
+
+/** ASCII case folding, then Unicode scalar order, matching Rust str ordering. */
+export function compareAgentNames(left: string, right: string): number {
+  const fold = (name: string) => [...name.replace(/[A-Z]/g, (letter) => letter.toLowerCase())];
+  const a = fold(left);
+  const b = fold(right);
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    const difference = a[index]!.codePointAt(0)! - b[index]!.codePointAt(0)!;
+    if (difference !== 0) return difference;
+  }
+  return a.length - b.length;
+}
 
 export function sameAgent(a: AgentKind | undefined, b: AgentKind | undefined): boolean {
   return typeof a === "object" && typeof b === "object" ? a.external === b.external : a === b;

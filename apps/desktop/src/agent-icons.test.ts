@@ -5,7 +5,8 @@ import claude from "@fortawesome/fontawesome-free/svgs/brands/claude.svg";
 import openai from "@fortawesome/fontawesome-free/svgs/brands/openai.svg";
 import copilot from "@fortawesome/fontawesome-free/svgs/brands/copilot.svg";
 import robot from "@fortawesome/fontawesome-free/svgs/solid/robot.svg";
-const assets: Record<string, string> = { claude, openai, copilot, robot };
+import google from "@fortawesome/fontawesome-free/svgs/brands/google.svg";
+const assets: Record<string, string> = { claude, openai, copilot, robot, google };
 
 const fixtures = JSON.parse(fixturesJson) as { name: string; icon: string }[];
 

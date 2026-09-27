@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentRuntimeStage, AgentSelectionStage, LensStage, LensState } from "./types";
 import {
   agentLabel,
+  compareAgentNames,
   sameAgent,
   agentDefaults,
   AGENT_RUNTIME_LABEL,
@@ -56,6 +57,43 @@ function lensInput(text: string): NonNullable<LensState["input"]> {
 }
 
 describe("Lens view model", () => {
+  it("orders Agent names stably by ASCII case folding and Unicode scalar values", () => {
+    const names = ["\u{1f600}", "b", "A", "a", "\u{e000}", "\u{00c4}", "\u{65e5}"];
+    expect([...names].sort(compareAgentNames)).toEqual([
+      "A",
+      "a",
+      "b",
+      "\u{00c4}",
+      "\u{65e5}",
+      "\u{e000}",
+      "\u{1f600}",
+    ]);
+    expect(compareAgentNames("a", "A")).toBe(0);
+    expect(compareAgentNames("Agent", "Agents")).toBeLessThan(0);
+    expect(compareAgentNames("\u{00c4}", "\u{00e4}")).toBeLessThan(0);
+  });
+  it("keeps managed Antigravity defaults separate from other providers", () => {
+    const antigravity = {
+      choices: [{ config_id: "model", value: "gemini" }],
+      tools: {
+        read: "ask",
+        search: "ask",
+        fetch: "ask",
+        edit: "deny",
+        delete: "deny",
+        move: "deny",
+        execute: "deny",
+        other: "ask",
+      } as const,
+    };
+    expect(agentLabel("antigravity")).toBe("Google Antigravity");
+    expect(sameAgent("antigravity", "codex")).toBe(false);
+    expect(sameAgent("antigravity", { external: "antigravity" })).toBe(false);
+    expect(agentDefaults({ agent: "antigravity", agent_preferences: { antigravity } })).toBe(
+      antigravity,
+    );
+    expect(agentDefaults({ agent: "claude", agent_preferences: { antigravity } })).toBeUndefined();
+  });
   it("defines every managed Agent runtime stage and its active states", () => {
     const stages: AgentRuntimeStage[] = [
       "not_installed",
