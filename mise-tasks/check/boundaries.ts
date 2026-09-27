@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { MEMBERS, TARGET_DEPENDENCIES } from "../../scripts/workspace-policy.ts";
 import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
@@ -190,7 +191,7 @@ export function validateInventory(
       `${member.name}: standard module collision`,
     );
     assert(
-      Object.keys(member.features).length === 0,
+      isDeepStrictEqual(member.features, owner.packageFeatures ?? {}),
       `${member.name}: unreviewed package feature declaration`,
     );
     for (const target of member.targets) {

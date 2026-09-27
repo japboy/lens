@@ -202,6 +202,17 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     expect(f.check).toThrow("unreviewed package feature");
   });
 
+  it.each([
+    {},
+    { "native-webview-lifecycle-test": [], extra: [] },
+    { "native-webview-lifecycle-test": [], default: ["native-webview-lifecycle-test"] },
+    { "native-webview-lifecycle-test": ["tauri/custom-protocol"] },
+  ])("rejects drift from the reviewed opt-in lifecycle feature: %j", (features) => {
+    const f = fixture();
+    member(f.cargo, "desktop").features = features;
+    expect(f.check).toThrow("unreviewed package feature");
+  });
+
   it("rejects a portable build script, cross-package target and std module collision", () => {
     const f = fixture();
     member(f.cargo, "domain").targets.push({

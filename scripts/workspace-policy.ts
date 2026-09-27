@@ -9,6 +9,7 @@ export type Member = {
   capability: "repository" | "desktop" | "observation" | "platform";
   implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "transport";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
+  packageFeatures?: Readonly<Record<string, readonly string[]>>;
 };
 
 export const MEMBERS: readonly Member[] = [
@@ -46,6 +47,8 @@ export const MEMBERS: readonly Member[] = [
     role: "application",
     capability: "desktop",
     implementation: "common-shell",
+    // Opt-in native regression only; no dependency activation or default feature.
+    packageFeatures: { "native-webview-lifecycle-test": [] },
     dependencies: {
       normal: [
         "usecase",
