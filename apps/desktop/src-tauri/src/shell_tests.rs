@@ -701,6 +701,190 @@ fn stale_agent_menu_selection_is_rejected_before_selection_or_probe() {
 }
 
 #[test]
+fn saved_external_agent_continuation_cannot_take_authority_from_later_menu_selection() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    };
+    use std::time::Duration;
+    const WAIT: Duration = Duration::from_secs(5);
+    struct PendingProbe {
+        candidate: AgentKind,
+        entered: mpsc::Sender<crate::app_state::AgentRunHandle>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl crate::agent::AgentHost<MockRuntime> for PendingProbe {
+        fn resolve<'a>(
+            &'a self,
+            app: &'a tauri::AppHandle<MockRuntime>,
+            candidate: AgentKind,
+        ) -> crate::agent::HostFuture<'a, crate::agent_runtime::ResolvedAgentRuntime> {
+            Box::pin(async move {
+                if candidate != self.candidate {
+                    return Err("stale saved selection reached the probe".into());
+                }
+                let state = app.state::<AppState>();
+                let operation = state.snapshot()?.agent_selection.operation_id.unwrap();
+                self.entered
+                    .send(state.agent_control.begin_validation(operation)?)
+                    .unwrap();
+                self.release.lock().unwrap().recv_timeout(WAIT).unwrap();
+                Err("later menu probe finished".into())
+            })
+        }
+        fn resolve_installed<'a>(
+            &'a self,
+            _: &'a tauri::AppHandle<MockRuntime>,
+            _: AgentKind,
+        ) -> crate::agent::HostFuture<'a, Option<crate::agent_runtime::ResolvedAgentRuntime>>
+        {
+            panic!("unexpected installed lookup")
+        }
+        fn connect(
+            &self,
+            _: &crate::agent::AgentDescriptor,
+            _: std::path::PathBuf,
+            _: crate::agent_environment::EnvironmentPurpose,
+        ) -> agent_client_protocol::DynConnectTo<agent_client_protocol::Client> {
+            panic!("unexpected real ACP connection")
+        }
+    }
+    let state = test_support::state();
+    let id = Uuid::from_u128(705);
+    let draft = move || crate::external_agent::ExternalAgentDraft {
+        id,
+        name: "Existing saved Agent".into(),
+        command: "synthetic".into(),
+        arguments: "--acp".into(),
+    };
+    let candidate = AgentKind::External(state.snapshot().unwrap().config.external_agents[0].id);
+    let operation = Uuid::from_u128(706);
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+    let (controls, _changes) = crate::session_controls::SessionControls::new(
+        operation,
+        "synthetic".into(),
+        "Synthetic Agent".into(),
+        None,
+        None,
+        vec![],
+        receiver,
+    )
+    .unwrap();
+    {
+        let mut snapshot = state.runtime.write().unwrap();
+        snapshot
+            .config
+            .external_agents
+            .push(draft().parse().unwrap());
+        snapshot.config.agent = AgentKind::External(id);
+        snapshot.agent_selection = AgentSelectionState::default();
+        snapshot.lens.operation_id = Some(operation);
+        snapshot.lens.session_controls = Some(controls.snapshot().unwrap());
+    }
+    *state.session_controls.lock().unwrap() = Some(controls);
+    let (probe_entered, probe_started) = mpsc::channel();
+    let (release_probe, probe_release) = mpsc::channel();
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(PendingProbe {
+            candidate,
+            entered: probe_entered,
+            release: Mutex::new(probe_release),
+        })),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    tauri::WebviewWindowBuilder::new(&app, "lens-overlay", Default::default())
+        .build()
+        .unwrap();
+    let (delivery_entered, delivery_started) = mpsc::channel();
+    let (release_delivery, delivery_release) = mpsc::channel();
+    let delivery_release = Mutex::new(delivery_release);
+    let first = AtomicBool::new(true);
+    app.listen_any("window-app-state-changed", move |_| {
+        if first.swap(false, Ordering::SeqCst) {
+            delivery_entered.send(()).unwrap();
+            delivery_release.lock().unwrap().recv_timeout(WAIT).unwrap();
+        }
+    });
+    let saving_app = app.handle().clone();
+    let saving = std::thread::spawn(move || {
+        crate::commands::save_external_agent_configuration(&saving_app, draft()).unwrap()
+    });
+    delivery_started.recv_timeout(WAIT).unwrap();
+    // This is the revision-guarded native menu entry. The unchanged existing preset
+    // leaves the native menu choice valid while Save and Verify releases its guards.
+    let later_app = app.handle().clone();
+    let revision = app.state::<AppState>().snapshot().unwrap().revision;
+    let selecting = std::thread::spawn(move || {
+        tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+            later_app,
+            candidate,
+            Some(revision),
+        ))
+    });
+    let running = probe_started.recv_timeout(WAIT).unwrap();
+    let accepted = app.state::<AppState>().snapshot().unwrap().agent_selection;
+    assert_eq!(accepted.stage, AgentSelectionStage::Checking);
+    assert_eq!(accepted.candidate, Some(candidate));
+    release_delivery.send(()).unwrap();
+    let saved = saving.join().unwrap();
+    let result = tauri::async_runtime::block_on(crate::agent::select_saved_agent(
+        app.handle().clone(),
+        saved,
+    ));
+    let after = app.state::<AppState>().snapshot().unwrap().agent_selection;
+    let cancelled = *running.cancellation.borrow();
+    release_probe.send(()).unwrap();
+    selecting.join().unwrap().unwrap();
+    assert!(result.unwrap_err().contains("selection changed"));
+    assert_eq!(after, accepted);
+    assert!(
+        !cancelled,
+        "stale save must not cancel the later selection's work"
+    );
+}
+
+#[test]
+fn identical_external_agent_save_supersedes_the_previous_continuation() {
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(test_support::state()),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let draft = move || crate::external_agent::ExternalAgentDraft {
+        id: Uuid::from_u128(707),
+        name: "Same Agent".into(),
+        command: "synthetic".into(),
+        arguments: "--acp".into(),
+    };
+    let first = crate::commands::save_external_agent_configuration(app.handle(), draft()).unwrap();
+    let before = app.state::<AppState>().snapshot().unwrap();
+    let _second =
+        crate::commands::save_external_agent_configuration(app.handle(), draft()).unwrap();
+    let after = app.state::<AppState>().snapshot().unwrap();
+    assert_eq!(before.config, after.config);
+    assert_ne!(
+        before.agent_selection.operation_id,
+        after.agent_selection.operation_id
+    );
+    let result = tauri::async_runtime::block_on(crate::agent::select_saved_agent(
+        app.handle().clone(),
+        first,
+    ));
+    assert!(result.unwrap_err().contains("selection changed"));
+    assert_eq!(
+        app.state::<AppState>().snapshot().unwrap().agent_selection,
+        after.agent_selection
+    );
+}
+
+#[test]
 fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
     for reset in [false, true] {
         let app = crate::configure_shell(
@@ -712,7 +896,7 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
         .build(crate::product_context())
         .unwrap();
         let id = Uuid::from_u128(702);
-        let (kind, revision) = crate::commands::save_external_agent_configuration(
+        let saved = crate::commands::save_external_agent_configuration(
             app.handle(),
             crate::external_agent::ExternalAgentDraft {
                 id,
@@ -728,10 +912,9 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
             crate::commands::delete_external_agent(app.handle().clone(), id).unwrap();
         }
         let before = app.state::<AppState>().snapshot().unwrap();
-        let result = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+        let result = tauri::async_runtime::block_on(crate::agent::select_saved_agent(
             app.handle().clone(),
-            kind,
-            Some(revision),
+            saved,
         ));
         assert!(result.unwrap_err().contains("selection changed"));
         assert_eq!(
@@ -742,7 +925,7 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
 }
 
 #[test]
-fn saved_external_agent_verification_accepts_revision_after_closing_live_controls() {
+fn saved_external_agent_verification_preserves_concurrent_progress_after_closing_controls() {
     struct ReachedProbe;
     impl crate::agent::AgentHost<MockRuntime> for ReachedProbe {
         fn resolve<'a>(
@@ -797,7 +980,7 @@ fn saved_external_agent_verification_accepts_revision_after_closing_live_control
     )
     .build(crate::product_context())
     .unwrap();
-    let (kind, revision) = crate::commands::save_external_agent_configuration(
+    let saved = crate::commands::save_external_agent_configuration(
         app.handle(),
         crate::external_agent::ExternalAgentDraft {
             id: Uuid::from_u128(704),
@@ -809,18 +992,28 @@ fn saved_external_agent_verification_accepts_revision_after_closing_live_control
     .unwrap();
     assert!(!controls.snapshot().unwrap().active);
     assert!(
-        revision > before + 1,
+        app.state::<AppState>().snapshot().unwrap().revision > before + 1,
         "closing controls publishes an additional revision"
     );
-    assert_eq!(
-        revision,
-        app.state::<AppState>().snapshot().unwrap().revision
-    );
-    let selection = tauri::async_runtime::block_on(crate::agent::select_agent_guarded(
+    {
+        let state = app.state::<AppState>();
+        let mut latest = state.runtime.write().unwrap();
+        latest.revision += 17;
+        latest.lens.error = Some("concurrent progress marker".into());
+    }
+    let selection = tauri::async_runtime::block_on(crate::agent::select_saved_agent(
         app.handle().clone(),
-        kind,
-        Some(revision),
+        saved,
     ))
     .unwrap();
     assert_eq!(selection.error.as_deref(), Some("synthetic probe reached"));
+    assert_eq!(
+        app.state::<AppState>()
+            .snapshot()
+            .unwrap()
+            .lens
+            .error
+            .as_deref(),
+        Some("concurrent progress marker")
+    );
 }

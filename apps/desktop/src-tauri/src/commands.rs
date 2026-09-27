@@ -186,22 +186,22 @@ pub async fn save_external_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,
 ) -> Result<AgentSelectionState, String> {
-    let (kind, revision) = crate::command_work::configuration(app.clone(), move |app| {
+    let saved = crate::command_work::configuration(app.clone(), move |app| {
         save_external_agent_configuration(&app, profile)
     })
     .await?;
-    agent::select_agent_guarded(app, kind, Some(revision)).await
+    agent::select_saved_agent(app, saved).await
 }
 
 pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
     app: &AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,
-) -> Result<(AgentKind, u32), String> {
+) -> Result<agent::SavedAgentSelection, String> {
     let profile = profile.parse()?;
     crate::external_agent::validate_profile(&profile)?;
     let kind = AgentKind::External(profile.id);
     let state = app.state::<AppState>();
-    let saved_revision;
+    let saved;
     {
         let transaction = state.store.writer.begin()?;
         let (snapshot, authority) = transaction.prepare_admitted(&state, false)?;
@@ -224,13 +224,14 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
             config.external_agents.push(profile);
         }
         config.agent = kind;
-        let (_, (), admission) =
+        let (snapshot, (), admission) =
             transaction.commit_admitted(&state, &previous, config, authority, |latest| {
                 if latest.agent_selection != selection {
                     return Err("Agent selection changed while saving settings".into());
                 }
                 state.agent_control.cancel_active()?;
                 latest.agent_selection = AgentSelectionState {
+                    operation_id: Some(Uuid::new_v4()),
                     candidate: Some(kind),
                     ..Default::default()
                 };
@@ -247,12 +248,12 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
         if let Some(controls) = controls {
             controls.close(app);
         }
-        saved_revision = state.snapshot()?.revision;
+        saved = agent::SavedAgentSelection::new(&snapshot);
     }
     crate::session_view::emit(app)?;
     crate::ui::sync_history_menu(app)?;
     emit_app_snapshot(app, state.snapshot()?, true)?;
-    Ok((kind, saved_revision))
+    Ok(saved)
 }
 
 pub fn delete_external_agent<R: tauri::Runtime>(
@@ -1847,6 +1848,7 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
                 })
                 .map(|(snapshot, ())| snapshot)
         })?;
+        drop(transaction);
         emit_app_snapshot(&app, snapshot, true)?;
         Ok(())
     })

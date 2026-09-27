@@ -413,41 +413,60 @@ pub async fn select_agent<R: tauri::Runtime>(
     select_agent_guarded(app, candidate, None).await
 }
 
-pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
+/// Authority captured by the configuration commit, independent of streaming revisions.
+pub(crate) struct SavedAgentSelection {
+    config: AppConfig,
+    selection: AgentSelectionState,
+}
+
+impl SavedAgentSelection {
+    pub(crate) fn new(snapshot: &crate::model::AppSnapshot) -> Self {
+        Self {
+            config: snapshot.config.clone(),
+            selection: snapshot.agent_selection.clone(),
+        }
+    }
+}
+
+pub(crate) async fn select_saved_agent<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    saved: SavedAgentSelection,
+) -> Result<AgentSelectionState, String> {
+    select_agent_if(app, saved.config.agent, move |snapshot| {
+        snapshot.config == saved.config && snapshot.agent_selection == saved.selection
+    })
+    .await
+}
+
+async fn select_agent_if<R: tauri::Runtime>(
     app: AppHandle<R>,
     candidate: AgentKind,
-    expected_revision: Option<u32>,
+    accepts: impl FnOnce(&crate::model::AppSnapshot) -> bool + Send,
 ) -> Result<AgentSelectionState, String> {
     let operation_id = Uuid::new_v4();
-    {
+    let (snapshot, already_selected) = {
         let state = app.state::<AppState>();
-        let _history_admission = state
+        let _admission = state
             .session_view
             .admission
             .lock()
             .map_err(|_| "Session admission is unavailable")?;
-        app.state::<AppState>().session_view.ensure_not_loading()?;
-        if expected_revision.is_some_and(|revision| {
-            state
-                .snapshot()
-                .map(|snapshot| snapshot.revision != revision)
-                .unwrap_or(true)
-        }) {
+        state.session_view.ensure_not_loading()?;
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "Application state is unavailable")?;
+        if !accepts(&snapshot) {
             return Err("Agent selection changed; choose the Agent again.".into());
         }
-        let current = current_agent_selection(&app)?;
-        if current.stage == AgentSelectionStage::SigningOut {
+        if snapshot.agent_selection.stage == AgentSelectionStage::SigningOut {
             return Err("wait for the current Agent logout to complete".into());
         }
-        if current.selected_agent() == Some(candidate) {
-            crate::ui::sync_tray_menu(&app)?;
-            return Ok(current);
-        }
-        let _ = app.state::<AppState>().agent_control.cancel_active()?;
-
-        publish_agent_selection(
-            &app,
-            AgentSelectionState {
+        let already_selected = snapshot.agent_selection.selected_agent() == Some(candidate);
+        if !already_selected {
+            let revision = next_revision(&snapshot)?;
+            state.agent_control.cancel_active()?;
+            snapshot.agent_selection = AgentSelectionState {
                 operation_id: Some(operation_id),
                 stage: AgentSelectionStage::Checking,
                 candidate: Some(candidate),
@@ -456,11 +475,17 @@ pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
                     agent_display_name(candidate)
                 )),
                 ..AgentSelectionState::default()
-            },
-        )?;
+            };
+            snapshot.revision = revision;
+        }
+        (snapshot.clone(), already_selected)
+    };
+    if already_selected {
+        crate::ui::sync_tray_menu(&app)?;
+        return Ok(snapshot.agent_selection);
     }
-
-    let expected_config = app.state::<AppState>().config()?;
+    let expected_config = snapshot.config.clone();
+    emit_app_snapshot(&app, snapshot, true)?;
     let descriptor = match AgentDescriptor::resolve(&app, candidate).await {
         Ok(descriptor) => descriptor,
         Err(error) => {
@@ -473,6 +498,17 @@ pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
         }
     };
     finish_agent_selection_probe(app, operation_id, candidate, descriptor, expected_config).await
+}
+
+pub(crate) async fn select_agent_guarded<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    candidate: AgentKind,
+    expected_revision: Option<u32>,
+) -> Result<AgentSelectionState, String> {
+    select_agent_if(app, candidate, move |snapshot| {
+        expected_revision.is_none_or(|revision| snapshot.revision == revision)
+    })
+    .await
 }
 
 pub async fn restore_agent_selection<R: tauri::Runtime>(
@@ -1211,6 +1247,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
             .config
             .same_agent_execution(expected_config, candidate)
     {
+        drop(transaction);
         update_agent_selection(app, operation_id, |selection| {
             selection.stage = AgentSelectionStage::Failed;
             selection.error =
@@ -1233,6 +1270,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
         latest.agent_selection.error = None;
         Ok(())
     });
+    drop(transaction);
     let snapshot = match committed {
         Ok((snapshot, ())) => snapshot,
         Err(error) => {
