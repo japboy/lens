@@ -10,8 +10,6 @@ import { fileURLToPath } from "node:url";
 import { buildMacosBundle } from "../../scripts/macos-bundle-build.ts";
 import { verifyApp, verifyDmg } from "../../scripts/release/bundle.ts";
 
-import { macosToolchainEnvironment } from "../../scripts/macos-toolchain.ts";
-
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 export function verifyNativeBundle(root = ROOT, kind = "app"): string {
   if (!["app", "dmg"].includes(kind)) throw new Error("Explicit app or dmg bundle kind required");
@@ -46,7 +44,7 @@ export function verifyNativeBundle(root = ROOT, kind = "app"): string {
     {
       cwd: application,
       stdio: "inherit",
-      env: { ...macosToolchainEnvironment(), CI: "true" },
+      env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: contract.minimum, CI: "true" },
     },
   );
   const app = join(directory, "macos/Lens.app");

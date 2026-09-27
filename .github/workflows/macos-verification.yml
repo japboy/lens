@@ -149,13 +149,6 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `generation=${generation}\n`);
           NODE
 
-      # Older release sources predate the toolchain contract and retain their build entrypoints.
-      - name: Verify the source macOS toolchain contract
-        run: |
-          if test -f scripts/macos-toolchain.ts; then
-            node scripts/macos-toolchain.ts export
-          fi
-
       - name: Resolve the macOS build and cache contract
         if: steps.source.outputs.generation == 'current'
         id: contract

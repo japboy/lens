@@ -4,7 +4,6 @@ import { verifyGeneration } from "../apps/desktop/tooling/prerender/verify.ts";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundleContract } from "./release/bundle.ts";
-import { normalizeVersion } from "./macos-toolchain.ts";
 import { runVariant } from "./run-workspace-variant.ts";
 
 // Cache seeding and packaging must compile precisely the same admitted variant.
@@ -13,7 +12,7 @@ export function buildMacosBundle(root: string) {
     throw new Error("Packaged compilation requires the admitted Apple-silicon host");
   const contract = bundleContract(root);
   const previous = process.env.MACOSX_DEPLOYMENT_TARGET;
-  if (previous !== undefined && normalizeVersion(previous) !== normalizeVersion(contract.minimum))
+  if (previous !== undefined && previous !== contract.minimum)
     throw new Error("The macOS deployment environment differs from the bundle contract");
   verifyGeneration(
     join(root, "apps/desktop", BUILD_PATHS.webview),

@@ -11,7 +11,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertMachOBuildVersion } from "../macos-toolchain.ts";
 import { readVersion } from "./version.ts";
 
 export function bundleContract(root: string) {
@@ -29,10 +28,30 @@ export function bundleContract(root: string) {
   return {
     version,
     minimum: "15.2",
+    sdk: "27.0",
     product: "Lens",
     identifier: "com.github.japboy.lens",
     executable: "lens",
   };
+}
+
+export function assertMachOBuildVersion(
+  output: string,
+  contract: Pick<ReturnType<typeof bundleContract>, "sdk" | "minimum">,
+): void {
+  const commands = output
+    .split(/Load command \d+\r?\n/u)
+    .filter((command) => /^\s*cmd LC_BUILD_VERSION$/mu.test(command));
+  if (commands.length !== 1) throw new Error("Expected one Mach-O LC_BUILD_VERSION");
+  const value = (key: string) =>
+    new RegExp(`^\\s*${key} (\\S+)\\s*$`, "mu").exec(commands[0]!)?.[1];
+  const numericVersion = (version: string | undefined) => version?.replace(/(?:\.0)+$/u, "");
+  if (
+    value("platform") !== "1" ||
+    numericVersion(value("sdk")) !== numericVersion(contract.sdk) ||
+    numericVersion(value("minos")) !== numericVersion(contract.minimum)
+  )
+    throw new Error("Mach-O platform, SDK or minimum OS differs from the build contract");
 }
 
 export function verifyApp(bundle: string, contract: ReturnType<typeof bundleContract>): void {
@@ -60,7 +79,7 @@ export function verifyApp(bundle: string, contract: ReturnType<typeof bundleCont
     execFileSync("/usr/bin/otool", ["-l", join(bundle, "Contents/MacOS/lens")], {
       encoding: "utf8",
     }),
-    contract.minimum,
+    contract,
   );
   execFileSync("codesign", ["--verify", "--deep", "--strict", bundle], { stdio: "inherit" });
   const signature = spawnSync("codesign", ["-d", "--verbose=4", bundle], { encoding: "utf8" });

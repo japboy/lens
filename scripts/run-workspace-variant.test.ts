@@ -1,11 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertMacosSdk } from "./macos-build-contract.ts";
 import { assertBuildEnvironment, runVariant, selectVariant } from "./run-workspace-variant.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
 
-vi.mock("./macos-toolchain.ts", () => ({
-  macosToolchainEnvironment: () => ({ SDKROOT: "/checked-sdk" }),
-}));
+vi.mock("./macos-build-contract.ts", () => ({ assertMacosSdk: vi.fn<typeof assertMacosSdk>() }));
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn<typeof execFileSync>() }));
 
@@ -30,6 +29,7 @@ function mockGraph(host: string, version = "2.7.2", tauriFeatures = "", nativePo
 afterEach(() => {
   vi.restoreAllMocks();
   execute.mockReset();
+  vi.mocked(assertMacosSdk).mockReset();
 });
 
 describe("explicit compiler variants", () => {
@@ -39,13 +39,28 @@ describe("explicit compiler variants", () => {
       vi.spyOn(process.stdout, "write").mockReturnValue(true);
       mockGraph("aarch64-apple-darwin", version);
       runVariant("macos-production-check", root);
+      expect(assertMacosSdk).toHaveBeenCalledExactlyOnceWith(root);
       expect(execute).toHaveBeenLastCalledWith(
         "cargo",
         variantArguments(selectVariant("macos-production-check")),
-        { cwd: root, stdio: "inherit", env: { SDKROOT: "/checked-sdk" } },
+        { cwd: root, stdio: "inherit" },
       );
     },
   );
+
+  it("rejects an older SDK before native compilation but leaves Linux verification unchanged", () => {
+    mockGraph("aarch64-apple-darwin");
+    vi.mocked(assertMacosSdk).mockImplementation(() => {
+      throw new Error("SDK mismatch");
+    });
+    expect(() => runVariant("macos-production-check", root)).toThrow("SDK mismatch");
+    expect(execute).toHaveBeenCalledTimes(2);
+    vi.mocked(assertMacosSdk).mockClear();
+    mockGraph("x86_64-unknown-linux-gnu");
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    runVariant("linux-common-check", root);
+    expect(assertMacosSdk).not.toHaveBeenCalled();
+  });
 
   it("selects only explicitly declared compiler invocations", () => {
     for (const variant of BUILD_VARIANTS) expect(selectVariant(variant.id)).toEqual(variant);
@@ -71,10 +86,11 @@ describe("explicit compiler variants", () => {
     vi.spyOn(process.stdout, "write").mockReturnValue(true);
     mockGraph("x86_64-unknown-linux-gnu");
     runVariant("apple-portable-check", root);
+    expect(assertMacosSdk).not.toHaveBeenCalled();
     expect(execute).toHaveBeenLastCalledWith(
       "cargo",
       variantArguments(selectVariant("apple-portable-check")),
-      { cwd: root, stdio: "inherit", env: process.env },
+      { cwd: root, stdio: "inherit" },
     );
   });
 

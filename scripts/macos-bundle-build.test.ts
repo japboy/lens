@@ -19,6 +19,7 @@ beforeEach(() => {
   vi.stubGlobal("process", { ...process, platform: "darwin", arch: "arm64", env: {} });
   vi.mocked(bundleContract).mockReturnValue({
     minimum: "15.2",
+    sdk: "27.0",
     version: "1.0.0",
     product: "Lens",
     identifier: "com.github.japboy.lens",

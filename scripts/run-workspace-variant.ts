@@ -2,9 +2,8 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectFeatureGraphs } from "../mise-tasks/inspect/features.ts";
+import { assertMacosSdk } from "./macos-build-contract.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
-
-import { macosToolchainEnvironment } from "./macos-toolchain.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -33,12 +32,12 @@ export function runVariant(id: string, root = ROOT): void {
   // Only the portable Apple libraries can be cross-checked without native SDKs.
   if (report.host !== variant.target && variant.id !== "apple-portable-check")
     throw new Error("Native/common-shell variants require their declared host");
+  if (variant.id.startsWith("macos-")) assertMacosSdk(root);
   const args = variantArguments(variant);
   process.stdout.write(
     `${JSON.stringify({ variant: id, host: report.host, arguments: args, graphDigest: report.variants[0]!.digest })}\n`,
   );
-  const env = variant.id.startsWith("macos-") ? macosToolchainEnvironment() : process.env;
-  execFileSync("cargo", args, { cwd: root, stdio: "inherit", env });
+  execFileSync("cargo", args, { cwd: root, stdio: "inherit" });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

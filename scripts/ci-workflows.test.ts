@@ -17,32 +17,6 @@ const nativeSteps = parse(native).jobs["macos-verification"].steps;
 const shell = qualityJobs["code-quality"].steps[0].run as string;
 
 describe("actual workflow admission", () => {
-  it("pins and verifies the native SDK before dependency cache restoration", () => {
-    const job = parse(native).jobs["macos-verification"];
-    expect(job["runs-on"]).toBe("xcode-27");
-    expect(job.env.DEVELOPER_DIR).toBe("/Applications/Xcode_27.0.app/Contents/Developer");
-    const validation = nativeSteps.findIndex(
-      (step: { name?: string }) => step.name === "Verify the source macOS toolchain contract",
-    );
-    const cache = nativeSteps.findIndex((step: { uses?: string }) =>
-      step.uses?.startsWith("Swatinem/rust-cache@"),
-    );
-    expect(validation).toBeGreaterThan(-1);
-    expect(validation).toBeLessThan(cache);
-    expect(MACOS_BUILD_CACHE_INPUTS).toContain("scripts/macos-toolchain.ts");
-    // Execute the workflow's guard against a historical source with no SDK contract.
-    const directory = mkdtempSync(join(tmpdir(), "lens-historical-sdk-"));
-    try {
-      const result = spawnSync("bash", ["-e", "-c", nativeSteps[validation].run], {
-        cwd: directory,
-        encoding: "utf8",
-      });
-      expect(result.status).toBe(0);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
   it("executes the actual aggregate shell for all 3,125 result combinations", () => {
     const outcomes = ["success", "failure", "cancelled", "skipped", ""];
     const cases: string[][] = [];
@@ -471,6 +445,9 @@ describe("actual workflow admission", () => {
   });
 
   it("keys and seeds complete trusted cache contracts before restoring", () => {
+    const nativeJob = parse(native).jobs["macos-verification"];
+    expect(nativeJob["runs-on"]).toBe("xcode-27");
+    expect(nativeJob.env.DEVELOPER_DIR).toBe("/Applications/Xcode_27.0.app/Contents/Developer");
     for (const workflow of [linux, native]) {
       expect(workflow).toContain("save-if: ${{ steps.cache-policy.outputs.save == 'true' }}");
       expect(workflow).toContain("cache-workspace-crates: false");
