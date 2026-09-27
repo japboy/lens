@@ -86,7 +86,7 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
         invoke(&overlay, "get_html_output", args.clone()).unwrap(),
         json!("<p>private</p>")
     );
-    let snapshot = invoke(&overlay, "get_app_snapshot", json!({})).unwrap();
+    let snapshot = invoke(&overlay, "get_window_snapshot", json!({})).unwrap();
     assert!(!snapshot.to_string().contains("<p>private</p>"));
     for field in ["operationId", "representationId", "resourceId"] {
         let mut stale = args.clone();
@@ -196,7 +196,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
         invoke(&overlay, "get_html_output", html_args.clone()).unwrap(),
         json!("<p>old private</p>")
     );
-    let snapshot = invoke(&overlay, "get_app_snapshot", json!({})).unwrap();
+    let snapshot = invoke(&overlay, "get_window_snapshot", json!({})).unwrap();
     assert_eq!(
         snapshot["lens"]["response_history"]["responses"]
             .as_array()
@@ -220,13 +220,16 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
 }
 
 #[test]
-fn production_snapshot_ipc_preserves_the_complete_state_and_permission_result() {
+fn production_snapshot_ipc_preserves_window_projection_and_permission_result() {
     let state = test_support::state();
-    let expected = serde_json::to_value(state.snapshot().unwrap()).unwrap();
+    let expected =
+        serde_json::to_value(crate::publication::window_snapshot(&state, "settings").unwrap())
+            .unwrap();
     let app = app(state);
     let window = window(&app);
+    assert!(invoke(&window, "get_app_snapshot", json!({})).is_err());
     assert_eq!(
-        invoke(&window, "get_app_snapshot", json!({})).unwrap(),
+        invoke(&window, "get_window_snapshot", json!({})).unwrap(),
         expected
     );
     assert_eq!(
@@ -248,7 +251,7 @@ fn production_snapshot_ipc_reports_poisoned_state_as_an_error() {
     .is_err());
     let window = window(&app);
     assert_eq!(
-        invoke(&window, "get_app_snapshot", json!({})).unwrap_err(),
+        invoke(&window, "get_window_snapshot", json!({})).unwrap_err(),
         json!("application state lock is poisoned")
     );
 }
@@ -500,7 +503,7 @@ fn recovery_window_cannot_invoke_normal_commands_without_app_state() {
         .build()
         .unwrap();
     for command in [
-        "get_app_snapshot",
+        "get_window_snapshot",
         "set_agent",
         "update_prompt_presets",
         "show_settings",

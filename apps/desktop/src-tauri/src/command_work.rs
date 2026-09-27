@@ -265,16 +265,6 @@ pub async fn authenticate_agent<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub async fn get_app_snapshot<R: tauri::Runtime>(
-    app: AppHandle<R>,
-) -> Result<crate::model::AppSnapshot, String> {
-    content(app, |app| {
-        commands::get_app_snapshot(app.state::<AppState>())
-    })
-    .await
-}
-
-#[tauri::command]
 pub async fn get_window_snapshot<R: tauri::Runtime>(
     app: AppHandle<R>,
     webview: tauri::Webview<R>,

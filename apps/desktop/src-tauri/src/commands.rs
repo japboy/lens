@@ -71,10 +71,6 @@ const MAX_SELECTION_PREVIEW_LONG_EDGE: u32 = 480;
 const MAX_SELECTION_PREVIEW_PIXELS: u32 = 230_400;
 const MAX_SELECTION_PREVIEW_BYTES: u32 = 1024 * 1024;
 
-pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    state.snapshot()
-}
-
 pub fn get_html_output<R: tauri::Runtime>(
     webview: tauri::Webview<R>,
     state: State<'_, AppState>,

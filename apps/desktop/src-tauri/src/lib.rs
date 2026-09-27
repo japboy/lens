@@ -134,7 +134,6 @@ fn command_handler<R: tauri::Runtime>(
             about::get_about_info,
             about::get_about_documents,
             about::show_about,
-            command_work::get_app_snapshot,
             command_work::get_window_snapshot,
             command_work::get_lens_source,
             command_work::get_lens_output,
