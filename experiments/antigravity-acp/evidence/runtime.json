@@ -1,8 +1,0 @@
-{
-  "archive_url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.2.1-darwin-arm64.zip",
-  "archive_sha256": "0fab9938812e6b32b3b543e65e4f3a0025ceef755413db13542d9a9b81ea803c",
-  "binary_sha256": "c93c86c0f505fcdf8b13c695bed26d306141ef5446189d591397074d324db34e",
-  "files": ["runtime/localharness_external", "runtime/agy_acp_server.par"],
-  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.7\nBuildVersion:\t\t25G229\n",
-  "localharness_sha256": "1b8a2b712ca312c9769e425b800bfbcceec4770f19736404474d1e8e50d65456"
-}
