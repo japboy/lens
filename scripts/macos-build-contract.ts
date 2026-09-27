@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -23,6 +24,23 @@ export const MACOS_BUILD_CACHE_INPUTS = [
   "apps/desktop/src-tauri/tauri.macos.conf.json",
   "apps/desktop/src-tauri/tauri.release.conf.json",
 ] as const;
+
+// Use the same SDK selection that Apple's compiler tools receive.
+export function assertMacosSdk(root: string, environment: NodeJS.ProcessEnv = process.env): void {
+  const { sdk } = bundleContract(root);
+  const actual = execFileSync(
+    "/usr/bin/xcrun",
+    ["--sdk", environment.SDKROOT || "macosx", "--show-sdk-version"],
+    {
+      encoding: "utf8",
+      env: environment,
+    },
+  ).trim();
+  if (actual !== sdk)
+    throw new Error(
+      `Lens requires macOS SDK ${sdk}; selected SDK is ${actual}. Select the required Xcode with DEVELOPER_DIR or xcode-select.`,
+    );
+}
 
 export function macosBuildContract(root: string) {
   const { minimum } = bundleContract(root);
@@ -56,5 +74,7 @@ export function publishMacosBuildContract(root: string, environment: NodeJS.Proc
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   if (process.argv.length !== 2) throw new Error("The macOS build contract accepts no arguments");
-  publishMacosBuildContract(fileURLToPath(new URL("..", import.meta.url)), process.env);
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  assertMacosSdk(root);
+  publishMacosBuildContract(root, process.env);
 }

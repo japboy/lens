@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
   copyFileSync,
@@ -12,12 +13,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  assertMacosSdk,
   MACOS_BUILD_CACHE_CAPABILITY,
   MACOS_BUILD_CACHE_INPUTS,
   macosBuildContract,
   publishMacosBuildContract,
 } from "./macos-build-contract.ts";
 import { VERSION_FILES } from "./release/version.ts";
+
+vi.mock("node:child_process", () => ({ execFileSync: vi.fn<typeof execFileSync>() }));
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const directories: string[] = [];
@@ -89,5 +93,34 @@ describe("macOS dependency cache build contract", () => {
     writeFileSync(mac, original);
     rmSync(join(directory, "scripts/macos-bundle-build.ts"));
     expect(() => macosBuildContract(directory)).toThrow("ENOENT");
+  });
+});
+
+describe("effective macOS SDK", () => {
+  it("checks the SDK selected by Apple's tools without changing the environment", () => {
+    const environment = { DEVELOPER_DIR: "/Applications/Xcode_27.app/Contents/Developer" };
+    vi.mocked(execFileSync).mockReturnValue("27.0\n");
+    expect(() => assertMacosSdk(root, environment)).not.toThrow();
+    expect(execFileSync).toHaveBeenCalledWith(
+      "/usr/bin/xcrun",
+      ["--sdk", "macosx", "--show-sdk-version"],
+      { encoding: "utf8", env: environment },
+    );
+    expect(environment).toEqual({ DEVELOPER_DIR: "/Applications/Xcode_27.app/Contents/Developer" });
+  });
+  it("checks an explicit SDKROOT and rejects an older SDK despite a new Xcode selection", () => {
+    const environment = {
+      DEVELOPER_DIR: "/Applications/Xcode_27.app/Contents/Developer",
+      SDKROOT: "/old/MacOSX.sdk",
+    };
+    vi.mocked(execFileSync).mockReturnValue("15.5\n");
+    expect(() => assertMacosSdk(root, environment)).toThrow(
+      "Lens requires macOS SDK 27.0; selected SDK is 15.5",
+    );
+    expect(execFileSync).toHaveBeenCalledWith(
+      "/usr/bin/xcrun",
+      ["--sdk", environment.SDKROOT, "--show-sdk-version"],
+      { encoding: "utf8", env: environment },
+    );
   });
 });

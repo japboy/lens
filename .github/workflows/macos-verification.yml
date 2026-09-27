@@ -45,7 +45,9 @@ permissions:
 jobs:
   macos-verification:
     name: ${{ inputs.seed_bundle_cache && 'code and bundle cache' || inputs.verification_mode }}
-    runs-on: macos-15
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     timeout-minutes: 45
     outputs:
       artifact_id: ${{ steps.release-artifact.outputs.artifact-id }}

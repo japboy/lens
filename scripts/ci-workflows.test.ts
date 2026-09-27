@@ -445,6 +445,9 @@ describe("actual workflow admission", () => {
   });
 
   it("keys and seeds complete trusted cache contracts before restoring", () => {
+    const nativeJob = parse(native).jobs["macos-verification"];
+    expect(nativeJob["runs-on"]).toBe("xcode-27");
+    expect(nativeJob.env.DEVELOPER_DIR).toBe("/Applications/Xcode_27.0.app/Contents/Developer");
     for (const workflow of [linux, native]) {
       expect(workflow).toContain("save-if: ${{ steps.cache-policy.outputs.save == 'true' }}");
       expect(workflow).toContain("cache-workspace-crates: false");

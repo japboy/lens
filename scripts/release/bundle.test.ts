@@ -2,7 +2,7 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { verifyDmg } from "./bundle.ts";
+import { assertMachOBuildVersion, verifyDmg } from "./bundle.ts";
 
 vi.mock("node:child_process", () => ({
   execFileSync: vi.fn<typeof childProcess.execFileSync>(),
@@ -15,6 +15,7 @@ vi.mock("node:fs", async (original) => {
 const contract = {
   version: "0.1.0",
   minimum: "15.2",
+  sdk: "27.0",
   product: "Lens",
   identifier: "com.github.japboy.lens",
   executable: "lens",
@@ -74,6 +75,8 @@ async function fixture(fault?: "attach" | "signal" | "parse" | "verify" | "copy"
       )[args[1]!]!;
     }
     if (file === "lipo") return "arm64";
+    if (file === "/usr/bin/otool")
+      return "Load command 1\n      cmd LC_BUILD_VERSION\n platform 1\n minos 15.2\n sdk 27.0\n";
     if (file === "ditto") {
       if (fault === "copy") throw primary;
       const executable = join(args[1]!, "Contents/MacOS/lens");
@@ -154,5 +157,25 @@ describe("DMG verification resource cleanup", () => {
     expect(fs.rmSync).toHaveBeenCalledWith(f.temporary(), { recursive: true, force: true });
     expect((thrown as AggregateError).cause).toBe(f.primary);
     expect((thrown as AggregateError).errors).toEqual([f.primary, f.detach, removal]);
+  });
+});
+
+const linkedVersion =
+  "Load command 1\n cmd LC_BUILD_VERSION\n platform 1\n minos 15.2\n sdk 27.0\nLoad command 2\n cmd LC_UUID\n";
+describe("packaged SDK and minimum OS", () => {
+  it("accepts the new SDK with the retained minimum OS and equivalent version spelling", () => {
+    expect(() => assertMachOBuildVersion(linkedVersion, contract)).not.toThrow();
+    expect(() =>
+      assertMachOBuildVersion(linkedVersion.replace("sdk 27.0", "sdk 27.0.0"), contract),
+    ).not.toThrow();
+  });
+  it.each([
+    linkedVersion.replace("sdk 27.0", "sdk 15.5"),
+    linkedVersion.replace("minos 15.2", "minos 27.0"),
+    linkedVersion.replace("platform 1", "platform 2"),
+    linkedVersion + linkedVersion,
+    "cmd LC_VERSION_MIN_MACOSX",
+  ])("rejects incorrect or ambiguous executable metadata", (output) => {
+    expect(() => assertMachOBuildVersion(output, contract)).toThrow(/Mach-O/u);
   });
 });
