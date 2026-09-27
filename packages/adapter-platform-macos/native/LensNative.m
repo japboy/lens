@@ -1820,14 +1820,18 @@ static void LensAppendTextFragment(
     if (*textBytes + candidateBytes > maxBytes) {
         NSUInteger remaining = maxBytes > *textBytes ? maxBytes - *textBytes : 0;
         if (remaining > 0) {
-            NSUInteger length = MIN(text.length, remaining);
-            NSString *prefix = [text substringToIndex:length];
-            while (prefix.length > 0 && [prefix lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > remaining) {
-                prefix = [prefix substringToIndex:prefix.length - 1];
-            }
-            if (prefix.length > 0) {
+            NSMutableData *buffer = [NSMutableData dataWithLength:remaining];
+            NSUInteger usedLength = 0;
+            // Partial conversion is useful even when the entire range cannot fit.
+            // Foundation chooses an encodable boundary, not a grapheme boundary.
+            [text getBytes:buffer.mutableBytes maxLength:remaining usedLength:&usedLength
+                encoding:NSUTF8StringEncoding options:0 range:NSMakeRange(0, text.length)
+                remainingRange:NULL];
+            if (usedLength > 0) {
+                NSString *prefix = [[NSString alloc] initWithBytes:buffer.bytes
+                    length:usedLength encoding:NSUTF8StringEncoding];
                 [fragments addObject:prefix];
-                *textBytes += [prefix lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+                *textBytes += usedLength;
             }
         }
         *truncated = YES;
