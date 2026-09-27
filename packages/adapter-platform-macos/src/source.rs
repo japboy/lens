@@ -67,11 +67,29 @@ unsafe extern "C" {
     ) -> bool;
     fn lens_release_registered_window(operation_id: *const c_char, window_id: u32) -> bool;
     fn lens_release_window_operation(operation_id: *const c_char) -> bool;
+    fn lens_cancel_window_picker_for_operation(operation_id: *const c_char) -> bool;
     fn lens_free_string(value: *mut c_char);
 }
 
 struct PickerContext {
     sender: Option<oneshot::Sender<String>>,
+}
+
+/// The native terminal callback owns its allocation; dropping a waiter requests that
+/// terminal callback instead of freeing the still-reachable context from Rust.
+struct PendingPicker {
+    operation_id: Option<CString>,
+}
+
+impl Drop for PendingPicker {
+    fn drop(&mut self) {
+        let Some(operation_id) = &self.operation_id else {
+            return;
+        };
+        // SAFETY: The UUID remains valid during the synchronous main-thread cancellation.
+        // Cancellation affects only this pending picker, never already reviewed targets.
+        unsafe { lens_cancel_window_picker_for_operation(operation_id.as_ptr()) };
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -225,9 +243,16 @@ async fn present_window_picker_impl(
         return Err(PlatformError::PickerBusy);
     }
 
+    let mut pending = PendingPicker {
+        operation_id: Some(operation_id),
+    };
+
     let json = receiver
         .await
         .map_err(|_| PlatformError::PickerCallbackDropped)?;
+    // The native terminal callback detached its coordinator before waking the receiver.
+    // Disarm before decoding; only a dropped/failed waiter requests cancellation.
+    pending.operation_id = None;
     serde_json::from_str(&json)
         .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
 }

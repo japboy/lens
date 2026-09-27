@@ -168,6 +168,9 @@ bool lens_release_registered_window(const char *operationID, uint32_t windowID);
 
 /* Releases every retained picker/source object owned by an operation. */
 bool lens_release_window_operation(const char *operationID);
+/* Cancels only a pending picker for this operation; already selected targets remain retained.
+ * A matching callback completes synchronously exactly once. False means no pending match. */
+bool lens_cancel_window_picker_for_operation(const char *operationID);
 
 void lens_free_string(char *value);
 
