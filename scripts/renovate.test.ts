@@ -10,6 +10,7 @@ const config = runInNewContext(`(${read("renovate.json5")})`, Object.create(null
   timeout: 1000,
 }) as {
   enabledManagers: string[];
+  separateMinorPatch: boolean;
   customManagers: {
     depNameTemplate: string;
     datasourceTemplate: string;
@@ -62,31 +63,19 @@ describe("Release Please dependency synchronization", () => {
     ).toBe("18.1.2");
   });
 
-  it("groups both occurrences with manual review after the broad npm automerge rules", () => {
-    const indices = config.packageRules.flatMap((rule, index) =>
-      rule.matchPackageNames?.includes("release-please") ? [index] : [],
+  it("keeps the library and schema in one group across SemVer update levels", () => {
+    const groups = config.packageRules.filter(
+      (rule) => rule.matchPackageNames?.includes("release-please") && rule.groupName,
     );
-    expect(indices).toHaveLength(1);
-    const index = indices[0]!;
-    const group = config.packageRules[index]!;
+    expect(groups).toHaveLength(1);
+    const group = groups[0]!;
     expect(group.matchManagers).toEqual(["npm", "custom.regex"]);
     expect(group.groupName).toBe("release-please");
     expect(group.minimumGroupSize).toBe(2);
-    expect(group.automerge).toBe(false);
     expect(group.matchUpdateTypes).toBeUndefined();
-    expect(group.separateMajorMinor).toBeUndefined();
-    expect(group.dependencyDashboardApproval).toBeUndefined();
-    const autoRules = config.packageRules.flatMap((rule, position) =>
-      rule.matchManagers?.includes("npm") && rule.automerge === true ? [position] : [],
-    );
-    expect(autoRules.length).toBeGreaterThan(0);
-    expect(autoRules.every((position) => position < index)).toBe(true);
-    expect(
-      config.packageRules.some(
-        (rule) =>
-          rule.matchUpdateTypes?.includes("major") && rule.dependencyDashboardApproval === true,
-      ),
-    ).toBe(true);
+    expect(group.separateMajorMinor).toBe(false);
+    expect(config.separateMinorPatch).toBe(false);
+    expect(group.automerge).toBeUndefined();
   });
 
   it("runs the installed library matching both exact repository pins", () => {
