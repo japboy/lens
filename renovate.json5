@@ -129,7 +129,7 @@
       separateMajorMinor: false,
     },
     {
-      description: "pnpm engine, package-manager, and mise versions update together.",
+      description: "pnpm version declarations in package.json and mise.toml update together.",
       matchPackageNames: ["pnpm"],
       groupName: "pnpm",
       separateMajorMinor: false,
