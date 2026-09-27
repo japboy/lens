@@ -67,6 +67,10 @@
 
 ## [0.4.0](https://github.com/japboy/lens/compare/v0.3.0...v0.4.0) (2026-09-18)
 
+### Upgrade notes
+
+Settings storage changed from `~/Library/Application Support/Lens/settings.json` to `~/Library/Application Support/com.github.japboy.lens/settings.json`, alongside the managed Agent runtimes ([#79](https://github.com/japboy/lens/commit/b1c44903fc51933c5d8bd7705742d2b8a79e73af)). Settings from the old location are not migrated or loaded; upgrading starts with defaults unless settings already exist at the new location. The old files are left untouched.
+
 
 ### Features
 
