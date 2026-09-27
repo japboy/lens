@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/japboy/lens/compare/v0.7.0...v0.7.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **build:** align macOS SDK across builds ([#137](https://github.com/japboy/lens/issues/137)) ([5669366](https://github.com/japboy/lens/commit/5669366ce38f902a612f79b26fcf8cb789a6308e))
+
 ## [0.7.0](https://github.com/japboy/lens/compare/v0.6.0...v0.7.0) (2026-09-26)
 
 
