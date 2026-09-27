@@ -880,9 +880,20 @@ fn real_actor_coalesces_progress_bursts_and_flushes_complete_terminal_output() {
                     .push((std::time::Instant::now(), wire));
             }
         });
+    let transcript_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let recorded_transcript = transcript_events.clone();
+    let transcript_listener = harness
+        .app
+        .listen_any("session-view-changed", move |event| {
+            recorded_transcript
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
     let start = std::time::Instant::now();
     let result = invoke(&harness.window, "confirm_lens_targets");
     let elapsed = start.elapsed();
+    let transcript_before_wait = transcript_events.lock().unwrap().len();
     assert_eq!(result.stage, LensStage::Completed);
     assert_eq!(result.agent.as_ref().unwrap().received_updates, chunks);
     let representation = result.representation.as_ref().unwrap();
@@ -891,7 +902,7 @@ fn real_actor_coalesces_progress_bursts_and_flushes_complete_terminal_output() {
     );
     let events_before_wait = events.lock().unwrap().len();
     std::thread::sleep(std::time::Duration::from_millis(150));
-    let recorded = events.lock().unwrap();
+    let recorded = events.lock().unwrap().clone();
     let progress: Vec<_> = recorded
         .iter()
         .filter(|(_, wire)| {
@@ -927,6 +938,35 @@ fn real_actor_coalesces_progress_bursts_and_flushes_complete_terminal_output() {
             .any(|(_, wire)| wire["lens"]["stage"] == "transforming"),
         "late timer overwrote terminal output"
     );
+    let transcript = transcript_events.lock().unwrap().clone();
+    assert_eq!(
+        transcript.len(),
+        transcript_before_wait,
+        "late transcript timer after terminal"
+    );
+    let live_events = transcript
+        .iter()
+        .filter(|wire| wire["phase"] == "live")
+        .count();
+    assert!(
+        live_events <= elapsed.as_millis() as usize / 100 + 2,
+        "{live_events} transcript events in {elapsed:?}"
+    );
+    let document = harness
+        .app
+        .state::<AppState>()
+        .session_view
+        .view()
+        .unwrap()
+        .document
+        .unwrap();
+    let last = document.entries.last().unwrap();
+    assert!(
+        matches!(last, crate::session_document::DocumentEntry::Message { blocks, .. }
+        if matches!(&blocks[0], crate::session_document::DocumentBlock::Markdown { text }
+            if text == &"Fixture interpretation".repeat(chunks)))
+    );
+    harness.app.unlisten(transcript_listener);
     harness.app.unlisten(listener);
 }
 

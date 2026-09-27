@@ -18,7 +18,8 @@ pub(crate) struct AgentProgress {
 }
 impl AgentProgress {
     pub fn new() -> Self {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        let period = std::time::Duration::from_millis(100);
+        let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
             interval,

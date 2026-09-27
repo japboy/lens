@@ -2496,6 +2496,8 @@ async fn run_session_turn<R: tauri::Runtime>(
     tokio::pin!(prompt_response);
     let mut candidate = AgentOutputCandidate::default();
     let mut progress = crate::publication::AgentProgress::new();
+    // The outgoing prompt is already canonical and shares this turn's display clock.
+    progress.record(false);
 
     let result = async {
     loop {
@@ -2517,6 +2519,8 @@ async fn run_session_turn<R: tauri::Runtime>(
             }
             output_dirty = progress.tick() => {
                 if let Some(output_dirty) = output_dirty {
+                    crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
+                        .map_err(state_error)?;
                     let streaming_blocks = (initial_streaming && output_dirty).then(|| candidate.blocks());
                     update_lens_state_for_run(app, key, &identity.config, |lens| {
                         if let Some(agent) = lens.agent.as_mut() {
@@ -2547,6 +2551,8 @@ async fn run_session_turn<R: tauri::Runtime>(
             }
             response = &mut prompt_response => {
                 let stop_reason = response?.stop_reason;
+                crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
+                    .map_err(state_error)?;
                 let stop_reason_text = stop_reason_text(stop_reason);
                 let cancelled = stop_reason == StopReason::Cancelled
                     || *cancellation.borrow()
@@ -2591,6 +2597,11 @@ async fn run_session_turn<R: tauri::Runtime>(
         }
     }
     }.await;
+    if let Err(error) =
+        crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
+    {
+        eprintln!("Unable to flush terminal session display: {error}");
+    }
     if result.is_err() {
         if let Some(output_dirty) = progress.take_pending() {
             // Preserve all accepted partial content on error/cancellation. Authority
@@ -2728,11 +2739,20 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
             use agent_client_protocol::schema::v1::SessionUpdate;
-            crate::session_view::record_live(
-                app,
-                &notification.session_id.to_string(),
-                notification.update.clone(),
-            )
+            if candidate.is_some() {
+                crate::session_view::record_live_with_cadence(
+                    app,
+                    &notification.session_id.to_string(),
+                    notification.update.clone(),
+                    crate::session_view::DisplayCadence::Actor,
+                )
+            } else {
+                crate::session_view::record_live(
+                    app,
+                    &notification.session_id.to_string(),
+                    notification.update.clone(),
+                )
+            }
             .map_err(state_error)?;
             controls.record_tool(&notification.update)?;
             match &notification.update {
@@ -2752,12 +2772,21 @@ pub(crate) async fn record_control_update<R: tauri::Runtime>(
         })
         .await
         .if_request(async |request: RequestPermissionRequest, responder| {
+            crate::session_view::flush_live(
+                app,
+                controls.snapshot().map_err(state_error)?.operation_id,
+                &request.session_id.to_string(),
+            )
+            .map_err(state_error)?;
             controls.receive_permission(app, request, responder, connection)
         })
         .await
         .if_request(
             async |request: agent_client_protocol::schema::v1::CreateElicitationRequest,
                    responder| {
+                let authority = controls.snapshot().map_err(state_error)?;
+                crate::session_view::flush_live(app, authority.operation_id, &authority.session_id)
+                    .map_err(state_error)?;
                 controls.receive_elicitation(app, request, responder, connection)
             },
         )
