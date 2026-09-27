@@ -33,8 +33,13 @@ export function compareAgentNames(left: string, right: string): number {
   return a.length - b.length;
 }
 
-export function sameAgent(a: AgentKind | undefined, b: AgentKind | undefined): boolean {
-  return typeof a === "object" && typeof b === "object" ? a.external === b.external : a === b;
+export function sameAgent(
+  a: AgentKind | null | undefined,
+  b: AgentKind | null | undefined,
+): boolean {
+  return a != null && b != null && typeof a === "object" && typeof b === "object"
+    ? a.external === b.external
+    : a === b;
 }
 export function agentLabel(agent: AgentKind, profiles: ExternalAgentProfile[] = []): string {
   return typeof agent === "string"
@@ -83,7 +88,7 @@ export const AGENT_SELECTION_LABEL: Record<AgentSelectionStage, string> = {
 };
 
 export function selectedAgent(selection: AgentSelectionState): AgentKind | undefined {
-  return selection.stage === "selected" ? selection.candidate : undefined;
+  return selection.stage === "selected" ? (selection.candidate ?? undefined) : undefined;
 }
 
 export const STAGE_LABEL: Record<LensStage, string> = {

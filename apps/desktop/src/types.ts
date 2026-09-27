@@ -359,7 +359,7 @@ export interface AgentSelectionState {
   agent_default?: string | null;
   operation_id?: string;
   stage: AgentSelectionStage;
-  candidate?: AgentKind;
+  candidate?: AgentKind | null;
   auth_methods: AgentAuthMethod[];
   message?: string;
   error?: string;

@@ -25,6 +25,40 @@ async function mount(stage: AgentSelectionState["stage"] = "selected") {
   await element.querySelector<LensSelect>("lens-select")?.updateComplete;
   return { element, intents };
 }
+
+it("renders and verifies the native unselected snapshot with a null candidate", async () => {
+  const element = new LensAgentSettings();
+  const nativeSelection: AgentSelectionState = JSON.parse(
+    '{"catalog_generation":null,"catalog_revision":0,"catalog_model":null,"config_options":null,"modes":[],"agent_default":null,"operation_id":null,"stage":"unselected","candidate":null,"auth_methods":[],"supports_logout":false,"message":null,"error":null}',
+  );
+  element.selection = nativeSelection;
+  element.runtime = JSON.parse(
+    '{"operation_id":null,"stage":"not_installed","agent":null,"version":null,"current_version":null,"downloaded_bytes":0,"total_bytes":null,"message":null,"error":null}',
+  );
+  const intents: AgentIntent[] = [];
+  element.addEventListener("lens-agent-intent", (event) =>
+    intents.push((event as CustomEvent<AgentIntent>).detail),
+  );
+  document.body.append(element);
+  await element.updateComplete;
+  const verify = button(element, "Verify Connection");
+  expect(verify).toBeDefined();
+  expect(verify.disabled).toBe(false);
+  verify.click();
+  expect(intents).toEqual([{ type: "select", agent: "claude" }]);
+
+  element.selection = { ...nativeSelection, candidate: { external: "profile-1" } };
+  await element.updateComplete;
+  element.selection = { ...nativeSelection, candidate: null };
+  await element.updateComplete;
+  expect(button(element, "Verify Connection")).toBeDefined();
+  button(element, "Add Preset").click();
+  await element.updateComplete;
+  button(element, "Discard Draft").click();
+  await element.updateComplete;
+  expect(button(element, "Verify Connection")).toBeDefined();
+  expect(intents).toEqual([{ type: "select", agent: "claude" }]);
+});
 function button(element: LensAgentSettings, text: string) {
   return [...element.querySelectorAll("button")].find(
     (button) => button.textContent?.trim() === text,
