@@ -537,6 +537,7 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
             snapshot.lens.delivery = Some(test_support::delivery());
             snapshot.config.external_agents[0].command = "/custom/goose".into();
             snapshot.config.external_agents.push(ExternalAgentProfile {
+                projection_layout: Default::default(),
                 id: custom_id,
                 name: "Custom".into(),
                 command: "custom".into(),
@@ -1035,4 +1036,72 @@ fn saved_external_agent_verification_preserves_concurrent_progress_after_closing
             .as_deref(),
         Some("concurrent progress marker")
     );
+}
+
+#[test]
+fn external_projection_layout_survives_edits_but_not_delete_and_manual_recreation() {
+    use crate::model::ProjectionLayout;
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(test_support::state()),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let id = ExternalAgentProfile::grok_preset().id;
+    for (name, command, arguments) in [
+        ("Renamed Agent", "grok", "agent stdio"),
+        ("Renamed Agent", "another-agent", "--changed"),
+    ] {
+        crate::commands::save_external_agent_configuration(
+            app.handle(),
+            crate::external_agent::ExternalAgentDraft {
+                id,
+                name: name.into(),
+                command: command.into(),
+                arguments: arguments.into(),
+            },
+        )
+        .unwrap();
+        let config = app.state::<AppState>().config().unwrap();
+        let profile = config.external_agents.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(profile.projection_layout, ProjectionLayout::Structured);
+        assert_eq!(profile.name, name);
+        assert_eq!(profile.command, std::path::PathBuf::from(command));
+        assert_eq!(profile.args, shlex::split(arguments).unwrap());
+        assert_eq!(app.state::<AppState>().store.load(), config);
+    }
+    crate::commands::delete_external_agent(app.handle().clone(), id).unwrap();
+    assert!(!app
+        .state::<AppState>()
+        .config()
+        .unwrap()
+        .external_agents
+        .iter()
+        .any(|p| p.id == id));
+    crate::commands::save_external_agent_configuration(
+        app.handle(),
+        crate::external_agent::ExternalAgentDraft {
+            id,
+            name: "Grok Build".into(),
+            command: "grok".into(),
+            arguments: "agent stdio".into(),
+        },
+    )
+    .unwrap();
+    let config = app.state::<AppState>().config().unwrap();
+    assert_eq!(config.projection_layout(), ProjectionLayout::Compact);
+    assert_eq!(app.state::<AppState>().store.load(), config);
+    let reset = crate::commands::reset_external_agents(app.handle().clone()).unwrap();
+    assert_eq!(
+        reset
+            .external_agents
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap()
+            .projection_layout,
+        ProjectionLayout::Structured
+    );
+    assert_eq!(app.state::<AppState>().store.load(), reset);
 }

@@ -762,6 +762,7 @@ fn setup(scenario: Scenario) -> Harness {
                 .config
                 .external_agents
                 .push(crate::model::ExternalAgentProfile {
+                    projection_layout: Default::default(),
                     id: Uuid::from_u128(1),
                     name: "Fixture".into(),
                     command: "/fixture/not-executed".into(),

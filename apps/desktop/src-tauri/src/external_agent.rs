@@ -77,6 +77,7 @@ impl ExternalAgentDraft {
         let args = shlex::split(&self.arguments)
             .ok_or("Arguments contain an unfinished quote or escape.")?;
         let profile = crate::model::ExternalAgentProfile {
+            projection_layout: Default::default(),
             id: self.id,
             name: self.name,
             command: self.command.into(),
@@ -162,6 +163,7 @@ mod tests {
         std::fs::write(&command, "#!/bin/sh\nexit 99\n").unwrap();
         std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
         let profile = crate::model::ExternalAgentProfile {
+            projection_layout: Default::default(),
             id: uuid::Uuid::new_v4(),
             name: "Custom".into(),
             command: command.clone(),
@@ -281,6 +283,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let command = root.path().join("fixture-agent");
         let profile = crate::model::ExternalAgentProfile {
+            projection_layout: Default::default(),
             id: uuid::Uuid::new_v4(),
             name: "Fixture".into(),
             command: "fixture-agent".into(),

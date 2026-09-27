@@ -2045,6 +2045,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, name)| crate::model::ExternalAgentProfile {
+                projection_layout: Default::default(),
                 id: Uuid::from_u128(index as u128 + 1),
                 name: name.into(),
                 command: "agent".into(),

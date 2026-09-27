@@ -392,6 +392,45 @@ it("sends the raw command only on Save and Verify and preserves arguments when b
   });
   expect(element.profiles[0]!.command).toBe("goose");
 });
+it("keeps preset transport metadata outside editable saves across snapshot refresh and Browse", async () => {
+  const { element, intents } = await mount();
+  element.profiles = [
+    {
+      id: "profile-1",
+      name: "Grok Build",
+      command: "grok",
+      args: ["agent", "stdio"],
+      projection_layout: "structured",
+    },
+  ];
+  await element.updateComplete;
+  const saved = structuredClone(element.profiles);
+  await edit(element, "grok agent --example stdio");
+  await choose(element, "claude");
+  await choose(element, "profile-1");
+  element.profiles = structuredClone(saved);
+  await element.updateComplete;
+  const revision = browse(element, intents);
+  expect(element.acceptExternalExecutable("/chosen/grok", revision)).toBe(true);
+  await element.updateComplete;
+  const name = element.querySelector<HTMLInputElement>('[aria-label="Connection name"]')!;
+  name.value = "My Grok";
+  name.dispatchEvent(new Event("input"));
+  await element.updateComplete;
+  button(element, "Save and Verify").click();
+  expect(intents.at(-1)).toEqual({
+    type: "save-external-agent",
+    profile: {
+      id: "profile-1",
+      name: "My Grok",
+      command: "/chosen/grok",
+      arguments: "agent --example stdio",
+    },
+  });
+  expect(element.profiles).toEqual(saved);
+  expect(element.querySelectorAll("lens-select")).toHaveLength(1);
+  expect(element.textContent).not.toMatch(/projection_layout|structured|compact/i);
+});
 it("keeps incomplete arguments local while choosing a new executable", async () => {
   const { element, intents } = await mount();
   await edit(element, "goose 'incomplete");

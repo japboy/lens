@@ -29,12 +29,28 @@ impl AgentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionLayout {
+    #[default]
+    Compact,
+    Structured,
+}
+
+impl ProjectionLayout {
+    fn is_compact(&self) -> bool {
+        *self == Self::Compact
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalAgentProfile {
     pub id: Uuid,
     pub name: String,
     pub command: PathBuf,
     pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "ProjectionLayout::is_compact")]
+    pub projection_layout: ProjectionLayout,
 }
 
 impl ExternalAgentProfile {
@@ -48,6 +64,7 @@ impl ExternalAgentProfile {
 
     pub fn copilot_preset() -> Self {
         Self {
+            projection_layout: ProjectionLayout::Compact,
             id: Uuid::from_u128(0xa14d73cb951c48eda3053829750c88da),
             name: "GitHub Copilot".into(),
             command: "copilot".into(),
@@ -56,6 +73,7 @@ impl ExternalAgentProfile {
     }
     pub fn goose_preset() -> Self {
         Self {
+            projection_layout: ProjectionLayout::Compact,
             id: Uuid::from_u128(0x6b57315e9c134e4abf4ce6bc33b10b21),
             name: "Goose".into(),
             command: "goose".into(),
@@ -64,6 +82,7 @@ impl ExternalAgentProfile {
     }
     pub fn grok_preset() -> Self {
         Self {
+            projection_layout: ProjectionLayout::Structured,
             id: Uuid::from_u128(0x09ebcfe5a77e4e6e832ff5e87f0a1310),
             name: "Grok Build".into(),
             command: "grok".into(),
@@ -311,6 +330,20 @@ impl AppConfig {
         Ok(())
     }
 
+    pub fn projection_layout(&self) -> ProjectionLayout {
+        match self.agent {
+            AgentKind::External(id) => self
+                .external_agents
+                .iter()
+                .find(|profile| profile.id == id)
+                .map(|profile| profile.projection_layout)
+                .unwrap_or_default(),
+            AgentKind::Claude | AgentKind::Codex | AgentKind::Antigravity => {
+                ProjectionLayout::Compact
+            }
+        }
+    }
+
     pub fn same_agent_execution(&self, other: &Self, agent: AgentKind) -> bool {
         self.agent_preferences.get(agent) == other.agent_preferences.get(agent)
             && self.same_agent_invocation(other, agent)
@@ -325,7 +358,8 @@ impl AppConfig {
                     .iter()
                     .find(|profile| profile.id == id);
                 matches!((left, right), (Some(left), Some(right))
-                    if left.command == right.command && left.args == right.args)
+                    if left.command == right.command && left.args == right.args
+                        && left.projection_layout == right.projection_layout)
             }
             _ => true,
         }
@@ -1044,11 +1078,90 @@ mod tests {
     }
 
     #[test]
+    fn projection_layout_defaults_and_wire_are_connection_owned() {
+        let mut config = AppConfig::new("/fixture".into());
+        for agent in AgentKind::MANAGED {
+            config.agent = agent;
+            assert_eq!(config.projection_layout(), ProjectionLayout::Compact);
+        }
+        for profile in config.external_agents.clone() {
+            config.agent = AgentKind::External(profile.id);
+            let expected = if profile.id == ExternalAgentProfile::grok_preset().id {
+                ProjectionLayout::Structured
+            } else {
+                ProjectionLayout::Compact
+            };
+            assert_eq!(config.projection_layout(), expected);
+            let wire = serde_json::to_value(&profile).unwrap();
+            assert_eq!(
+                wire.get("projection_layout").is_some(),
+                expected == ProjectionLayout::Structured
+            );
+            assert_eq!(
+                serde_json::from_value::<ExternalAgentProfile>(wire.clone()).unwrap(),
+                profile
+            );
+            let mut explicit = wire;
+            explicit["projection_layout"] = serde_json::json!("compact");
+            let compact = serde_json::from_value::<ExternalAgentProfile>(explicit.clone()).unwrap();
+            assert_eq!(compact.projection_layout, ProjectionLayout::Compact);
+            assert!(serde_json::to_value(compact)
+                .unwrap()
+                .get("projection_layout")
+                .is_none());
+            explicit["projection_layout"] = serde_json::json!("automatic");
+            assert!(serde_json::from_value::<ExternalAgentProfile>(explicit).is_err());
+        }
+        config.agent = AgentKind::External(ExternalAgentProfile::grok_preset().id);
+        let mut legacy = serde_json::to_value(&config).unwrap();
+        for profile in legacy["external_agents"].as_array_mut().unwrap() {
+            profile.as_object_mut().unwrap().remove("projection_layout");
+        }
+        let decoded =
+            AppConfig::decode_settings(&serde_json::to_vec(&legacy).unwrap(), "/fixture".into())
+                .unwrap();
+        assert_eq!(decoded.projection_layout(), ProjectionLayout::Compact);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), legacy);
+        let mut reset = decoded;
+        reset.reset_external_agents();
+        reset.agent = config.agent;
+        assert_eq!(reset.projection_layout(), ProjectionLayout::Structured);
+    }
+
+    #[test]
+    fn projection_layout_changes_execution_identity_without_name_inference() {
+        let mut config = AppConfig::new("/fixture".into());
+        let grok = ExternalAgentProfile::grok_preset();
+        config.agent = AgentKind::External(grok.id);
+        let mut changed = config.clone();
+        let profile = changed
+            .external_agents
+            .iter_mut()
+            .find(|p| p.id == grok.id)
+            .unwrap();
+        profile.name = "Renamed unrelated Agent".into();
+        assert!(config.same_execution_config(&changed));
+        assert!(config.same_active_session_config(&changed));
+        assert_eq!(changed.projection_layout(), ProjectionLayout::Structured);
+        changed
+            .external_agents
+            .iter_mut()
+            .find(|p| p.id == grok.id)
+            .unwrap()
+            .projection_layout = ProjectionLayout::Compact;
+        assert!(!config.same_agent_execution(&changed, config.agent));
+        assert!(!config.same_execution_config(&changed));
+        assert!(!config.same_active_session_config(&changed));
+        assert_eq!(changed.projection_layout(), ProjectionLayout::Compact);
+    }
+
+    #[test]
     fn external_executable_is_part_of_execution_identity_and_legacy_defaults() {
         let mut config = AppConfig::new("/fixture".into());
         config.external_agents.clear();
         let previous = config.clone();
         config.external_agents.push(ExternalAgentProfile {
+            projection_layout: Default::default(),
             id: Uuid::from_u128(1),
             name: "Custom".into(),
             command: "/user/agent".into(),
@@ -1074,6 +1187,7 @@ mod tests {
         );
         let id = Uuid::from_u128(1);
         let profile = ExternalAgentProfile {
+            projection_layout: Default::default(),
             id,
             name: "Custom".into(),
             command: "/bin/agent".into(),

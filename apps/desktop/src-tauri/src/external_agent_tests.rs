@@ -9,6 +9,7 @@ fn external() -> AgentKind {
 }
 fn profile(command: PathBuf) -> crate::model::ExternalAgentProfile {
     crate::model::ExternalAgentProfile {
+        projection_layout: Default::default(),
         id: external_id(),
         name: "Personal ACP connection".into(),
         command,
@@ -110,12 +111,21 @@ async fn installed_external_persistent_actor_publishes_synthetic_html(agent: Syn
     {
         let mut snapshot = state.runtime.write().unwrap();
         snapshot.config.agent = external();
-        let mut connection = profile(executable.into());
-        if agent == SyntheticAgent::Grok {
-            connection.args = vec!["agent".into(), "stdio".into()];
-        } else if agent == SyntheticAgent::Copilot {
-            connection.args = vec!["--acp".into(), "--stdio".into()];
-        }
+        let connection = match agent {
+            SyntheticAgent::Grok => {
+                let mut connection = crate::model::ExternalAgentProfile::grok_preset();
+                connection.id = external_id();
+                connection.command = executable.into();
+                assert_eq!(connection.projection_layout, ProjectionLayout::Structured);
+                connection
+            }
+            SyntheticAgent::Copilot => {
+                let mut connection = profile(executable.into());
+                connection.args = vec!["--acp".into(), "--stdio".into()];
+                connection
+            }
+            SyntheticAgent::Goose => profile(executable.into()),
+        };
         snapshot.config.external_agents = vec![connection];
         snapshot.config.working_directory = directory.0.clone();
         snapshot

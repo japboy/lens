@@ -16,7 +16,7 @@ use crate::{
         AgentAuthMethod, AgentAuthMethodKind, AgentKind, AgentRunState, AgentSelectionStage,
         AgentSelectionState, AppConfig, LensFreshness, LensMonitoringLifecycle,
         LensPendingRepresentation, LensRefreshOutcome, LensRepresentation, LensSourceHealth,
-        LensStage, LensState, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+        LensStage, LensState, ProjectionLayout, LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
     },
     prompt_template::{AgentPromptMode, AgentPromptTemplate},
 };
@@ -2586,6 +2586,7 @@ async fn run_session_turn<R: tauri::Runtime>(
         &delivery.projection,
         prompt_mode,
         prompt_capabilities,
+        identity.config.projection_layout(),
     )?;
     prompt.push(crate::output_mcp::publication_context(
         key.run_id,
@@ -3049,6 +3050,7 @@ fn build_prompt_blocks(
     target_projection: &ProjectionRef,
     prompt_mode: &AgentPromptMode,
     capabilities: &PromptCapabilities,
+    projection_layout: ProjectionLayout,
 ) -> Result<Vec<ContentBlock>, Error> {
     if projection.digest() != &target_projection.digest {
         return Err(state_error(
@@ -3085,7 +3087,10 @@ fn build_prompt_blocks(
         ));
     }
 
-    let projection_text = readable_projection_json(projection)?;
+    let projection_text = match projection_layout {
+        ProjectionLayout::Compact => projection.json().to_owned(),
+        ProjectionLayout::Structured => readable_projection_json(projection)?,
+    };
     let mut blocks = vec![instruction];
     let checkpoint = if let AgentPromptMode::SourceCheckpoint { base_projection } = prompt_mode {
         Some(
@@ -3579,6 +3584,7 @@ mod tests {
                 &delivery.projection,
                 &AgentPromptMode::FullProjection,
                 &PromptCapabilities::new().embedded_context(embedded),
+                ProjectionLayout::Structured,
             )
             .unwrap();
             let body = match &blocks[1] {
@@ -3608,6 +3614,7 @@ mod tests {
             &projection_ref,
             &AgentPromptMode::FullProjection,
             &PromptCapabilities::new().embedded_context(true),
+            ProjectionLayout::Compact,
         )
         .expect("build prompt blocks");
 
@@ -3648,6 +3655,7 @@ mod tests {
             &projection_ref,
             &AgentPromptMode::FullProjection,
             &PromptCapabilities::default(),
+            ProjectionLayout::Compact,
         )
         .expect("build fallback blocks");
 
@@ -3674,6 +3682,7 @@ mod tests {
                 base_projection: projection_ref("Old source material", 1),
             },
             &PromptCapabilities::default(),
+            ProjectionLayout::Compact,
         )
         .expect("fallback checkpoint blocks");
 
@@ -3707,6 +3716,7 @@ mod tests {
             &projection_ref,
             &AgentPromptMode::FullProjection,
             &PromptCapabilities::default(),
+            ProjectionLayout::Compact,
         )
         .expect("build prompt blocks");
 
@@ -3735,6 +3745,7 @@ mod tests {
             &projection_ref,
             &AgentPromptMode::FullProjection,
             &PromptCapabilities::new().embedded_context(true).image(true),
+            ProjectionLayout::Compact,
         )
         .expect("multimodal blocks");
 
@@ -3759,10 +3770,101 @@ mod tests {
             &projection_ref,
             &AgentPromptMode::FullProjection,
             &PromptCapabilities::new().embedded_context(true),
+            ProjectionLayout::Compact,
         )
         .expect_err("missing image capability must be explicit");
 
         assert!(error.to_string().contains("image prompt support"));
+    }
+
+    #[test]
+    fn selected_connection_projection_layout_controls_every_prompt_mode_and_transport() {
+        let (input, payload) = sample_input_with_media(&"Accessible document text. ".repeat(50));
+        let (source, source_ref) = sample_projection(&input, &[payload]);
+        let delivered = source.for_image_support(false).unwrap();
+        let mut target = delivered.delivery(source_ref).projection;
+        target.revision = std::num::NonZeroU64::new(2).unwrap();
+        let mut config = AppConfig::new("/fixture".into());
+        let mut manual = crate::model::ExternalAgentProfile::grok_preset();
+        manual.id = Uuid::from_u128(777);
+        manual.projection_layout = ProjectionLayout::Compact;
+        config.external_agents.push(manual);
+        let agents: Vec<_> = AgentKind::MANAGED
+            .into_iter()
+            .chain(
+                config
+                    .external_agents
+                    .iter()
+                    .map(|p| AgentKind::External(p.id)),
+            )
+            .collect();
+        for agent in agents {
+            config.agent = agent;
+            let expected = if agent
+                == AgentKind::External(crate::model::ExternalAgentProfile::grok_preset().id)
+            {
+                ProjectionLayout::Structured
+            } else {
+                ProjectionLayout::Compact
+            };
+            assert_eq!(config.projection_layout(), expected);
+            for embedded in [false, true] {
+                for mode in [
+                    AgentPromptMode::FullProjection,
+                    AgentPromptMode::SourceCheckpoint {
+                        base_projection: projection_ref("Previous", 1),
+                    },
+                    AgentPromptMode::CurrentProjectionRetry {
+                        applied_projection: target.clone(),
+                    },
+                ] {
+                    let blocks = build_prompt_blocks(
+                        &config.agent_prompt_template,
+                        &delivered,
+                        &target,
+                        &mode,
+                        &PromptCapabilities::new().embedded_context(embedded),
+                        config.projection_layout(),
+                    )
+                    .unwrap();
+                    let index = if matches!(mode, AgentPromptMode::SourceCheckpoint { .. }) {
+                        2
+                    } else {
+                        1
+                    };
+                    let text = match &blocks[index] {
+                        ContentBlock::Text(content) => &content.text,
+                        ContentBlock::Resource(resource) => match &resource.resource {
+                            EmbeddedResourceResource::TextResourceContents(content) => {
+                                assert_eq!(
+                                    content.uri,
+                                    format!(
+                                        "lens://projection/{}/{}",
+                                        target.revision,
+                                        target.digest.as_str()
+                                    )
+                                );
+                                &content.text
+                            }
+                            _ => panic!("expected text resource"),
+                        },
+                        _ => panic!("expected source projection"),
+                    };
+                    match expected {
+                        ProjectionLayout::Compact => assert_eq!(text.as_bytes(), delivered.bytes()),
+                        ProjectionLayout::Structured => {
+                            assert!(text.contains('\n'));
+                            assert_eq!(text, &readable_projection_json(&delivered).unwrap());
+                        }
+                    }
+                    assert_canonical_projection_text(text, &delivered);
+                    assert!(text.contains("image_not_supported"));
+                    assert!(!blocks
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::Image(_))));
+                }
+            }
+        }
     }
 
     #[test]
@@ -3784,6 +3886,7 @@ mod tests {
                     &delivery.projection,
                     &mode,
                     &PromptCapabilities::new().embedded_context(embedded),
+                    ProjectionLayout::Compact,
                 )
                 .unwrap();
                 assert!(!blocks
@@ -3882,6 +3985,7 @@ mod tests {
             &mismatched,
             &AgentPromptMode::FullProjection,
             &PromptCapabilities::new().embedded_context(true),
+            ProjectionLayout::Compact,
         )
         .expect_err("mismatched projection identity must fail closed");
 
@@ -3904,6 +4008,7 @@ mod tests {
                 base_projection: base_projection.clone(),
             },
             &PromptCapabilities::new().embedded_context(true),
+            ProjectionLayout::Compact,
         )
         .expect("source checkpoint prompt");
 
@@ -4000,6 +4105,7 @@ mod tests {
             &turn.projection_ref,
             &mode,
             &PromptCapabilities::default(),
+            ProjectionLayout::Compact,
         )
         .unwrap();
         let ContentBlock::Text(checkpoint) = &blocks[1] else {

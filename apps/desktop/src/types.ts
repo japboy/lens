@@ -12,6 +12,7 @@ export interface ExternalAgentProfile {
   name: string;
   command: string;
   args: string[];
+  projection_layout?: "compact" | "structured";
 }
 export type AgentSelectionStage =
   | "unselected"

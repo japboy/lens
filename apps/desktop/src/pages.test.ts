@@ -788,7 +788,7 @@ describe("Lens rich Agent output", () => {
       const page = await createPage("overlay");
       const root = viewRoot(page, "lens-overlay-view")!;
       await vi.waitFor(() => expect(root.textContent).toContain("Retry with Agent"));
-      expect(root.querySelector(".quality")?.textContent).toBe("full");
+      expect(root.querySelector(".quality")?.textContent).toBe("Capture: full");
       const { invoke } = await import("@tauri-apps/api/core");
       expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "get_lens_source")).toBe(
         false,

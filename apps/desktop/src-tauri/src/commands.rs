@@ -193,7 +193,7 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
     app: &AppHandle<R>,
     profile: crate::external_agent::ExternalAgentDraft,
 ) -> Result<agent::SavedAgentSelection, String> {
-    let profile = profile.parse()?;
+    let mut profile = profile.parse()?;
     crate::external_agent::validate_profile(&profile)?;
     let kind = AgentKind::External(profile.id);
     let state = app.state::<AppState>();
@@ -212,6 +212,8 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
             .iter_mut()
             .find(|p| p.id == profile.id)
         {
+            // Editor drafts cannot replace connection-owned compatibility metadata.
+            profile.projection_layout = existing.projection_layout;
             *existing = profile;
         } else {
             if config.external_agents.len() >= 16 {

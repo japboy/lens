@@ -160,6 +160,7 @@ fn project(snapshot: &AppSnapshot, label: &str, output_ref: Option<String>) -> W
             context: None,
             input: None,
             projection: snapshot.lens.projection.clone(),
+            delivery: snapshot.lens.delivery.clone(),
             output_blocks: Default::default(),
             representation: snapshot.lens.representation.as_ref().map(|r| {
                 let mut r = r.clone();
@@ -385,7 +386,16 @@ mod tests {
     #[test]
     fn committed_representation_shares_storage_and_retires_provisional_resources() {
         let state = crate::test_support::state();
+        let delivery: crate::live_sync::LensDelivery = serde_json::from_value(serde_json::json!({
+            "source_projection": { "revision": 5, "digest": "a".repeat(64) },
+            "projection": { "revision": 5, "digest": "b".repeat(64) },
+            "mode": "text_only_partial",
+            "sources": [{ "source_id": "source-1", "mode": "text_only_partial",
+                "omitted_media": [{ "id": "image-1", "reason": "image_not_supported" }] }],
+        }))
+        .unwrap();
         let representation = crate::model::LensRepresentation {
+            delivery: Some(delivery.clone()),
             prompt_execution_revision: 7,
             representation_id: Uuid::from_u128(2),
             context_id: Uuid::from_u128(3),
@@ -408,8 +418,10 @@ mod tests {
             let mut snapshot = state.runtime.write().unwrap();
             snapshot.lens.operation_id = Some(Uuid::from_u128(1));
             snapshot.lens.output_blocks = representation.output_blocks.clone();
+            snapshot.lens.delivery = Some(delivery.clone());
         }
         let provisional = window_snapshot(&state, "lens-overlay").unwrap();
+        assert_eq!(provisional.snapshot.lens.delivery.as_ref(), Some(&delivery));
         let output_ref = provisional.output_ref.unwrap();
         let content = output(&state, &output_ref).unwrap();
         let image_ref = content.output_blocks[0]["image_ref"].as_str().unwrap();
@@ -455,6 +467,18 @@ mod tests {
         assert_eq!(metadata.context_id, representation.context_id);
         assert_eq!(metadata.context_revision, representation.context_revision);
         assert_eq!(metadata.projection, representation.projection);
+        assert_eq!(metadata.delivery.as_ref(), Some(&delivery));
+        assert_eq!(wire.snapshot.lens.delivery.as_ref(), Some(&delivery));
+        assert_eq!(
+            wire.snapshot
+                .lens
+                .response_history
+                .representation(representation.representation_id)
+                .unwrap()
+                .delivery
+                .as_ref(),
+            Some(&delivery),
+        );
         assert_eq!(metadata.run_id, representation.run_id);
         assert!(metadata.output_blocks.is_empty());
         assert!(serde_json::to_vec(&wire).unwrap().len() < 64 * 1024);
