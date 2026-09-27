@@ -74,11 +74,10 @@ static void LensApplyMenuPresentation(NSMenu *menu, NSArray *values) {
     }
 }
 
-bool lens_set_menu_presentation(void *statusItemPointer, size_t submenuIndex,
+bool lens_set_menu_presentation(void *rootMenuPointer, size_t submenuIndex,
                                const char *submenuTitle, const char *itemsJSON) {
-    if (![NSThread isMainThread] || !statusItemPointer || !submenuTitle || !itemsJSON) return false;
-    NSStatusItem *statusItem = (__bridge NSStatusItem *)statusItemPointer;
-    NSMenu *root = statusItem.menu;
+    if (![NSThread isMainThread] || !rootMenuPointer || !submenuTitle || !itemsJSON) return false;
+    NSMenu *root = (__bridge NSMenu *)rootMenuPointer;
     if (!root || submenuIndex >= (size_t)root.numberOfItems) return false;
     NSMenuItem *parent = [root itemAtIndex:(NSInteger)submenuIndex];
     NSString *expectedTitle = [NSString stringWithUTF8String:submenuTitle];
@@ -485,6 +484,9 @@ static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinato
 
 - (void)deliver:(NSDictionary *)payload {
     NSAssert([NSThread isMainThread], @"Picker completion must be delivered on the main thread");
+    if (self.callback == NULL) {
+        return;
+    }
     LensPickerCallback callback = self.callback;
     void *context = self.callbackContext;
     self.callback = NULL;
@@ -559,6 +561,8 @@ static LensContentPickerCoordinator *_Nullable LensActiveContentPickerCoordinato
     NSString *ownBundleID = NSBundle.mainBundle.bundleIdentifier;
     configuration.excludedBundleIDs = ownBundleID.length > 0 ? @[ownBundleID] : @[];
     picker.defaultConfiguration = configuration;
+    // Still-image selection owns no SCStream; coordinator admission bounds picker concurrency.
+    picker.maximumStreamCount = nil;
     picker.active = YES;
     [picker presentPickerUsingContentStyle:SCShareableContentStyleWindow];
     return YES;
@@ -2461,6 +2465,24 @@ bool lens_release_registered_window(const char *operationIDCString, uint32_t win
     return released;
 }
 
+bool lens_cancel_window_picker_for_operation(const char *operationIDCString) {
+    NSString *operationID = operationIDCString == NULL
+        ? nil
+        : [NSString stringWithUTF8String:operationIDCString];
+    if (operationID.length == 0) {
+        return false;
+    }
+    __block BOOL cancelled = NO;
+    LensPerformSyncOnMainThread(^{
+        LensContentPickerCoordinator *coordinator = LensActiveContentPickerCoordinator;
+        if ([coordinator.operationID isEqualToString:operationID]) {
+            [coordinator deliver:@{ @"status": @"cancelled" }];
+            cancelled = YES;
+        }
+    });
+    return cancelled;
+}
+
 bool lens_release_window_operation(const char *operationIDCString) {
     NSString *operationID = operationIDCString == NULL
         ? nil
@@ -2470,6 +2492,12 @@ bool lens_release_window_operation(const char *operationIDCString) {
     }
     __block BOOL released = NO;
     LensPerformSyncOnMainThread(^{
+        // End callback ownership even when no window has been selected yet.
+        LensContentPickerCoordinator *coordinator = LensActiveContentPickerCoordinator;
+        if ([coordinator.operationID isEqualToString:operationID]) {
+            [coordinator deliver:@{ @"status": @"cancelled" }];
+            released = YES;
+        }
         LensEnsureWindowRegistries();
         NSArray<NSString *> *windowKeys = [LensWindowSourceRegistry.allKeys copy];
         for (NSString *windowKey in windowKeys) {

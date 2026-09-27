@@ -79,7 +79,7 @@ describe("repository task ownership", () => {
   it("owns commands only in mise and keeps verification free of freshness skips", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     expect(manifest.scripts).toBeUndefined();
-    expect(tasks).toHaveLength(45);
+    expect(tasks).toHaveLength(46);
     expect(new Set(tasks.map((task) => task.name)).size).toBe(tasks.length);
     for (const task of tasks) {
       expect(task.source).toBe(
@@ -150,6 +150,7 @@ describe("repository task ownership", () => {
         "check:rust:release",
       ].toSorted(),
     );
+    expect(result.completed).not.toContain("rust:test:webview-lifecycle");
     expect(result.completed.indexOf("check:rust")).toBeLessThan(
       result.completed.indexOf("rust:clippy"),
     );

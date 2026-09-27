@@ -4,6 +4,15 @@ use tauri::WebviewWindow;
 
 pub struct MacOsPresentation;
 
+// Tauri's public ContextMenu bound exposes its sealed supertrait's context accessor.
+// Keep that dependency-specific access here: Muda's public ns_menu contract borrows
+// the pointer for the ContextMenu lifetime. Never recover it from NSStatusItem.menu,
+// which tray-icon 0.25 attaches only while a menu is being shown.
+// Sources: tauri 2.12.0 src/menu/{mod.rs,menu.rs}; muda 0.20.0 src/context_menu.rs.
+fn native_context_menu_ptr<M: tauri::menu::ContextMenu>(menu: &M) -> *mut std::ffi::c_void {
+    menu.inner_context().ns_menu()
+}
+
 // Wry executes tasks inline when already on the main thread. Elsewhere this waits only
 // for handle acquisition and native start, never for an animation callback.
 fn on_main_thread<R: tauri::Runtime, T: Send + 'static>(
@@ -71,32 +80,37 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         history: &tauri::menu::Submenu<R>,
         expected: Vec<port_platform::MenuPresentationItem>,
     ) -> Result<(), PlatformError> {
-        let error = |error: tauri::Error| PlatformError::Operation(error.to_string());
-        let root_items = root.items().map_err(error)?;
-        let index = root_items
-            .iter()
-            .position(|item| item.id() == history.id())
-            .ok_or_else(|| PlatformError::Operation("target submenu is not attached".into()))?;
-        let title = history.text().map_err(error)?;
-        // The bridge validates the entire attached tree and decodes template images before mutation.
-        app.tray_by_id("lens")
-            .ok_or_else(|| PlatformError::Operation("Lens tray icon is unavailable".into()))?
-            .with_inner_tray_icon(move |tray| {
-                let item = tray.ns_status_item().ok_or_else(|| {
-                    PlatformError::Operation("native status item is unavailable".into())
-                })?;
-                // SAFETY: Tauri runs this closure on AppKit's main thread. The retained
-                // status item remains alive throughout this synchronous borrowed call.
+        let root = root.clone();
+        let history = history.clone();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            let result = (|| {
+                let error = |error: tauri::Error| PlatformError::Operation(error.to_string());
+                let root_items = root.items().map_err(error)?;
+                let index = root_items
+                    .iter()
+                    .position(|item| item.id() == history.id())
+                    .ok_or_else(|| {
+                        PlatformError::Operation("target submenu is not attached".into())
+                    })?;
+                let title = history.text().map_err(error)?;
+                // SAFETY: The owned Tauri root keeps the borrowed NSMenu alive through
+                // this synchronous main-thread call. No pointer crosses the channel.
                 unsafe {
                     presentation::set_menu_presentation(
-                        &*item as *const _ as *mut std::ffi::c_void,
+                        native_context_menu_ptr(&root),
                         index,
                         &title,
                         &expected,
                     )
                 }
-            })
-            .map_err(error)?
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|error| PlatformError::Operation(error.to_string()))?;
+        receiver.recv().map_err(|_| {
+            PlatformError::Operation("Menu presentation dispatch was dropped".into())
+        })?
     }
 
     fn settings_background(

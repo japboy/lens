@@ -372,27 +372,81 @@ impl AgentControl {
 
 #[derive(Clone, Default)]
 pub struct PickerControl {
-    active: Arc<AtomicBool>,
+    active: Arc<Mutex<Option<ActivePicker>>>,
+}
+
+struct ActivePicker {
+    operation_id: Uuid,
+    cancellation: watch::Sender<bool>,
 }
 
 pub struct PickerLease {
-    active: Arc<AtomicBool>,
+    active: Arc<Mutex<Option<ActivePicker>>>,
+    cancellation: watch::Receiver<bool>,
 }
 
 impl PickerControl {
-    pub fn try_begin(&self) -> Result<PickerLease, String> {
-        self.active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "Lens Target picker is already active".to_string())?;
+    pub fn try_begin(&self, operation_id: Uuid) -> Result<PickerLease, String> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| "Picker control is unavailable")?;
+        if active.is_some() {
+            return Err("Lens Target picker is already active".into());
+        }
+        let (sender, cancellation) = watch::channel(false);
+        *active = Some(ActivePicker {
+            operation_id,
+            cancellation: sender,
+        });
         Ok(PickerLease {
             active: Arc::clone(&self.active),
+            cancellation,
         })
+    }
+
+    pub fn cancel(&self, operation_id: Uuid) -> Result<(), String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Picker control is unavailable")?;
+        if let Some(picker) = active
+            .as_ref()
+            .filter(|picker| picker.operation_id == operation_id)
+        {
+            picker.cancellation.send_replace(true);
+        }
+        Ok(())
+    }
+}
+
+impl PickerLease {
+    /// Cancellation is checked before polling native presentation, including when Stop
+    /// happened after state publication but before the first native future poll.
+    pub async fn wait_for<T>(&mut self, future: impl std::future::Future<Output = T>) -> Option<T> {
+        let cancelled = async {
+            loop {
+                if *self.cancellation.borrow_and_update() {
+                    return;
+                }
+                if self.cancellation.changed().await.is_err() {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = cancelled => None,
+            result = future => Some(result),
+        }
     }
 }
 
 impl Drop for PickerLease {
     fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
     }
 }
 
@@ -1162,10 +1216,64 @@ mod tests {
     #[test]
     fn picker_lease_rejects_reentry_and_releases_on_drop() {
         let control = PickerControl::default();
-        let lease = control.try_begin().expect("first picker lease");
-        assert!(control.try_begin().is_err());
+        let operation = Uuid::new_v4();
+        let lease = control.try_begin(operation).expect("first picker lease");
+        assert!(control.try_begin(operation).is_err());
         drop(lease);
-        assert!(control.try_begin().is_ok());
+        assert!(control.try_begin(operation).is_ok());
+    }
+
+    #[tokio::test]
+    async fn picker_cancel_before_presentation_never_polls_native_work() {
+        let control = PickerControl::default();
+        let operation = Uuid::new_v4();
+        let mut lease = control.try_begin(operation).unwrap();
+        control.cancel(operation).unwrap();
+        assert_eq!(
+            lease
+                .wait_for(async { panic!("cancelled picker was presented") })
+                .await,
+            None::<()>
+        );
+        // Cancellation cannot release exclusion before the old native future is dropped.
+        assert!(control.try_begin(operation).is_err());
+        drop(lease);
+        let mut next = control.try_begin(operation).unwrap();
+        assert_eq!(next.wait_for(async { 42 }).await, Some(42));
+    }
+
+    #[tokio::test]
+    async fn picker_cancel_drops_suspended_native_work_before_reentry() {
+        struct PendingNative(Arc<AtomicBool>);
+        impl Drop for PendingNative {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let control = PickerControl::default();
+        let operation = Uuid::new_v4();
+        let mut lease = control.try_begin(operation).unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let native = PendingNative(dropped.clone());
+        let (started, entered) = oneshot::channel();
+        let work = async move {
+            let _native = native;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        };
+        let wait = lease.wait_for(work);
+        let cancellation = async {
+            entered.await.unwrap();
+            control.cancel(Uuid::new_v4()).unwrap();
+            assert!(!dropped.load(Ordering::Acquire));
+            assert!(control.try_begin(operation).is_err());
+            control.cancel(operation).unwrap();
+        };
+        let (result, ()) = tokio::join!(wait, cancellation);
+        assert_eq!(result, None);
+        assert!(dropped.load(Ordering::Acquire));
+        drop(lease);
+        assert!(control.try_begin(operation).is_ok());
     }
 
     #[test]

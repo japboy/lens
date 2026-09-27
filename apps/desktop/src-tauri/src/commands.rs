@@ -4,7 +4,7 @@ use crate::{
         clear_lens_operation, commit_initial_lens_context, commit_lens_context_refresh,
         emit_app_snapshot, next_revision, publish_lens_state, update_lens_state,
         update_lens_state_for_context, AgentRunKey, AppState, LensContextRefreshCommit,
-        LensContextRefreshOutcome,
+        LensContextRefreshOutcome, PickerLease,
     },
     confirm_targets::{confirm_targets, ConfirmationHost, OPERATION_SUPERSEDED},
     lens::{
@@ -557,15 +557,16 @@ pub fn request_accessibility_permission(state: State<'_, AppState>) -> bool {
 async fn select_single_window<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation_id: Uuid,
+    picker_lease: &mut PickerLease,
 ) -> Result<Option<SelectedWindow>, String> {
     let state = app.state::<AppState>();
-    let _picker_lease = state.picker_control.try_begin()?;
-    let reply = state
-        .platform
-        .selection
-        .pick(operation_id)
+    let Some(reply) = picker_lease
+        .wait_for(state.platform.selection.pick(operation_id))
         .await
-        .map_err(|error| error.to_string())?;
+    else {
+        return Ok(None);
+    };
+    let reply = reply.map_err(|error| error.to_string())?;
     let Some(mut windows) = usecase::platform::picker_reply(reply).into_selected()? else {
         return Ok(None);
     };
@@ -593,6 +594,7 @@ pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
     let state = app.state::<AppState>();
     let _ = state.agent_control.cancel_active()?;
     let operation_id = Uuid::new_v4();
+    let mut picker_lease = state.picker_control.try_begin(operation_id)?;
     state.lens_media.begin(operation_id)?;
     publish_lens_state(
         &app,
@@ -606,7 +608,7 @@ pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
     let requested_windows = validation_window_count();
     let mut windows = Vec::with_capacity(requested_windows);
     for _ in 0..requested_windows {
-        match select_single_window(&app, operation_id).await {
+        match select_single_window(&app, operation_id, &mut picker_lease).await {
             Ok(Some(window)) => windows.push(window),
             Ok(None) => {
                 let cancelled = LensState {
@@ -629,6 +631,7 @@ pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
             }
         }
     }
+    drop(picker_lease);
     let target_set = match LensTargetSet::try_new(operation_id, windows) {
         Ok(target_set) => target_set,
         Err(error) => {
@@ -1166,6 +1169,7 @@ fn store_target_selection_payload<R: tauri::Runtime>(
 pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<LensState, String> {
     let state = app.state::<AppState>();
     let operation_id = Uuid::new_v4();
+    let mut picker_lease = state.picker_control.try_begin(operation_id)?;
     {
         let _history_admission = state
             .session_view
@@ -1206,7 +1210,7 @@ pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
         crate::session_view::emit(&app)?;
     }
 
-    let window = match select_single_window(&app, operation_id).await {
+    let window = match select_single_window(&app, operation_id, &mut picker_lease).await {
         Ok(Some(window)) => window,
         Ok(None) => {
             let cancelled = LensState {
@@ -1255,6 +1259,8 @@ pub async fn add_lens_target<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<LensState, String> {
+    let state = app.state::<AppState>();
+    let mut picker_lease = state.picker_control.try_begin(operation_id)?;
     let mut selection = target_selection_for_operation(&app, operation_id)?;
     if selection.stage != LensTargetSelectionStage::Reviewing {
         return Err("Lens target selection is already picking a window".into());
@@ -1269,7 +1275,7 @@ pub async fn add_lens_target<R: tauri::Runtime>(
     selection.notice = None;
     publish_target_selection(&app, operation_id, selection.clone()).await?;
 
-    let selected = select_single_window(&app, operation_id).await;
+    let selected = select_single_window(&app, operation_id, &mut picker_lease).await;
     selection = target_selection_for_operation(&app, operation_id)?;
     match selected {
         Ok(None) => {
@@ -1468,6 +1474,7 @@ pub fn stop_lens<R: tauri::Runtime>(
     if current.operation_id != Some(operation_id) {
         return Err("Lens operation was superseded".into());
     }
+    state.picker_control.cancel(operation_id)?;
     update_lens_state(&app, operation_id, |lens| {
         if let Some(live) = lens.live.as_mut() {
             live.lifecycle = LensMonitoringLifecycle::Stopped;

@@ -106,6 +106,11 @@ dir = "{{config_root}}"
 depends = ["check:rust"]
 run = "cargo clippy --locked --workspace --all-targets -- -D warnings"
 
+[tasks."rust:test:webview-lifecycle"]
+description = "Verify real macOS WebView teardown and development SSE ownership (opt-in)"
+dir = "{{config_root}}"
+run = "cargo test --locked -p desktop --test native_webview_lifecycle --features native-webview-lifecycle-test"
+
 [tasks."rust:test"]
 description = "Run native workspace tests after compilation and lint"
 dir = "{{config_root}}"
