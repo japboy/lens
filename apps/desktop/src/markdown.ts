@@ -215,7 +215,7 @@ export function renderMarkdownFragment(markdown: string): DocumentFragment {
     return `${prefix}${index}END`;
   });
   const tokens = lex(markdown);
-  excludeHtmlMath(tokens);
+  excludeHtmlMath(parser, tokens);
   const baseline = DOMPurify.sanitize(parser.parser(tokens), {
     ...SANITIZE_OPTIONS,
     RETURN_DOM_FRAGMENT: true,
