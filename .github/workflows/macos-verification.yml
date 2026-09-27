@@ -149,6 +149,10 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `generation=${generation}\n`);
           NODE
 
+      - name: Install the pinned source build-policy dependencies
+        if: steps.source.outputs.generation == 'current'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
       - name: Resolve the macOS build and cache contract
         if: steps.source.outputs.generation == 'current'
         id: contract
@@ -187,7 +191,7 @@ jobs:
           cache-workspace-crates: false
           save-if: false
 
-      - name: Run native verification without JavaScript dependencies
+      - name: Run native verification
         env:
           VERIFY_TASK: ${{ steps.source.outputs.generation == 'legacy' && 'verify:native' || 'verify:macos' }}
         run: mise run "$VERIFY_TASK"
