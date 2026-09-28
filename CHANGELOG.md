@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/japboy/lens/compare/v0.7.1...v0.8.0) (2026-09-28)
+
+
+### Features
+
+* **agent:** add managed Google Antigravity ([#139](https://github.com/japboy/lens/issues/139)) ([3999cc3](https://github.com/japboy/lens/commit/3999cc308a9319a7179ac44c6ebd26ca47250f31))
+* **agents:** support Grok Build text fallback ([#147](https://github.com/japboy/lens/issues/147)) ([25c9893](https://github.com/japboy/lens/commit/25c9893c0e93f49596410562b23a1f5397f58428))
+* **desktop:** show release availability in About and tray ([#167](https://github.com/japboy/lens/issues/167)) ([7a8e0e8](https://github.com/japboy/lens/commit/7a8e0e8b0e239ae6d904704202a254e038d6bf69))
+
+
+### Bug Fixes
+
+* **agent:** bound Claude authentication subprocess ([#151](https://github.com/japboy/lens/issues/151)) ([6aeb59c](https://github.com/japboy/lens/commit/6aeb59c10422532c4591dc73cf740fbb9988d49e)), refs [#141](https://github.com/japboy/lens/issues/141)
+* **deps:** update acp dependencies ([#166](https://github.com/japboy/lens/issues/166)) ([20f09e2](https://github.com/japboy/lens/commit/20f09e255b43413613805e1ba9698d4ee7ec449d))
+* **desktop:** restore target selection and release closed macOS webviews ([#159](https://github.com/japboy/lens/issues/159)) ([47d9498](https://github.com/japboy/lens/commit/47d94987dac84db8a5f420c2e4fbe3199db289f5))
+* **native:** preserve valid UTF-8 diagnostic prefixes ([#149](https://github.com/japboy/lens/issues/149)) ([e71b687](https://github.com/japboy/lens/commit/e71b68796634ff000c8fe84d6fbc092150bbb8b8))
+* **release:** parse TOML before version admission ([#148](https://github.com/japboy/lens/issues/148)) ([aea0c6d](https://github.com/japboy/lens/commit/aea0c6d07d38d9d11191f217ca8ae36caeaf574b))
+* **ui:** bound publication and isolate command work ([#157](https://github.com/japboy/lens/issues/157)) ([5d9c029](https://github.com/japboy/lens/commit/5d9c0292c7c6a05f7c754ab14ad236f1d375cbcc))
+
 ## [0.7.1](https://github.com/japboy/lens/compare/v0.7.0...v0.7.1) (2026-09-27)
 
 
