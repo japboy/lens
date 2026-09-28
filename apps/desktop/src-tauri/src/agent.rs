@@ -2406,7 +2406,7 @@ fn finish_prompt_response(
     candidate: AgentOutputCandidate,
     stop_reason: String,
     cancelled: bool,
-    delivery: Option<LensDelivery>,
+    delivery: LensDelivery,
 ) {
     let AgentTurnSource {
         projection: target_projection,
@@ -2492,7 +2492,7 @@ fn finish_prompt_response(
         representation_id: Uuid::new_v4(),
         context_id,
         context_revision,
-        delivery,
+        delivery: Some(delivery),
         projection: target_projection,
         run_id: key.run_id,
         output_blocks: candidate.blocks().into(),
@@ -2689,7 +2689,7 @@ async fn run_session_turn<R: tauri::Runtime>(
                             std::mem::take(&mut candidate),
                             stop_reason_text,
                             cancelled,
-                            Some(delivery),
+                            delivery,
                         );
                     },
                 )
@@ -3467,6 +3467,21 @@ mod tests {
             LensAgentProjection::from_input(&input, &sample_target_set(), &[]).expect("projection");
         projection
             .projection_ref(std::num::NonZeroU64::new(revision).expect("test revision is non-zero"))
+    }
+
+    fn complete_delivery(projection: &ProjectionRef) -> LensDelivery {
+        LensDelivery {
+            source_projection: projection.clone(),
+            projection: projection.clone(),
+            coverage: crate::live_sync::LensDeliveryCoverage {
+                mode: LensDeliveryMode::Complete,
+                sources: vec![crate::live_sync::LensSourceDelivery {
+                    source_id: "source-0".into(),
+                    mode: LensDeliveryMode::Complete,
+                    omitted_media: Vec::new(),
+                }],
+            },
+        }
     }
 
     pub(super) fn sample_context(revision: u64) -> LensContext {
@@ -4354,7 +4369,7 @@ mod tests {
             candidate,
             "end_turn".into(),
             false,
-            None,
+            complete_delivery(&target_projection),
         );
 
         let settled = lens.representation.as_ref().expect("settled replacement");
@@ -4422,13 +4437,13 @@ mod tests {
                 run_id,
             },
             AgentTurnSource {
-                projection: target_projection,
+                projection: target_projection.clone(),
                 context_revision: 3,
             },
             candidate,
             "end_turn".into(),
             false,
-            None,
+            complete_delivery(&target_projection),
         );
 
         assert!(lens.output_blocks.is_empty());
@@ -4486,7 +4501,7 @@ mod tests {
             ),
             "end_turn".into(),
             false,
-            Some(first_delivery.clone()),
+            first_delivery.clone(),
         );
 
         let first = lens
@@ -4531,7 +4546,7 @@ mod tests {
             ),
             "end_turn".into(),
             false,
-            None,
+            complete_delivery(&second_projection),
         );
 
         let second = lens
@@ -4553,7 +4568,7 @@ mod tests {
                 run_id: Uuid::from_u128(33),
             },
             AgentTurnSource {
-                projection: first_projection,
+                projection: first_projection.clone(),
                 context_revision: 1,
             },
             AgentOutputCandidate::from_blocks(
@@ -4565,7 +4580,7 @@ mod tests {
             ),
             "end_turn".into(),
             false,
-            None,
+            complete_delivery(&first_projection),
         );
         assert_eq!(lens.representation, settled);
         assert_eq!(lens.stage, LensStage::Completed);
@@ -4620,13 +4635,13 @@ mod tests {
                 run_id,
             },
             AgentTurnSource {
-                projection: target_projection,
+                projection: target_projection.clone(),
                 context_revision: 2,
             },
             AgentOutputCandidate::default(),
             "end_turn".into(),
             false,
-            None,
+            complete_delivery(&target_projection),
         );
 
         assert_eq!(lens.representation, Some(old_representation));
@@ -4685,13 +4700,13 @@ mod tests {
                 run_id,
             },
             AgentTurnSource {
-                projection,
+                projection: projection.clone(),
                 context_revision: 1,
             },
             AgentOutputCandidate::default(),
             "cancelled".into(),
             true,
-            None,
+            complete_delivery(&projection),
         );
 
         assert_eq!(lens.representation, Some(representation));
@@ -4744,7 +4759,7 @@ mod tests {
                 AgentOutputCandidate::from_blocks(output(text), 1),
                 "end_turn".into(),
                 false,
-                None,
+                complete_delivery(&projection),
             );
             assert!(lens.output_blocks.is_empty());
             assert_eq!(lens.response_history.responses.len(), (run - 9) as usize);
@@ -4773,7 +4788,7 @@ mod tests {
             AgentOutputCandidate::from_blocks(output("duplicate"), 1),
             "end_turn".into(),
             false,
-            None,
+            complete_delivery(&projection),
         );
         assert_eq!(lens.response_history, before);
         assert_eq!(lens.representation, settled);
@@ -4805,13 +4820,13 @@ mod tests {
                     run_id: Uuid::from_u128(run),
                 },
                 AgentTurnSource {
-                    projection: target,
+                    projection: target.clone(),
                     context_revision: 2,
                 },
                 candidate,
                 "end_turn".into(),
                 kind == "cancelled",
-                None,
+                complete_delivery(&target),
             );
             assert_eq!(lens.response_history.responses, before.responses, "{kind}");
             assert_eq!(lens.representation, settled, "{kind}");
@@ -4869,7 +4884,7 @@ mod tests {
                 ),
                 "end_turn".into(),
                 false,
-                None,
+                complete_delivery(&projection),
             );
             assert_eq!(lens.response_history.responses.len(), count);
         }
