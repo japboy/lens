@@ -608,7 +608,7 @@ export class LensOverlayView extends LitElement {
         outline-offset: -2px;
       }
 
-      .quality button[class]:hover {
+      .quality button:hover {
         background: SelectedItem;
         color: SelectedItemText;
       }
@@ -2131,7 +2131,6 @@ export class LensOverlayView extends LitElement {
               ? html`<div class="quality" role="group" aria-label="Input coverage">
                   <button
                     type="button"
-                    class=${`quality-${sourceQuality ?? "unknown"}`}
                     aria-label=${`Show Source tab: capture quality ${sourceQuality ?? "unknown"}`}
                     aria-controls="source-panel"
                     title="Capture quality — Open Source"
@@ -2143,7 +2142,6 @@ export class LensOverlayView extends LitElement {
                   </button>
                   <button
                     type="button"
-                    class=${`quality-${inputStatus}`}
                     aria-label=${`Show Diagnostics tab: prepared Agent input coverage ${inputStatus}; submission may still be pending`}
                     aria-controls="diagnostics-panel"
                     title="Prepared Agent input — Open Diagnostics; submission may still be pending"
