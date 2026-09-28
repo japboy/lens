@@ -2,5 +2,15 @@
   "identifier": "about",
   "description": "About window with embedded license text.",
   "windows": ["about"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/japboy/lens" },
+        { "url": "https://github.com/japboy/lens/releases/tag/*" }
+      ]
+    }
+  ]
 }

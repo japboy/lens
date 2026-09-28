@@ -38,6 +38,13 @@ export type PromptIntent =
   | { type: "save"; agentPromptTemplate: AgentPromptTemplate }
   | { type: "reset" };
 
+export const ABOUT_INTENT_EVENT = "lens-about-intent";
+
+export type AboutIntent =
+  | { type: "open-repository" }
+  | { type: "open-release" }
+  | { type: "retry-update-check" };
+
 export type SettingsIntent =
   | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }
   | { type: "save-external-agent"; profile: ExternalAgentDraft }
@@ -111,6 +118,7 @@ declare global {
     "lens-output-media-demand": CustomEvent<OutputMediaDemand>;
     "lens-media-presentation": CustomEvent<MediaPresentation>;
     "lens-settings-intent": CustomEvent<SettingsIntent>;
+    "lens-about-intent": CustomEvent<AboutIntent>;
     "lens-overlay-intent": CustomEvent<OverlayIntent>;
     "lens-target-selection-intent": CustomEvent<TargetSelectionIntent>;
   }

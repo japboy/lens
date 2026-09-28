@@ -213,6 +213,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         license: "Apache text\n<not-markup>",
         notice: "Original project by Yu Inao",
       };
+    if (command === "get_release_availability") return { revision: 0, stage: "checking" };
+    if (command === "retry_release_availability_check") return { revision: 3, stage: "checking" };
     if (command === "get_window_snapshot") return windowSnapshot();
     if (command === "get_lens_source")
       return {
@@ -395,11 +397,12 @@ describe("About", () => {
     expect(documentText.isContentEditable).not.toBe(true);
     expect(documentText.tabIndex).toBe(0);
     expect(root.querySelector("not-markup")).toBeNull();
-    expect(listen).not.toHaveBeenCalled();
-    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual([
-      "get_about_info",
-      "get_about_documents",
-    ]);
+    expect(listen).toHaveBeenCalledWith("release-availability-changed", expect.any(Function));
+    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toContain("get_about_info");
+    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toContain("get_about_documents");
+    expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toContain(
+      "get_release_availability",
+    );
     const select = root.querySelector<LensSelect>("lens-select")!;
     documentText.scrollTop = 100;
     select.value = "notice";
@@ -456,9 +459,12 @@ describe("About", () => {
     const documents = new Promise<unknown>((resolve) => {
       resolveDocuments = resolve;
     });
-    vi.mocked(invoke)
-      .mockImplementationOnce(() => info)
-      .mockImplementationOnce(() => documents);
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "get_about_info") return info;
+      if (command === "get_about_documents") return documents;
+      return original(command, args);
+    });
     const element = await createPage("about");
     await vi.waitFor(() =>
       expect(
@@ -486,13 +492,19 @@ describe("About", () => {
     expect(root.querySelector("header")).toBe(header);
     expect(root.querySelector(".document-text")).toBe(region);
     expect(region?.getAttribute("aria-busy")).toBe("false");
+    vi.mocked(invoke).mockImplementation(original);
   });
 
   it("contains document failures within the document region", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke)
-      .mockResolvedValueOnce({ name: "Lens", version: "1.2.3", copyright: "Copyright" })
-      .mockRejectedValueOnce(new Error("Document unavailable"));
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "get_about_info")
+        return Promise.resolve({ name: "Lens", version: "1.2.3", copyright: "Copyright" });
+      if (command === "get_about_documents")
+        return Promise.reject(new Error("Document unavailable"));
+      return original(command, args);
+    });
     const element = await createPage("about");
     await vi.waitFor(() =>
       expect(
@@ -506,11 +518,17 @@ describe("About", () => {
     );
     expect(root.querySelector<LensSelect>("lens-select")?.disabled).toBe(false);
     expect(root.querySelector(".document-text")?.getAttribute("aria-busy")).toBe("false");
+    vi.mocked(invoke).mockImplementation(original);
   });
 
   it("still loads documents when app metadata fails", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
-    vi.mocked(invoke).mockRejectedValueOnce(new Error("Metadata unavailable"));
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, args) =>
+      command === "get_about_info"
+        ? Promise.reject(new Error("Metadata unavailable"))
+        : original(command, args),
+    );
     const element = await createPage("about");
     await vi.waitFor(() =>
       expect(
@@ -521,6 +539,205 @@ describe("About", () => {
     expect(root.querySelector("header [role=alert]")?.textContent).toContain(
       "Metadata unavailable",
     );
+    vi.mocked(invoke).mockImplementation(original);
+  });
+
+  it("keeps the newest release event when an older snapshot arrives, and opens the exact links", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    let resolveSnapshot!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    vi.mocked(invoke).mockImplementation((command, args) =>
+      command === "get_release_availability" ? pending : original(command, args),
+    );
+    try {
+      const element = await createPage("about");
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("get_release_availability"));
+      const listener = vi
+        .mocked(listen)
+        .mock.calls.find(([name]) => name === "release-availability-changed")?.[1];
+      expect(listener).toBeDefined();
+      listener!({
+        event: "release-availability-changed",
+        id: 1,
+        payload: {
+          revision: 2,
+          stage: "available",
+          version: "0.8.0",
+          release_url: "https://github.com/japboy/lens/releases/tag/v0.8.0",
+        },
+      });
+      resolveSnapshot({ revision: 1, stage: "failed" });
+      const root = viewRoot(element, "lens-about-view")!;
+      await vi.waitFor(() =>
+        expect(root.querySelector(".update strong")?.textContent).toBe(
+          "Version 0.8.0 is available",
+        ),
+      );
+      expect(root.querySelector(".update")?.getAttribute("data-state")).toBe("available");
+      expect(root.querySelector<HTMLAnchorElement>(".release-link")?.href).toBe(
+        "https://github.com/japboy/lens/releases/tag/v0.8.0",
+      );
+      expect(root.querySelector(".update button")).toBeNull();
+      root.querySelector<HTMLAnchorElement>(".repository-link")!.click();
+      root.querySelector<HTMLAnchorElement>(".release-link")!.click();
+      await vi.waitFor(() => expect(openUrl).toHaveBeenCalledTimes(2));
+      expect(openUrl).toHaveBeenNthCalledWith(1, "https://github.com/japboy/lens");
+      expect(openUrl).toHaveBeenNthCalledWith(
+        2,
+        "https://github.com/japboy/lens/releases/tag/v0.8.0",
+      );
+      expect(root.querySelector(".repository-link .github-mark path")).not.toBeNull();
+    } finally {
+      vi.mocked(invoke).mockImplementation(original);
+    }
+  });
+
+  it("offers Retry only after release-check failure and removes the listener on disconnect", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const unlisten = vi.fn<() => void>();
+    vi.mocked(listen).mockResolvedValueOnce(unlisten);
+    const element = await createPage("about");
+    const root = viewRoot(element, "lens-about-view")!;
+    await vi.waitFor(() =>
+      expect(root.querySelector(".update")?.getAttribute("data-state")).toBe("checking"),
+    );
+    const listener = vi
+      .mocked(listen)
+      .mock.calls.find(([name]) => name === "release-availability-changed")?.[1];
+    expect(listener).toBeDefined();
+    listener!({
+      event: "release-availability-changed",
+      id: 1,
+      payload: { revision: 1, stage: "current" },
+    });
+    await vi.waitFor(() =>
+      expect(root.querySelector(".update strong")?.textContent).toBe("No newer release was found"),
+    );
+    expect(root.querySelector(".release-link")).toBeNull();
+    expect(root.querySelector(".update button")).toBeNull();
+    listener!({
+      event: "release-availability-changed",
+      id: 2,
+      payload: { revision: 2, stage: "failed" },
+    });
+    await vi.waitFor(() =>
+      expect(root.querySelector<HTMLButtonElement>(".update button")?.textContent?.trim()).toBe(
+        "Retry",
+      ),
+    );
+    root.querySelector<HTMLButtonElement>(".update button")!.click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("retry_release_availability_check"));
+    await vi.waitFor(() =>
+      expect(root.querySelector(".update")?.getAttribute("data-state")).toBe("checking"),
+    );
+    expect(root.querySelector(".update button")).toBeNull();
+    element.remove();
+    expect(unlisten).toHaveBeenCalledOnce();
+    listener!({
+      event: "release-availability-changed",
+      id: 3,
+      payload: {
+        revision: 4,
+        stage: "available",
+        version: "0.8.0",
+        release_url: "https://github.com/japboy/lens/releases/tag/v0.8.0",
+      },
+    });
+    expect(root.querySelector(".update")?.getAttribute("data-state")).toBe("checking");
+  });
+
+  it("waits for the native retry deadline before enabling Retry", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const element = await createPage("about");
+    const root = viewRoot(element, "lens-about-view")!;
+    const listener = vi
+      .mocked(listen)
+      .mock.calls.find(([name]) => name === "release-availability-changed")?.[1];
+    listener!({
+      event: "release-availability-changed",
+      id: 1,
+      payload: { revision: 1, stage: "failed", retry_after_epoch_ms: Date.now() + 300 },
+    });
+    await vi.waitFor(() =>
+      expect(root.querySelector<HTMLButtonElement>(".update button")?.disabled).toBe(true),
+    );
+    expect(root.querySelector(".update small")?.textContent).toContain("Try again shortly");
+    root.querySelector<HTMLButtonElement>(".update button")!.click();
+    expect(invoke).not.toHaveBeenCalledWith("retry_release_availability_check");
+    await vi.waitFor(
+      () => expect(root.querySelector<HTMLButtonElement>(".update button")?.disabled).toBe(false),
+      { timeout: 1_000 },
+    );
+    root.querySelector<HTMLButtonElement>(".update button")!.click();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("retry_release_availability_check"));
+  });
+
+  it("keeps About synchronized after event subscription fails and exposes later IPC failure", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    vi.mocked(listen).mockRejectedValueOnce(new Error("Events unavailable"));
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    let reads = 0;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "get_release_availability") {
+        reads += 1;
+        if (reads === 1) return Promise.resolve({ revision: 4, stage: "current" });
+        if (reads === 2)
+          return Promise.resolve({
+            revision: 5,
+            stage: "available",
+            version: "0.8.0",
+            release_url: "https://github.com/japboy/lens/releases/tag/v0.8.0",
+          });
+        return Promise.reject(new Error("IPC unavailable"));
+      }
+      if (command === "retry_release_availability_check")
+        return Promise.resolve({ revision: 6, stage: "checking" });
+      return original(command, args);
+    });
+    const runTerminalPoll = async () => {
+      const index = timers.mock.calls.map(([, delay]) => delay).lastIndexOf(5 * 60_000);
+      expect(index).toBeGreaterThanOrEqual(0);
+      clearTimeout(timers.mock.results[index]!.value as ReturnType<typeof setTimeout>);
+      await (timers.mock.calls[index]![0] as () => Promise<void>)();
+    };
+    try {
+      const element = await createPage("about");
+      const root = viewRoot(element, "lens-about-view")!;
+      await vi.waitFor(() =>
+        expect(root.querySelector(".update strong")?.textContent).toBe(
+          "No newer release was found",
+        ),
+      );
+      await runTerminalPoll();
+      await vi.waitFor(() =>
+        expect(root.querySelector(".update strong")?.textContent).toBe(
+          "Version 0.8.0 is available",
+        ),
+      );
+      await runTerminalPoll();
+      await vi.waitFor(() =>
+        expect(root.querySelector(".update strong")?.textContent).toBe(
+          "Unable to check for updates",
+        ),
+      );
+      root.querySelector<HTMLButtonElement>(".update button")!.click();
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("retry_release_availability_check"),
+      );
+      element.remove();
+    } finally {
+      timers.mockRestore();
+      vi.mocked(invoke).mockImplementation(original);
+    }
   });
 
   it("opens About from Settings without changing the selected page", async () => {

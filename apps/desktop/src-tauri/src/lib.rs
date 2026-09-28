@@ -37,6 +37,7 @@ mod projection_transport;
 mod quit;
 #[cfg(debug_assertions)]
 mod quit_validation;
+mod release_availability;
 #[cfg(debug_assertions)]
 mod response_history_validation;
 mod session_controls;
@@ -113,6 +114,7 @@ fn configure_shell<R: tauri::Runtime>(
         .manage(agents)
         .manage(ui::LensWindowPresentationState::default())
         .manage(quit::QuitCoordinator::default())
+        .manage(release_availability::ReleaseAvailability::default())
         .on_menu_event(|app, event| {
             if event.id().as_ref() == quit::APPLICATION_QUIT_ID {
                 quit::request(app);
@@ -135,6 +137,8 @@ fn command_handler<R: tauri::Runtime>(
             about::get_about_info,
             about::get_about_documents,
             about::show_about,
+            release_availability::get_release_availability,
+            release_availability::retry_release_availability_check,
             command_work::get_window_snapshot,
             command_work::get_lens_source,
             command_work::get_lens_output,
@@ -261,6 +265,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             #[cfg(target_os = "macos")]
             native::configure_activation(app, validate_a11y);
             ui::install_menu_bar(app)?;
+            release_availability::start(app.handle().clone());
             #[cfg(debug_assertions)]
             if std::env::var_os("LENS_VALIDATE_QUIT").is_some() {
                 quit_validation::start(app.handle()).map_err(std::io::Error::other)?;

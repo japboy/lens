@@ -182,6 +182,7 @@ fn tray_icon(enabled: bool) -> tauri::Result<Image<'static>> {
 
 struct TrayMenuItems<R: tauri::Runtime> {
     root: Menu<R>,
+    about: MenuItem<R>,
     history: Submenu<R>,
     history_presentation: Mutex<String>,
     select_target: MenuItem<R>,
@@ -898,6 +899,7 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         .build(app)?;
     app.manage(TrayMenuItems {
         root: menu,
+        about,
         history,
         history_presentation: Mutex::new(String::new()),
         select_target: select,
@@ -915,6 +917,57 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
         }
     });
     Ok(())
+}
+
+fn about_menu_text(snapshot: &crate::release_availability::ReleaseAvailabilitySnapshot) -> String {
+    match (snapshot.stage, snapshot.version.as_deref()) {
+        (crate::release_availability::Stage::Available, Some(version)) => {
+            format!("About (v{version} available)")
+        }
+        _ => "About".into(),
+    }
+}
+
+#[cfg(test)]
+mod about_menu_tests {
+    use super::*;
+    use crate::release_availability::{ReleaseAvailabilitySnapshot, Stage};
+
+    #[test]
+    fn only_confirmed_new_release_changes_about_label() {
+        let mut snapshot = ReleaseAvailabilitySnapshot {
+            revision: 1,
+            stage: Stage::Available,
+            version: Some("1.2.3".into()),
+            release_url: Some("https://github.com/japboy/lens/releases/tag/v1.2.3".into()),
+            retry_after_epoch_ms: None,
+        };
+        assert_eq!(about_menu_text(&snapshot), "About (v1.2.3 available)");
+        for stage in [Stage::Idle, Stage::Checking, Stage::Current, Stage::Failed] {
+            snapshot.stage = stage;
+            assert_eq!(about_menu_text(&snapshot), "About");
+        }
+    }
+}
+
+pub(crate) fn sync_about_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let Some(items) = handle.try_state::<TrayMenuItems<R>>() else {
+            return;
+        };
+        let Ok(snapshot) = crate::release_availability::get_release_availability(handle.clone())
+        else {
+            return;
+        };
+        if let Err(error) = items.about.set_text(about_menu_text(&snapshot)) {
+            eprintln!("Unable to update About menu text: {error}");
+        }
+        if let Err(error) = handle.emit_to("about", "release-availability-changed", snapshot) {
+            eprintln!("Unable to publish release availability: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
 }
 
 pub fn sync_tray_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
