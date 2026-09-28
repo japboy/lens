@@ -1269,7 +1269,7 @@ fn complete_agent_selection<R: tauri::Runtime>(
             return Err("Agent selection changed while saving settings".into());
         }
         if execution_changed {
-            latest.lens.delivery = None;
+            usecase::state::reconcile_lens_after_execution_config_change(&mut latest.lens);
         }
         latest.agent_selection.stage = AgentSelectionStage::Selected;
         latest.agent_selection.message = Some(format!(
@@ -3989,6 +3989,67 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_image_delivery_keeps_prior_complete_response_stale() {
+        let (mut input, payload) = sample_input_with_media("");
+        input.sources[0]
+            .document
+            .as_mut()
+            .unwrap()
+            .nodes
+            .last_mut()
+            .unwrap()
+            .description = None;
+        let (source, source_ref) = sample_projection(&input, &[payload]);
+        let previous_delivery = source.delivery(source_ref.clone());
+        let current_delivery = source
+            .for_image_support(false)
+            .unwrap()
+            .delivery(source_ref.clone());
+        assert_eq!(
+            current_delivery.coverage.mode,
+            LensDeliveryMode::Unavailable
+        );
+        let previous = LensRepresentation {
+            prompt_execution_revision: 1,
+            representation_id: Uuid::from_u128(10),
+            context_id: Uuid::nil(),
+            context_revision: 1,
+            projection: source_ref.clone(),
+            delivery: Some(previous_delivery),
+            run_id: Uuid::from_u128(11),
+            output_blocks: vec![LensOutputBlock::Markdown {
+                message_id: None,
+                text: "Prior image-capable response".into(),
+            }]
+            .into(),
+        };
+        let mut lens = LensState {
+            stage: LensStage::Failed,
+            projection: Some(source_ref),
+            delivery: Some(current_delivery),
+            representation: Some(previous.clone()),
+            live: Some(crate::model::LensLiveState {
+                lifecycle: LensMonitoringLifecycle::Watching,
+                health: LensSourceHealth::Healthy,
+                freshness: LensFreshness::Checking,
+                agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+                last_outcome: None,
+                error: None,
+            }),
+            ..LensState::default()
+        };
+        finish_retained_representation(
+            &mut lens,
+            Some(LensRefreshOutcome::Failed),
+            Some("Image input unavailable".into()),
+        );
+        assert_eq!(lens.representation, Some(previous));
+        let live = lens.live.as_ref().unwrap();
+        assert_eq!(live.freshness, LensFreshness::Stale);
+        assert_eq!(live.last_outcome, Some(LensRefreshOutcome::Failed));
+    }
+
+    #[test]
     fn prompt_rejects_projection_identity_mismatch() {
         let input = sample_input("Source material");
         let (projection, _) = sample_projection(&input, &[]);
@@ -4320,6 +4381,7 @@ mod tests {
             stage: LensStage::Transforming,
             context: Some(sample_context(7).into()),
             projection: Some(target_projection.clone()),
+            delivery: Some(complete_delivery(&target_projection)),
             representation: Some(old_representation.clone()),
             pending_representation: Some(LensPendingRepresentation {
                 turn_id: run_id,

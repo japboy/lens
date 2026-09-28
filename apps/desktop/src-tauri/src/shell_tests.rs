@@ -1039,6 +1039,65 @@ fn saved_external_agent_verification_preserves_concurrent_progress_after_closing
 }
 
 #[test]
+fn saving_external_agent_marks_retained_response_stale_at_commit() {
+    let state = test_support::state();
+    let delivery = test_support::delivery();
+    let projection = delivery.source_projection.clone();
+    let representation = LensRepresentation {
+        prompt_execution_revision: 1,
+        representation_id: Uuid::from_u128(812),
+        context_id: Uuid::nil(),
+        context_revision: 1,
+        projection: projection.clone(),
+        delivery: Some(delivery.clone()),
+        run_id: Uuid::from_u128(813),
+        output_blocks: vec![LensOutputBlock::Markdown {
+            message_id: None,
+            text: "Prior interpretation".into(),
+        }]
+        .into(),
+    };
+    state.runtime.write().unwrap().lens = LensState {
+        stage: LensStage::Completed,
+        projection: Some(projection),
+        delivery: Some(delivery),
+        representation: Some(representation.clone()),
+        live: Some(LensLiveState {
+            lifecycle: LensMonitoringLifecycle::Watching,
+            health: LensSourceHealth::Healthy,
+            freshness: LensFreshness::Current,
+            agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+            last_outcome: None,
+            error: None,
+        }),
+        ..LensState::default()
+    };
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    crate::commands::save_external_agent_configuration(
+        app.handle(),
+        crate::external_agent::ExternalAgentDraft {
+            id: Uuid::from_u128(814),
+            name: "Different Agent".into(),
+            command: "synthetic".into(),
+            arguments: "--acp".into(),
+        },
+    )
+    .unwrap();
+    let lens = app.state::<AppState>().lens().unwrap();
+    assert_eq!(lens.stage, LensStage::Completed);
+    assert_eq!(lens.representation, Some(representation));
+    assert!(lens.delivery.is_none());
+    assert_eq!(lens.live.unwrap().freshness, LensFreshness::Stale);
+}
+
+#[test]
 fn external_projection_layout_survives_edits_but_not_delete_and_manual_recreation() {
     use crate::model::ProjectionLayout;
     let app = crate::configure_shell(

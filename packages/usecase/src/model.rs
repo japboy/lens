@@ -629,18 +629,22 @@ impl LensRepresentation {
         delivery: Option<&domain::projection::LensDelivery>,
         prompt_revision: u32,
     ) -> bool {
-        self.prompt_execution_revision == prompt_revision
-            && (&self.projection == source
-                || self
-                    .delivery
-                    .as_ref()
-                    .zip(delivery)
-                    .is_some_and(|(previous, latest)| {
-                        &latest.source_projection == source
-                            && previous.projection.digest == latest.projection.digest
-                            && latest.coverage.mode
-                                != domain::projection::LensDeliveryMode::Unavailable
-                    }))
+        if self.prompt_execution_revision != prompt_revision {
+            return false;
+        }
+        match (self.delivery.as_ref(), delivery) {
+            (Some(previous), Some(latest)) => {
+                previous.source_projection == self.projection
+                    && &latest.source_projection == source
+                    && previous.projection.digest == latest.projection.digest
+                    && previous.coverage == latest.coverage
+                    && latest.coverage.mode != domain::projection::LensDeliveryMode::Unavailable
+            }
+            // Persisted representations predating delivery provenance retain their
+            // original exact-source comparison only while both sides lack it.
+            (None, None) => &self.projection == source,
+            (Some(_), None) | (None, Some(_)) => false,
+        }
     }
 }
 
@@ -771,6 +775,70 @@ impl AppSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn representation_currentness_requires_matching_delivery_and_retains_legacy_exact_source() {
+        use domain::projection::{
+            LensDelivery, LensDeliveryCoverage, LensDeliveryMode, LensSourceDelivery,
+        };
+        let projection = |revision, digit: char| {
+            ProjectionRef::new(
+                std::num::NonZeroU64::new(revision).unwrap(),
+                serde_json::from_str(&format!("\"{}\"", digit.to_string().repeat(64))).unwrap(),
+            )
+        };
+        let source = projection(1, 'a');
+        let newer_source = projection(2, 'b');
+        let delivered = projection(1, 'c');
+        let complete = LensDeliveryCoverage {
+            mode: LensDeliveryMode::Complete,
+            sources: vec![LensSourceDelivery {
+                source_id: "source-0".into(),
+                mode: LensDeliveryMode::Complete,
+                omitted_media: Vec::new(),
+            }],
+        };
+        let previous = LensDelivery {
+            source_projection: source.clone(),
+            projection: delivered.clone(),
+            coverage: complete,
+        };
+        let mut representation = LensRepresentation {
+            prompt_execution_revision: 1,
+            representation_id: Uuid::from_u128(1),
+            context_id: Uuid::from_u128(2),
+            context_revision: 1,
+            projection: source.clone(),
+            delivery: Some(previous.clone()),
+            run_id: Uuid::from_u128(3),
+            output_blocks: Default::default(),
+        };
+        assert!(representation.is_current_for(&source, Some(&previous), 1));
+        assert!(!representation.is_current_for(&source, Some(&previous), 2));
+
+        let mut latest = previous.clone();
+        latest.projection = projection(1, 'd');
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+        latest = previous.clone();
+        latest.coverage.mode = LensDeliveryMode::Unavailable;
+        latest.coverage.sources[0].mode = LensDeliveryMode::Unavailable;
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+        latest = previous.clone();
+        latest.coverage.sources[0].source_id = "source-1".into();
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+
+        latest = previous.clone();
+        latest.source_projection = newer_source.clone();
+        latest.projection = projection(2, 'c');
+        assert!(representation.is_current_for(&newer_source, Some(&latest), 1));
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+        assert!(!representation.is_current_for(&source, None, 1));
+
+        representation.delivery = None;
+        assert!(representation.is_current_for(&source, None, 1));
+        assert!(!representation.is_current_for(&newer_source, None, 1));
+        assert!(!representation.is_current_for(&source, Some(&previous), 1));
+    }
 
     #[test]
     fn existing_settings_without_recoverable_prompts_do_not_receive_defaults() {

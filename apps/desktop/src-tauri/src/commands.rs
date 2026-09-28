@@ -228,7 +228,7 @@ pub(crate) fn save_external_agent_configuration<R: tauri::Runtime>(
                     return Err("Agent selection changed while saving settings".into());
                 }
                 state.agent_control.cancel_active()?;
-                latest.lens.delivery = None;
+                usecase::state::reconcile_lens_after_execution_config_change(&mut latest.lens);
                 latest.agent_selection = AgentSelectionState {
                     operation_id: Some(Uuid::new_v4()),
                     candidate: Some(kind),
@@ -288,7 +288,7 @@ pub fn delete_external_agent<R: tauri::Runtime>(
                 }
                 if affected {
                     state.agent_control.cancel_active()?;
-                    latest.lens.delivery = None;
+                    usecase::state::reconcile_lens_after_execution_config_change(&mut latest.lens);
                     latest.agent_selection = AgentSelectionState::default();
                 }
                 Ok(())
@@ -344,7 +344,7 @@ pub fn reset_external_agents<R: tauri::Runtime>(app: AppHandle<R>) -> Result<App
                 }
                 if affected {
                     state.agent_control.cancel_active()?;
-                    latest.lens.delivery = None;
+                    usecase::state::reconcile_lens_after_execution_config_change(&mut latest.lens);
                     latest.agent_selection = AgentSelectionState {
                         candidate: Some(AgentKind::Claude),
                         ..Default::default()
@@ -1851,7 +1851,7 @@ pub async fn set_agent_defaults<R: tauri::Runtime>(
                         return Err("Agent settings changed while saving defaults".into());
                     }
                     state.agent_control.cancel_active()?;
-                    latest.lens.delivery = None;
+                    usecase::state::reconcile_lens_after_execution_config_change(&mut latest.lens);
                     latest.agent_selection.config_options = validated.options;
                     latest.agent_selection.catalog_revision = catalog_revision;
                     latest.agent_selection.catalog_model = catalog_model;
