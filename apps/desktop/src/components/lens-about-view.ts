@@ -22,22 +22,6 @@ export class LensAboutView extends LitElement {
         display: block;
         height: 100%;
         min-height: 0;
-        --about-link-color: #1265be;
-        --about-update-border: #d8dbe1;
-        --about-update-background: #f5f6f8;
-        --about-update-available-border: #b8cde7;
-        --about-update-available-background: #f0f6fd;
-        --about-update-secondary: #5d6570;
-      }
-      @media (prefers-color-scheme: dark) {
-        :host {
-          --about-link-color: #76b8ff;
-          --about-update-border: #4b4d56;
-          --about-update-background: #2c2e34;
-          --about-update-available-border: #416487;
-          --about-update-available-background: #233346;
-          --about-update-secondary: #b7bdc8;
-        }
       }
 
       main {
@@ -70,7 +54,7 @@ export class LensAboutView extends LitElement {
         min-height: 1lh;
       }
       a {
-        color: var(--about-link-color);
+        color: LinkText;
         text-decoration: none;
       }
       a:hover {
@@ -105,13 +89,13 @@ export class LensAboutView extends LitElement {
         gap: 14px;
         min-height: 58px;
         padding: 11px 14px;
-        border: 1px solid var(--about-update-border);
+        border: 1px solid var(--settings-group-border);
         border-radius: 7px;
-        background: var(--about-update-background);
+        background: var(--settings-group-background);
       }
       .update[data-state="available"] {
-        border-color: var(--about-update-available-border);
-        background: var(--about-update-available-background);
+        border-color: color-mix(in srgb, AccentColor 48%, var(--settings-group-border));
+        background: color-mix(in srgb, AccentColor 7%, var(--settings-group-background));
       }
       .update-copy {
         min-width: 0;
@@ -125,7 +109,7 @@ export class LensAboutView extends LitElement {
       .update small {
         display: block;
         margin-top: 3px;
-        color: var(--about-update-secondary);
+        color: GrayText;
         line-height: 1.3;
       }
       .update a {
