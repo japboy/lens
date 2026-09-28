@@ -527,7 +527,12 @@ export interface LensState {
 
 export interface AppSnapshot {
   source_ref: string | null;
-  source_metadata: { has_input: boolean; quality: ExtractionQuality | null } | null;
+  source_metadata: {
+    has_input: boolean;
+    quality: ExtractionQuality | null;
+    /** Absent in older snapshots; absence cannot establish complete Agent input. */
+    projection_has_loss?: boolean;
+  } | null;
   output_ref: string | null;
   revision: number;
   config: AppConfig;

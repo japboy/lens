@@ -1,6 +1,19 @@
 import { LitElement, html, nothing } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import type { AgentRunState, LensContext } from "../types";
+import type { InputCoverage } from "../rendering/input-coverage";
+import type {
+  AgentRunState,
+  LensContext,
+  LensDeliveryCoverage,
+  LensInput,
+  ProjectionOmission,
+} from "../types";
+
+const PROJECTION_LOSS_LABELS = {
+  token_budget: "Text budget",
+  resource_budget: "Resource budget",
+  unsupported_semantics: "Unsupported document semantics",
+} as const satisfies Record<Exclude<ProjectionOmission["reason"], "application_chrome">, string>;
 
 @customElement("lens-extraction-diagnostics")
 export class LensExtractionDiagnostics extends LitElement {
@@ -10,13 +23,40 @@ export class LensExtractionDiagnostics extends LitElement {
   @property({ attribute: false })
   agent: AgentRunState | undefined;
 
+  @property({ attribute: false })
+  delivery: LensDeliveryCoverage | undefined;
+
+  @property({ attribute: false })
+  inputStatus: InputCoverage = "pending";
+
+  @property({ attribute: false })
+  projectionHasLoss: boolean | undefined;
+
+  @property({ attribute: false })
+  input: LensInput | undefined;
+
+  @property({ attribute: false })
+  inputDetailsLoading = false;
+
   protected createRenderRoot(): HTMLElement {
     return this;
   }
 
   protected render() {
     const context = this.context;
-    if (!context) return nothing;
+    if (!context) {
+      return html`<section class="extraction-diagnostics" aria-labelledby="diagnostics-heading">
+        <header class="diagnostics-header">
+          <h2 id="diagnostics-heading">Extraction diagnostics</h2>
+        </header>
+        <p class="empty-state">
+          ${this.inputDetailsLoading ? "Loading extraction diagnostics…" : "No extraction diagnostics are available."}
+        </p>
+        <div class="diagnostics-layout">
+          ${this.renderProjectionOmissions()} ${this.renderAgentDelivery()}
+        </div>
+      </section>`;
+    }
     const mediaMetrics = [
       [
         "AX image regions",
@@ -25,7 +65,7 @@ export class LensExtractionDiagnostics extends LitElement {
       ["Window fallbacks", context.media.filter((item) => item.scope === "window_fallback").length],
       ["PNG bytes", context.media.reduce((total, item) => total + item.encoded_bytes, 0)],
       [
-        "Omitted images",
+        "Images omitted during capture",
         context.media_omissions.reduce((total, item) => total + item.omitted_count, 0),
       ],
     ] as const;
@@ -80,8 +120,10 @@ export class LensExtractionDiagnostics extends LitElement {
           })}
           <section class="diagnostic-group" aria-labelledby="media-metrics-heading">
             <h2 id="media-metrics-heading">AX-linked images</h2>
+            <p>Captured image attachments; these counts do not describe what the Agent receives.</p>
             ${this.metricList(mediaMetrics)}
           </section>
+          ${this.renderProjectionOmissions()} ${this.renderAgentDelivery(context)}
           ${
             agentMetrics.length
               ? html`<section class="diagnostic-group" aria-labelledby="agent-metrics-heading">
@@ -104,6 +146,99 @@ export class LensExtractionDiagnostics extends LitElement {
             }
           </section>
         </div>
+      </section>
+    `;
+  }
+
+  private renderProjectionOmissions() {
+    const projectionOmissions = this.input?.sources.flatMap((source) =>
+      source.omissions.filter((omission) => omission.reason !== "application_chrome"),
+    );
+    return html`
+      <section class="diagnostic-group" aria-labelledby="projection-loss-heading">
+        <h2 id="projection-loss-heading">Projection omissions</h2>
+        ${
+          this.projectionHasLoss === false
+            ? html`<p>No text, resource, or document content was omitted by projection.</p>`
+            : projectionOmissions && projectionOmissions.length
+              ? html`<p>${projectionOmissions.length} omission records in prepared input.</p>
+                  <ul>
+                    ${Object.entries(PROJECTION_LOSS_LABELS).map(([reason, label]) => {
+                      const count = projectionOmissions.filter(
+                        (omission) => omission.reason === reason,
+                      ).length;
+                      return count ? html`<li>${label}: ${count}</li>` : nothing;
+                    })}
+                  </ul>`
+              : html`<p>Details ${this.inputDetailsLoading ? "loading" : "unavailable"}.</p>`
+        }
+      </section>
+    `;
+  }
+
+  private renderAgentDelivery(context?: LensContext) {
+    return html`
+      <section class="diagnostic-group" aria-labelledby="agent-delivery-heading">
+        <h2 id="agent-delivery-heading">Agent image input</h2>
+        ${
+          this.delivery
+            ? html`
+                <p>Prepared input coverage for the current projection.</p>
+                ${
+                  this.delivery.mode === "unavailable"
+                    ? html`<p>
+                        No usable source text is available to this Agent. Choose an image-capable
+                        Agent or a source with accessible text.
+                      </p>`
+                    : nothing
+                }
+                ${this.metricList([
+                  ["Overall input coverage", this.inputStatus.toUpperCase()],
+                  [
+                    "Projection omissions",
+                    this.projectionHasLoss === undefined
+                      ? "Unknown"
+                      : this.projectionHasLoss
+                        ? "Present"
+                        : "None",
+                  ],
+                  [
+                    "Images omitted for Agent",
+                    this.delivery.sources.reduce(
+                      (total, source) => total + source.omitted_media.length,
+                      0,
+                    ),
+                  ],
+                  [
+                    "Reason",
+                    this.delivery.sources.some((source) => source.omitted_media.length)
+                      ? "Image input not supported for this submission"
+                      : "—",
+                  ],
+                ])}
+                <ul>
+                  ${this.delivery.sources.map((source, index) => {
+                    const captured = context?.sources[index];
+                    const label = captured
+                      ? captured.source.window_title
+                        ? `${captured.source.application} — ${captured.source.window_title}`
+                        : captured.source.application
+                      : `Source ${index + 1}`;
+                    const status =
+                      source.mode === "complete"
+                        ? "Complete"
+                        : source.mode === "unavailable"
+                          ? "Unavailable: no usable source text"
+                          : "Text only";
+                    return html`<li>
+                      ${label}: ${status}; ${source.omitted_media.length}
+                      ${source.omitted_media.length === 1 ? "image" : "images"} omitted for Agent
+                    </li>`;
+                  })}
+                </ul>
+              `
+            : html`<p>Agent input coverage is ${this.inputStatus} for the current projection.</p>`
+        }
       </section>
     `;
   }

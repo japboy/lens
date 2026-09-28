@@ -43,6 +43,7 @@ impl AgentProgress {
 pub struct SourceMetadata {
     pub has_input: bool,
     pub quality: Option<ExtractionQuality>,
+    pub projection_has_loss: bool,
 }
 
 #[derive(Clone, Serialize, PartialEq)]
@@ -195,6 +196,19 @@ fn project(snapshot: &AppSnapshot, label: &str, output_ref: Option<String>) -> W
         source_ref,
         source_metadata: overlay.then(|| SourceMetadata {
             has_input: snapshot.lens.input.is_some(),
+            projection_has_loss: snapshot.lens.input.as_ref().is_some_and(|input| {
+                input.sources.iter().any(|source| {
+                    source
+                        .omissions
+                        .iter()
+                        .any(|omission| match omission.reason {
+                            crate::lens::ProjectionOmissionReason::ApplicationChrome => false,
+                            crate::lens::ProjectionOmissionReason::TokenBudget
+                            | crate::lens::ProjectionOmissionReason::ResourceBudget
+                            | crate::lens::ProjectionOmissionReason::UnsupportedSemantics => true,
+                        })
+                })
+            }),
             quality: snapshot
                 .lens
                 .context
@@ -628,6 +642,76 @@ mod tests {
         }
         tokio::time::advance(std::time::Duration::from_millis(100)).await;
         assert_eq!(progress.tick().await, Some(true));
+    }
+
+    #[test]
+    fn source_metadata_distinguishes_projection_loss_from_chrome_normalization() {
+        use crate::lens::{
+            LensInput, LensInputSource, LensSource, ProjectionOmission, ProjectionOmissionReason,
+        };
+        let state = image_state();
+        let snapshot = state.snapshot().unwrap();
+        let absent = project(&snapshot, "lens-overlay", None);
+        let metadata = absent.source_metadata.unwrap();
+        assert!(!metadata.has_input);
+        assert!(!metadata.projection_has_loss);
+
+        let mut input = LensInput {
+            schema_version: crate::lens::LENS_INPUT_SCHEMA_VERSION,
+            context_id: Uuid::from_u128(7),
+            context_revision: 1,
+            sources: vec![LensInputSource {
+                source_id: "source-0".into(),
+                target_id: "target-0".into(),
+                source_revision: 1,
+                source: LensSource {
+                    application: "Fixture".into(),
+                    window_title: "Fixture window".into(),
+                    bundle_id: "fixture.bundle".into(),
+                    window_id: 1,
+                },
+                document: None,
+                quality: ExtractionQuality::Full,
+                omissions: vec![],
+            }],
+            media: vec![],
+            media_omissions: vec![],
+            quality: ExtractionQuality::Full,
+        };
+        let omission = |reason| ProjectionOmission {
+            reason,
+            omitted_node_count: 1,
+            first_order: Some(0),
+            last_order: Some(0),
+            detail: None,
+        };
+        for (reasons, expected_loss) in [
+            (vec![], false),
+            (vec![ProjectionOmissionReason::ApplicationChrome], false),
+            (vec![ProjectionOmissionReason::TokenBudget], true),
+            (vec![ProjectionOmissionReason::ResourceBudget], true),
+            (vec![ProjectionOmissionReason::UnsupportedSemantics], true),
+            (
+                vec![
+                    ProjectionOmissionReason::ApplicationChrome,
+                    ProjectionOmissionReason::TokenBudget,
+                ],
+                true,
+            ),
+        ] {
+            input.sources[0].omissions = reasons.into_iter().map(omission).collect();
+            let mut snapshot = snapshot.clone();
+            snapshot.lens.input = Some(Arc::new(input.clone()));
+            let wire = project(&snapshot, "lens-overlay", None);
+            let metadata = wire.source_metadata.unwrap();
+            assert!(metadata.has_input);
+            assert_eq!(metadata.quality, None);
+            assert_eq!(metadata.projection_has_loss, expected_loss);
+            assert!(wire.snapshot.lens.input.is_none());
+            assert!(project(&snapshot, "settings", None)
+                .source_metadata
+                .is_none());
+        }
     }
 
     #[test]

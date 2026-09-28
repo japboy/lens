@@ -1,4 +1,4 @@
-import { renderDeliveryNotice } from "../rendering/delivery-notice";
+import { renderResponseDeliveryNotice } from "../rendering/delivery-notice";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { keyed } from "lit/directives/keyed.js";
@@ -290,14 +290,16 @@ export class LensAgentOutput extends LitElement {
           ${history.responses
             .filter((response) => response.delivery && response.delivery.mode !== "complete")
             .map(
-              (response) => html`<section
+              (response) => html`<details
+                class="lens-response-coverage"
                 aria-label=${`Response ${response.sequence} input coverage`}
               >
-                <strong class="lens-response-coverage-heading"
-                  >Response ${response.sequence}</strong
-                >
-                ${renderDeliveryNotice(response.delivery, "response")}
-              </section>`,
+                <summary>
+                  Response ${response.sequence} · Agent input:
+                  ${response.delivery?.mode === "unavailable" ? "UNAVAILABLE" : "PARTIAL"}
+                </summary>
+                ${renderResponseDeliveryNotice(response.delivery)}
+              </details>`,
             )}
         </div>
         <div
