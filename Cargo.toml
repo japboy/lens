@@ -16,7 +16,7 @@ rust-version = "1.90"
 publish = false
 
 [workspace.dependencies]
-agent-client-protocol-schema = { version = "=1.7.0", features = ["tracing"] }
+agent-client-protocol-schema = { version = "=1.9.1", features = ["tracing"] }
 domain = { path = "packages/domain" }
 usecase = { path = "packages/usecase" }
 port-platform = { path = "packages/port-platform" }
