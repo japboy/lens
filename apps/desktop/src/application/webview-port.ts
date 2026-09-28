@@ -32,6 +32,11 @@ export interface AboutDocuments {
   notice: string;
 }
 
+export type ReleaseAvailability =
+  | { revision: number; stage: "idle" | "checking" | "current" }
+  | { revision: number; stage: "failed"; retry_after_epoch_ms?: number }
+  | { revision: number; stage: "available"; version: string; release_url: string };
+
 export interface LensSourceResource {
   source_ref: string;
   context?: AppSnapshot["lens"]["context"];
@@ -68,6 +73,11 @@ export interface WebviewPort {
   getHtmlOutput(operationId: string, representationId: string, resourceId: string): Promise<string>;
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
+  getReleaseAvailability(): Promise<ReleaseAvailability>;
+  subscribeToReleaseAvailability(
+    listener: (availability: ReleaseAvailability) => void,
+  ): Promise<Unlisten>;
+  retryReleaseAvailabilityCheck(): Promise<ReleaseAvailability>;
   showAbout(): Promise<void>;
   previewAgentModel(
     selectionId: string,
@@ -150,6 +160,11 @@ export const tauriWebviewPort: WebviewPort = {
     invoke<string>("get_html_output", { operationId, representationId, resourceId }),
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
   getAboutDocuments: () => invoke<AboutDocuments>("get_about_documents"),
+  getReleaseAvailability: () => invoke<ReleaseAvailability>("get_release_availability"),
+  subscribeToReleaseAvailability: (listener) =>
+    listen<ReleaseAvailability>("release-availability-changed", ({ payload }) => listener(payload)),
+  retryReleaseAvailabilityCheck: () =>
+    invoke<ReleaseAvailability>("retry_release_availability_check"),
   showAbout: () => invoke<void>("show_about"),
   async previewAgentModel(selectionId, configId, value, catalogGeneration, catalogRevision) {
     await invoke("preview_agent_model", {
