@@ -12,6 +12,7 @@ export interface ExternalAgentProfile {
   name: string;
   command: string;
   args: string[];
+  projection_layout?: "compact" | "structured";
 }
 export type AgentSelectionStage =
   | "unselected"
@@ -432,12 +433,27 @@ export interface ProjectionRef {
   digest: string;
 }
 
+export type LensDeliveryMode = "complete" | "text_only_partial" | "unavailable";
+export interface LensDeliveryCoverage {
+  mode: LensDeliveryMode;
+  sources: Array<{
+    source_id: string;
+    mode: LensDeliveryMode;
+    omitted_media: Array<{ id: string; reason: "image_not_supported" }>;
+  }>;
+}
+export interface LensDelivery extends LensDeliveryCoverage {
+  source_projection: ProjectionRef;
+  projection: ProjectionRef;
+}
+
 export interface LensRepresentation {
   prompt_execution_revision: number;
   representation_id: string;
   context_id: string;
   context_revision: number;
   projection: ProjectionRef;
+  delivery?: LensDelivery;
   run_id: string;
   output_blocks: LensOutputBlock[];
 }
@@ -465,6 +481,7 @@ export interface LensResponseManifest {
   context_id: string;
   context_revision: number;
   projection: ProjectionRef;
+  delivery?: LensDeliveryCoverage;
   block_count: number;
   retained_bytes: number;
   blocks: LensResponseBlockDescriptor[];
@@ -499,6 +516,7 @@ export interface LensState {
   context?: LensContext;
   input?: LensInput;
   projection?: ProjectionRef;
+  delivery?: LensDelivery;
   representation?: LensRepresentation;
   response_history: LensResponseHistory;
   live?: LensLiveState;
@@ -509,7 +527,12 @@ export interface LensState {
 
 export interface AppSnapshot {
   source_ref: string | null;
-  source_metadata: { has_input: boolean; quality: ExtractionQuality | null } | null;
+  source_metadata: {
+    has_input: boolean;
+    quality: ExtractionQuality | null;
+    /** Absent in older snapshots; absence cannot establish complete Agent input. */
+    projection_has_loss?: boolean;
+  } | null;
   output_ref: string | null;
   revision: number;
   config: AppConfig;

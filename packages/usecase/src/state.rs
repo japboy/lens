@@ -210,9 +210,11 @@ pub fn reconcile_lens_after_context_refresh(
                 .as_ref()
                 .zip(lens.projection.as_ref())
                 .is_some_and(|(representation, projection)| {
-                    &representation.projection == projection
-                        && representation.prompt_execution_revision
-                            == lens.prompt_execution_revision
+                    representation.is_current_for(
+                        projection,
+                        lens.delivery.as_ref(),
+                        lens.prompt_execution_revision,
+                    )
                 });
             if representation_is_current {
                 lens.representation
@@ -261,6 +263,19 @@ pub fn reconcile_lens_after_context_refresh(
 /// The configuration transaction owns recovery after revoking old run authority.
 /// This also handles cancellation that settled immediately before the transaction.
 pub fn reconcile_lens_after_execution_config_change(lens: &mut LensState) {
+    lens.delivery = None;
+    let has_representation = lens.representation.is_some();
+    if let Some(live) = lens.live.as_mut() {
+        live.freshness = if live.lifecycle != LensMonitoringLifecycle::Watching
+            || live.health == LensSourceHealth::Unavailable
+        {
+            LensFreshness::Unverified
+        } else if has_representation {
+            LensFreshness::Stale
+        } else {
+            LensFreshness::None
+        };
+    }
     if !matches!(
         lens.stage,
         LensStage::Connecting | LensStage::Transforming | LensStage::Cancelled
@@ -275,15 +290,6 @@ pub fn reconcile_lens_after_execution_config_change(lens: &mut LensState) {
     lens.pending_representation = None;
     lens.error = Some(error.clone());
     if let Some(live) = lens.live.as_mut() {
-        live.freshness = if live.lifecycle != LensMonitoringLifecycle::Watching
-            || live.health == LensSourceHealth::Unavailable
-        {
-            LensFreshness::Unverified
-        } else if lens.representation.is_some() {
-            LensFreshness::Stale
-        } else {
-            LensFreshness::None
-        };
         live.last_outcome = Some(LensRefreshOutcome::Failed);
         live.error = Some(error);
     }
@@ -465,11 +471,48 @@ mod tests {
             assert_eq!(lens.stage, LensStage::Failed);
             assert!(lens.error.as_deref().unwrap().contains("Retry"));
         }
-        let mut settled = canonical_state(7);
-        settled.stage = LensStage::Completed;
-        let before = settled.clone();
-        reconcile_lens_after_execution_config_change(&mut settled);
-        assert_eq!(settled, before);
+        for has_delivery in [false, true] {
+            let mut settled = canonical_state(7);
+            settled.stage = LensStage::Completed;
+            if has_delivery {
+                let projection = settled.projection.clone().unwrap();
+                let delivery = domain::projection::LensDelivery {
+                    source_projection: projection.clone(),
+                    projection,
+                    coverage: domain::projection::LensDeliveryCoverage {
+                        mode: domain::projection::LensDeliveryMode::Complete,
+                        sources: vec![domain::projection::LensSourceDelivery {
+                            source_id: "source-0".into(),
+                            mode: domain::projection::LensDeliveryMode::Complete,
+                            omitted_media: Vec::new(),
+                        }],
+                    },
+                };
+                settled.delivery = Some(delivery.clone());
+                settled.representation.as_mut().unwrap().delivery = Some(delivery);
+            }
+            let representation = settled.representation.clone();
+            reconcile_lens_after_execution_config_change(&mut settled);
+            assert_eq!(settled.stage, LensStage::Completed);
+            assert_eq!(settled.representation, representation);
+            assert!(settled.delivery.is_none());
+            assert_eq!(
+                settled.live.as_ref().unwrap().freshness,
+                LensFreshness::Stale
+            );
+            if has_delivery {
+                reconcile_lens_after_context_refresh(
+                    &mut settled,
+                    8,
+                    LensSourceHealth::Healthy,
+                    LensContextRefreshOutcome::Unchanged,
+                );
+                assert_eq!(
+                    settled.live.as_ref().unwrap().freshness,
+                    LensFreshness::Stale
+                );
+            }
+        }
     }
 
     #[test]
@@ -638,6 +681,7 @@ mod tests {
             target_set: Some(targets),
             projection: Some(projection_ref(1, 'a')),
             representation: Some(LensRepresentation {
+                delivery: None,
                 context_id: Uuid::from_u128(2),
                 ..representation(projection_ref(1, 'a'), 1)
             }),
@@ -883,6 +927,7 @@ mod tests {
         context_revision: u64,
     ) -> crate::model::LensRepresentation {
         crate::model::LensRepresentation {
+            delivery: None,
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),

@@ -54,6 +54,7 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
     state.runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation),
         representation: Some(LensRepresentation {
+            delivery: None,
             prompt_execution_revision: 1,
             representation_id: representation,
             context_id: Uuid::nil(),
@@ -127,6 +128,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
     let state = test_support::state();
     let operation = Uuid::from_u128(701);
     let old = LensRepresentation {
+        delivery: None,
         prompt_execution_revision: 1,
         representation_id: Uuid::from_u128(702),
         context_id: Uuid::nil(),
@@ -153,6 +155,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
         .into(),
     };
     let latest = LensRepresentation {
+        delivery: None,
         representation_id: Uuid::from_u128(704),
         run_id: Uuid::from_u128(705),
         output_blocks: vec![LensOutputBlock::Markdown {
@@ -531,8 +534,10 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
         let operation = Uuid::new_v4();
         {
             let mut snapshot = state.runtime.write().unwrap();
+            snapshot.lens.delivery = Some(test_support::delivery());
             snapshot.config.external_agents[0].command = "/custom/goose".into();
             snapshot.config.external_agents.push(ExternalAgentProfile {
+                projection_layout: Default::default(),
                 id: custom_id,
                 name: "Custom".into(),
                 command: "custom".into(),
@@ -585,6 +590,11 @@ fn reset_external_agents_ipc_restores_catalog_and_invalidates_only_external_sele
         let window = window(&app);
         let result = invoke(&window, "reset_external_agents", json!({})).unwrap();
         let after = app.state::<AppState>().snapshot().unwrap();
+        assert_eq!(
+            after.lens.delivery.is_none(),
+            external_selected || external_pending,
+            "reset only invalidates affected execution delivery"
+        );
         assert_eq!(
             after.config.external_agents,
             ExternalAgentProfile::bundled_presets()
@@ -898,6 +908,12 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
         )
         .build(crate::product_context())
         .unwrap();
+        app.state::<AppState>()
+            .runtime
+            .write()
+            .unwrap()
+            .lens
+            .delivery = Some(test_support::delivery());
         let id = Uuid::from_u128(702);
         let saved = crate::commands::save_external_agent_configuration(
             app.handle(),
@@ -909,6 +925,7 @@ fn saved_external_agent_verification_cannot_override_later_delete_or_reset() {
             },
         )
         .unwrap();
+        assert!(app.state::<AppState>().lens().unwrap().delivery.is_none());
         if reset {
             crate::commands::reset_external_agents(app.handle().clone()).unwrap();
         } else {
@@ -1019,4 +1036,131 @@ fn saved_external_agent_verification_preserves_concurrent_progress_after_closing
             .as_deref(),
         Some("concurrent progress marker")
     );
+}
+
+#[test]
+fn saving_external_agent_marks_retained_response_stale_at_commit() {
+    let state = test_support::state();
+    let delivery = test_support::delivery();
+    let projection = delivery.source_projection.clone();
+    let representation = LensRepresentation {
+        prompt_execution_revision: 1,
+        representation_id: Uuid::from_u128(812),
+        context_id: Uuid::nil(),
+        context_revision: 1,
+        projection: projection.clone(),
+        delivery: Some(delivery.clone()),
+        run_id: Uuid::from_u128(813),
+        output_blocks: vec![LensOutputBlock::Markdown {
+            message_id: None,
+            text: "Prior interpretation".into(),
+        }]
+        .into(),
+    };
+    state.runtime.write().unwrap().lens = LensState {
+        stage: LensStage::Completed,
+        projection: Some(projection),
+        delivery: Some(delivery),
+        representation: Some(representation.clone()),
+        live: Some(LensLiveState {
+            lifecycle: LensMonitoringLifecycle::Watching,
+            health: LensSourceHealth::Healthy,
+            freshness: LensFreshness::Current,
+            agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+            last_outcome: None,
+            error: None,
+        }),
+        ..LensState::default()
+    };
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(state),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    crate::commands::save_external_agent_configuration(
+        app.handle(),
+        crate::external_agent::ExternalAgentDraft {
+            id: Uuid::from_u128(814),
+            name: "Different Agent".into(),
+            command: "synthetic".into(),
+            arguments: "--acp".into(),
+        },
+    )
+    .unwrap();
+    let lens = app.state::<AppState>().lens().unwrap();
+    assert_eq!(lens.stage, LensStage::Completed);
+    assert_eq!(lens.representation, Some(representation));
+    assert!(lens.delivery.is_none());
+    assert_eq!(lens.live.unwrap().freshness, LensFreshness::Stale);
+}
+
+#[test]
+fn external_projection_layout_survives_edits_but_not_delete_and_manual_recreation() {
+    use crate::model::ProjectionLayout;
+    let app = crate::configure_shell(
+        tauri::test::mock_builder().manage(test_support::state()),
+        platform::Presentation(Arc::new(test_support::UnusedPresentation)),
+        crate::ui::TrayPresentation(Arc::new(PresetTestTray)),
+        crate::agent::AgentServices(Arc::new(test_support::UnusedAgent)),
+    )
+    .build(crate::product_context())
+    .unwrap();
+    let id = ExternalAgentProfile::grok_preset().id;
+    for (name, command, arguments) in [
+        ("Renamed Agent", "grok", "agent stdio"),
+        ("Renamed Agent", "another-agent", "--changed"),
+    ] {
+        crate::commands::save_external_agent_configuration(
+            app.handle(),
+            crate::external_agent::ExternalAgentDraft {
+                id,
+                name: name.into(),
+                command: command.into(),
+                arguments: arguments.into(),
+            },
+        )
+        .unwrap();
+        let config = app.state::<AppState>().config().unwrap();
+        let profile = config.external_agents.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(profile.projection_layout, ProjectionLayout::Structured);
+        assert_eq!(profile.name, name);
+        assert_eq!(profile.command, std::path::PathBuf::from(command));
+        assert_eq!(profile.args, shlex::split(arguments).unwrap());
+        assert_eq!(app.state::<AppState>().store.load(), config);
+    }
+    crate::commands::delete_external_agent(app.handle().clone(), id).unwrap();
+    assert!(!app
+        .state::<AppState>()
+        .config()
+        .unwrap()
+        .external_agents
+        .iter()
+        .any(|p| p.id == id));
+    crate::commands::save_external_agent_configuration(
+        app.handle(),
+        crate::external_agent::ExternalAgentDraft {
+            id,
+            name: "Grok Build".into(),
+            command: "grok".into(),
+            arguments: "agent stdio".into(),
+        },
+    )
+    .unwrap();
+    let config = app.state::<AppState>().config().unwrap();
+    assert_eq!(config.projection_layout(), ProjectionLayout::Compact);
+    assert_eq!(app.state::<AppState>().store.load(), config);
+    let reset = crate::commands::reset_external_agents(app.handle().clone()).unwrap();
+    assert_eq!(
+        reset
+            .external_agents
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap()
+            .projection_layout,
+        ProjectionLayout::Structured
+    );
+    assert_eq!(app.state::<AppState>().store.load(), reset);
 }

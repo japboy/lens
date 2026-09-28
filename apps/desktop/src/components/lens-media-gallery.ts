@@ -54,25 +54,25 @@ export class LensMediaGallery extends LitElement {
       attachment.scope === "window_fallback" ? "Whole-window fallback" : "AX image region";
     const alt =
       attachment.scope === "window_fallback"
-        ? "Whole-window fallback sent to the Agent"
-        : `AX image region sent to the Agent for node ${attachment.source_node_id ?? "unknown"}`;
+        ? "Whole-window fallback captured from the selected window"
+        : `AX image region captured for node ${attachment.source_node_id ?? "unknown"}`;
 
     return html`
       <section class="input-media-preview" aria-labelledby="input-media-heading">
         <header>
-          <h2 id="input-media-heading">Input images</h2>
+          <h2 id="input-media-heading">Captured images</h2>
           <span>${index + 1} of ${media.length}</span>
         </header>
-        <div class="input-media-carousel" role="group" aria-label="Input image carousel">
+        <div class="input-media-carousel" role="group" aria-label="Captured image carousel">
           <button
             type="button"
-            aria-label="Previous Input Image"
+            aria-label="Previous Captured Image"
             ?disabled=${index === 0}
             @click=${() => this.select(media[index - 1]?.id)}
           >
             <span aria-hidden="true">‹</span>
           </button>
-          <ol class="input-media-thumbnails" aria-label="Input image thumbnails">
+          <ol class="input-media-thumbnails" aria-label="Captured image thumbnails">
             ${media.map(
               (candidate, candidateIndex) => html`
                 <li>
@@ -83,7 +83,7 @@ export class LensMediaGallery extends LitElement {
                         ? "input-media-thumbnail is-selected"
                         : "input-media-thumbnail"
                     }
-                    aria-label=${`Show Input Image ${candidateIndex + 1} of ${media.length}`}
+                    aria-label=${`Show Captured Image ${candidateIndex + 1} of ${media.length}`}
                     aria-current=${candidateIndex === index ? "true" : "false"}
                     @click=${() => this.select(candidate.id)}
                   >
@@ -100,7 +100,7 @@ export class LensMediaGallery extends LitElement {
           </ol>
           <button
             type="button"
-            aria-label="Next Input Image"
+            aria-label="Next Captured Image"
             ?disabled=${index === media.length - 1}
             @click=${() => this.select(media[index + 1]?.id)}
           >
@@ -121,7 +121,7 @@ export class LensMediaGallery extends LitElement {
                   @error=${() => {
                     if (this.activeAttachmentId === attachment.id) {
                       this.previewError =
-                        "The selected input image is no longer available for this operation.";
+                        "The selected captured image is no longer available for this operation.";
                     }
                   }}
                 />`
@@ -132,7 +132,7 @@ export class LensMediaGallery extends LitElement {
               ? html`<p class="input-media-error" role="alert">
                   ${
                     this.previewError ||
-                    "The selected input image URI does not match the current operation."
+                    "The selected captured image URI does not match the current operation."
                   }
                 </p>`
               : nothing

@@ -10,6 +10,7 @@ import {
 } from "../application/session-document";
 import { cache } from "lit/directives/cache.js";
 import { initialOverlayState } from "../rendering/initial-state";
+import { inputCoverage } from "../rendering/input-coverage";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing, render, type PropertyValues } from "lit";
 import {
@@ -25,7 +26,8 @@ import type { MediaPresentation } from "./events";
 import { customElement, property, state } from "lit/decorators.js";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel } from "../application/view-models";
-import type { LensState } from "../types";
+import type { LensDelivery, LensState } from "../types";
+import type { InputCoverage } from "../rendering/input-coverage";
 import { composeOutputMedia } from "../output-media";
 import {
   accessibilityStyles,
@@ -123,6 +125,33 @@ export class LensOverlayView extends LitElement {
         border-top: 1px solid Separator;
         margin-top: 24px;
         padding-top: 16px;
+      }
+      .lens-delivery-notice {
+        flex: 0 0 auto;
+        padding: 4px 14px 10px;
+        background: color-mix(in srgb, AccentColor 8%, Canvas);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .lens-delivery-notice p,
+      .lens-delivery-notice ul {
+        margin: 4px 0 0;
+      }
+      .lens-delivery-notice ul {
+        padding-inline-start: 18px;
+      }
+      .lens-response-coverage {
+        border-block-end: 1px solid Separator;
+        font-size: 12px;
+      }
+      .lens-response-coverage summary {
+        cursor: pointer;
+        padding: 8px 14px;
+      }
+      .lens-delivery-notices {
+        flex: 0 0 auto;
+        max-height: 30vh;
+        overflow: auto;
       }
       .lens-response-heading {
         font-size: 12px;
@@ -544,23 +573,44 @@ export class LensOverlayView extends LitElement {
 
       .quality {
         flex: 0 0 auto;
+        display: inline-flex;
         border: 1px solid Separator;
-        border-radius: 999px;
-        padding: 1px 7px;
-        font-variant-caps: all-small-caps;
+        border-radius: 7px;
+        overflow: hidden;
+        font-size: 11px;
+        background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
       }
 
-      .quality-full {
-        color: LinkText;
+      .quality button {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border: 0;
+        padding: 4px 8px;
+        background: transparent;
+        color: CanvasText;
+        font: inherit;
+        font-weight: 400;
+        letter-spacing: 0.01em;
+        cursor: pointer;
       }
 
-      .quality-partial {
-        color: MarkText;
-        background: Mark;
+      .quality button i {
+        opacity: 0.74;
       }
 
-      .quality-unavailable {
-        color: GrayText;
+      .quality button + button {
+        border-inline-start: 1px solid Separator;
+      }
+
+      .quality button:focus-visible {
+        outline: 2px solid AccentColor;
+        outline-offset: -2px;
+      }
+
+      .quality button:hover {
+        background: SelectedItem;
+        color: SelectedItemText;
       }
 
       .lens-tabs {
@@ -1569,6 +1619,11 @@ export class LensOverlayView extends LitElement {
         margin-top: 4px;
       }
 
+      .diagnostic-group > ul {
+        margin: 4px 0 0;
+        padding-inline-start: 18px;
+      }
+
       .metrics {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(min(112px, 100%), 1fr));
@@ -1893,6 +1948,26 @@ export class LensOverlayView extends LitElement {
       (lens?.stage === "authentication_required" || lens?.stage === "failed");
     const liveStatus = lensLiveStatus(lens?.live);
     const displayLens = lens;
+    const currentDelivery =
+      lens?.delivery &&
+      lens.delivery.source_projection.revision === lens.projection?.revision &&
+      lens.delivery.source_projection.digest === lens.projection?.digest
+        ? lens.delivery
+        : undefined;
+    const unresolvedInput =
+      (lens?.delivery && !currentDelivery) ||
+      lens?.stage === "completed" ||
+      lens?.stage === "failed" ||
+      lens?.stage === "cancelled"
+        ? "unknown"
+        : "pending";
+    const inputStatus = inputCoverage(
+      sourceQuality,
+      model?.sourceMetadata?.has_input,
+      model?.sourceMetadata?.projection_has_loss,
+      currentDelivery,
+      unresolvedInput,
+    );
     const announcedStatus =
       (displayLens ? overlayNotification(displayLens) : undefined) ?? this.updateOnlyNotification();
     const interactive = Boolean(
@@ -2032,7 +2107,7 @@ export class LensOverlayView extends LitElement {
                 </section>`
               : nothing
           }
-          ${cache(this.renderActivePanel(lens, displayLens, sourceJson))}
+          ${cache(this.renderActivePanel(lens, displayLens, sourceJson, currentDelivery, inputStatus))}
         </main>
 
         ${this.renderNotification(announcedStatus, showStatusSnackbar, interactive, lens?.stage === "transforming")}
@@ -2052,8 +2127,31 @@ export class LensOverlayView extends LitElement {
                 </div>`
           }
           ${
-            sourceQuality
-              ? html`<span class="quality quality-${sourceQuality}">${sourceQuality}</span>`
+            lens
+              ? html`<div class="quality" role="group" aria-label="Input coverage">
+                  <button
+                    type="button"
+                    aria-label=${`Show Source tab: capture quality ${sourceQuality ?? "unknown"}`}
+                    aria-controls="source-panel"
+                    title="Capture quality — Open Source"
+                    ?disabled=${!this.active}
+                    @click=${() => this.activateCoverageTab("source")}
+                  >
+                    <i class="fa-solid fa-camera" aria-hidden="true"></i>
+                    <span>${(sourceQuality ?? "unknown").toUpperCase()}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label=${`Show Diagnostics tab: prepared Agent input coverage ${inputStatus}; submission may still be pending`}
+                    aria-controls="diagnostics-panel"
+                    title="Prepared Agent input — Open Diagnostics; submission may still be pending"
+                    ?disabled=${!this.active}
+                    @click=${() => this.activateCoverageTab("diagnostics")}
+                  >
+                    <i class="fa-solid fa-robot" aria-hidden="true"></i>
+                    <span>${inputStatus.toUpperCase()}</span>
+                  </button>
+                </div>`
               : nothing
           }
         </footer>
@@ -2307,6 +2405,8 @@ export class LensOverlayView extends LitElement {
     lens: OverlayViewModel["lens"] | undefined,
     displayLens: LensState | undefined,
     sourceJson: string,
+    delivery: LensDelivery | undefined,
+    inputStatus: InputCoverage,
   ) {
     const activeTab = this.activeTab;
     if (activeTab === "conversation")
@@ -2391,16 +2491,19 @@ export class LensOverlayView extends LitElement {
           tabindex="0"
         >
           <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
-          ${
-            lens.context
-              ? html`<lens-extraction-diagnostics
-                  .context=${lens.context}
-                  .agent=${lens.agent}
-                ></lens-extraction-diagnostics>`
-              : html`<div class="lens-content">
-                  <p class="empty-state">No extraction diagnostics are available.</p>
-                </div>`
-          }
+          <lens-extraction-diagnostics
+            .context=${lens.context}
+            .agent=${lens.agent}
+            .delivery=${delivery}
+            .inputStatus=${inputStatus}
+            .projectionHasLoss=${
+              this.model?.sourceMetadata?.has_input && lens.projection
+                ? this.model.sourceMetadata.projection_has_loss
+                : undefined
+            }
+            .input=${lens.input}
+            .inputDetailsLoading=${this.model?.sourceResource?.stage === "loading"}
+          ></lens-extraction-diagnostics>
         </section>`;
     }
   }
@@ -2531,5 +2634,16 @@ export class LensOverlayView extends LitElement {
 
   private activateTab(tab: LensTab): void {
     this.activeTab = tab;
+  }
+
+  private activateCoverageTab(tab: "source" | "diagnostics"): void {
+    this.activateTab(tab);
+    void this.updateComplete.then(() => {
+      if (this.activeTab === tab && !isHistoryView(this.sessionView)) {
+        this.renderRoot
+          .querySelector<HTMLButtonElement>(`#${tab}-tab`)
+          ?.focus({ preventScroll: true });
+      }
+    });
   }
 }

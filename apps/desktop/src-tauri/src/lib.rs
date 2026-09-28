@@ -33,6 +33,7 @@ pub use native::run;
 mod history_catalog;
 mod history_writer;
 mod platform;
+mod projection_transport;
 mod quit;
 #[cfg(debug_assertions)]
 mod quit_validation;

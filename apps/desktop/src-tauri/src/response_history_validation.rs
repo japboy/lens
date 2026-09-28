@@ -39,6 +39,7 @@ fn append(state: &mut model::LensState, ordinal: u64) -> Result<(), String> {
         blocks.push(image.clone());
     }
     let representation = model::LensRepresentation {
+        delivery: None,
         prompt_execution_revision: state.prompt_execution_revision,
         representation_id: Uuid::new_v4(),
         context_id: operation_id,
@@ -130,6 +131,7 @@ pub(crate) fn run_replay<R: tauri::Runtime>(
         document.entries.push(DocumentEntry::Message {
             id: format!("user-{ordinal}"),
             role: MessageRole::User,
+            delivery: None,
             blocks: vec![DocumentBlock::Markdown {
                 text: format!("Replay prompt {ordinal}"),
             }],
@@ -149,6 +151,7 @@ pub(crate) fn run_replay<R: tauri::Runtime>(
         document.entries.push(DocumentEntry::Message {
             id: format!("answer-{ordinal}"),
             role: MessageRole::Assistant,
+            delivery: None,
             blocks: vec![DocumentBlock::Markdown {
                 text: format!(
                     "## Replay response {ordinal}\n\nReplay body #{ordinal}.\n\n{}",

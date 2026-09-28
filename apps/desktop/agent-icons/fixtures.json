@@ -102,5 +102,25 @@
   {
     "name": "Google",
     "icon": "google"
+  },
+  {
+    "name": "Grok Build",
+    "icon": "x-twitter"
+  },
+  {
+    "name": "gRoK bUiLd",
+    "icon": "x-twitter"
+  },
+  {
+    "name": "My Grok Agent",
+    "icon": "x-twitter"
+  },
+  {
+    "name": "X custom agent",
+    "icon": "robot"
+  },
+  {
+    "name": "Grok Claude",
+    "icon": "claude"
   }
 ]

@@ -6,6 +6,7 @@ use agent_client_protocol::schema::v1::{
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use usecase::live_sync::{LensDeliveryCoverage, LensDeliveryMode};
 
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
@@ -35,6 +36,8 @@ pub enum DocumentEntry {
         id: String,
         role: MessageRole,
         blocks: Vec<DocumentBlock>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<LensDeliveryCoverage>,
     },
     Tool {
         id: String,
@@ -210,11 +213,17 @@ impl SessionDocument {
     ) -> Result<(), String> {
         self.ensure_accounting();
         let key = (role, message_id);
+        let incoming_delivery = (role == MessageRole::User)
+            .then(|| delivery_coverage(&content))
+            .flatten();
         let block = convert(content);
         let same = self.message_key.as_ref() == Some(&key)
             && matches!(self.entries.last(), Some(DocumentEntry::Message { role: previous, .. }) if *previous == role);
         if same {
-            let Some(DocumentEntry::Message { blocks, .. }) = self.entries.last_mut() else {
+            let Some(DocumentEntry::Message {
+                blocks, delivery, ..
+            }) = self.entries.last_mut()
+            else {
                 unreachable!()
             };
             let merge = matches!(
@@ -232,7 +241,14 @@ impl SessionDocument {
             } else {
                 wire_size(&block) + usize::from(!blocks.is_empty())
             };
-            let bytes = self.accounting.bytes + added_bytes;
+            let delivery_bytes = if delivery.is_none() {
+                incoming_delivery
+                    .as_ref()
+                    .map_or(0, |value| wire_size(value) + ",\"delivery\":".len())
+            } else {
+                0
+            };
+            let bytes = self.accounting.bytes + added_bytes + delivery_bytes;
             let count = self.accounting.blocks + usize::from(!merge);
             capacity(bytes, self.accounting.entries, count)?;
             if merge {
@@ -247,9 +263,12 @@ impl SessionDocument {
             } else {
                 blocks.push(block);
             }
+            if delivery.is_none() {
+                *delivery = incoming_delivery;
+            }
             self.accounting.bytes = bytes;
             self.accounting.blocks = count;
-            if added_bytes > 0 {
+            if added_bytes + delivery_bytes > 0 {
                 self.accounting.last_changed_entry = Some(self.entries.len() - 1);
             }
         } else {
@@ -257,6 +276,7 @@ impl SessionDocument {
                 id: format!("message:{}", self.entries.len()),
                 role,
                 blocks: vec![block],
+                delivery: incoming_delivery,
             };
             let bytes =
                 self.accounting.bytes + wire_size(&entry) + usize::from(!self.entries.is_empty());
@@ -333,10 +353,17 @@ impl SessionDocument {
                 id: format!("message:{}", self.entries.len()),
                 role,
                 blocks: vec![],
+                delivery: None,
             });
         }
         self.message_key = Some(key);
-        if let Some(DocumentEntry::Message { blocks, .. }) = self.entries.last_mut() {
+        if let Some(DocumentEntry::Message {
+            blocks, delivery, ..
+        }) = self.entries.last_mut()
+        {
+            if role == MessageRole::User && delivery.is_none() {
+                *delivery = delivery_coverage(&content);
+            }
             let block = convert(content);
             if let (
                 Some(DocumentBlock::Markdown { text: previous }),
@@ -533,6 +560,95 @@ fn accepted_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Op
     accepted.then(|| html.to_owned())
 }
 
+/// Historical coverage is presentation evidence from one complete user projection,
+/// never execution authority. Unknown, fragmented or future input remains unknown.
+fn delivery_coverage(content: &ContentBlock) -> Option<LensDeliveryCoverage> {
+    use usecase::lens::{MAX_LENS_INPUT_BYTES, MAX_LENS_MEDIA_ATTACHMENTS, MAX_LENS_TARGETS};
+    let text = match content {
+        ContentBlock::Text(value) => &value.text,
+        ContentBlock::Resource(value) => match &value.resource {
+            EmbeddedResourceResource::TextResourceContents(value)
+                if value.uri.starts_with("lens://projection/")
+                    && value.mime_type.as_deref() == Some("application/json") =>
+            {
+                &value.text
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // Transport may insert whitespace without changing canonical projection bytes.
+    // At most one inserted byte per original byte is admitted before parsing;
+    // the semantic JSON still has the unchanged canonical input-size ceiling.
+    if text.len() > MAX_LENS_INPUT_BYTES * 2 || !text.trim_start().starts_with('{') {
+        return None;
+    }
+    let value: Value = serde_json::from_str(text).ok()?;
+    if serde_json_canonicalizer::to_vec(&value).ok()?.len() > MAX_LENS_INPUT_BYTES {
+        return None;
+    }
+    if value.get("schema_version")?.as_u64()? != 1
+        || !value.get("media")?.as_array()?.is_empty()
+        || !value.get("media_omissions")?.is_array()
+        || !matches!(
+            value.get("quality")?.as_str()?,
+            "full" | "partial" | "unavailable"
+        )
+    {
+        return None;
+    }
+    let sources = value.get("sources")?.as_array()?;
+    let coverage: LensDeliveryCoverage =
+        serde_json::from_value(value.get("delivery")?.clone()).ok()?;
+    if sources.is_empty()
+        || sources.len() > MAX_LENS_TARGETS
+        || coverage.sources.len() != sources.len()
+    {
+        return None;
+    }
+    let mut media_ids = std::collections::BTreeSet::new();
+    for (index, (source, delivered)) in sources.iter().zip(&coverage.sources).enumerate() {
+        let id = format!("source-{index}");
+        if source.get("id")?.as_str()? != id || delivered.source_id != id {
+            return None;
+        }
+        match delivered.mode {
+            LensDeliveryMode::Complete if !delivered.omitted_media.is_empty() => return None,
+            LensDeliveryMode::TextOnlyPartial if delivered.omitted_media.is_empty() => return None,
+            _ => {}
+        }
+        for omitted in &delivered.omitted_media {
+            let ordinal = omitted
+                .id
+                .strip_prefix(&format!("{id}/media-"))?
+                .parse::<usize>()
+                .ok()?;
+            if ordinal >= MAX_LENS_MEDIA_ATTACHMENTS
+                || omitted.id != format!("{id}/media-{ordinal}")
+                || !media_ids.insert(&omitted.id)
+            {
+                return None;
+            }
+        }
+    }
+    let expected = if coverage
+        .sources
+        .iter()
+        .all(|source| source.mode == LensDeliveryMode::Unavailable)
+    {
+        LensDeliveryMode::Unavailable
+    } else if coverage
+        .sources
+        .iter()
+        .all(|source| source.mode == LensDeliveryMode::Complete)
+    {
+        LensDeliveryMode::Complete
+    } else {
+        LensDeliveryMode::TextOnlyPartial
+    };
+    (coverage.mode == expected && media_ids.len() <= MAX_LENS_MEDIA_ATTACHMENTS).then_some(coverage)
+}
+
 fn convert(content: ContentBlock) -> DocumentBlock {
     match content {
         ContentBlock::Text(value) => DocumentBlock::Markdown { text: value.text },
@@ -588,6 +704,101 @@ mod tests {
     fn assistant(value: &str) -> SessionUpdate {
         SessionUpdate::AgentMessageChunk(ContentChunk::new(text(value)))
     }
+    fn delivery_projection() -> Value {
+        serde_json::json!({
+            "schema_version":1,"sources":[{"id":"source-0"}],"media":[],
+            "media_omissions":[],"quality":"full",
+            "delivery":{"mode":"text_only_partial","sources":[{
+                "source_id":"source-0","mode":"text_only_partial",
+                "omitted_media":[{"id":"source-0/media-0","reason":"image_not_supported"}]
+            }]}
+        })
+    }
+    #[test]
+    fn delivery_coverage_survives_live_and_replayed_text_or_embedded_user_input() {
+        let json = delivery_projection().to_string();
+        let resource: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type":"resource","resource":{"uri":"lens://projection/1/digest",
+            "mimeType":"application/json","text":json}
+        }))
+        .unwrap();
+        for content in [text(&json), resource] {
+            let mut live = SessionDocument::default();
+            live.append_prompt(&[text("instructions"), content.clone()])
+                .unwrap();
+            let mut replay = SessionDocument::default();
+            for chunk in [text("instructions"), content] {
+                replay
+                    .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(chunk)))
+                    .unwrap();
+            }
+            assert_eq!(live, replay);
+            assert!(matches!(&replay.entries[0], DocumentEntry::Message {
+                delivery: Some(coverage), ..
+            } if coverage.mode == LensDeliveryMode::TextOnlyPartial));
+            assert_accounting(&live);
+            assert_accounting(&replay);
+        }
+    }
+    #[test]
+    fn coverage_rejects_malformed_future_or_unrelated_values_and_assistant_claims() {
+        for path in ["schema_version", "sources", "delivery"] {
+            let mut value = delivery_projection();
+            value[path] = serde_json::json!("unknown");
+            assert!(delivery_coverage(&text(&value.to_string())).is_none());
+        }
+        let mut value = delivery_projection();
+        value["delivery"]["sources"][0]["source_id"] = serde_json::json!("source-3");
+        assert!(delivery_coverage(&text(&value.to_string())).is_none());
+        let mut value = delivery_projection();
+        value["delivery"]["mode"] = serde_json::json!("complete");
+        assert!(delivery_coverage(&text(&value.to_string())).is_none());
+        let json = delivery_projection().to_string();
+        let mut document = SessionDocument::default();
+        document.record_update(assistant(&json)).unwrap();
+        assert!(matches!(
+            &document.entries[0],
+            DocumentEntry::Message { delivery: None, .. }
+        ));
+        let mut fragmented = SessionDocument::default();
+        for part in [&json[..10], &json[10..]] {
+            fragmented
+                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(text(
+                    part,
+                ))))
+                .unwrap();
+        }
+        assert!(matches!(
+            &fragmented.entries[0],
+            DocumentEntry::Message { delivery: None, .. }
+        ));
+    }
+    #[test]
+    fn coverage_bounds_canonical_bytes_independently_of_transport_whitespace() {
+        let mut value = delivery_projection();
+        value["padding"] = serde_json::json!("");
+        let overhead = serde_json_canonicalizer::to_vec(&value).unwrap().len();
+        value["padding"] =
+            serde_json::json!("x".repeat(usecase::lens::MAX_LENS_INPUT_BYTES - overhead));
+        let canonical = serde_json_canonicalizer::to_string(&value).unwrap();
+        let transport = serde_json::to_string_pretty(&value).unwrap();
+        assert_eq!(canonical.len(), usecase::lens::MAX_LENS_INPUT_BYTES);
+        assert!(transport.len() > canonical.len());
+        assert_eq!(
+            delivery_coverage(&text(&canonical)),
+            delivery_coverage(&text(&transport))
+        );
+        assert!(delivery_coverage(&text(&transport)).is_some());
+        let oversized_wire = format!(
+            "{}{}",
+            " ".repeat(usecase::lens::MAX_LENS_INPUT_BYTES * 2),
+            canonical
+        );
+        assert!(delivery_coverage(&text(&oversized_wire)).is_none());
+        let padding = value["padding"].as_str().unwrap().to_owned() + "x";
+        value["padding"] = serde_json::json!(padding);
+        assert!(delivery_coverage(&text(&value.to_string())).is_none());
+    }
     #[test]
     fn fragmented_and_replayed_text_match_without_deduplication() {
         let mut live = SessionDocument::default();
@@ -635,6 +846,7 @@ mod tests {
             doc.entries.push(DocumentEntry::Message {
                 id: index.to_string(),
                 role: MessageRole::User,
+                delivery: None,
                 blocks: vec![],
             });
         }
@@ -648,6 +860,7 @@ mod tests {
         doc.entries.push(DocumentEntry::Message {
             id: "message:0".into(),
             role: MessageRole::Assistant,
+            delivery: None,
             blocks: vec![DocumentBlock::Html {
                 text: "<h1>Visible</h1>".into(),
             }],

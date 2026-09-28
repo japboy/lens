@@ -9,6 +9,8 @@ enum AgentIcon {
     Claude,
     Openai,
     Copilot,
+    #[serde(rename = "x-twitter")]
+    XTwitter,
     Robot,
     Google,
 }
@@ -49,6 +51,7 @@ pub(crate) fn icon_png(name: &str) -> &'static [u8] {
         AgentIcon::Claude => include_bytes!("../../agent-icons/claude.png"),
         AgentIcon::Openai => include_bytes!("../../agent-icons/openai.png"),
         AgentIcon::Copilot => include_bytes!("../../agent-icons/copilot.png"),
+        AgentIcon::XTwitter => include_bytes!("../../agent-icons/x-twitter.png"),
         AgentIcon::Robot => include_bytes!("../../agent-icons/robot.png"),
         AgentIcon::Google => include_bytes!("../../agent-icons/google.png"),
     }

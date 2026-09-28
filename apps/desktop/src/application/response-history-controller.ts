@@ -1,5 +1,10 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
-import type { LensOutputBlock, LensResponseBlockDescriptor, LensState } from "../types";
+import type {
+  LensDeliveryCoverage,
+  LensOutputBlock,
+  LensResponseBlockDescriptor,
+  LensState,
+} from "../types";
 import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
 import type { PresentedOutputMedia } from "../output-media";
 import { imageDataUrl } from "../view-model";
@@ -14,6 +19,7 @@ export type ResponseBlockDescriptor = LensResponseBlockDescriptor & {
 export interface ResponseManifest {
   id: string;
   sequence: number;
+  delivery?: LensDeliveryCoverage;
   blocks: readonly ResponseBlockDescriptor[];
 }
 interface ResponseManifestSet {
@@ -97,6 +103,7 @@ export class ResponseHistoryController implements ReactiveController {
             responses: history.responses.map((response) => ({
               id: response.representation_id,
               sequence: response.sequence,
+              delivery: response.delivery,
               blocks: response.blocks,
             })),
             capacityReached: history.capacity_reached,
@@ -113,6 +120,7 @@ export class ResponseHistoryController implements ReactiveController {
             responses: interpretation.responses.map((response) => ({
               id: response.response_id,
               sequence: response.sequence,
+              delivery: response.delivery,
               blocks: response.blocks,
             })),
             capacityReached: false,

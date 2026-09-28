@@ -29,21 +29,42 @@ impl AgentKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionLayout {
+    #[default]
+    Compact,
+    Structured,
+}
+
+impl ProjectionLayout {
+    fn is_compact(&self) -> bool {
+        *self == Self::Compact
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalAgentProfile {
     pub id: Uuid,
     pub name: String,
     pub command: PathBuf,
     pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "ProjectionLayout::is_compact")]
+    pub projection_layout: ProjectionLayout,
 }
 
 impl ExternalAgentProfile {
     pub fn bundled_presets() -> Vec<Self> {
-        vec![Self::copilot_preset(), Self::goose_preset()]
+        vec![
+            Self::copilot_preset(),
+            Self::goose_preset(),
+            Self::grok_preset(),
+        ]
     }
 
     pub fn copilot_preset() -> Self {
         Self {
+            projection_layout: ProjectionLayout::Compact,
             id: Uuid::from_u128(0xa14d73cb951c48eda3053829750c88da),
             name: "GitHub Copilot".into(),
             command: "copilot".into(),
@@ -52,10 +73,20 @@ impl ExternalAgentProfile {
     }
     pub fn goose_preset() -> Self {
         Self {
+            projection_layout: ProjectionLayout::Compact,
             id: Uuid::from_u128(0x6b57315e9c134e4abf4ce6bc33b10b21),
             name: "Goose".into(),
             command: "goose".into(),
             args: vec!["acp".into()],
+        }
+    }
+    pub fn grok_preset() -> Self {
+        Self {
+            projection_layout: ProjectionLayout::Structured,
+            id: Uuid::from_u128(0x09ebcfe5a77e4e6e832ff5e87f0a1310),
+            name: "Grok Build".into(),
+            command: "grok".into(),
+            args: vec!["agent".into(), "stdio".into()],
         }
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -299,6 +330,20 @@ impl AppConfig {
         Ok(())
     }
 
+    pub fn projection_layout(&self) -> ProjectionLayout {
+        match self.agent {
+            AgentKind::External(id) => self
+                .external_agents
+                .iter()
+                .find(|profile| profile.id == id)
+                .map(|profile| profile.projection_layout)
+                .unwrap_or_default(),
+            AgentKind::Claude | AgentKind::Codex | AgentKind::Antigravity => {
+                ProjectionLayout::Compact
+            }
+        }
+    }
+
     pub fn same_agent_execution(&self, other: &Self, agent: AgentKind) -> bool {
         self.agent_preferences.get(agent) == other.agent_preferences.get(agent)
             && self.same_agent_invocation(other, agent)
@@ -313,7 +358,8 @@ impl AppConfig {
                     .iter()
                     .find(|profile| profile.id == id);
                 matches!((left, right), (Some(left), Some(right))
-                    if left.command == right.command && left.args == right.args)
+                    if left.command == right.command && left.args == right.args
+                        && left.projection_layout == right.projection_layout)
             }
             _ => true,
         }
@@ -569,8 +615,37 @@ pub struct LensRepresentation {
     pub context_id: Uuid,
     pub context_revision: u64,
     pub projection: ProjectionRef,
+    #[serde(default)]
+    pub delivery: Option<domain::projection::LensDelivery>,
     pub run_id: Uuid,
     pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
+}
+
+impl LensRepresentation {
+    /// Current means current for the declared delivered coverage, not omitted pixels.
+    pub fn is_current_for(
+        &self,
+        source: &ProjectionRef,
+        delivery: Option<&domain::projection::LensDelivery>,
+        prompt_revision: u32,
+    ) -> bool {
+        if self.prompt_execution_revision != prompt_revision {
+            return false;
+        }
+        match (self.delivery.as_ref(), delivery) {
+            (Some(previous), Some(latest)) => {
+                previous.source_projection == self.projection
+                    && &latest.source_projection == source
+                    && previous.projection.digest == latest.projection.digest
+                    && previous.coverage == latest.coverage
+                    && latest.coverage.mode != domain::projection::LensDeliveryMode::Unavailable
+            }
+            // Persisted representations predating delivery provenance retain their
+            // original exact-source comparison only while both sides lack it.
+            (None, None) => &self.projection == source,
+            (Some(_), None) | (None, Some(_)) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -631,6 +706,8 @@ pub struct LensState {
     #[serde(default)]
     pub projection: Option<ProjectionRef>,
     #[serde(default)]
+    pub delivery: Option<domain::projection::LensDelivery>,
+    #[serde(default)]
     pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
     #[serde(default)]
     pub representation: Option<LensRepresentation>,
@@ -662,6 +739,7 @@ impl Default for LensState {
             context: None,
             input: None,
             projection: None,
+            delivery: None,
             output_blocks: Vec::new().into(),
             representation: None,
             response_history: Default::default(),
@@ -697,6 +775,70 @@ impl AppSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn representation_currentness_requires_matching_delivery_and_retains_legacy_exact_source() {
+        use domain::projection::{
+            LensDelivery, LensDeliveryCoverage, LensDeliveryMode, LensSourceDelivery,
+        };
+        let projection = |revision, digit: char| {
+            ProjectionRef::new(
+                std::num::NonZeroU64::new(revision).unwrap(),
+                serde_json::from_str(&format!("\"{}\"", digit.to_string().repeat(64))).unwrap(),
+            )
+        };
+        let source = projection(1, 'a');
+        let newer_source = projection(2, 'b');
+        let delivered = projection(1, 'c');
+        let complete = LensDeliveryCoverage {
+            mode: LensDeliveryMode::Complete,
+            sources: vec![LensSourceDelivery {
+                source_id: "source-0".into(),
+                mode: LensDeliveryMode::Complete,
+                omitted_media: Vec::new(),
+            }],
+        };
+        let previous = LensDelivery {
+            source_projection: source.clone(),
+            projection: delivered.clone(),
+            coverage: complete,
+        };
+        let mut representation = LensRepresentation {
+            prompt_execution_revision: 1,
+            representation_id: Uuid::from_u128(1),
+            context_id: Uuid::from_u128(2),
+            context_revision: 1,
+            projection: source.clone(),
+            delivery: Some(previous.clone()),
+            run_id: Uuid::from_u128(3),
+            output_blocks: Default::default(),
+        };
+        assert!(representation.is_current_for(&source, Some(&previous), 1));
+        assert!(!representation.is_current_for(&source, Some(&previous), 2));
+
+        let mut latest = previous.clone();
+        latest.projection = projection(1, 'd');
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+        latest = previous.clone();
+        latest.coverage.mode = LensDeliveryMode::Unavailable;
+        latest.coverage.sources[0].mode = LensDeliveryMode::Unavailable;
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+        latest = previous.clone();
+        latest.coverage.sources[0].source_id = "source-1".into();
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+
+        latest = previous.clone();
+        latest.source_projection = newer_source.clone();
+        latest.projection = projection(2, 'c');
+        assert!(representation.is_current_for(&newer_source, Some(&latest), 1));
+        assert!(!representation.is_current_for(&source, Some(&latest), 1));
+        assert!(!representation.is_current_for(&source, None, 1));
+
+        representation.delivery = None;
+        assert!(representation.is_current_for(&source, None, 1));
+        assert!(!representation.is_current_for(&newer_source, None, 1));
+        assert!(!representation.is_current_for(&source, Some(&previous), 1));
+    }
 
     #[test]
     fn existing_settings_without_recoverable_prompts_do_not_receive_defaults() {
@@ -1004,11 +1146,90 @@ mod tests {
     }
 
     #[test]
+    fn projection_layout_defaults_and_wire_are_connection_owned() {
+        let mut config = AppConfig::new("/fixture".into());
+        for agent in AgentKind::MANAGED {
+            config.agent = agent;
+            assert_eq!(config.projection_layout(), ProjectionLayout::Compact);
+        }
+        for profile in config.external_agents.clone() {
+            config.agent = AgentKind::External(profile.id);
+            let expected = if profile.id == ExternalAgentProfile::grok_preset().id {
+                ProjectionLayout::Structured
+            } else {
+                ProjectionLayout::Compact
+            };
+            assert_eq!(config.projection_layout(), expected);
+            let wire = serde_json::to_value(&profile).unwrap();
+            assert_eq!(
+                wire.get("projection_layout").is_some(),
+                expected == ProjectionLayout::Structured
+            );
+            assert_eq!(
+                serde_json::from_value::<ExternalAgentProfile>(wire.clone()).unwrap(),
+                profile
+            );
+            let mut explicit = wire;
+            explicit["projection_layout"] = serde_json::json!("compact");
+            let compact = serde_json::from_value::<ExternalAgentProfile>(explicit.clone()).unwrap();
+            assert_eq!(compact.projection_layout, ProjectionLayout::Compact);
+            assert!(serde_json::to_value(compact)
+                .unwrap()
+                .get("projection_layout")
+                .is_none());
+            explicit["projection_layout"] = serde_json::json!("automatic");
+            assert!(serde_json::from_value::<ExternalAgentProfile>(explicit).is_err());
+        }
+        config.agent = AgentKind::External(ExternalAgentProfile::grok_preset().id);
+        let mut legacy = serde_json::to_value(&config).unwrap();
+        for profile in legacy["external_agents"].as_array_mut().unwrap() {
+            profile.as_object_mut().unwrap().remove("projection_layout");
+        }
+        let decoded =
+            AppConfig::decode_settings(&serde_json::to_vec(&legacy).unwrap(), "/fixture".into())
+                .unwrap();
+        assert_eq!(decoded.projection_layout(), ProjectionLayout::Compact);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), legacy);
+        let mut reset = decoded;
+        reset.reset_external_agents();
+        reset.agent = config.agent;
+        assert_eq!(reset.projection_layout(), ProjectionLayout::Structured);
+    }
+
+    #[test]
+    fn projection_layout_changes_execution_identity_without_name_inference() {
+        let mut config = AppConfig::new("/fixture".into());
+        let grok = ExternalAgentProfile::grok_preset();
+        config.agent = AgentKind::External(grok.id);
+        let mut changed = config.clone();
+        let profile = changed
+            .external_agents
+            .iter_mut()
+            .find(|p| p.id == grok.id)
+            .unwrap();
+        profile.name = "Renamed unrelated Agent".into();
+        assert!(config.same_execution_config(&changed));
+        assert!(config.same_active_session_config(&changed));
+        assert_eq!(changed.projection_layout(), ProjectionLayout::Structured);
+        changed
+            .external_agents
+            .iter_mut()
+            .find(|p| p.id == grok.id)
+            .unwrap()
+            .projection_layout = ProjectionLayout::Compact;
+        assert!(!config.same_agent_execution(&changed, config.agent));
+        assert!(!config.same_execution_config(&changed));
+        assert!(!config.same_active_session_config(&changed));
+        assert_eq!(changed.projection_layout(), ProjectionLayout::Compact);
+    }
+
+    #[test]
     fn external_executable_is_part_of_execution_identity_and_legacy_defaults() {
         let mut config = AppConfig::new("/fixture".into());
         config.external_agents.clear();
         let previous = config.clone();
         config.external_agents.push(ExternalAgentProfile {
+            projection_layout: Default::default(),
             id: Uuid::from_u128(1),
             name: "Custom".into(),
             command: "/user/agent".into(),
@@ -1034,6 +1255,7 @@ mod tests {
         );
         let id = Uuid::from_u128(1);
         let profile = ExternalAgentProfile {
+            projection_layout: Default::default(),
             id,
             name: "Custom".into(),
             command: "/bin/agent".into(),
@@ -1095,7 +1317,14 @@ mod tests {
         assert_eq!(copilot.name, "GitHub Copilot");
         assert_eq!(copilot.command, PathBuf::from("copilot"));
         assert_eq!(copilot.args, ["--acp", "--stdio"]);
-        for profile in [goose, copilot] {
+        let grok = ExternalAgentProfile::grok_preset();
+        assert_eq!(grok.id.to_string(), "09ebcfe5-a77e-4e6e-832f-f5e87f0a1310");
+        assert_ne!(grok.id, goose.id);
+        assert_ne!(grok.id, copilot.id);
+        assert_eq!(grok.name, "Grok Build");
+        assert_eq!(grok.command, PathBuf::from("grok"));
+        assert_eq!(grok.args, ["agent", "stdio"]);
+        for profile in [goose, copilot, grok] {
             profile.validate().unwrap();
         }
     }
@@ -1136,6 +1365,7 @@ mod tests {
             vec![
                 ExternalAgentProfile::copilot_preset(),
                 ExternalAgentProfile::goose_preset(),
+                ExternalAgentProfile::grok_preset(),
             ]
         );
     }
@@ -1148,6 +1378,7 @@ mod tests {
             vec![
                 ExternalAgentProfile::copilot_preset(),
                 ExternalAgentProfile::goose_preset(),
+                ExternalAgentProfile::grok_preset(),
             ]
         );
         for marker in [None, Some(0), Some(1), Some(99)] {

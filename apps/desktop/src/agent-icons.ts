@@ -2,10 +2,11 @@ import catalogJson from "../agent-icons/catalog.json?raw";
 import claude from "@fortawesome/fontawesome-free/svgs/brands/claude.svg";
 import openai from "@fortawesome/fontawesome-free/svgs/brands/openai.svg";
 import copilot from "@fortawesome/fontawesome-free/svgs/brands/copilot.svg";
+import xTwitter from "@fortawesome/fontawesome-free/svgs/brands/x-twitter.svg";
 import robot from "@fortawesome/fontawesome-free/svgs/solid/robot.svg";
 import google from "@fortawesome/fontawesome-free/svgs/brands/google.svg";
 
-const icons = { claude, openai, copilot, robot, google };
+const icons = { claude, openai, copilot, robot, google, "x-twitter": xTwitter };
 type Icon = keyof typeof icons;
 const catalog = JSON.parse(catalogJson) as {
   assets: Record<string, string>;

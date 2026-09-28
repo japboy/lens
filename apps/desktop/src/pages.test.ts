@@ -726,9 +726,16 @@ describe("Lens rich Agent output", () => {
 
     tabs[3]?.click();
     await overlayView?.updateComplete;
-    expect(overlayRoot?.querySelector("#diagnostics-panel .empty-state")?.textContent).toContain(
-      "No extraction diagnostics are available.",
-    );
+    await vi.waitFor(async () => {
+      const diagnostics = overlayRoot?.querySelector<
+        HTMLElement & { updateComplete: Promise<boolean> }
+      >("lens-extraction-diagnostics");
+      expect(diagnostics).not.toBeNull();
+      await diagnostics?.updateComplete;
+      expect(overlayRoot?.querySelector("#diagnostics-panel .empty-state")?.textContent).toContain(
+        "No extraction diagnostics are available.",
+      );
+    });
     expect(overlayRoot?.querySelector("#source-panel")).toBeNull();
     expectSelectedPanel(3);
 
@@ -788,7 +795,11 @@ describe("Lens rich Agent output", () => {
       const page = await createPage("overlay");
       const root = viewRoot(page, "lens-overlay-view")!;
       await vi.waitFor(() => expect(root.textContent).toContain("Retry with Agent"));
-      expect(root.querySelector(".quality")?.textContent).toBe("full");
+      expect(root.querySelector(".quality")?.textContent?.replace(/\s+/g, " ").trim()).toBe(
+        "FULL UNKNOWN",
+      );
+      expect(root.querySelector(".quality .fa-camera")?.getAttribute("aria-hidden")).toBe("true");
+      expect(root.querySelector(".quality .fa-robot")?.getAttribute("aria-hidden")).toBe("true");
       const { invoke } = await import("@tauri-apps/api/core");
       expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "get_lens_source")).toBe(
         false,
@@ -822,7 +833,7 @@ describe("Lens rich Agent output", () => {
     }
   });
 
-  it("previews only ordered Agent input images without adding payloads to Source JSON", async () => {
+  it("labels captured images without claiming they were sent to the Agent", async () => {
     const element = await createPage("overlay");
     await vi.waitFor(() => {
       expect(
@@ -849,6 +860,8 @@ describe("Lens rich Agent output", () => {
     );
     const source = overlayRoot?.querySelector(".source-content code")?.textContent;
     expect(preview?.getAttribute("src")).toBe(snapshot.lens.input?.media[0]?.uri);
+    expect(preview?.getAttribute("alt")).toBe("AX image region captured for node node-000001");
+    expect(overlayRoot?.querySelector("#input-media-heading")?.textContent).toBe("Captured images");
     expect(preview?.getAttribute("src")).not.toContain("data:");
     expect(thumbnails).toHaveLength(2);
     expect(thumbnails[0]?.getAttribute("aria-current")).toBe("true");
@@ -868,6 +881,11 @@ describe("Lens rich Agent output", () => {
         ?.querySelector<HTMLImageElement>(".input-media-preview figure > img")
         ?.getAttribute("src"),
     ).toBe(snapshot.lens.input?.media[1]?.uri);
+    expect(
+      overlayRoot
+        ?.querySelector<HTMLImageElement>(".input-media-preview figure > img")
+        ?.getAttribute("alt"),
+    ).toBe("AX image region captured for node node-000002");
     const metadata = overlayRoot
       ?.querySelector(".input-media-metadata")
       ?.textContent?.replace(/\s+/g, " ");
@@ -1825,6 +1843,7 @@ it.each(["cancel", "success", "failure"] as const)(
               args: ["--acp", "--stdio"],
             },
             { id: "preset-goose", name: "Goose", command: "goose", args: ["acp"] },
+            { id: "preset-grok", name: "Grok Build", command: "grok", args: ["agent", "stdio"] },
           ],
         };
         snapshot.revision++;
@@ -1874,7 +1893,14 @@ it.each(["cancel", "success", "failure"] as const)(
           ].map((option) => option.textContent?.trim()),
         ).toEqual(
           outcome === "success"
-            ? ["ChatGPT Codex", "Claude Code", "GitHub Copilot", "Google Antigravity", "Goose"]
+            ? [
+                "ChatGPT Codex",
+                "Claude Code",
+                "GitHub Copilot",
+                "Google Antigravity",
+                "Goose",
+                "Grok Build",
+              ]
             : ["ChatGPT Codex", "Claude Code", "Google Antigravity", "New preset (unsaved)"],
         );
       });

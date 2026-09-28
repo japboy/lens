@@ -173,3 +173,26 @@ impl<R: tauri::Runtime> crate::agent::AgentHost<R> for UnusedAgent {
         panic!("unexpected Agent connection")
     }
 }
+
+/// Synthetic immutable coverage for execution-invalidation regression tests.
+pub(crate) fn delivery() -> usecase::live_sync::LensDelivery {
+    let projection = usecase::live_sync::ProjectionRef::new(
+        std::num::NonZeroU64::new(1).unwrap(),
+        "a".repeat(64).parse().unwrap(),
+    );
+    usecase::live_sync::LensDelivery {
+        source_projection: projection.clone(),
+        projection,
+        coverage: usecase::live_sync::LensDeliveryCoverage {
+            mode: usecase::live_sync::LensDeliveryMode::TextOnlyPartial,
+            sources: vec![usecase::live_sync::LensSourceDelivery {
+                source_id: "source-0".into(),
+                mode: usecase::live_sync::LensDeliveryMode::TextOnlyPartial,
+                omitted_media: vec![usecase::live_sync::LensDeliveryOmission {
+                    id: "source-0/media-0".into(),
+                    reason: usecase::live_sync::LensDeliveryOmissionReason::ImageNotSupported,
+                }],
+            }],
+        },
+    }
+}

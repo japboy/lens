@@ -392,6 +392,45 @@ it("sends the raw command only on Save and Verify and preserves arguments when b
   });
   expect(element.profiles[0]!.command).toBe("goose");
 });
+it("keeps preset transport metadata outside editable saves across snapshot refresh and Browse", async () => {
+  const { element, intents } = await mount();
+  element.profiles = [
+    {
+      id: "profile-1",
+      name: "Grok Build",
+      command: "grok",
+      args: ["agent", "stdio"],
+      projection_layout: "structured",
+    },
+  ];
+  await element.updateComplete;
+  const saved = structuredClone(element.profiles);
+  await edit(element, "grok agent --example stdio");
+  await choose(element, "claude");
+  await choose(element, "profile-1");
+  element.profiles = structuredClone(saved);
+  await element.updateComplete;
+  const revision = browse(element, intents);
+  expect(element.acceptExternalExecutable("/chosen/grok", revision)).toBe(true);
+  await element.updateComplete;
+  const name = element.querySelector<HTMLInputElement>('[aria-label="Connection name"]')!;
+  name.value = "My Grok";
+  name.dispatchEvent(new Event("input"));
+  await element.updateComplete;
+  button(element, "Save and Verify").click();
+  expect(intents.at(-1)).toEqual({
+    type: "save-external-agent",
+    profile: {
+      id: "profile-1",
+      name: "My Grok",
+      command: "/chosen/grok",
+      arguments: "agent --example stdio",
+    },
+  });
+  expect(element.profiles).toEqual(saved);
+  expect(element.querySelectorAll("lens-select")).toHaveLength(1);
+  expect(element.textContent).not.toMatch(/projection_layout|structured|compact/i);
+});
 it("keeps incomplete arguments local while choosing a new executable", async () => {
   const { element, intents } = await mount();
   await edit(element, "goose 'incomplete");
@@ -496,8 +535,8 @@ it("blocks saving a legacy multiline argument instead of silently stripping it",
   expect(button(element, "Save and Verify").disabled).toBe(true);
 });
 
-it("renders both first-run external presets with managed agents in the single selector", async () => {
-  // Matches ExternalAgentProfile::{goose_preset,copilot_preset} used by AppConfig::new.
+it("renders all first-run external presets with managed agents in the single selector", async () => {
+  // Matches ExternalAgentProfile::bundled_presets used by AppConfig::new.
   const presets = [
     {
       id: "a14d73cb-951c-48ed-a305-3829750c88da",
@@ -506,6 +545,12 @@ it("renders both first-run external presets with managed agents in the single se
       args: ["--acp", "--stdio"],
     },
     { id: "6b57315e-9c13-4e4a-bf4c-e6bc33b10b21", name: "Goose", command: "goose", args: ["acp"] },
+    {
+      id: "09ebcfe5-a77e-4e6e-832f-f5e87f0a1310",
+      name: "Grok Build",
+      command: "grok",
+      args: ["agent", "stdio"],
+    },
   ];
   const element = new LensAgentSettings();
   element.selection = { stage: "unselected", supports_logout: false, auth_methods: [] };
@@ -525,6 +570,7 @@ it("renders both first-run external presets with managed agents in the single se
     "GitHub Copilot",
     "Google Antigravity",
     "Goose",
+    "Grok Build",
   ]);
   expect(intents).toEqual([]);
   await choose(element, presets[0]!.id);

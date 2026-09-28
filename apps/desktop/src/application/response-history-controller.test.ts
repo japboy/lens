@@ -434,3 +434,31 @@ describe("restored session response history", () => {
     expect(port.getResponseBlock).not.toHaveBeenCalled();
   });
 });
+
+it("preserves immutable delivery coverage through live and replay manifests without fetching prompt bodies", () => {
+  const { controller, port } = setup();
+  const delivery = {
+    mode: "text_only_partial" as const,
+    sources: [
+      {
+        source_id: "source-0",
+        mode: "text_only_partial" as const,
+        omitted_media: [{ id: "image-0", reason: "image_not_supported" as const }],
+      },
+    ],
+  };
+  const state = lens();
+  state.response_history!.responses[0]!.delivery = delivery;
+  controller.synchronize(state);
+  expect(controller.presentation?.responses[0]?.delivery).toEqual(delivery);
+  controller.synchronizeHistory({
+    revision: 1,
+    generation: "replay",
+    phase: "ready",
+    interpretation: {
+      responses: [{ response_id: "old-response", sequence: 1, delivery, blocks: [] }],
+    },
+  });
+  expect(controller.presentation?.responses[0]?.delivery).toEqual(delivery);
+  expect(port.getResponseBlock).not.toHaveBeenCalled();
+});
