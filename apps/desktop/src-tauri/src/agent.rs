@@ -3474,6 +3474,7 @@ mod tests {
             source_projection: projection.clone(),
             projection: projection.clone(),
             coverage: crate::live_sync::LensDeliveryCoverage {
+                projection_has_loss: Some(false),
                 mode: LensDeliveryMode::Complete,
                 sources: vec![crate::live_sync::LensSourceDelivery {
                     source_id: "source-0".into(),

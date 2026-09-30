@@ -1102,6 +1102,16 @@ pub struct ProjectionOmission {
 }
 
 impl ProjectionOmission {
+    /// Additional loss relative to acquired source; intentional chrome exclusion is not loss.
+    pub fn has_loss(&self) -> bool {
+        match self.reason {
+            ProjectionOmissionReason::ApplicationChrome => false,
+            ProjectionOmissionReason::TokenBudget
+            | ProjectionOmissionReason::ResourceBudget
+            | ProjectionOmissionReason::UnsupportedSemantics => true,
+        }
+    }
+
     fn document_wide(reason: ProjectionOmissionReason, detail: impl Into<String>) -> Self {
         Self {
             reason,

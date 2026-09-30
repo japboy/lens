@@ -436,6 +436,8 @@ export interface ProjectionRef {
 export type LensDeliveryMode = "complete" | "text_only_partial" | "unavailable";
 export interface LensDeliveryCoverage {
   mode: LensDeliveryMode;
+  /** Additional projection loss at preparation time; absent in legacy receipts. */
+  projection_has_loss?: boolean;
   sources: Array<{
     source_id: string;
     mode: LensDeliveryMode;

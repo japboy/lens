@@ -1962,7 +1962,6 @@ export class LensOverlayView extends LitElement {
         ? "unknown"
         : "pending";
     const inputStatus = inputCoverage(
-      sourceQuality,
       model?.sourceMetadata?.has_input,
       model?.sourceMetadata?.projection_has_loss,
       currentDelivery,
@@ -2144,7 +2143,7 @@ export class LensOverlayView extends LitElement {
                     type="button"
                     aria-label=${`Show Diagnostics tab: prepared Agent input coverage ${inputStatus}; submission may still be pending`}
                     aria-controls="diagnostics-panel"
-                    title="Prepared Agent input — Open Diagnostics; submission may still be pending"
+                    title="Prepared Agent input relative to captured information — Open Diagnostics; submission may still be pending"
                     ?disabled=${!this.active}
                     @click=${() => this.activateCoverageTab("diagnostics")}
                   >

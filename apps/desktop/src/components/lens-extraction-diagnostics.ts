@@ -183,7 +183,10 @@ export class LensExtractionDiagnostics extends LitElement {
         ${
           this.delivery
             ? html`
-                <p>Prepared input coverage for the current projection.</p>
+                <p>
+                  Prepared input completeness relative to captured information. Capture quality is
+                  shown separately; preparation does not confirm submission.
+                </p>
                 ${
                   this.delivery.mode === "unavailable"
                     ? html`<p>
@@ -193,7 +196,7 @@ export class LensExtractionDiagnostics extends LitElement {
                     : nothing
                 }
                 ${this.metricList([
-                  ["Overall input coverage", this.inputStatus.toUpperCase()],
+                  ["Prepared input coverage", this.inputStatus.toUpperCase()],
                   [
                     "Projection omissions",
                     this.projectionHasLoss === undefined

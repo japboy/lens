@@ -240,6 +240,40 @@ mod tests {
     }
 
     #[test]
+    fn receipts_keep_original_projection_loss_across_later_turns_and_serialization() {
+        use crate::live_sync::{LensDelivery, LensDeliveryCoverage, LensDeliveryMode};
+        let mut history = LensResponseHistory::default();
+        for (run, loss) in [(1, Some(true)), (2, Some(false)), (3, None)] {
+            let mut value = response(run, "answer");
+            value.delivery = Some(LensDelivery {
+                source_projection: value.projection.clone(),
+                projection: value.projection.clone(),
+                coverage: LensDeliveryCoverage {
+                    mode: LensDeliveryMode::Complete,
+                    projection_has_loss: loss,
+                    sources: Vec::new(),
+                },
+            });
+            history.append(value, Some("session".into())).unwrap();
+        }
+        let wire: LensResponseHistory =
+            serde_json::from_str(&serde_json::to_string(&history).unwrap()).unwrap();
+        let losses: Vec<_> = wire
+            .responses
+            .iter()
+            .map(|response| {
+                response
+                    .delivery
+                    .as_ref()
+                    .unwrap()
+                    .coverage
+                    .projection_has_loss
+            })
+            .collect();
+        assert_eq!(losses, [Some(true), Some(false), None]);
+    }
+
+    #[test]
     fn ordered_history_shares_bodies_and_serializes_only_descriptors() {
         let mut history = LensResponseHistory::default();
         let first = response(1, "private-first-markdown");

@@ -442,7 +442,11 @@ impl LensAgentProjection {
             LensDeliveryMode::TextOnlyPartial
         };
         payload.media.clear();
-        payload.delivery = Some(LensDeliveryCoverage { mode, sources });
+        payload.delivery = Some(LensDeliveryCoverage {
+            mode,
+            sources,
+            projection_has_loss: None,
+        });
         let canonical = CanonicalProjection::from_serializable(&payload)
             .map_err(LensAgentProjectionError::Canonicalization)?;
         Ok(Self {
@@ -453,12 +457,13 @@ impl LensAgentProjection {
     }
 
     pub fn delivery(&self, source_projection: ProjectionRef) -> LensDelivery {
-        let coverage = self
+        let mut coverage = self
             .payload
             .delivery
             .clone()
             .unwrap_or_else(|| LensDeliveryCoverage {
                 mode: LensDeliveryMode::Complete,
+                projection_has_loss: None,
                 sources: self
                     .payload
                     .sources
@@ -470,6 +475,12 @@ impl LensAgentProjection {
                     })
                     .collect(),
             });
+        coverage.projection_has_loss = Some(
+            self.payload
+                .sources
+                .iter()
+                .any(|source| source.omissions.iter().any(ProjectionOmission::has_loss)),
+        );
         LensDelivery {
             projection: self.projection_ref(source_projection.revision),
             source_projection,
@@ -531,6 +542,9 @@ pub struct LensSourceDelivery {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LensDeliveryCoverage {
     pub mode: LensDeliveryMode,
+    /// Immutable additional projection loss. Legacy records lack this evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_has_loss: Option<bool>,
     pub sources: Vec<LensSourceDelivery>,
 }
 
@@ -1084,6 +1098,54 @@ mod tests {
             LensAgentProjection::from_input(&input, &targets, &media),
             Err(LensAgentProjectionError::MediaMetadataMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn preparation_receipt_keeps_capture_independent_projection_loss_without_changing_bytes() {
+        use crate::lens::ProjectionOmissionReason;
+        for (reason, expected) in [
+            (None, false),
+            (Some(ProjectionOmissionReason::ApplicationChrome), false),
+            (Some(ProjectionOmissionReason::TokenBudget), true),
+            (Some(ProjectionOmissionReason::ResourceBudget), true),
+            (Some(ProjectionOmissionReason::UnsupportedSemantics), true),
+        ] {
+            let (mut input, targets, media) = agent_projection_fixture(
+                Uuid::from_u128(1),
+                1,
+                1,
+                7,
+                (0.0, 0.0),
+                "Revenue rose",
+                "aGVsbG8=",
+            );
+            input.sources[0].quality = ExtractionQuality::Partial;
+            if let Some(reason) = reason {
+                input.sources[0].omissions.push(ProjectionOmission {
+                    reason,
+                    omitted_node_count: 1,
+                    first_order: None,
+                    last_order: None,
+                    detail: None,
+                });
+            }
+            let source = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
+            for image in [true, false] {
+                let prepared = source.for_image_support(image).unwrap();
+                let before = prepared.bytes().to_vec();
+                let receipt = prepared.delivery(source.projection_ref(NonZeroU64::new(1).unwrap()));
+                assert_eq!(receipt.coverage.projection_has_loss, Some(expected));
+                assert_eq!(prepared.bytes(), before);
+                let canonical: serde_json::Value = serde_json::from_str(prepared.json()).unwrap();
+                assert!(canonical["delivery"].get("projection_has_loss").is_none());
+                let roundtrip: LensDelivery =
+                    serde_json::from_value(serde_json::to_value(&receipt).unwrap()).unwrap();
+                assert_eq!(roundtrip, receipt);
+            }
+        }
+        let legacy: LensDeliveryCoverage =
+            serde_json::from_str(r#"{"mode":"complete","sources":[]}"#).unwrap();
+        assert_eq!(legacy.projection_has_loss, None);
     }
 
     #[test]
