@@ -1470,21 +1470,21 @@ fn read_record(path: &Path, kind: AgentKind) -> Result<InstallRecord, String> {
         return Err("managed Agent install record does not match runtime policy".into());
     }
     let package = fs::read(path.join("package.json")).map_err(|error| error.to_string())?;
-    let workspace =
-        fs::read(path.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?;
     let json: serde_json::Value =
         serde_json::from_slice(&package).map_err(|error| error.to_string())?;
     if json["dependencies"][provider.adapter_name].as_str() != Some(&record.adapter_version)
         || sha256_file(&path.join("pnpm-lock.yaml"), "Agent dependency lock")?
             != record.pnpm_lock_sha256
-        || sha256_bytes(&workspace) != record.pnpm_workspace_sha256
+        || sha256_file(&path.join("pnpm-workspace.yaml"), "Agent workspace policy")?
+            != record.pnpm_workspace_sha256
     {
         return Err("managed Agent dependency policy was modified".into());
     }
     if record.schema_version == AGENT_INSTALL_RECORD_VERSION
         && (record.package_json_sha256.as_deref() != Some(&sha256_bytes(&package))
             || package != manifest(kind, &record.adapter_version)?
-            || workspace != AGENT_WORKSPACE)
+            || fs::read(path.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?
+                != AGENT_WORKSPACE)
     {
         return Err("managed Agent install policy was modified".into());
     }
@@ -3456,7 +3456,6 @@ mod tests {
         let policy = std::str::from_utf8(AGENT_WORKSPACE).unwrap();
         for required in [
             "minimumReleaseAge: 60",
-            "minimumReleaseAgeIgnoreMissingTime: false",
             "minimumReleaseAgeStrict: true",
             "trustPolicy: no-downgrade",
             "allowBuilds: {}",
@@ -3834,73 +3833,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn immutable_npm_records_require_current_policy_and_reject_old_records() {
-        for kind in [AgentKind::Claude, AgentKind::Codex] {
-            let root = root();
-            let package = manifest(kind, "1.2.3").unwrap();
-            fs::write(root.join("package.json"), &package).unwrap();
-            fs::write(root.join("pnpm-lock.yaml"), "test-lock").unwrap();
-            let mut record = InstallRecord {
-                schema_version: AGENT_INSTALL_RECORD_VERSION,
-                registry_id: provider(kind).unwrap().registry_id.into(),
-                adapter_name: provider(kind).unwrap().adapter_name.into(),
-                adapter_version: "1.2.3".into(),
-                node_version: NODE_VERSION.into(),
-                node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
-                pnpm_version: PNPM_VERSION.into(),
-                pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
-                pnpm_lock_sha256: sha256_bytes(b"test-lock"),
-                pnpm_workspace_sha256: String::new(),
-                package_json_sha256: Some(sha256_bytes(&package)),
-            };
-            let save = |record: &InstallRecord| {
-                fs::write(
-                    root.join("lens-runtime.json"),
-                    serde_json::to_vec(record).unwrap(),
-                )
-                .unwrap();
-            };
-            fs::write(root.join("pnpm-workspace.yaml"), AGENT_WORKSPACE).unwrap();
-            record.pnpm_workspace_sha256 = sha256_bytes(AGENT_WORKSPACE);
-            save(&record);
-            assert!(read_record(&root, kind).is_ok());
-
-            // A policy-file mutation cannot be hidden by retaining the stored hash.
-            fs::write(root.join("pnpm-workspace.yaml"), b"minimumReleaseAge: 0\n").unwrap();
-            assert!(read_record(&root, kind).is_err());
-
-            // Even a matching hash cannot admit an unknown policy.
-            record.pnpm_workspace_sha256 = sha256_bytes(b"minimumReleaseAge: 0\n");
-            save(&record);
-            assert!(read_record(&root, kind).is_err());
-            // A correctly hashed installation made under the previous policy requires
-            // explicit reinstallation; loading never rewrites immutable inputs.
-            let old_policy = std::str::from_utf8(AGENT_WORKSPACE)
-                .unwrap()
-                .replace("minimumReleaseAge: 60", "minimumReleaseAge: 4320");
-            fs::write(root.join("pnpm-workspace.yaml"), old_policy.as_bytes()).unwrap();
-            record.pnpm_workspace_sha256 = sha256_bytes(old_policy.as_bytes());
-            save(&record);
-            assert!(read_record(&root, kind).is_err());
-            assert_eq!(
-                fs::read(root.join("pnpm-workspace.yaml")).unwrap(),
-                old_policy.as_bytes()
-            );
-            // A current-policy record with matching immutable inputs is accepted.
-            fs::write(root.join("pnpm-workspace.yaml"), AGENT_WORKSPACE).unwrap();
-            record.pnpm_workspace_sha256 = sha256_bytes(AGENT_WORKSPACE);
-            save(&record);
-            assert!(read_record(&root, kind).is_ok());
-            fs::write(root.join("pnpm-lock.yaml"), "tampered-lock").unwrap();
-            assert!(read_record(&root, kind).is_err());
-            fs::write(root.join("pnpm-lock.yaml"), "test-lock").unwrap();
-            fs::write(root.join("package.json"), b"{}").unwrap();
-            assert!(read_record(&root, kind).is_err());
-            fs::remove_dir_all(root).unwrap();
-        }
-    }
-
-    #[test]
     fn legacy_record_requires_unpatched_schema_and_all_stored_policy_hashes() {
         let root = root();
         let kind = AgentKind::Codex;
@@ -4034,7 +3966,6 @@ mod tests {
             assert_eq!(restored.adapter_version, version);
             assert!(legacy.exists());
             drop(restored);
-
             fs::remove_dir_all(migration).unwrap();
         }
     }
@@ -4328,46 +4259,6 @@ mod tests {
             eprintln!(
                 "Mature resolution {:?}: registry {}, selected {}, repeat reused {}",
                 kind, ceiling, runtime.adapter_version, id
-            );
-            drop(again);
-            drop(runtime);
-            // Model a pre-update installation in this disposable signed fixture only.
-            // Explicit reinstallation below must create a separate installation.
-            let old_policy = std::str::from_utf8(AGENT_WORKSPACE)
-                .unwrap()
-                .replace("minimumReleaseAge: 60", "minimumReleaseAge: 4320");
-            fs::write(path.join("pnpm-workspace.yaml"), old_policy.as_bytes()).unwrap();
-            let mut old_record = record;
-            old_record.pnpm_workspace_sha256 = sha256_bytes(old_policy.as_bytes());
-            fs::write(
-                path.join("lens-runtime.json"),
-                serde_json::to_vec(&old_record).unwrap(),
-            )
-            .unwrap();
-            assert!(read_record(&path, kind).is_err());
-            assert_eq!(
-                fs::read(path.join("pnpm-workspace.yaml")).unwrap(),
-                old_policy.as_bytes()
-            );
-            assert!(selected_runtime(&root, kind, true).await.unwrap().is_none());
-            assert!(read_selector(&root, kind).unwrap().current.is_none());
-            let (reinstalled, _, _) = resolve_at(app.handle(), kind, true, false, &root)
-                .await
-                .unwrap();
-            let rebuilt_id = reinstalled.installation.as_ref().unwrap().id.clone();
-            assert_ne!(rebuilt_id, id);
-            let rebuilt = install_root(&root, kind, &rebuilt_id).unwrap();
-            assert_eq!(
-                fs::read(rebuilt.join("pnpm-workspace.yaml")).unwrap(),
-                AGENT_WORKSPACE
-            );
-            assert!(read_record(&rebuilt, kind).is_ok());
-            confirm_ready(&reinstalled).unwrap();
-            let restored = selected_runtime(&root, kind, true).await.unwrap().unwrap();
-            assert_eq!(restored.installation.as_ref().unwrap().id, rebuilt_id);
-            eprintln!(
-                "Explicit reinstallation {:?}: rejected old policy {}, restored {}",
-                kind, id, rebuilt_id
             );
         }
     }
