@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapter-output-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "axum",
  "hyper",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "adapter-platform-macos"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "cc",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "adapter-output-mcp",
  "adapter-platform-macos",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "pretty_assertions",
@@ -3166,7 +3166,7 @@ dependencies = [
 
 [[package]]
 name = "port-platform"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5243,7 +5243,7 @@ dependencies = [
 
 [[package]]
 name = "usecase"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-client-protocol-schema",
  "base64 0.22.1",
