@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.1](https://github.com/japboy/lens/compare/v0.8.0...v0.8.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **agents:** send publication control before observations ([#170](https://github.com/japboy/lens/issues/170)) ([e201e76](https://github.com/japboy/lens/commit/e201e763e5c367e676e38deaa25d090540ee3974))
+* **agents:** shorten adapter quarantine to one hour; after upgrading, reinstall Claude/Codex through Settings Install/Update if shown as not installed; retry if the first operation fails; existing Antigravity remains usable ([27bf3af](https://github.com/japboy/lens/commit/27bf3afb159665f8c5e0116c3d2d95261d3f5c0f))
+* **desktop:** decouple prepared input coverage ([#169](https://github.com/japboy/lens/issues/169)) ([9ee9862](https://github.com/japboy/lens/commit/9ee9862364faa9dc1ac3654506b1228ce5fb2e0e))
+* **runtime:** synchronize managed pnpm with development ([#171](https://github.com/japboy/lens/issues/171)) ([374df3a](https://github.com/japboy/lens/commit/374df3a0dfc9bceef0a710e0f05ab67e52017eca))
+
 ## [0.8.0](https://github.com/japboy/lens/compare/v0.7.1...v0.8.0) (2026-09-28)
 
 
