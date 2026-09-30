@@ -268,8 +268,9 @@ export class LensConversationBlock extends LitElement {
   @property({ attribute: false }) cache: ConversationRenderCache | undefined;
   @property({ attribute: false }) loadBlock: BlockLoader | undefined;
   @state() private prepared: PreparedConversationBlock | undefined;
-  @state() private error: string | undefined;
-  @state() private pending = false;
+  @state() private retrieval:
+    | { phase: "idle" | "pending" | "ready" }
+    | { phase: "failed"; error: string } = { phase: "idle" };
   private preparedIdentity: string | undefined;
   private preparedKey: string | undefined;
   private request:
@@ -278,7 +279,6 @@ export class LensConversationBlock extends LitElement {
         key: string;
         cache: ConversationRenderCache;
         loader: BlockLoader | undefined;
-        phase: "pending" | "ready" | "failed";
       }
     | undefined;
   private generation = 0;
@@ -294,10 +294,14 @@ export class LensConversationBlock extends LitElement {
     if (this.hasUpdated) this.requestUpdate("block", undefined);
   }
   disconnectedCallback(): void {
-    const failed = this.request?.phase === "failed" ? this.request : undefined;
+    const failed = this.retrieval.phase === "failed" ? this.retrieval : undefined;
+    const request = this.request;
     this.cancelPreparation();
     // Reopening the tab resumes interrupted work, but does not retry a known failure.
-    this.request = failed;
+    if (failed) {
+      this.request = request;
+      this.retrieval = failed;
+    }
     super.disconnectedCallback();
   }
   protected willUpdate(changed: PropertyValues<this>): void {
@@ -313,7 +317,7 @@ export class LensConversationBlock extends LitElement {
     this.prepare();
   }
   protected updated(): void {
-    this.setAttribute("aria-busy", String(this.pending));
+    this.setAttribute("aria-busy", String(this.retrieval.phase === "pending"));
   }
   private contentIdentity(): string | undefined {
     if (!this.block) return undefined;
@@ -325,7 +329,7 @@ export class LensConversationBlock extends LitElement {
     this.preparation?.abort();
     this.preparation = undefined;
     this.request = undefined;
-    this.pending = false;
+    this.retrieval = { phase: "idle" };
   }
   private prepare(retry = false): void {
     const identity = this.contentIdentity();
@@ -334,7 +338,6 @@ export class LensConversationBlock extends LitElement {
       this.prepared = undefined;
       this.preparedIdentity = identity;
       this.preparedKey = undefined;
-      this.error = undefined;
     }
     const block = this.block;
     const cache = this.cache;
@@ -351,30 +354,24 @@ export class LensConversationBlock extends LitElement {
       previous.cache === cache &&
       previous.loader === this.loadBlock;
     // Descriptor objects may be recreated without changing their content version.
-    if (sameRequest && (!retry || previous.phase !== "failed")) return;
+    if (sameRequest && (!retry || this.retrieval.phase !== "failed")) return;
     if (retry && !sameRequest) return;
     this.cancelPreparation();
-    this.error = undefined;
-    const request = {
-      identity,
-      key,
-      cache,
-      loader: this.loadBlock,
-      phase: "ready" as "pending" | "ready" | "failed",
-    };
+    const request = { identity, key, cache, loader: this.loadBlock };
     this.request = request;
     const cached = cache.peek(key);
     if (cached) {
       this.prepared = cached;
       this.preparedKey = key;
+    }
+    if (this.prepared && this.preparedKey === key) {
+      this.retrieval = { phase: "ready" };
       return;
     }
-    if (this.prepared && this.preparedKey === key) return;
     // Retain one displayed version of this cell while fetching its newer version.
     const generation = this.generation;
     this.preparation = new AbortController();
-    request.phase = "pending";
-    this.pending = true;
+    this.retrieval = { phase: "pending" };
     const isCurrent = () =>
       this.isConnected &&
       this.generation === generation &&
@@ -389,22 +386,19 @@ export class LensConversationBlock extends LitElement {
         if (!isCurrent()) return;
         this.prepared = value;
         this.preparedKey = key;
-        request.phase = "ready";
+        this.retrieval = { phase: "ready" };
       })
       .catch((error) => {
         if (!isCurrent()) return;
-        this.error = String(error);
-        request.phase = "failed";
-      })
-      .finally(() => {
-        if (isCurrent()) this.pending = false;
+        this.retrieval = { phase: "failed", error: String(error) };
       });
   }
   protected render() {
+    const error = this.retrieval.phase === "failed" ? this.retrieval.error : undefined;
     return html`${this.renderPrepared()}${
-      this.error
+      error
         ? html`<p role="alert">
-            ${this.error}
+            ${error}
             <button type="button" data-lens-button-role="normal" @click=${() => this.prepare(true)}>
               Retry
             </button>

@@ -73,15 +73,9 @@ export class ResponseHistoryController implements ReactiveController {
   private mediaBodies = new Map<string, LensOutputBlock>();
   private htmlContents = new Map<string, HtmlOutputContent>();
   private mediaErrors = new Map<string, string>();
-  private initialOutput:
+  private initialProjection:
     | {
-        runId: string;
-        blocks: readonly LensOutputBlock[];
-        byteLengths: readonly number[];
-      }
-    | undefined;
-  private initialAttempt:
-    | {
+        status: "admitted" | "oversized";
         runId: string;
         blocks: readonly LensOutputBlock[];
         byteLengths: readonly number[];
@@ -116,14 +110,13 @@ export class ResponseHistoryController implements ReactiveController {
     this.mediaBodies.clear();
     this.htmlContents.clear();
     this.mediaErrors.clear();
-    this.initialOutput = undefined;
-    this.initialAttempt = undefined;
+    this.initialProjection = undefined;
     this.provisionalBlocks.clear();
     this.provisionalBytes = 0;
   }
   synchronize(lens: LensState | undefined): void {
     const history = lens?.response_history;
-    const initial = lens?.operation_id === this.operation ? this.initialOutput : undefined;
+    const initial = lens?.operation_id === this.operation ? this.initialProjection : undefined;
     this.synchronizeSource(
       lens?.operation_id,
       history
@@ -142,13 +135,11 @@ export class ResponseHistoryController implements ReactiveController {
     if (!history.responses.length) {
       const runId = lens.agent?.run_id;
       if (lens.stage !== "transforming" || !runId) {
-        this.initialOutput = undefined;
-        this.initialAttempt = undefined;
+        this.initialProjection = undefined;
         return;
       }
-      if (this.initialAttempt?.runId === runId && this.initialAttempt.blocks === lens.output_blocks)
-        return;
-      const previous = this.initialAttempt?.runId === runId ? this.initialAttempt : undefined;
+      const previous = this.initialProjection?.runId === runId ? this.initialProjection : undefined;
+      if (previous?.blocks === lens.output_blocks) return;
       const byteLengths = lens.output_blocks.map((block, index) => {
         const old = previous?.blocks[index];
         return old &&
@@ -160,17 +151,21 @@ export class ResponseHistoryController implements ReactiveController {
           ? previous!.byteLengths[index]!
           : this.bodyBytes(block);
       });
-      this.initialAttempt = { runId, blocks: lens.output_blocks, byteLengths };
-      this.initialOutput =
-        byteLengths.reduce((total, bytes) => total + bytes, 0) <= RESPONSE_BODY_CACHE_BYTES
-          ? { runId, blocks: lens.output_blocks, byteLengths }
-          : undefined;
+      this.initialProjection = {
+        status:
+          byteLengths.reduce((total, bytes) => total + bytes, 0) <= RESPONSE_BODY_CACHE_BYTES
+            ? "admitted"
+            : "oversized",
+        runId,
+        blocks: lens.output_blocks,
+        byteLengths,
+      };
       return;
     }
-    this.initialOutput = undefined;
-    this.initialAttempt = undefined;
+    this.initialProjection = undefined;
     const first = history.responses[0];
-    if (!initial || first?.sequence !== 1 || first.run_id !== initial.runId) return;
+    if (initial?.status !== "admitted" || first?.sequence !== 1 || first.run_id !== initial.runId)
+      return;
     for (const descriptor of first.blocks) {
       const body = initial.blocks[descriptor.block_index];
       if (
