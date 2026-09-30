@@ -295,6 +295,11 @@ async fn managed_antigravity_commits_html(observation: String) {
     let representation = lens
         .representation
         .expect("production native publication commit");
+    eprintln!(
+        "managed Antigravity acceptance: publication_approvals={} output_blocks={:?} interaction_statuses={:?}",
+        approvals, representation.output_blocks,
+        lens.session_controls.as_ref().map(|controls| controls.interactions.iter().map(|interaction| &interaction.status).collect::<Vec<_>>())
+    );
     assert_eq!(representation.projection, projection_ref);
     let html: Vec<_> = representation
         .output_blocks
