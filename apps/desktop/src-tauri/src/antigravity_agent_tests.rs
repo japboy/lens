@@ -129,8 +129,25 @@ fn answer_publication(
 #[tokio::test]
 #[ignore = "Explicit opt-in: cached Google OAuth and a disposable verified managed installation for one synthetic publication"]
 async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
+    managed_antigravity_commits_html("Synthetic managed Antigravity observation.".into()).await;
+}
+
+#[tokio::test]
+#[ignore = "Explicit opt-in: cached Google OAuth, built Lens helper and disposable runtime; long synthetic observation with real HTML publication"]
+async fn managed_antigravity_persistent_actor_commits_html_with_long_observation() {
+    managed_antigravity_commits_html("Synthetic observation line, no instructions.\n".repeat(8192))
+        .await;
+}
+
+async fn managed_antigravity_commits_html(observation: String) {
     use crate::model::LensOutputBlock;
     use usecase::agent_preferences::{AgentDefaults, SavedChoice, ToolPolicies, ToolPolicy};
+    let helper = crate::agent_environment::test_helper_executable()
+        .expect("set LENS_TEST_AGENT_HELPER_EXECUTABLE to the built Lens binary for production self-exec helpers");
+    assert!(
+        helper.is_file(),
+        "the explicit Lens helper executable must exist"
+    );
     let root = PathBuf::from(
         std::env::var_os("LENS_ANTIGRAVITY_RUNTIME_ROOT")
             .expect("provide the disposable managed runtime root"),
@@ -201,7 +218,8 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
     assert_eq!(
         selected.stage,
         AgentSelectionStage::Selected,
-        "cached OAuth readiness must pass"
+        "cached OAuth readiness must pass: {:?}",
+        selected.error
     );
     assert!(selected.supports_logout);
     assert!(selected
@@ -209,8 +227,16 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
         .iter()
         .any(|method| method.id == "oauth-personal" && method.supported));
     let operation_id = Uuid::new_v4();
-    let input = tests::sample_input("Synthetic managed Antigravity observation.");
+    let input = tests::sample_input(&observation);
     let (projection, projection_ref) = tests::sample_projection(&input, &[]);
+    assert!(projection
+        .json()
+        .contains(&serde_json::to_string(&observation).unwrap()));
+    eprintln!(
+        "managed Antigravity acceptance: readiness=selected observation_bytes={} projection_bytes={}",
+        observation.len(),
+        projection.bytes().len()
+    );
     app.state::<AppState>().runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation_id),
         stage: LensStage::Ready,

@@ -1,8 +1,8 @@
 //! Session-local HTTP MCP registration and explicit per-turn publication authority.
 use adapter_output_mcp::HttpPublisher;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, EmbeddedResource, EmbeddedResourceResource, HttpHeader, McpCapabilities,
-    McpServer, McpServerHttp, NewSessionRequest, TextContent, TextResourceContents,
+    ContentBlock, HttpHeader, McpCapabilities, McpServer, McpServerHttp, NewSessionRequest,
+    TextContent,
 };
 use agent_client_protocol::Error;
 use std::path::Path;
@@ -52,25 +52,21 @@ pub(crate) fn session_request(cwd: &Path, publisher: &HttpPublisher) -> NewSessi
     )])
 }
 
-/// Structured execution metadata, separate from user-editable prompt prose.
+/// Host-owned publication control precedes user prose and observation data.
+/// Ordinary text avoids depending on embedded-resource flattening or capabilities.
 /// A turn UUID is an output correlation receipt, never a bearer credential.
-pub(crate) fn publication_context(turn_id: Uuid, embedded: bool) -> ContentBlock {
-    let json = serde_json::json!({
+pub(crate) fn publication_prompt(turn_id: Uuid, blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let control = serde_json::json!({
         "kind": "lens_output_publication",
         "schema_version": 1,
         "turn_id": turn_id,
+        "instructions": "If the requested response requires HTML, call lens_output.publish_html with html and the exact turn_id in this control block. Do not substitute a session ID or turn number. Identical HTML may be retried with the same turn_id; different HTML cannot replace an accepted publication. For an ordinary text response, do not call publish_html.",
     })
     .to_string();
-    if embedded {
-        ContentBlock::Resource(EmbeddedResource::new(
-            EmbeddedResourceResource::TextResourceContents(
-                TextResourceContents::new(json, format!("lens://output-publication/{turn_id}"))
-                    .mime_type("application/json"),
-            ),
-        ))
-    } else {
-        ContentBlock::Text(TextContent::new(json))
-    }
+    let mut prompt = Vec::with_capacity(blocks.len() + 1);
+    prompt.push(ContentBlock::Text(TextContent::new(control)));
+    prompt.extend(blocks);
+    prompt
 }
 
 #[cfg(test)]
@@ -107,21 +103,52 @@ mod tests {
         assert!(require_http(&McpCapabilities::default().http(true)).is_ok());
     }
     #[test]
-    fn publication_context_preserves_identity_in_both_encodings() {
+    fn publication_control_is_leading_text_at_the_acp_request_boundary() {
+        use agent_client_protocol::schema::v1::{
+            EmbeddedResource, EmbeddedResourceResource, PromptRequest, SessionId,
+            TextResourceContents,
+        };
         let id = Uuid::new_v4();
+        let observation = "observation ".repeat(30_000);
         for embedded in [true, false] {
-            let block = publication_context(id, embedded);
-            let json = match block {
-                ContentBlock::Text(text) => text.text,
-                ContentBlock::Resource(resource) => match resource.resource {
-                    EmbeddedResourceResource::TextResourceContents(text) => text.text,
-                    _ => panic!("expected text resource"),
-                },
-                _ => panic!("expected publication context"),
+            let projection = if embedded {
+                ContentBlock::Resource(EmbeddedResource::new(
+                    EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(
+                        observation.clone(),
+                        "lens://projection/long",
+                    )),
+                ))
+            } else {
+                ContentBlock::Text(TextContent::new(observation.clone()))
             };
-            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-            assert_eq!(value["turn_id"], id.to_string());
-            assert_eq!(value["kind"], "lens_output_publication");
+            let blocks = vec![
+                ContentBlock::Text(TextContent::new("USER_REQUEST")),
+                projection,
+            ];
+            let expected = serde_json::to_value(&blocks).unwrap();
+            let request = PromptRequest::new(
+                SessionId::new("session-is-not-turn"),
+                publication_prompt(id, blocks),
+            );
+            let json = serde_json::to_value(&request).unwrap();
+            assert_eq!(json["prompt"][0]["type"], "text");
+            let control: serde_json::Value =
+                serde_json::from_str(json["prompt"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(control["turn_id"], id.to_string());
+            assert_eq!(control["kind"], "lens_output_publication");
+            assert_eq!(control["schema_version"], 1);
+            assert!(control["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("ordinary text"));
+            assert_eq!(json["prompt"][1], expected[0]);
+            assert_eq!(json["prompt"][2], expected[1]);
+            let wire = serde_json::to_string(&request).unwrap();
+            assert!(wire.find(&id.to_string()).unwrap() < wire.find("USER_REQUEST").unwrap());
+            assert!(wire.find(&id.to_string()).unwrap() < wire.find("observation ").unwrap());
+            // A short leading text block remains self-contained even when later
+            // observation content is omitted by a downstream context budget.
+            assert!(json["prompt"][0]["text"].as_str().unwrap().len() < 1024);
         }
     }
     #[tokio::test]

@@ -2580,7 +2580,7 @@ async fn run_session_turn<R: tauri::Runtime>(
         .map_err(|error| state_error(error.to_string()))?;
     controls.begin_turn(key.run_id)?;
     let _turn_lifetime = session_controls::TurnLifetime { controls, app };
-    let mut prompt = build_prompt_blocks(
+    let prompt = build_prompt_blocks(
         &identity.config.agent_prompt_template,
         projection,
         &delivery.projection,
@@ -2588,10 +2588,7 @@ async fn run_session_turn<R: tauri::Runtime>(
         prompt_capabilities,
         identity.config.projection_layout(),
     )?;
-    prompt.push(crate::output_mcp::publication_context(
-        key.run_id,
-        prompt_capabilities.embedded_context,
-    ));
+    let prompt = crate::output_mcp::publication_prompt(key.run_id, prompt);
     let session_id = session.session_id().clone();
     crate::session_view::append_prompt(app, &session_id.to_string(), &prompt)
         .map_err(state_error)?;
