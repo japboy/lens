@@ -456,7 +456,7 @@ export class LensOutputMedia extends LitElement {
       aria-hidden=${index !== this.selectedIndex ? "true" : "false"}
       ?inert=${index !== this.selectedIndex}
       data-load-state=${loaded.status}
-      aria-busy=${mounted && (loaded.status === "loading" || item.provisional) ? "true" : "false"}
+      aria-busy=${mounted && loaded.status !== "failed" && (loaded.status === "loading" || item.provisional) ? "true" : "false"}
     >
       ${
         mounted && item.source

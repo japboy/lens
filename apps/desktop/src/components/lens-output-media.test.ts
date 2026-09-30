@@ -170,6 +170,52 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-slide")?.getAttribute("aria-busy")).toBe("false");
   });
 
+  it("ends provisional image busy state on fetch failure and resumes it only during retry", async () => {
+    const element = await mount([{ ...images[0]!, provisional: true }]);
+    await load(element, 0, 100, 100);
+    const slide = element.querySelector(".output-media-slide")!;
+    const image = slide.querySelector("img")!;
+    expect(slide.getAttribute("aria-busy")).toBe("true");
+
+    element.mediaErrors = new Map([[images[0]!.id, "Committed image could not be loaded."]]);
+    await element.updateComplete;
+    expect(slide.getAttribute("data-load-state")).toBe("failed");
+    expect(slide.getAttribute("aria-busy")).toBe("false");
+    expect(slide.querySelector("img")).toBe(image);
+    expect(slide.querySelector('[role="alert"]')?.textContent).toContain(
+      "Committed image could not be loaded.",
+    );
+    await expect(element.presentMedia(images[0]!.id)).resolves.toBe(false);
+
+    element.mediaErrors = new Map();
+    await element.updateComplete;
+    expect(slide.getAttribute("aria-busy")).toBe("true");
+    expect(slide.querySelector("img")).toBe(image);
+    expect(slide.querySelector('[role="alert"]')).toBeNull();
+
+    element.media = [images[0]!];
+    await element.updateComplete;
+    expect(slide.getAttribute("aria-busy")).toBe("false");
+    expect(slide.querySelector("img")).toBe(image);
+    await expect(element.presentMedia(images[0]!.id)).resolves.toBe(true);
+  });
+
+  it("ends provisional image busy state on an image decoding failure", async () => {
+    const element = await mount([{ ...images[0]!, provisional: true }]);
+    const slide = element.querySelector(".output-media-slide")!;
+    const image = slide.querySelector("img")!;
+    expect(slide.getAttribute("aria-busy")).toBe("true");
+    image.dispatchEvent(new Event("error"));
+    await element.updateComplete;
+    expect(slide.getAttribute("data-load-state")).toBe("failed");
+    expect(slide.getAttribute("aria-busy")).toBe("false");
+    expect(slide.querySelector("img")).toBe(image);
+    expect(slide.querySelector('[role="alert"]')?.textContent).toContain(
+      "Unable to display this image.",
+    );
+    await expect(element.presentMedia(images[0]!.id)).resolves.toBe(false);
+  });
+
   it("renders the shared Notification only in fullscreen and keeps arrival passive with keyboard access", async () => {
     const element = await mount([images[0]!]);
     const action = vi.fn<() => void>();
