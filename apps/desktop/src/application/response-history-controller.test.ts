@@ -72,6 +72,155 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
+function initial(blocks: LensOutputBlock[], operation = "op", run = "r1"): LensState {
+  return {
+    ...lens(operation, 0),
+    stage: "transforming",
+    agent: { run_id: run } as LensState["agent"],
+    output_blocks: blocks,
+  };
+}
+
+describe("initial response body handoff", () => {
+  it("retains only the newest initial body as provisional and still loads authoritative content", async () => {
+    const { controller, port } = setup();
+    controller.synchronize(initial([{ type: "markdown", text: "older" }]));
+    const newer = { type: "markdown", text: "newer partial" } as const;
+    controller.synchronize(initial([newer]));
+    controller.synchronize(lens());
+    const id = responseBlockIdentity("op", "r1", 0);
+    const provisional = controller.presentation?.provisionalBlocks?.get(id);
+    expect(provisional?.body).toBe(newer);
+    expect(port.getResponseBlock).not.toHaveBeenCalled();
+    await expect(controller.loadBlock("op", "r1", 0)).resolves.toEqual({
+      type: "markdown",
+      text: "abc",
+    });
+    expect(port.getResponseBlock).toHaveBeenCalledExactlyOnceWith("op", "r1", 0);
+    // The leaf releases after admitting the actual body, avoiding an intermediate empty render.
+    provisional!.release();
+    expect(controller.presentation?.provisionalBlocks?.has(id)).toBe(false);
+    provisional!.release();
+    await controller.loadBlock("op", "r1", 0);
+    expect(port.getResponseBlock).toHaveBeenCalledTimes(1);
+  });
+  it.each(["operation", "run", "type", "index", "sequence", "replay", "disconnect"] as const)(
+    "does not transfer initial content after a %s mismatch",
+    (mismatch) => {
+      const { controller } = setup();
+      controller.synchronize(initial([{ type: "markdown", text: "partial" }]));
+      const committed = lens(mismatch === "operation" ? "new-op" : "op");
+      const first = committed.response_history.responses[0]!;
+      if (mismatch === "run") first.run_id = "new-run";
+      if (mismatch === "type")
+        first.blocks[0] = { type: "unsupported", block_index: 0, content_type: "audio" };
+      if (mismatch === "index")
+        first.blocks[0] = { type: "markdown", block_index: 9, byte_length: 3 };
+      if (mismatch === "sequence") first.sequence = 2;
+      if (mismatch === "disconnect") controller.hostDisconnected();
+      if (mismatch === "replay") controller.synchronizeHistory(replay());
+      else controller.synchronize(committed);
+      expect(controller.presentation?.provisionalBlocks?.size ?? 0).toBe(0);
+    },
+  );
+  it("measures an immutable initial body once across operational snapshot updates", () => {
+    const { controller } = setup();
+    const state = initial([{ type: "markdown", text: "partial" }]);
+    const stringify = vi.spyOn(JSON, "stringify");
+    controller.synchronize(state);
+    const calls = stringify.mock.calls.length;
+    controller.synchronize({ ...state, agent: { ...state.agent!, received_updates: 10 } });
+    expect(stringify).toHaveBeenCalledTimes(calls);
+    stringify.mockRestore();
+  });
+  it("does not serialize immutable image bodies again as streamed text changes", () => {
+    const { controller } = setup();
+    const image = { type: "image", mime_type: "image/png", data: "x".repeat(100_000) } as const;
+    const stringify = vi.spyOn(JSON, "stringify");
+    controller.synchronize(initial([image, { type: "markdown", text: "first" }]));
+    controller.synchronize(initial([{ ...image }, { type: "markdown", text: "second" }]));
+    expect(
+      stringify.mock.calls.some(([value]) => value?.type === "image" && value.data.length > 0),
+    ).toBe(false);
+    stringify.mockRestore();
+  });
+  it.each([0, 1])("admits handoff at the exact body budget boundary, overflow %s", (overflow) => {
+    const { controller } = setup();
+    const overhead = new TextEncoder().encode(
+      JSON.stringify({ type: "markdown", text: "" }),
+    ).byteLength;
+    const body = {
+      type: "markdown",
+      text: "x".repeat(RESPONSE_BODY_CACHE_BYTES - overhead + overflow),
+    } as const;
+    const state = initial([body]);
+    controller.synchronize(state);
+    const stringify = vi.spyOn(JSON, "stringify");
+    controller.synchronize({ ...state });
+    expect(stringify).not.toHaveBeenCalled();
+    stringify.mockRestore();
+    controller.synchronize(lens());
+    expect(controller.presentation?.provisionalBlocks?.size).toBe(overflow ? 0 : 1);
+  });
+  it("shares the fixed budget with authoritative caching and releases offscreen handoff bodies", async () => {
+    const { controller, port } = setup();
+    const text = "x".repeat(Math.floor(RESPONSE_BODY_CACHE_BYTES / 2));
+    const body = { type: "markdown", text } as const;
+    controller.synchronize(initial([body]));
+    const committed = lens();
+    committed.response_history.responses[0]!.blocks[0] = {
+      type: "markdown",
+      block_index: 0,
+      byte_length: text.length,
+    };
+    controller.synchronize(committed);
+    port.getResponseBlock.mockResolvedValue(body);
+    await controller.loadBlock("op", "r1", 0);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await controller.loadBlock("op", "r1", 0);
+    expect(port.getResponseBlock).toHaveBeenCalledTimes(2);
+    const provisional = controller.presentation!.provisionalBlocks!.get(
+      responseBlockIdentity("op", "r1", 0),
+    )!;
+    provisional.release();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await controller.loadBlock("op", "r1", 0);
+    await controller.loadBlock("op", "r1", 0);
+    expect(port.getResponseBlock).toHaveBeenCalledTimes(3);
+    expect(controller.presentation?.provisionalBlocks?.size).toBe(0);
+  });
+  it("keeps initial images explicitly provisional until native image materialization", async () => {
+    const { controller, port } = setup();
+    const body = { type: "image", mime_type: "image/png", data: "x" } as const;
+    controller.synchronize(
+      initial([
+        { type: "markdown", text: "partial" },
+        { type: "unsupported", content_type: "audio" },
+        body,
+      ]),
+    );
+    controller.synchronize(lens());
+    const id = responseBlockIdentity("op", "r1", 2);
+    expect(controller.presentation?.media.find((item) => item.id === id)).toMatchObject({
+      provisional: true,
+      source: "data:image/png;base64,x",
+    });
+    const actual = deferred<LensOutputBlock>();
+    port.getResponseBlock.mockReturnValueOnce(actual.promise);
+    controller.requestMedia([id]);
+    expect(controller.presentation?.media.find((item) => item.id === id)).toMatchObject({
+      provisional: true,
+    });
+    actual.resolve(body);
+    await vi.waitFor(() =>
+      expect(controller.presentation?.media.find((item) => item.id === id)).toMatchObject({
+        provisional: false,
+      }),
+    );
+    expect(controller.presentation?.provisionalBlocks?.has(id)).toBe(false);
+  });
+});
+
 describe("committed response history bodies", () => {
   it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, MAX_HTML_OUTPUT_BYTES + 1])(
     "rejects invalid HTML descriptor size %s before IPC",

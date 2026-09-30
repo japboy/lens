@@ -247,8 +247,10 @@ export class LensSessionDocument extends LitElement {
       ? html`<lens-conversation-block
           data-row-id=${row.id}
           data-entry-id=${row.entryId}
+          .scopeId=${this.identity}
+          .cellId=${row.id}
           .block=${row.block}
-          .contentKey=${`${this.identity}:${row.contentKey}`}
+          .contentKey=${row.contentKey}
           .cache=${retained.cache}
           .loadBlock=${this.loadBlock}
         ></lens-conversation-block>`
@@ -260,11 +262,25 @@ export class LensSessionDocument extends LitElement {
 @customElement("lens-conversation-block")
 export class LensConversationBlock extends LitElement {
   @property({ attribute: false }) block: DocumentBlock | undefined;
+  @property({ type: String }) scopeId = "";
+  @property({ type: String }) cellId = "";
   @property({ type: String }) contentKey = "";
   @property({ attribute: false }) cache: ConversationRenderCache | undefined;
   @property({ attribute: false }) loadBlock: BlockLoader | undefined;
   @state() private prepared: PreparedConversationBlock | undefined;
-  @state() private error: string | undefined;
+  @state() private retrieval:
+    | { phase: "idle" | "pending" | "ready" }
+    | { phase: "failed"; error: string } = { phase: "idle" };
+  private preparedIdentity: string | undefined;
+  private preparedKey: string | undefined;
+  private request:
+    | {
+        identity: string;
+        key: string;
+        cache: ConversationRenderCache;
+        loader: BlockLoader | undefined;
+      }
+    | undefined;
   private generation = 0;
   private preparation: AbortController | undefined;
   static styles = css`
@@ -272,41 +288,127 @@ export class LensConversationBlock extends LitElement {
       display: block;
       overflow-wrap: anywhere;
     }
-    .loading {
-      min-height: 24px;
-      opacity: 0.6;
-    }
   `;
   connectedCallback(): void {
     super.connectedCallback();
     if (this.hasUpdated) this.requestUpdate("block", undefined);
   }
   disconnectedCallback(): void {
-    this.generation++;
-    this.preparation?.abort();
+    const failed = this.retrieval.phase === "failed" ? this.retrieval : undefined;
+    const request = this.request;
+    this.cancelPreparation();
+    // Reopening the tab resumes interrupted work, but does not retry a known failure.
+    if (failed) {
+      this.request = request;
+      this.retrieval = failed;
+    }
     super.disconnectedCallback();
   }
   protected willUpdate(changed: PropertyValues<this>): void {
-    if (!changed.has("contentKey") && !changed.has("block") && !changed.has("loadBlock")) return;
-    const generation = ++this.generation;
+    if (
+      !changed.has("scopeId") &&
+      !changed.has("cellId") &&
+      !changed.has("contentKey") &&
+      !changed.has("block") &&
+      !changed.has("loadBlock") &&
+      !changed.has("cache")
+    )
+      return;
+    this.prepare();
+  }
+  protected updated(): void {
+    this.setAttribute("aria-busy", String(this.retrieval.phase === "pending"));
+  }
+  private contentIdentity(): string | undefined {
+    if (!this.block) return undefined;
+    const kind = this.block.type === "deferred" ? this.block.content_type : this.block.type;
+    return JSON.stringify([this.scopeId, this.cellId, kind]);
+  }
+  private cancelPreparation(): void {
+    ++this.generation;
     this.preparation?.abort();
+    this.preparation = undefined;
+    this.request = undefined;
+    this.retrieval = { phase: "idle" };
+  }
+  private prepare(retry = false): void {
+    const identity = this.contentIdentity();
+    if (this.preparedIdentity !== identity) {
+      this.cancelPreparation();
+      this.prepared = undefined;
+      this.preparedIdentity = identity;
+      this.preparedKey = undefined;
+    }
+    const block = this.block;
+    const cache = this.cache;
+    if (!this.isConnected) return;
+    if (!identity || !block || !cache) {
+      this.cancelPreparation();
+      return;
+    }
+    const key = JSON.stringify([identity, this.contentKey]);
+    const previous = this.request;
+    const sameRequest =
+      previous?.identity === identity &&
+      previous.key === key &&
+      previous.cache === cache &&
+      previous.loader === this.loadBlock;
+    // Descriptor objects may be recreated without changing their content version.
+    if (sameRequest && (!retry || this.retrieval.phase !== "failed")) return;
+    if (retry && !sameRequest) return;
+    this.cancelPreparation();
+    const request = { identity, key, cache, loader: this.loadBlock };
+    this.request = request;
+    const cached = cache.peek(key);
+    if (cached) {
+      this.prepared = cached;
+      this.preparedKey = key;
+    }
+    if (this.prepared && this.preparedKey === key) {
+      this.retrieval = { phase: "ready" };
+      return;
+    }
+    // Retain one displayed version of this cell while fetching its newer version.
+    const generation = this.generation;
     this.preparation = new AbortController();
-    this.prepared = this.cache?.peek(this.contentKey);
-    this.error = undefined;
-    if (this.prepared || !this.block || !this.cache) return;
-    void this.cache
-      .resolve(this.contentKey, this.block, this.loadBlock, this.preparation.signal)
+    this.retrieval = { phase: "pending" };
+    const isCurrent = () =>
+      this.isConnected &&
+      this.generation === generation &&
+      this.request === request &&
+      this.contentIdentity() === identity &&
+      JSON.stringify([identity, this.contentKey]) === key &&
+      this.cache === cache &&
+      this.loadBlock === request.loader;
+    void cache
+      .resolve(key, block, this.loadBlock, this.preparation.signal)
       .then((value) => {
-        if (this.isConnected && this.generation === generation) this.prepared = value;
+        if (!isCurrent()) return;
+        this.prepared = value;
+        this.preparedKey = key;
+        this.retrieval = { phase: "ready" };
       })
       .catch((error) => {
-        if (this.isConnected && this.generation === generation) this.error = String(error);
+        if (!isCurrent()) return;
+        this.retrieval = { phase: "failed", error: String(error) };
       });
   }
   protected render() {
-    if (this.error) return html`<p role="alert">${this.error}</p>`;
+    const error = this.retrieval.phase === "failed" ? this.retrieval.error : undefined;
+    return html`${this.renderPrepared()}${
+      error
+        ? html`<p role="alert">
+            ${error}
+            <button type="button" data-lens-button-role="normal" @click=${() => this.prepare(true)}>
+              Retry
+            </button>
+          </p>`
+        : nothing
+    }`;
+  }
+  private renderPrepared() {
     const block = this.prepared?.block;
-    if (!block) return html`<div class="loading" role="status">Loading content…</div>`;
+    if (!block) return nothing;
     switch (block.type) {
       case "markdown":
       case "html":

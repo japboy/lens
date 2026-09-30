@@ -9,7 +9,11 @@ import {
 } from "./lens-session-document";
 import { ConversationRenderCache } from "../application/conversation-render-cache";
 import { LensOverlayView } from "./lens-overlay-view";
-import type { SessionDocument } from "../application/session-document";
+import type {
+  DeferredDocumentBlock,
+  DocumentBlock,
+  SessionDocument,
+} from "../application/session-document";
 
 const documentModel: SessionDocument = {
   entries: [
@@ -44,6 +48,238 @@ beforeAll(async () => {
     }) as unknown as MediaQueryList;
 });
 afterEach(() => document.body.replaceChildren());
+function deferredBody() {
+  let resolve!: (block: DocumentBlock) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<DocumentBlock>((resolveBody, rejectBody) => {
+    resolve = resolveBody;
+    reject = rejectBody;
+  });
+  return { promise, resolve, reject };
+}
+function conversationCell() {
+  const cell = new LensConversationBlock();
+  cell.scopeId = "session-generation";
+  cell.cellId = "assistant:0";
+  cell.cache = new ConversationRenderCache();
+  return cell;
+}
+function reviseCell(
+  cell: LensConversationBlock,
+  revision: number,
+  content_type: DeferredDocumentBlock["content_type"] = "markdown",
+) {
+  cell.block = {
+    type: "deferred",
+    entry_id: "assistant",
+    block_index: 0,
+    content_type,
+    revision,
+    byte_length: revision,
+    append_only: content_type === "markdown",
+  };
+  cell.contentKey = `assistant:0:${revision}`;
+}
+function displayedText(cell: LensConversationBlock) {
+  return cell.shadowRoot!.querySelector<import("./lens-conversation-text").LensConversationText>(
+    "lens-conversation-text",
+  );
+}
+describe("Conversation body ownership", () => {
+  it("uses the normal empty host with aria-busy before the first body arrives", async () => {
+    const body = deferredBody();
+    const cell = conversationCell();
+    reviseCell(cell, 1);
+    cell.loadBlock = () => body.promise;
+    document.body.append(cell);
+    await cell.updateComplete;
+    expect(cell.getAttribute("aria-busy")).toBe("true");
+    expect(cell.shadowRoot!.querySelector("[role=status], .loading")).toBeNull();
+    expect(cell.shadowRoot!.textContent).not.toContain("Loading");
+    body.resolve({ type: "markdown", text: "First body" });
+    await vi.waitFor(() => {
+      expect(displayedText(cell)?.text).toBe("First body");
+      expect(cell.getAttribute("aria-busy")).toBe("false");
+    });
+  });
+
+  it("retains displayed text and its DOM while fetching a newer revision of the same cell", async () => {
+    const newer = deferredBody();
+    const cell = conversationCell();
+    reviseCell(cell, 1);
+    const load = vi.fn<NonNullable<LensConversationBlock["loadBlock"]>>(
+      async (reference): Promise<DocumentBlock> =>
+        reference.revision === 1 ? { type: "markdown", text: "Existing body" } : newer.promise,
+    );
+    cell.loadBlock = load;
+    document.body.append(cell);
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Existing body"));
+    const text = displayedText(cell);
+    reviseCell(cell, 2);
+    await cell.updateComplete;
+    expect(displayedText(cell)).toBe(text);
+    expect(text?.text).toBe("Existing body");
+    expect(cell.getAttribute("aria-busy")).toBe("true");
+    expect(load).toHaveBeenCalledTimes(2);
+    newer.resolve({ type: "markdown", text: "Existing body plus an update" });
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Existing body plus an update"));
+    expect(displayedText(cell)).toBe(text);
+  });
+
+  it("does not restart an in-flight request when the same descriptor version is recreated", async () => {
+    const body = deferredBody();
+    const cell = conversationCell();
+    reviseCell(cell, 1);
+    const load = vi.fn<NonNullable<LensConversationBlock["loadBlock"]>>(() => body.promise);
+    cell.loadBlock = load;
+    document.body.append(cell);
+    await cell.updateComplete;
+    reviseCell(cell, 1);
+    await cell.updateComplete;
+    expect(load).toHaveBeenCalledTimes(1);
+    body.resolve({ type: "markdown", text: "Original request completes" });
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Original request completes"));
+    expect(cell.shadowRoot!.querySelector("[role=alert]")).toBeNull();
+  });
+
+  it.each(["scope", "cell", "kind"] as const)(
+    "clears old content on %s reassignment, even if the cache contentKey is unchanged",
+    async (boundary) => {
+      const next = deferredBody();
+      const cell = conversationCell();
+      reviseCell(cell, 1);
+      const load = vi
+        .fn<NonNullable<LensConversationBlock["loadBlock"]>>()
+        .mockResolvedValueOnce({ type: "markdown", text: "Other identity's body" })
+        .mockReturnValueOnce(next.promise);
+      cell.loadBlock = load;
+      document.body.append(cell);
+      await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Other identity's body"));
+      if (boundary === "scope") cell.scopeId = "new-session-generation";
+      else if (boundary === "cell") cell.cellId = "different-entry:0";
+      else reviseCell(cell, 1, "html");
+      await cell.updateComplete;
+      expect(displayedText(cell)).toBeNull();
+      expect(cell.getAttribute("aria-busy")).toBe("true");
+      next.resolve({ type: boundary === "kind" ? "html" : "markdown", text: "New identity body" });
+      await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("New identity body"));
+      expect(load).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a superseded revision's late %s while the newest request owns the cell",
+    async (completion) => {
+      const old = deferredBody();
+      const current = deferredBody();
+      const cell = conversationCell();
+      reviseCell(cell, 1);
+      cell.loadBlock = (reference) => (reference.revision === 1 ? old.promise : current.promise);
+      document.body.append(cell);
+      await cell.updateComplete;
+      reviseCell(cell, 2);
+      await cell.updateComplete;
+      if (completion === "resolve") old.resolve({ type: "markdown", text: "Stale body" });
+      else old.reject(new Error("Stale failure"));
+      current.resolve({ type: "markdown", text: "Current body" });
+      await vi.waitFor(() => {
+        expect(displayedText(cell)?.text).toBe("Current body");
+        expect(cell.getAttribute("aria-busy")).toBe("false");
+      });
+      expect(cell.shadowRoot!.querySelector("[role=alert]")).toBeNull();
+      expect(cell.shadowRoot!.textContent).not.toContain("Stale");
+    },
+  );
+
+  it("retains the prior body on update failure and retries only the failed current request", async () => {
+    const retry = deferredBody();
+    const cell = conversationCell();
+    reviseCell(cell, 1);
+    const load = vi
+      .fn<NonNullable<LensConversationBlock["loadBlock"]>>()
+      .mockResolvedValueOnce({ type: "markdown", text: "Retained body" })
+      .mockRejectedValueOnce(new Error("Current request failed"))
+      .mockReturnValueOnce(retry.promise);
+    cell.loadBlock = load;
+    document.body.append(cell);
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Retained body"));
+    const text = displayedText(cell);
+    reviseCell(cell, 2);
+    await vi.waitFor(() => {
+      expect(cell.shadowRoot!.querySelector("[role=alert]")?.textContent).toContain(
+        "Current request failed",
+      );
+      expect(cell.getAttribute("aria-busy")).toBe("false");
+    });
+    expect(displayedText(cell)).toBe(text);
+    reviseCell(cell, 2);
+    await cell.updateComplete;
+    expect(load).toHaveBeenCalledTimes(2);
+    cell.remove();
+    document.body.append(cell);
+    await cell.updateComplete;
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(cell.shadowRoot!.querySelector("[role=alert]")?.textContent).toContain(
+      "Current request failed",
+    );
+    const button = cell.shadowRoot!.querySelector<HTMLButtonElement>("button")!;
+    button.click();
+    button.click();
+    await cell.updateComplete;
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(cell.getAttribute("aria-busy")).toBe("true");
+    expect(displayedText(cell)).toBe(text);
+    expect(cell.shadowRoot!.querySelector("[role=alert]")).toBeNull();
+    retry.resolve({ type: "markdown", text: "Recovered body" });
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Recovered body"));
+    expect(displayedText(cell)).toBe(text);
+  });
+
+  it("retains only the displayed version when the bounded cache cannot retain its body", async () => {
+    const first = deferredBody();
+    const second = deferredBody();
+    const cell = conversationCell();
+    cell.cache = new ConversationRenderCache(1);
+    reviseCell(cell, 1);
+    cell.loadBlock = (reference) => (reference.revision === 1 ? first.promise : second.promise);
+    document.body.append(cell);
+    await cell.updateComplete;
+    first.resolve({ type: "markdown", text: "Body larger than the entire cache budget" });
+    await vi.waitFor(() =>
+      expect(displayedText(cell)?.text).toBe("Body larger than the entire cache budget"),
+    );
+    expect(cell.cache.retainedEntries).toBe(0);
+    const text = displayedText(cell);
+    reviseCell(cell, 2);
+    await cell.updateComplete;
+    expect(displayedText(cell)).toBe(text);
+    second.resolve({ type: "markdown", text: "New larger body" });
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("New larger body"));
+    expect(cell.cache.retainedBytes).toBe(0);
+  });
+
+  it("waits until reconnect to fetch a revision received while the cell is detached", async () => {
+    const cell = conversationCell();
+    reviseCell(cell, 1);
+    const load = vi.fn<NonNullable<LensConversationBlock["loadBlock"]>>(
+      async (reference): Promise<DocumentBlock> => ({
+        type: "markdown",
+        text: `Revision ${reference.revision}`,
+      }),
+    );
+    cell.loadBlock = load;
+    document.body.append(cell);
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Revision 1"));
+    cell.remove();
+    reviseCell(cell, 2);
+    await cell.updateComplete;
+    expect(load).toHaveBeenCalledTimes(1);
+    document.body.append(cell);
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe("Revision 2"));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(cell.getAttribute("aria-busy")).toBe("false");
+  });
+});
 describe("canonical session renderer", () => {
   it("keeps ordered messages and displays HTML literally without loading embedded resources", async () => {
     expect(conversationRows(documentModel).map((row) => row.id)).toEqual([

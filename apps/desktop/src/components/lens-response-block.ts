@@ -1,7 +1,10 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { LensOutputBlock, LensResponseBlockDescriptor } from "../types";
-import type { LoadResponseBlock } from "../application/response-history-controller";
+import type {
+  LoadResponseBlock,
+  ProvisionalResponseBlock,
+} from "../application/response-history-controller";
 import "../streaming-markdown";
 
 /** Retains visible Markdown DOM across publications; offscreen bodies are reloadable. */
@@ -11,6 +14,7 @@ export class LensResponseBlock extends LitElement {
   @property({ attribute: false }) responseId = "";
   @property({ attribute: false }) descriptor: LensResponseBlockDescriptor | undefined;
   @property({ attribute: false }) loadBlock: LoadResponseBlock | undefined;
+  @property({ attribute: false }) provisional: ProvisionalResponseBlock | undefined;
   @state() private body: LensOutputBlock | undefined;
   @state() private failure = "";
   private observer: IntersectionObserver | undefined;
@@ -18,7 +22,8 @@ export class LensResponseBlock extends LitElement {
   private measuredHeight = 100;
   private resize: ResizeObserver | undefined;
   private visible = false;
-  private loading = false;
+  @state() private loading = false;
+  @state() private provisionalReleased = false;
   protected createRenderRoot(): HTMLElement {
     return this;
   }
@@ -29,7 +34,8 @@ export class LensResponseBlock extends LitElement {
     if (typeof ResizeObserver !== "undefined") {
       this.resize = new ResizeObserver((entries) => {
         const height = entries[0]?.contentRect.height;
-        if (height && this.body) this.measuredHeight = height;
+        if (height && (this.body || (this.provisional && !this.provisionalReleased)))
+          this.measuredHeight = height;
       });
       this.resize.observe(this);
     }
@@ -41,7 +47,8 @@ export class LensResponseBlock extends LitElement {
     this.observer = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((entry) => entry.isIntersecting);
-        if (visible === this.visible) return;
+        if (visible === this.visible && (visible || !this.provisional || this.provisionalReleased))
+          return;
         this.visible = visible;
         if (visible) {
           void this.load();
@@ -53,6 +60,7 @@ export class LensResponseBlock extends LitElement {
           this.loading = false;
           this.body = undefined;
           this.failure = "";
+          this.releaseProvisional();
         }
       },
       { root: this.closest("[data-auto-scroll-container]"), rootMargin: "500px" },
@@ -70,8 +78,10 @@ export class LensResponseBlock extends LitElement {
     this.loading = false;
     this.body = undefined;
     this.visible = false;
+    this.releaseProvisional();
   }
   protected willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has("provisional")) this.provisionalReleased = false;
     if (changed.has("operationId") || changed.has("responseId") || changed.has("descriptor")) {
       const old = changed.get("descriptor") as LensResponseBlockDescriptor | undefined;
       if (
@@ -86,7 +96,9 @@ export class LensResponseBlock extends LitElement {
         this.style.minHeight = "100px";
       }
     }
+    if (this.provisional && !this.provisionalReleased) this.style.minHeight = "";
     if (this.visible) void this.load();
+    this.setAttribute("aria-busy", String(this.loading));
   }
   private async load(): Promise<void> {
     const descriptor = this.descriptor;
@@ -107,6 +119,7 @@ export class LensResponseBlock extends LitElement {
       if (generation !== this.generation || !this.isConnected || !this.visible) return;
       this.body = body;
       this.style.minHeight = "";
+      this.releaseProvisional();
     } catch {
       if (generation === this.generation && this.isConnected)
         this.failure = "This response could not be loaded. Scroll back to retry.";
@@ -126,6 +139,7 @@ export class LensResponseBlock extends LitElement {
       return this.isConnected && generation === this.generation;
     }
     if (!this.loadBlock) return false;
+    this.loading = true;
     try {
       const body =
         this.body ??
@@ -134,6 +148,7 @@ export class LensResponseBlock extends LitElement {
       this.failure = "";
       this.body = body;
       this.style.minHeight = "";
+      this.releaseProvisional();
       await this.updateComplete;
       return (
         this.isConnected &&
@@ -144,36 +159,42 @@ export class LensResponseBlock extends LitElement {
       if (generation === this.generation && this.isConnected)
         this.failure = "This response could not be loaded. Try again.";
       return false;
+    } finally {
+      if (generation === this.generation) this.loading = false;
     }
   }
 
+  private releaseProvisional(): void {
+    this.provisionalReleased = true;
+    this.provisional?.release();
+  }
+
   protected render() {
-    if (this.failure)
-      return html`<p class="error" role="alert">
-        ${this.failure}
-        <button
-          data-lens-button-role="normal"
-          type="button"
-          @click=${() => {
-            this.failure = "";
-            void this.load();
-          }}
-        >
-          Retry
-        </button>
-      </p>`;
-    const block = this.body;
+    const failure = this.failure
+      ? html`<p class="error" role="alert">
+          ${this.failure}
+          <button
+            data-lens-button-role="normal"
+            type="button"
+            @click=${() => {
+              this.failure = "";
+              void this.load();
+            }}
+          >
+            Retry
+          </button>
+        </p>`
+      : nothing;
+    const block = this.body ?? (!this.provisionalReleased ? this.provisional?.body : undefined);
     if (block?.type === "markdown")
-      return html`<lens-markdown
-        class="markdown-body"
-        .state=${{ operationId: JSON.stringify([this.operationId, this.responseId, this.descriptor?.block_index]), markdown: block.text, phase: "settled", scrollBehavior: "preserve" }}
-      ></lens-markdown>`;
+      return html`${failure}<lens-markdown
+          class="markdown-body"
+          .state=${{ operationId: JSON.stringify([this.operationId, this.responseId, this.descriptor?.block_index]), markdown: block.text, phase: "settled", scrollBehavior: "preserve" }}
+        ></lens-markdown>`;
     if (this.descriptor?.type === "unsupported")
       return html`<p class="lens-output-unsupported" role="note">
         This agent output type is not supported yet: <code>${this.descriptor.content_type}</code>
       </p>`;
-    return this.visible
-      ? html`<p class="response-loading" role="status">Loading response…</p>`
-      : nothing;
+    return failure;
   }
 }

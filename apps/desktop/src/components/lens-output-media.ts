@@ -116,12 +116,12 @@ export class LensOutputMedia extends LitElement {
       const previous = changed.get("media") ?? [];
       const retained = this.media.find((item) => item.id === this.selectedId);
       const oldSelected = previous.find((item) => item.id === this.selectedId);
-      if (!retained || !this.sameMedia(retained, oldSelected)) {
+      if (!retained || !oldSelected || !this.sameNavigationTarget(retained, oldSelected)) {
         this.closeExpanded();
         this.selectedId = this.media[0]?.id;
         this.overlay = "none";
         this.fullscreenError = "";
-      }
+      } else if (!this.sameMedia(retained, oldSelected)) this.closeExpanded();
       this.loadedImages = new Map(
         this.media.flatMap((item) => {
           if (item.kind !== "image") return [];
@@ -214,6 +214,17 @@ export class LensOutputMedia extends LitElement {
       ? previous.kind === "image" &&
           (!item.source || !previous.source || item.source === previous.source)
       : previous.kind === "html" && item.resourceId === previous.resourceId;
+  }
+
+  private sameNavigationTarget(
+    item: PresentedOutputMedia,
+    previous: PresentedOutputMedia,
+  ): boolean {
+    if (previous.kind === "image" && previous.provisional)
+      return (
+        item.kind === "image" && item.id === previous.id && item.mimeType === previous.mimeType
+      );
+    return this.sameMedia(item, previous);
   }
 
   private htmlState(item: PresentedOutputHtml): "loading" | "ready" | "failed" {
@@ -445,6 +456,7 @@ export class LensOutputMedia extends LitElement {
       aria-hidden=${index !== this.selectedIndex ? "true" : "false"}
       ?inert=${index !== this.selectedIndex}
       data-load-state=${loaded.status}
+      aria-busy=${mounted && loaded.status !== "failed" && (loaded.status === "loading" || item.provisional) ? "true" : "false"}
     >
       ${
         mounted && item.source
@@ -460,9 +472,9 @@ export class LensOutputMedia extends LitElement {
           : nothing
       }
       ${
-        mounted && loaded.status !== "ready"
-          ? html`<p class="output-media-state" role="status">
-              ${loaded.status === "failed" ? (this.mediaErrors.get(item.id) ?? "Unable to display this image.") : "Loading image…"}
+        mounted && loaded.status === "failed"
+          ? html`<p class="output-media-state" role="alert">
+              ${this.mediaErrors.get(item.id) ?? "Unable to display this image."}
             </p>`
           : nothing
       }
@@ -478,15 +490,14 @@ export class LensOutputMedia extends LitElement {
         ? content.message
         : prepared?.status === "failed"
           ? prepared.message
-          : this.htmlState(item) === "loading"
-            ? "Loading HTML…"
-            : "";
+          : "";
     return html`<section
       class="output-media-slide output-media-html-slide"
       aria-roledescription="slide"
       aria-label="HTML ${index + 1} of ${this.media.length}"
       aria-hidden=${index !== this.selectedIndex ? "true" : "false"}
       ?inert=${index !== this.selectedIndex}
+      aria-busy=${selected && this.htmlState(item) === "loading" ? "true" : "false"}
       @keydown=${this.handleExpandedKeyDown}
     >
       <div class="output-media-html-content">
@@ -522,7 +533,7 @@ export class LensOutputMedia extends LitElement {
               )
             : nothing
         }
-        ${selected && message ? html`<p class="output-media-state" role="status">${message}</p>` : nothing}
+        ${selected && message ? html`<p class="output-media-state" role="alert">${message}</p>` : nothing}
       </div>
     </section>`;
   }
@@ -586,7 +597,7 @@ export class LensOutputMedia extends LitElement {
     if (
       revision !== this.navigationRevision ||
       !this.isConnected ||
-      !this.media.some((item) => this.sameMedia(item, media))
+      !this.media.some((item) => this.sameNavigationTarget(item, media))
     )
       return false;
     return new Promise<boolean>((resolve) => {
@@ -622,10 +633,14 @@ export class LensOutputMedia extends LitElement {
         : item?.kind === "html"
           ? this.htmlState(item)
           : "failed";
-    if (!item || !this.sameMedia(item, pending.media) || state === "failed") {
+    if (!item || !this.sameNavigationTarget(item, pending.media) || state === "failed") {
       this.navigation = undefined;
       pending.resolve(false);
-    } else if (state === "ready" && this.fullscreen.status === "idle") {
+    } else if (
+      state === "ready" &&
+      !(item.kind === "image" && item.provisional) &&
+      this.fullscreen.status === "idle"
+    ) {
       const rail = this.querySelector<HTMLElement>(".output-media-rail");
       if (
         !rail ||

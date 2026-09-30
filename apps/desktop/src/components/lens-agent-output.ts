@@ -335,6 +335,7 @@ export class LensAgentOutput extends LitElement {
                     .responseId=${response.id}
                     .descriptor=${block}
                     .loadBlock=${this.loadResponseBlock}
+                    .provisional=${history.provisionalBlocks?.get(responseBlockIdentity(history.scopeId, response.id, block.block_index))}
                   ></lens-response-block>`,
               )}
             </section>`,

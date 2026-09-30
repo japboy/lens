@@ -683,6 +683,11 @@ export class LensOverlayView extends LitElement {
         user-select: text;
       }
 
+      .lens-resource-error {
+        flex: 0 0 auto;
+        overflow-wrap: anywhere;
+      }
+
       .source-view {
         display: flex;
         flex-direction: column;
@@ -2291,20 +2296,21 @@ export class LensOverlayView extends LitElement {
     | ((kind: "source" | "output") => void)
     | undefined;
 
-  private renderResourceState(
+  private renderResourceFailure(
     state: OverlayViewModel["sourceResource"],
     label: "source" | "output",
   ) {
-    if (state?.stage === "loading") return html`<p role="status">Loading ${label}…</p>`;
     if (state?.stage === "failed")
-      return html`<p role="alert">Unable to load ${label}: ${state.message}</p>
+      return html`<div class="lens-content lens-resource-error">
+        <p role="alert">Unable to load ${label}: ${state.message}</p>
         <button
           type="button"
           data-lens-button-role="normal"
           @click=${() => this.retrySnapshotResource?.(label)}
         >
           Retry
-        </button>`;
+        </button>
+      </div>`;
     return nothing;
   }
 
@@ -2434,6 +2440,11 @@ export class LensOverlayView extends LitElement {
         aria-busy="true"
         tabindex="0"
       ></section>`;
+    const sourcePending =
+      this.model?.sourceResource?.stage === "loading" ||
+      (this.model?.sourceResource?.stage === "idle" &&
+        ((this.model?.sourceMetadata?.has_input === true && !lens.input) ||
+          (this.model?.sourceMetadata?.quality != null && !lens.context)));
     switch (activeTab) {
       case "interpretation":
         return html`<section
@@ -2441,9 +2452,10 @@ export class LensOverlayView extends LitElement {
           class="lens-panel"
           role="tabpanel"
           aria-labelledby="interpretation-tab"
+          aria-busy=${this.model?.outputResource?.stage === "loading" ? "true" : "false"}
           tabindex="0"
         >
-          ${this.renderResourceState(this.model?.outputResource, "output")}
+          ${this.renderResourceFailure(this.model?.outputResource, "output")}
           <lens-agent-output
             .lens=${displayLens}
             .history=${this.responseHistory}
@@ -2459,9 +2471,10 @@ export class LensOverlayView extends LitElement {
           class="lens-panel"
           role="tabpanel"
           aria-labelledby="source-tab"
+          aria-busy=${sourcePending ? "true" : "false"}
           tabindex="0"
         >
-          ${this.renderResourceState(this.model?.sourceResource, "source")}
+          ${this.renderResourceFailure(this.model?.sourceResource, "source")}
           ${
             sourceJson
               ? html`<div class="lens-content source-view">
@@ -2475,7 +2488,7 @@ export class LensOverlayView extends LitElement {
                   </section>
                 </div>`
               : html`<div class="lens-content">
-                  ${this.model?.sourceResource?.stage === "loading" || this.model?.sourceResource?.stage === "failed" ? nothing : html`<p class="empty-state">No normalized source data is available.</p>`}
+                  ${sourcePending || this.model?.sourceResource?.stage === "failed" ? nothing : html`<p class="empty-state">No normalized source data is available.</p>`}
                 </div>`
           }
         </section>`;
@@ -2485,8 +2498,10 @@ export class LensOverlayView extends LitElement {
           class="lens-panel"
           role="tabpanel"
           aria-labelledby="diagnostics-tab"
+          aria-busy=${sourcePending ? "true" : "false"}
           tabindex="0"
         >
+          ${this.renderResourceFailure(this.model?.sourceResource, "source")}
           <div class="lens-content">
             <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
             ${renderResponseInputDiagnostics(this.responseHistory)}
@@ -2501,7 +2516,7 @@ export class LensOverlayView extends LitElement {
                   : undefined
               }
               .input=${lens.input}
-              .inputDetailsLoading=${this.model?.sourceResource?.stage === "loading"}
+              .inputDetailsLoading=${sourcePending}
             ></lens-extraction-diagnostics>
           </div>
         </section>`;

@@ -54,9 +54,10 @@ it("separates capture omissions from Agent image omissions and keeps pending cov
     "Source 1: Text only; 1 image omitted for Agent",
   );
   expect(delivered.textContent).toContain("Image input not supported for this submission");
-  expect(
-    element.querySelector('[aria-labelledby="projection-loss-heading"]')?.textContent,
-  ).toContain("Details loading");
+  const pendingProjection = element.querySelector('[aria-labelledby="projection-loss-heading"]')!;
+  expect(pendingProjection.getAttribute("aria-busy")).toBe("true");
+  expect(pendingProjection.textContent).not.toContain("Details loading");
+  expect(pendingProjection.textContent).not.toContain("Details unavailable");
 
   element.input = {
     schema_version: 3,
@@ -92,4 +93,24 @@ it("separates capture omissions from Agent image omissions and keeps pending cov
   expect(projection.textContent).toContain("Text budget: 1");
   expect(projection.textContent).toContain("Resource budget: 1");
   expect(projection.textContent).not.toContain("Application chrome");
+  expect(projection.getAttribute("aria-busy")).toBe("false");
+});
+
+it("keeps pending extraction regions empty without claiming diagnostics are absent", async () => {
+  const element = document.createElement(
+    "lens-extraction-diagnostics",
+  ) as LensExtractionDiagnostics;
+  element.inputDetailsLoading = true;
+  element.projectionHasLoss = false;
+  document.body.append(element);
+  await element.updateComplete;
+  expect(element.querySelector(".extraction-diagnostics")?.getAttribute("aria-busy")).toBe("true");
+  expect(element.textContent).not.toContain("Loading");
+  expect(element.textContent).not.toContain("No extraction diagnostics are available");
+  expect(element.textContent).toContain("No text, resource, or document content was omitted");
+
+  element.inputDetailsLoading = false;
+  await element.updateComplete;
+  expect(element.querySelector(".extraction-diagnostics")?.getAttribute("aria-busy")).toBe("false");
+  expect(element.textContent).toContain("No extraction diagnostics are available");
 });
