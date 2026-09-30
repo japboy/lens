@@ -13,6 +13,8 @@ minimumReleaseAgeStrict: true
 # Approved exact API match for Tauri's native WebView ownership fix (tauri#15224).
 minimumReleaseAgeExclude:
   - "@tauri-apps/api@2.12.0"
+  # Renovate security update: dompurify@3.4.16
+  - dompurify@3.4.16
 trustPolicy: no-downgrade
 # Approved exact release-please 17.6.0 security backports. Their integrity matches
 # the adopted Action lockfile; later-published backports lack earlier majors'
