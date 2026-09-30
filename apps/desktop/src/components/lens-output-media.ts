@@ -116,12 +116,12 @@ export class LensOutputMedia extends LitElement {
       const previous = changed.get("media") ?? [];
       const retained = this.media.find((item) => item.id === this.selectedId);
       const oldSelected = previous.find((item) => item.id === this.selectedId);
-      if (!retained || !this.sameMedia(retained, oldSelected)) {
+      if (!retained || !oldSelected || !this.sameNavigationTarget(retained, oldSelected)) {
         this.closeExpanded();
         this.selectedId = this.media[0]?.id;
         this.overlay = "none";
         this.fullscreenError = "";
-      }
+      } else if (!this.sameMedia(retained, oldSelected)) this.closeExpanded();
       this.loadedImages = new Map(
         this.media.flatMap((item) => {
           if (item.kind !== "image") return [];

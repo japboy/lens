@@ -170,6 +170,65 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-slide")?.getAttribute("aria-busy")).toBe("false");
   });
 
+  it("keeps a non-first provisional image selected while navigation waits for authoritative decoding", async () => {
+    const element = await mount(
+      images.slice(0, 2).map((image) => ({ ...image, provisional: true })),
+    );
+    await load(element, 1, 100, 100);
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    const slides = element.querySelectorAll(".output-media-slide");
+    expect(slides[1]!.getAttribute("aria-hidden")).toBe("false");
+
+    let presented: boolean | undefined;
+    const navigation = element.presentMedia(images[1]!.id).then((value) => {
+      presented = value;
+    });
+    await Promise.resolve();
+    await element.updateComplete;
+    expect(presented).toBeUndefined();
+    element.media = [
+      element.media[0]!,
+      { ...images[1]!, source: "data:image/jpeg;base64,ZmluYWw=" },
+    ];
+    await element.updateComplete;
+    await Promise.resolve();
+    expect(slides[1]!.getAttribute("aria-hidden")).toBe("false");
+    expect(slides[0]!.getAttribute("aria-hidden")).toBe("true");
+    expect(slides[1]!.getAttribute("aria-busy")).toBe("true");
+    expect(presented).toBeUndefined();
+
+    await load(element, 1, 120, 120);
+    await navigation;
+    expect(presented).toBe(true);
+    expect(slides[1]!.getAttribute("aria-hidden")).toBe("false");
+    expect(slides[1]!.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it.each(["settled-source", "provisional-id", "provisional-mime"] as const)(
+    "resets a non-first selection after a %s replacement",
+    async (replacement) => {
+      const second = { ...images[1]!, provisional: replacement !== "settled-source" };
+      const element = await mount([images[0]!, second]);
+      element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+      await element.updateComplete;
+      expect(element.querySelectorAll(".output-media-slide")[1]!.getAttribute("aria-hidden")).toBe(
+        "false",
+      );
+      const changed =
+        replacement === "provisional-id"
+          ? { ...second, id: "other-response:image:1" }
+          : replacement === "provisional-mime"
+            ? { ...second, mimeType: "image/png" }
+            : { ...second, source: "data:image/jpeg;base64,ZmluYWw=" };
+      element.media = [images[0]!, changed];
+      await element.updateComplete;
+      const slides = element.querySelectorAll(".output-media-slide");
+      expect(slides[0]!.getAttribute("aria-hidden")).toBe("false");
+      expect(slides[1]!.getAttribute("aria-hidden")).toBe("true");
+    },
+  );
+
   it("ends provisional image busy state on fetch failure and resumes it only during retry", async () => {
     const element = await mount([{ ...images[0]!, provisional: true }]);
     await load(element, 0, 100, 100);
@@ -1052,6 +1111,66 @@ describe("Interpretation media interactions", () => {
           ?.getAttribute("aria-label"),
       ).toBe("Media 2 of 3");
     }
+  });
+
+  it.each(["active", "pending"] as const)(
+    "ends %s provisional fullscreen on authoritative handoff while keeping the non-first selection",
+    async (phase) => {
+      const element = await mount([images[0]!, { ...images[1]!, provisional: true }]);
+      element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+      await element.updateComplete;
+      await load(element, 1, 750, 1200);
+      const expanded = element.querySelector<HTMLElement>(".output-media-expanded")!;
+      element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+      if (phase === "active") {
+        setFullscreen(expanded);
+        resolveRequest();
+        await Promise.resolve();
+        await element.updateComplete;
+      }
+
+      const actual = { ...images[1]!, source: "data:image/jpeg;base64,ZmluYWw=" };
+      element.media = [images[0]!, actual];
+      await element.updateComplete;
+      expect(element.querySelectorAll(".output-media-slide")[1]!.getAttribute("aria-hidden")).toBe(
+        "false",
+      );
+      expect(exitFullscreen).toHaveBeenCalledTimes(phase === "active" ? 1 : 0);
+      if (phase === "pending") {
+        setFullscreen(expanded);
+        resolveRequest();
+        await Promise.resolve();
+        await element.updateComplete;
+      }
+      expect(exitFullscreen).toHaveBeenCalledTimes(1);
+      expect(document.fullscreenElement).toBeNull();
+      expect(element.querySelectorAll(".output-media-slide")[1]!.getAttribute("aria-hidden")).toBe(
+        "false",
+      );
+      expect(
+        element.querySelector('.output-media-slide[aria-hidden="false"] img')?.getAttribute("src"),
+      ).toBe(actual.source);
+    },
+  );
+
+  it("exits provisional fullscreen when MIME identity changes even with the same source", async () => {
+    const provisional = { ...images[1]!, provisional: true };
+    const element = await mount([images[0]!, provisional]);
+    element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+    await element.updateComplete;
+    await load(element, 1, 750, 1200);
+    element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
+    setFullscreen(element.querySelector(".output-media-expanded"));
+    resolveRequest();
+    await Promise.resolve();
+    await element.updateComplete;
+    element.media = [images[0]!, { ...provisional, mimeType: "image/png" }];
+    await element.updateComplete;
+    expect(exitFullscreen).toHaveBeenCalledTimes(1);
+    expect(document.fullscreenElement).toBeNull();
+    expect(element.querySelectorAll(".output-media-slide")[0]!.getAttribute("aria-hidden")).toBe(
+      "false",
+    );
   });
 
   it.each(["replacement", "removal", "disconnect"] as const)(
