@@ -622,7 +622,73 @@ describe("Overlay committed response presentation", () => {
     await vi.waitFor(() => expect(last.querySelector("h2")?.textContent).toBe("r3"));
     expect(view.shadowRoot!.querySelector("lens-session-controls")).toBeNull();
     expect(view.shadowRoot!.querySelector("#conversation-tab")).not.toBeNull();
+    expect(output.querySelector(".lens-response-coverage")).toBeNull();
+    const requestSource = vi.fn<(active: boolean) => void>();
+    view.requestSource = requestSource;
+    view.responseHistory = {
+      ...history(2, "history:replacement"),
+      responses: [
+        { ...manifest(1), delivery: { mode: "text_only_partial", sources: [] } },
+        manifest(2),
+      ],
+    };
+    view.sessionView = { ...view.sessionView!, generation: "replacement", revision: 2 };
+    await view.updateComplete;
+    const root = view.shadowRoot!;
+    expect([...root.querySelectorAll('[role="tab"]')].map((tab) => tab.id)).toEqual([
+      "interpretation-tab",
+      "conversation-tab",
+    ]);
+    expect(view.responseHistory.responses[0]?.delivery?.mode).toBe("text_only_partial");
+    expect(view.responseHistory.responses[1]?.delivery).toBeUndefined();
+    for (const tab of ["interpretation", "conversation"] as const) {
+      root.querySelector<HTMLButtonElement>(`#${tab}-tab`)!.click();
+      await view.updateComplete;
+      expect(root.querySelector(".lens-response-coverage")).toBeNull();
+      expect(root.querySelector(".response-input-diagnostics")).toBeNull();
+      expect(root.querySelector("lens-extraction-diagnostics")).toBeNull();
+      expect(root.textContent).not.toContain("Agent input:");
+      expect(root.textContent).not.toContain("Response input history");
+      expect(root.textContent).not.toContain("PARTIAL");
+      expect(root.textContent).not.toContain("UNKNOWN");
+      expect(requestSource).toHaveBeenLastCalledWith(false);
+    }
   });
+  it.each(["source", "diagnostics"] as const)(
+    "returns from live %s to Interpretation when opening saved history",
+    async (previousTab) => {
+      const view = await mountOverlay(1);
+      const requestSource = vi.fn<(active: boolean) => void>();
+      view.requestSource = requestSource;
+      const root = view.shadowRoot!;
+      root.querySelector<HTMLButtonElement>(`#${previousTab}-tab`)!.click();
+      await view.updateComplete;
+      expect(requestSource).toHaveBeenLastCalledWith(true);
+      view.responseHistory = history(1, "history:saved");
+      view.sessionView = {
+        phase: "ready",
+        revision: 1,
+        generation: "saved",
+        session_id: "saved",
+        agent: "codex",
+        interpretation: { responses: [] },
+        conversation: { entries: [] },
+      };
+      await view.updateComplete;
+      expect(root.querySelector('[aria-selected="true"]')?.id).toBe("interpretation-tab");
+      expect(root.querySelector("#interpretation-panel lens-agent-output")).not.toBeNull();
+      expect(root.querySelector("#source-tab")).toBeNull();
+      expect(root.querySelector("#diagnostics-tab")).toBeNull();
+      expect(root.querySelector(".response-input-diagnostics")).toBeNull();
+      expect(requestSource).toHaveBeenLastCalledWith(false);
+      // Unsupported live tabs cannot leave history without a selected tab.
+      Reflect.set(view, "activeTab", previousTab);
+      await view.updateComplete;
+      expect(root.querySelector('[aria-selected="true"]')?.id).toBe("interpretation-tab");
+      expect(root.querySelector("#interpretation-panel")).not.toBeNull();
+      expect(requestSource).toHaveBeenLastCalledWith(false);
+    },
+  );
   it("replaces a provisional first answer exactly once and starts an operation with separate DOM identity", async () => {
     const element = document.createElement("lens-agent-output") as LensAgentOutput;
     element.lens = {
@@ -748,35 +814,38 @@ describe("Overlay committed response presentation", () => {
   });
 });
 
-it("retains each submitted response's text-only coverage across later complete responses and removes it in a new scope", async () => {
-  const element = await mount(2);
-  const first = element.history!.responses[0]!;
-  element.history = {
-    ...element.history!,
-    responses: [
-      {
-        ...first,
-        delivery: {
-          mode: "text_only_partial",
-          sources: [
-            {
-              source_id: "source-0",
-              mode: "text_only_partial",
-              omitted_media: [{ id: "image-0", reason: "image_not_supported" }],
-            },
-            {
-              source_id: "source-1",
-              mode: "unavailable",
-              omitted_media: [{ id: "image-1", reason: "image_not_supported" }],
-            },
-          ],
-        },
+it("keeps per-response input coverage in Diagnostics across later responses and scope replacement", async () => {
+  const view = await mountOverlay(2);
+  const responses = [
+    {
+      ...manifest(1),
+      delivery: {
+        mode: "text_only_partial" as const,
+        sources: [
+          {
+            source_id: "source-0",
+            mode: "text_only_partial" as const,
+            omitted_media: [{ id: "image-0", reason: "image_not_supported" as const }],
+          },
+          {
+            source_id: "source-1",
+            mode: "unavailable" as const,
+            omitted_media: [{ id: "image-1", reason: "image_not_supported" as const }],
+          },
+        ],
       },
-      element.history!.responses[1]!,
-    ],
-  };
-  await element.updateComplete;
-  const coverage = element.querySelector<HTMLDetailsElement>(
+    },
+    manifest(2),
+  ];
+  appendHistory(view, { ...history(2), responses });
+  await view.updateComplete;
+  const output = view.shadowRoot!.querySelector<LensAgentOutput>("lens-agent-output")!;
+  await output.updateComplete;
+  expect(output.querySelector(".lens-response-coverage")).toBeNull();
+  expect(output.textContent).not.toContain("Agent input:");
+  view.shadowRoot!.querySelector<HTMLButtonElement>("#diagnostics-tab")!.click();
+  await view.updateComplete;
+  const coverage = view.shadowRoot!.querySelector<HTMLDetailsElement>(
     '[aria-label="Response 1 input coverage"]',
   )!;
   expect(coverage.open).toBe(false);
@@ -788,12 +857,23 @@ it("retains each submitted response's text-only coverage across later complete r
     "Source 1: text only; images omitted",
   );
   expect(coverage.textContent?.replace(/\s+/g, " ")).toContain("Source 2: not interpreted");
-  expect(element.querySelector('[aria-label="Response 2 input coverage"]')?.textContent).toContain(
-    "UNKNOWN",
-  );
-  element.history = history(1, "next-operation");
-  await element.updateComplete;
-  expect(element.querySelector(".lens-delivery-notice")).toBeNull();
+  expect(
+    view.shadowRoot!.querySelector('[aria-label="Response 2 input coverage"]')?.textContent,
+  ).toContain("UNKNOWN");
+  coverage.open = true;
+  view.responseHistory = { ...view.responseHistory!, htmlContents: new Map() };
+  await view.updateComplete;
+  expect(
+    view.shadowRoot!.querySelector<HTMLDetailsElement>('[aria-label="Response 1 input coverage"]')
+      ?.open,
+  ).toBe(true);
+  appendHistory(view, history(1, "next-operation"));
+  await view.updateComplete;
+  expect(view.shadowRoot!.querySelector(".lens-delivery-notice")).toBeNull();
+  expect(
+    view.shadowRoot!.querySelector<HTMLDetailsElement>('[aria-label="Response 1 input coverage"]')
+      ?.open,
+  ).toBe(false);
 });
 
 it("moves current unavailable-input detail to Diagnostics and clears stale coverage", async () => {
@@ -1000,11 +1080,7 @@ it("keeps committed response coverage in history independently of a newer partia
   };
   await view.updateComplete;
   await view.shadowRoot!.querySelector<LensAgentOutput>("lens-agent-output")!.updateComplete;
-  const notices = [...view.shadowRoot!.querySelectorAll(".lens-delivery-notice")];
-  expect(notices).toHaveLength(1);
-  expect(notices[0]?.textContent).toContain("This response used text only");
-  expect(notices[0]?.textContent?.replace(/\s+/g, " ")).toContain("Source 2: not interpreted");
-  expect(notices[0]?.closest('[aria-label="Response 1 input coverage"]')).not.toBeNull();
+  expect(view.shadowRoot!.querySelector(".lens-delivery-notice")).toBeNull();
   expect(view.shadowRoot!.querySelector(".quality button:last-child")?.textContent?.trim()).toBe(
     "PARTIAL",
   );
@@ -1013,6 +1089,11 @@ it("keeps committed response coverage in history independently of a newer partia
   await view.shadowRoot!.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
     "lens-extraction-diagnostics",
   )!.updateComplete;
+  const notices = [...view.shadowRoot!.querySelectorAll(".lens-delivery-notice")];
+  expect(notices).toHaveLength(1);
+  expect(notices[0]?.textContent).toContain("This response used text only");
+  expect(notices[0]?.textContent?.replace(/\s+/g, " ")).toContain("Source 2: not interpreted");
+  expect(notices[0]?.closest('[aria-label="Response 1 input coverage"]')).not.toBeNull();
   const agentInput = view.shadowRoot!.querySelector('[aria-labelledby="agent-delivery-heading"]')!;
   expect(agentInput.textContent?.replace(/\s+/g, " ")).toContain("Images omitted for Agent 1");
   expect(agentInput.textContent?.replace(/\s+/g, " ")).toContain(
@@ -1027,11 +1108,11 @@ it("keeps committed response coverage in history independently of a newer partia
   expect(view.shadowRoot!.textContent).not.toContain("This response used text only");
 });
 
-it("preserves historical projection loss and missing evidence across later input changes", async () => {
-  const element = await mount(3);
-  element.history = {
-    ...element.history!,
-    responses: element.history!.responses.map((response, index) => ({
+it("preserves historical projection loss in Diagnostics across later input changes", async () => {
+  const view = await mountOverlay(3);
+  appendHistory(view, {
+    ...history(3),
+    responses: history(3).responses.map((response, index) => ({
       ...response,
       delivery: {
         mode: "complete",
@@ -1039,24 +1120,28 @@ it("preserves historical projection loss and missing evidence across later input
         ...(index === 2 ? {} : { projection_has_loss: index === 0 }),
       },
     })),
-  };
-  await element.updateComplete;
-  expect(element.querySelector('[aria-label="Response 1 input coverage"]')?.textContent).toContain(
+  });
+  await view.updateComplete;
+  expect(view.shadowRoot!.querySelector(".lens-response-coverage")).toBeNull();
+  view.shadowRoot!.querySelector<HTMLButtonElement>("#diagnostics-tab")!.click();
+  await view.updateComplete;
+  const root = view.shadowRoot!;
+  expect(root.querySelector('[aria-label="Response 1 input coverage"]')?.textContent).toContain(
     "PARTIAL",
   );
-  expect(element.querySelector('[aria-label="Response 1 input coverage"]')?.textContent).toContain(
+  expect(root.querySelector('[aria-label="Response 1 input coverage"]')?.textContent).toContain(
     "omitted when preparing",
   );
-  expect(element.querySelector('[aria-label="Response 2 input coverage"]')).toBeNull();
-  expect(element.querySelector('[aria-label="Response 3 input coverage"]')?.textContent).toContain(
+  expect(root.querySelector('[aria-label="Response 2 input coverage"]')).toBeNull();
+  expect(root.querySelector('[aria-label="Response 3 input coverage"]')?.textContent).toContain(
     "UNKNOWN",
   );
-  element.lens = { ...element.lens!, stage: "completed", delivery: undefined };
-  await element.updateComplete;
-  expect(element.querySelector('[aria-label="Response 1 input coverage"]')?.textContent).toContain(
+  view.model = { ...view.model!, lens: { ...view.model!.lens, delivery: undefined } };
+  await view.updateComplete;
+  expect(root.querySelector('[aria-label="Response 1 input coverage"]')?.textContent).toContain(
     "PARTIAL",
   );
-  expect(element.querySelector('[aria-label="Response 3 input coverage"]')?.textContent).toContain(
+  expect(root.querySelector('[aria-label="Response 3 input coverage"]')?.textContent).toContain(
     "UNKNOWN",
   );
 });

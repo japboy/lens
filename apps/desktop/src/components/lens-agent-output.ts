@@ -1,5 +1,3 @@
-import { inputCoverage } from "../rendering/input-coverage";
-import { renderResponseDeliveryNotice } from "../rendering/delivery-notice";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { keyed } from "lit/directives/keyed.js";
@@ -287,81 +285,63 @@ export class LensAgentOutput extends LitElement {
     const hasNarrative = narrativeResponses.length > 0;
     return keyed(
       history.scopeId,
-      html`<div class="lens-delivery-notices">
-          ${history.responses
-            .filter((response) => inputCoverage(response.delivery, "unknown") !== "full")
-            .map(
-              (response) => html`<details
-                class="lens-response-coverage"
-                aria-label=${`Response ${response.sequence} input coverage`}
-              >
-                <summary>
-                  Response ${response.sequence} · Agent input:
-                  ${inputCoverage(response.delivery, "unknown").toUpperCase()}
-                </summary>
-                ${renderResponseDeliveryNotice(response.delivery)}
-                ${response.delivery?.projection_has_loss === true ? html`<p>Text, resource, or document content was omitted when preparing this response.</p>` : nothing}
-                ${inputCoverage(response.delivery, "unknown") === "unknown" ? html`<p>Preparation information is unavailable for this response.</p>` : nothing}
-              </details>`,
-            )}
-        </div>
+      html`<div
+        class="lens-content lens-output ${history.media.length ? "has-media" : ""} ${hasNarrative ? "has-narrative" : ""}"
+        data-auto-scroll-container
+        role="document"
+        @scroll=${this.handleHistoryScroll}
+      >
+        ${
+          history.media.length
+            ? html`<lens-output-media
+                .notificationContent=${this.notificationContent}
+                .media=${history.media}
+                .htmlContents=${history.htmlContents}
+                .mediaErrors=${history.mediaErrors}
+                @lens-output-media-demand=${(
+                  event: CustomEvent<{ mediaIds: readonly string[] }>,
+                ) => {
+                  event.stopPropagation();
+                  this.requestMedia?.(event.detail.mediaIds);
+                }}
+              ></lens-output-media>`
+            : nothing
+        }
+        ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-explanation" @click=${this.showExplanation}>Explore the Interpretation <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>` : nothing}
         <div
-          class="lens-content lens-output ${history.media.length ? "has-media" : ""} ${hasNarrative ? "has-narrative" : ""}"
-          data-auto-scroll-container
-          role="document"
-          @scroll=${this.handleHistoryScroll}
+          class="lens-output-narrative"
+          @click=${this.openMarkdownLink}
+          @markdown-render-error=${this.handleMarkdownRenderError}
         >
-          ${
-            history.media.length
-              ? html`<lens-output-media
-                  .notificationContent=${this.notificationContent}
-                  .media=${history.media}
-                  .htmlContents=${history.htmlContents}
-                  .mediaErrors=${history.mediaErrors}
-                  @lens-output-media-demand=${(
-                    event: CustomEvent<{ mediaIds: readonly string[] }>,
-                  ) => {
-                    event.stopPropagation();
-                    this.requestMedia?.(event.detail.mediaIds);
-                  }}
-                ></lens-output-media>`
-              : nothing
-          }
-          ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-explanation" @click=${this.showExplanation}>Explore the Interpretation <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>` : nothing}
-          <div
-            class="lens-output-narrative"
-            @click=${this.openMarkdownLink}
-            @markdown-render-error=${this.handleMarkdownRenderError}
-          >
-            ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-return" @click=${this.showMedia}><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to Media</button>` : nothing}
-            ${repeat(
-              narrativeResponses,
-              (response) => response.id,
-              (response) => html`<section
-                class="lens-response"
-                data-response-id=${response.id}
-                data-response-sequence=${response.sequence}
-                aria-label=${`Response ${response.sequence}`}
-              >
-                ${response.blocks.some((block) => block.type === "markdown" || block.type === "unsupported") ? html`<h2 class="lens-response-heading">Response ${response.sequence}</h2>` : nothing}
-                ${repeat(
-                  response.blocks.filter(
-                    (block) => block.type === "markdown" || block.type === "unsupported",
-                  ),
-                  (block) => block.block_index,
-                  (block) =>
-                    html`<lens-response-block
-                      .operationId=${history.scopeId}
-                      .responseId=${response.id}
-                      .descriptor=${block}
-                      .loadBlock=${this.loadResponseBlock}
-                    ></lens-response-block>`,
-                )}
-              </section>`,
-            )}
-            ${history.capacityReached ? html`<p class="lens-history-capacity" role="status">This session has reached its response history limit. Your previous responses remain available. Start a new session to continue.</p>` : nothing}
-          </div>
-        </div>`,
+          ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-return" @click=${this.showMedia}><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to Media</button>` : nothing}
+          ${repeat(
+            narrativeResponses,
+            (response) => response.id,
+            (response) => html`<section
+              class="lens-response"
+              data-response-id=${response.id}
+              data-response-sequence=${response.sequence}
+              aria-label=${`Response ${response.sequence}`}
+            >
+              ${response.blocks.some((block) => block.type === "markdown" || block.type === "unsupported") ? html`<h2 class="lens-response-heading">Response ${response.sequence}</h2>` : nothing}
+              ${repeat(
+                response.blocks.filter(
+                  (block) => block.type === "markdown" || block.type === "unsupported",
+                ),
+                (block) => block.block_index,
+                (block) =>
+                  html`<lens-response-block
+                    .operationId=${history.scopeId}
+                    .responseId=${response.id}
+                    .descriptor=${block}
+                    .loadBlock=${this.loadResponseBlock}
+                  ></lens-response-block>`,
+              )}
+            </section>`,
+          )}
+          ${history.capacityReached ? html`<p class="lens-history-capacity" role="status">This session has reached its response history limit. Your previous responses remain available. Start a new session to continue.</p>` : nothing}
+        </div>
+      </div>`,
     );
   }
 

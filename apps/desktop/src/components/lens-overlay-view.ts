@@ -11,6 +11,7 @@ import {
 import { cache } from "lit/directives/cache.js";
 import { initialOverlayState } from "../rendering/initial-state";
 import { inputCoverage } from "../rendering/input-coverage";
+import { renderResponseInputDiagnostics } from "../rendering/delivery-notice";
 import { renderSnapshotFailure } from "../rendering/snapshot-status";
 import { LitElement, css, html, nothing, render, type PropertyValues } from "lit";
 import {
@@ -60,6 +61,8 @@ const LENS_TABS = [
   { id: "source", label: "Source" },
   { id: "diagnostics", label: "Diagnostics" },
 ] as const;
+
+const HISTORY_TABS = LENS_TABS.filter(({ id }) => id === "interpretation" || id === "conversation");
 
 type LensTab = (typeof LENS_TABS)[number]["id"];
 
@@ -148,10 +151,8 @@ export class LensOverlayView extends LitElement {
         cursor: pointer;
         padding: 8px 14px;
       }
-      .lens-delivery-notices {
-        flex: 0 0 auto;
-        max-height: 30vh;
-        overflow: auto;
+      .response-input-diagnostics {
+        padding: 14px;
       }
       .lens-response-heading {
         font-size: 12px;
@@ -1876,6 +1877,8 @@ export class LensOverlayView extends LitElement {
       )
         this.activeTab = "interpretation";
     }
+    if (isHistoryView(this.sessionView) && !HISTORY_TABS.some(({ id }) => id === this.activeTab))
+      this.activeTab = "interpretation";
     if (changed.has("model")) {
       const previous = changed.get("model");
       if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
@@ -2334,7 +2337,7 @@ export class LensOverlayView extends LitElement {
   private renderHistory() {
     const view = this.sessionView!;
     const identity = `${view.agent}:${view.session_id}${view.generation ? `:${view.generation}` : ""}`;
-    const activeTab = this.activeTab === "conversation" ? "conversation" : "interpretation";
+    const activeTab = this.activeTab;
     const notification = historyNotification(view) ?? this.updateOnlyNotification();
     const showNotification = Boolean(notification && this.notificationVisibility === "open");
     return html`<div
@@ -2346,7 +2349,7 @@ export class LensOverlayView extends LitElement {
       ${this.renderHeader()}
       <nav class="lens-tabs" aria-label="Lens content">
         <div role="tablist" aria-orientation="horizontal">
-          ${this.renderTab("interpretation", "Interpretation")}${this.renderTab("conversation", "Conversation")}
+          ${HISTORY_TABS.map(({ id, label }) => this.renderTab(id, label))}
         </div>
       </nav>
       <main class="overlay-main" aria-busy=${view.phase === "loading" ? "true" : "false"}>
@@ -2484,20 +2487,23 @@ export class LensOverlayView extends LitElement {
           aria-labelledby="diagnostics-tab"
           tabindex="0"
         >
-          <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
-          <lens-extraction-diagnostics
-            .context=${lens.context}
-            .agent=${lens.agent}
-            .delivery=${delivery}
-            .inputStatus=${inputStatus}
-            .projectionHasLoss=${
-              this.model?.sourceMetadata?.has_input && lens.projection
-                ? this.model.sourceMetadata.projection_has_loss
-                : undefined
-            }
-            .input=${lens.input}
-            .inputDetailsLoading=${this.model?.sourceResource?.stage === "loading"}
-          ></lens-extraction-diagnostics>
+          <div class="lens-content">
+            <lens-session-controls .controls=${lens.session_controls}></lens-session-controls>
+            ${renderResponseInputDiagnostics(this.responseHistory)}
+            <lens-extraction-diagnostics
+              .context=${lens.context}
+              .agent=${lens.agent}
+              .delivery=${delivery}
+              .inputStatus=${inputStatus}
+              .projectionHasLoss=${
+                this.model?.sourceMetadata?.has_input && lens.projection
+                  ? this.model.sourceMetadata.projection_has_loss
+                  : undefined
+              }
+              .input=${lens.input}
+              .inputDetailsLoading=${this.model?.sourceResource?.stage === "loading"}
+            ></lens-extraction-diagnostics>
+          </div>
         </section>`;
     }
   }
@@ -2521,9 +2527,7 @@ export class LensOverlayView extends LitElement {
   }
 
   private handleTabKeyDown = (event: KeyboardEvent): void => {
-    const tabs = isHistoryView(this.sessionView)
-      ? LENS_TABS.filter(({ id }) => id === "interpretation" || id === "conversation")
-      : LENS_TABS;
+    const tabs = isHistoryView(this.sessionView) ? HISTORY_TABS : LENS_TABS;
     const activeIndex = tabs.findIndex(({ id }) => id === this.activeTab);
     const nextIndex = (() => {
       switch (event.key) {
@@ -2561,7 +2565,10 @@ export class LensOverlayView extends LitElement {
   @property({ attribute: false }) requestSource: ((active: boolean) => void) | undefined;
 
   protected updated(): void {
-    this.requestSource?.(this.activeTab === "source" || this.activeTab === "diagnostics");
+    this.requestSource?.(
+      !isHistoryView(this.sessionView) &&
+        (this.activeTab === "source" || this.activeTab === "diagnostics"),
+    );
     // A removed/cached Hero cannot bubble its final fullscreen event to this owner.
     if (this.mediaFullscreen && !this.fullscreenOwner?.isConnected) this.mediaFullscreen = false;
   }

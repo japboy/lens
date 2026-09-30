@@ -1,4 +1,8 @@
 import { html, nothing } from "lit";
+import { keyed } from "lit/directives/keyed.js";
+import { repeat } from "lit/directives/repeat.js";
+import type { ResponseHistoryPresentation } from "../application/response-history-controller";
+import { inputCoverage } from "./input-coverage";
 import type { LensDeliveryCoverage } from "../types";
 
 /** Coverage belongs to its submitted response, independently of current capture quality. */
@@ -29,4 +33,40 @@ export function renderResponseDeliveryNotice(delivery: LensDeliveryCoverage | un
         })}
     </ul>
   </aside>`;
+}
+
+/** Live Diagnostics owns immutable response receipts without exposing them in saved sessions. */
+export function renderResponseInputDiagnostics(history: ResponseHistoryPresentation | undefined) {
+  if (!history) return nothing;
+  const affected = history.responses.filter(
+    (response) => inputCoverage(response.delivery, "unknown") !== "full",
+  );
+  return keyed(
+    history.scopeId,
+    html`<section class="response-input-diagnostics" aria-labelledby="response-input-heading">
+      <h2 id="response-input-heading">Response input history</h2>
+      ${
+        affected.length
+          ? repeat(
+              affected,
+              (response) => response.id,
+              (response) => html`<details
+                class="lens-response-coverage"
+                aria-label=${`Response ${response.sequence} input coverage`}
+              >
+                <summary>
+                  Response ${response.sequence} · Agent input:
+                  ${inputCoverage(response.delivery, "unknown").toUpperCase()}
+                </summary>
+                ${renderResponseDeliveryNotice(response.delivery)}
+                ${response.delivery?.projection_has_loss === true ? html`<p>Text, resource, or document content was omitted when preparing this response.</p>` : nothing}
+                ${inputCoverage(response.delivery, "unknown") === "unknown" ? html`<p>Preparation information is unavailable for this response.</p>` : nothing}
+              </details>`,
+            )
+          : html`<p>
+              ${history.responses.length ? "All recorded responses have complete prepared input." : "No response input diagnostics are available."}
+            </p>`
+      }
+    </section>`,
+  );
 }

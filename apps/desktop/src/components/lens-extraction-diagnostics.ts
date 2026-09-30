@@ -179,7 +179,7 @@ export class LensExtractionDiagnostics extends LitElement {
   private renderAgentDelivery(context?: LensContext) {
     return html`
       <section class="diagnostic-group" aria-labelledby="agent-delivery-heading">
-        <h2 id="agent-delivery-heading">Agent image input</h2>
+        <h2 id="agent-delivery-heading">Current prepared Agent input</h2>
         ${
           this.delivery
             ? html`

@@ -332,7 +332,7 @@ describe("canonical session renderer", () => {
   });
 });
 
-it("history keyboard navigation only visits the two available tabs", async () => {
+it("history keyboard navigation visits only Interpretation and Conversation", async () => {
   const view = new LensOverlayView();
   view.active = true;
   view.sessionView = {
