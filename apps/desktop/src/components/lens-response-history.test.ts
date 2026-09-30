@@ -840,6 +840,28 @@ it("moves current unavailable-input detail to Diagnostics and clears stale cover
     "true",
   );
   expect(view.shadowRoot!.activeElement).toBe(view.shadowRoot!.querySelector("#diagnostics-tab"));
+  // An input container and projection loss do not establish usable text or images.
+  view.model = {
+    ...view.model!,
+    sourceMetadata: { has_input: true, quality: "partial", projection_has_loss: true },
+    lens: {
+      ...view.model!.lens,
+      delivery: {
+        ...view.model!.lens.delivery!,
+        sources: [{ source_id: "source-0", mode: "unavailable", omitted_media: [] }],
+      },
+    },
+  };
+  await view.updateComplete;
+  await view.shadowRoot!.querySelector<HTMLElement & { updateComplete: Promise<boolean> }>(
+    "lens-extraction-diagnostics",
+  )!.updateComplete;
+  expect(inputButton.textContent?.trim()).toBe("UNAVAILABLE");
+  const diagnostics = view.shadowRoot!.querySelector('[aria-labelledby="agent-delivery-heading"]')!;
+  expect(diagnostics.textContent?.replace(/\s+/g, " ")).toContain(
+    "No usable source text or images are available",
+  );
+  expect(diagnostics.textContent?.replace(/\s+/g, " ")).toContain("Images omitted for Agent 0");
   const captureButton = view.shadowRoot!.querySelector<HTMLButtonElement>(
     ".quality button:first-child",
   )!;

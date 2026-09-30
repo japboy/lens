@@ -13,6 +13,7 @@ describe("prepared input coverage", () => {
     expect(inputCoverage(true, false, textOnly, "pending")).toBe("partial");
     expect(inputCoverage(true, true, textOnly, "pending")).toBe("partial");
     expect(inputCoverage(true, false, unavailable, "pending")).toBe("unavailable");
+    expect(inputCoverage(true, true, unavailable, "pending")).toBe("unavailable");
     expect(inputCoverage(false, false, complete, "pending")).toBe("unavailable");
     expect(inputCoverage(false, false, textOnly, "pending")).toBe("unavailable");
   });

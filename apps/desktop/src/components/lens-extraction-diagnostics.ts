@@ -190,8 +190,9 @@ export class LensExtractionDiagnostics extends LitElement {
                 ${
                   this.delivery.mode === "unavailable"
                     ? html`<p>
-                        No usable source text is available to this Agent. Choose an image-capable
-                        Agent or a source with accessible text.
+                        No usable source text or images are available to this Agent. Capture the
+                        sources again, or choose an image-capable Agent or a source with accessible
+                        text.
                       </p>`
                     : nothing
                 }

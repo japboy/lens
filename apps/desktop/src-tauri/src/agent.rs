@@ -1801,7 +1801,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         lens.delivery = Some(delivery.clone());
                         if unavailable {
                             lens.stage = LensStage::Failed;
-                            lens.error = Some("Images cannot be sent to this Agent, and the selected sources have no usable text. Choose an image-capable Agent or a source with accessible text.".into());
+                            lens.error = Some("No usable source text or images are available to this Agent. Capture the sources again, or choose an image-capable Agent or a source with accessible text.".into());
                             finish_retained_representation(lens, Some(LensRefreshOutcome::Failed), lens.error.clone());
                         } else if unchanged_delivery {
                             lens.stage = LensStage::Completed;

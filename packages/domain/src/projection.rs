@@ -457,24 +457,45 @@ impl LensAgentProjection {
     }
 
     pub fn delivery(&self, source_projection: ProjectionRef) -> LensDelivery {
-        let mut coverage = self
-            .payload
-            .delivery
-            .clone()
-            .unwrap_or_else(|| LensDeliveryCoverage {
-                mode: LensDeliveryMode::Complete,
-                projection_has_loss: None,
-                sources: self
-                    .payload
+        let mut coverage = self.payload.delivery.clone().unwrap_or_else(|| {
+            let sources =
+                self.payload
                     .sources
                     .iter()
-                    .map(|source| LensSourceDelivery {
-                        source_id: source.id.clone(),
-                        mode: LensDeliveryMode::Complete,
-                        omitted_media: Vec::new(),
+                    .map(|source| {
+                        let has_text = source.document.as_ref().is_some_and(|document| {
+                            document.nodes.iter().any(meaningful_content_text)
+                        });
+                        let has_image = self
+                            .payload
+                            .media
+                            .iter()
+                            .any(|media| media.source_id == source.id);
+                        LensSourceDelivery {
+                            source_id: source.id.clone(),
+                            mode: if has_text || has_image {
+                                LensDeliveryMode::Complete
+                            } else {
+                                LensDeliveryMode::Unavailable
+                            },
+                            omitted_media: Vec::new(),
+                        }
                     })
-                    .collect(),
-            });
+                    .collect::<Vec<_>>();
+            let mode = if sources
+                .iter()
+                .all(|source| source.mode == LensDeliveryMode::Unavailable)
+            {
+                LensDeliveryMode::Unavailable
+            } else {
+                LensDeliveryMode::Complete
+            };
+            LensDeliveryCoverage {
+                mode,
+                projection_has_loss: None,
+                sources,
+            }
+        });
         coverage.projection_has_loss = Some(
             self.payload
                 .sources
@@ -1245,14 +1266,49 @@ mod tests {
             node.role = Some(role.into());
             node.value = Some(value.into());
             let source = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
-            let text = source.for_image_support(false).unwrap();
+            let reference = source.projection_ref(NonZeroU64::new(1).unwrap());
             assert_eq!(
-                text.delivery(source.projection_ref(NonZeroU64::new(1).unwrap()))
+                source.delivery(reference.clone()).coverage.mode,
+                LensDeliveryMode::Complete
+            );
+            assert_eq!(
+                source
+                    .for_image_support(false)
+                    .unwrap()
+                    .delivery(reference)
                     .coverage
                     .mode,
                 expected,
                 "{role} {value:?}"
             );
+            let mut no_image = input.clone();
+            no_image.media.clear();
+            for node in &mut no_image.sources[0].document.as_mut().unwrap().nodes {
+                node.media_refs.clear();
+            }
+            no_image.sources[0].omissions.push(ProjectionOmission {
+                reason: crate::lens::ProjectionOmissionReason::UnsupportedSemantics,
+                omitted_node_count: 1,
+                first_order: None,
+                last_order: None,
+                detail: None,
+            });
+            let source = LensAgentProjection::from_input(&no_image, &targets, &[]).unwrap();
+            let expected = if expected == LensDeliveryMode::TextOnlyPartial {
+                LensDeliveryMode::Complete
+            } else {
+                expected
+            };
+            for agent_image in [false, true] {
+                let prepared = source.for_image_support(agent_image).unwrap();
+                let before = prepared.bytes().to_vec();
+                let receipt = prepared.delivery(source.projection_ref(NonZeroU64::new(1).unwrap()));
+                assert_eq!(
+                    receipt.coverage.mode, expected,
+                    "{role} {value:?}, capability={agent_image}"
+                );
+                assert_eq!(prepared.bytes(), before);
+            }
         }
     }
 
