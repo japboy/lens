@@ -4,7 +4,11 @@ import type { LensAgentOutput } from "./lens-agent-output";
 import type { LensOverlayView } from "./lens-overlay-view";
 import type { LensResponseBlock } from "./lens-response-block";
 import type { LensOutputMedia } from "./lens-output-media";
-import { responseBlockIdentity } from "../application/response-history-controller";
+import {
+  responseBlockIdentity,
+  ResponseHistoryController,
+} from "../application/response-history-controller";
+import type { ReactiveControllerHost } from "lit";
 import type {
   ResponseHistoryPresentation,
   ResponseManifest,
@@ -711,6 +715,107 @@ describe("Overlay committed response presentation", () => {
     element.history = history(1, "another");
     await element.updateComplete;
     expect(element.querySelector("lens-response-block")).not.toBe(first);
+  });
+  it("keeps the bound initial body visible until the committed body arrives and navigation waits for it", async () => {
+    const element = document.createElement("lens-agent-output") as LensAgentOutput;
+    let resolve!: (body: LensOutputBlock) => void;
+    const request = vi.fn<LoadResponseBlock>(
+      () =>
+        new Promise<LensOutputBlock>((done) => {
+          resolve = done;
+        }),
+    );
+    const controller = new ResponseHistoryController(
+      {
+        addController: () => undefined,
+        requestUpdate: () => {
+          element.history = controller.presentation;
+        },
+      } as unknown as ReactiveControllerHost,
+      { getResponseBlock: request, getHtmlOutput: async () => "" },
+    );
+    element.lens = {
+      operation_id: "op",
+      stage: "transforming",
+      agent: { run_id: "run-1" } as never,
+      prompt_execution_revision: 1,
+      response_history: nativeHistory(history(0)),
+      output_blocks: [{ type: "markdown", text: "Previously **displayed** partial" }],
+    };
+    controller.synchronize(element.lens);
+    element.loadResponseBlock = controller.loadBlock;
+    document.body.append(element);
+    await element.updateComplete;
+    element.lens = {
+      ...element.lens,
+      stage: "completed",
+      output_blocks: [],
+      response_history: nativeHistory(history(1)),
+    };
+    controller.synchronize(element.lens);
+    await element.updateComplete;
+    const block = element.querySelector<LensResponseBlock>("lens-response-block")!;
+    await block.updateComplete;
+    expect(block.textContent).toContain("Previously displayed partial");
+    expect(block.querySelector(".response-loading")).toBeNull();
+    visible(block);
+    await block.updateComplete;
+    expect(block.getAttribute("aria-busy")).toBe("true");
+    let presented = false;
+    const presentation = block.present().then((value) => {
+      presented = value;
+    });
+    await Promise.resolve();
+    expect(presented).toBe(false);
+    expect(block.textContent).toContain("Previously displayed partial");
+    const bodies: Array<string | null> = [];
+    const observer = new MutationObserver(() =>
+      bodies.push(block.querySelector("lens-markdown")?.textContent ?? null),
+    );
+    observer.observe(block, { childList: true, subtree: true, characterData: true });
+    resolve({ type: "markdown", text: "abc" });
+    await presentation;
+    await element.updateComplete;
+    await block.updateComplete;
+    observer.disconnect();
+    expect(presented).toBe(true);
+    expect(block.textContent).toContain("abc");
+    expect(block.getAttribute("aria-busy")).toBe("false");
+    expect(bodies).not.toContain(null);
+    expect(controller.presentation?.provisionalBlocks?.size).toBe(0);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it("releases an initially offscreen provisional body while retaining measured geometry", async () => {
+    const element = await mount();
+    const block = element.querySelector<LensResponseBlock>("lens-response-block")!;
+    const release = vi.fn<() => void>();
+    block.provisional = { body: { type: "markdown", text: "partial" }, bytes: 36, release };
+    await block.updateComplete;
+    resize(block, 260);
+    visible(block, false);
+    await block.updateComplete;
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(block.querySelector("lens-markdown")).toBeNull();
+    expect(block.style.minHeight).toBe("260px");
+  });
+  it("shows errors and explicit Retry without replacing a bound displayed body", async () => {
+    const element = await mount();
+    const block = element.querySelector<LensResponseBlock>("lens-response-block")!;
+    const release = vi.fn<() => void>();
+    block.provisional = { body: { type: "markdown", text: "partial" }, bytes: 36, release };
+    block.loadBlock = vi
+      .fn<LoadResponseBlock>()
+      .mockRejectedValueOnce(new Error("temporary"))
+      .mockResolvedValue({ type: "markdown", text: "recovered" });
+    await block.updateComplete;
+    visible(block);
+    await vi.waitFor(() => expect(block.querySelector('[role="alert"]')).not.toBeNull());
+    expect(block.querySelector("lens-markdown")?.textContent).toContain("partial");
+    expect(block.getAttribute("aria-busy")).toBe("false");
+    block.querySelector<HTMLButtonElement>("button")!.click();
+    await vi.waitFor(() => expect(block.textContent).toContain("recovered"));
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(block.querySelector('[role="alert"]')).toBeNull();
   });
   it("retains measured placeholder height on tab detach and rejects old asynchronous bodies", async () => {
     const element = await mount();

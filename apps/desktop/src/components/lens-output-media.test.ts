@@ -132,6 +132,44 @@ describe("Interpretation media interactions", () => {
     return renderer;
   }
 
+  it("keeps the ordinary media slot while image or HTML bodies load without status text", async () => {
+    const element = await mount([{ ...images[0]!, source: undefined }]);
+    const slide = element.querySelector(".output-media-slide")!;
+    expect(slide.getAttribute("aria-busy")).toBe("true");
+    expect(element.querySelector(".output-media-state")).toBeNull();
+    element.media = [images[0]!];
+    await element.updateComplete;
+    expect(element.querySelector(".output-media-slide")).toBe(slide);
+    await load(element, 0, 100, 100);
+    expect(slide.getAttribute("aria-busy")).toBe("false");
+    element.media = [htmlMedia];
+    await element.updateComplete;
+    const htmlSlide = element.querySelector(".output-media-html-slide")!;
+    expect(htmlSlide.getAttribute("aria-busy")).toBe("true");
+    expect(element.querySelector(".output-media-state")).toBeNull();
+    await loadHtml(element);
+    expect(element.querySelector(".output-media-html-slide")).toBe(htmlSlide);
+    expect(htmlSlide.getAttribute("aria-busy")).toBe("false");
+  });
+  it("waits for the authoritative image when navigating to a provisional handoff", async () => {
+    const element = await mount([{ ...images[0]!, provisional: true }]);
+    await load(element, 0, 100, 100);
+    expect(element.querySelector(".output-media-slide")?.getAttribute("aria-busy")).toBe("true");
+    let presented = false;
+    const navigation = element.presentMedia(images[0]!.id).then((value) => {
+      presented = value;
+    });
+    await element.updateComplete;
+    await Promise.resolve();
+    expect(presented).toBe(false);
+    element.media = [{ ...images[0]!, source: "data:image/png;base64,ZmluYWw=" }];
+    await element.updateComplete;
+    await load(element, 0, 120, 120);
+    await navigation;
+    expect(presented).toBe(true);
+    expect(element.querySelector(".output-media-slide")?.getAttribute("aria-busy")).toBe("false");
+  });
+
   it("renders the shared Notification only in fullscreen and keeps arrival passive with keyboard access", async () => {
     const element = await mount([images[0]!]);
     const action = vi.fn<() => void>();

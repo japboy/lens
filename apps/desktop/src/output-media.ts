@@ -7,6 +7,8 @@ export interface PresentedOutputImage {
   readonly id: string;
   readonly source?: string;
   readonly mimeType: string;
+  /** A prior initial-stream image retained until the committed body arrives. */
+  readonly provisional?: boolean;
 }
 
 export interface PresentedOutputHtml {

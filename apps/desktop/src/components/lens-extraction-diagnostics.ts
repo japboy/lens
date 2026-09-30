@@ -45,13 +45,15 @@ export class LensExtractionDiagnostics extends LitElement {
   protected render() {
     const context = this.context;
     if (!context) {
-      return html`<section class="extraction-diagnostics" aria-labelledby="diagnostics-heading">
+      return html`<section
+        class="extraction-diagnostics"
+        aria-labelledby="diagnostics-heading"
+        aria-busy=${this.inputDetailsLoading ? "true" : "false"}
+      >
         <header class="diagnostics-header">
           <h2 id="diagnostics-heading">Extraction diagnostics</h2>
         </header>
-        <p class="empty-state">
-          ${this.inputDetailsLoading ? "Loading extraction diagnostics…" : "No extraction diagnostics are available."}
-        </p>
+        ${this.inputDetailsLoading ? nothing : html`<p class="empty-state">No extraction diagnostics are available.</p>`}
         <div class="diagnostics-layout">
           ${this.renderProjectionOmissions()} ${this.renderAgentDelivery()}
         </div>
@@ -79,7 +81,11 @@ export class LensExtractionDiagnostics extends LitElement {
     const diagnosticCount = context.diagnostics.length;
 
     return html`
-      <section class="extraction-diagnostics" aria-labelledby="diagnostics-heading">
+      <section
+        class="extraction-diagnostics"
+        aria-labelledby="diagnostics-heading"
+        aria-busy=${this.inputDetailsLoading ? "true" : "false"}
+      >
         <header class="diagnostics-header">
           <h2 id="diagnostics-heading">Extraction diagnostics</h2>
           <span class="diagnostic-count">
@@ -155,7 +161,11 @@ export class LensExtractionDiagnostics extends LitElement {
       source.omissions.filter((omission) => omission.reason !== "application_chrome"),
     );
     return html`
-      <section class="diagnostic-group" aria-labelledby="projection-loss-heading">
+      <section
+        class="diagnostic-group"
+        aria-labelledby="projection-loss-heading"
+        aria-busy=${!this.input && this.inputDetailsLoading && this.projectionHasLoss !== false ? "true" : "false"}
+      >
         <h2 id="projection-loss-heading">Projection omissions</h2>
         ${
           this.projectionHasLoss === false
@@ -170,7 +180,9 @@ export class LensExtractionDiagnostics extends LitElement {
                       return count ? html`<li>${label}: ${count}</li>` : nothing;
                     })}
                   </ul>`
-              : html`<p>Details ${this.inputDetailsLoading ? "loading" : "unavailable"}.</p>`
+              : this.inputDetailsLoading
+                ? nothing
+                : html`<p>Details unavailable.</p>`
         }
       </section>
     `;
