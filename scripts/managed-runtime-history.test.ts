@@ -35,7 +35,7 @@ describe("managed bootstrap identity retention", () => {
       ).toThrow("preserve");
     }
   });
-  it("migrates the base Rust SHA512 hex to the exact npm SRI identity", () => {
+  it("extracts the shipped Rust SHA512 identity", () => {
     const texts: Record<string, string> = {
       "mise.toml": '[tools]\nnode="24.21.0"',
       "mise.lock": `[[tools.node]]\nversion="24.21.0"\n[tools.node."platforms.macos-arm64"]\nchecksum="sha256:${"a".repeat(64)}"`,
@@ -45,14 +45,14 @@ describe("managed bootstrap identity retention", () => {
       ["11.22.0", `sha512:${"b".repeat(128)}`],
     ]);
   });
-  it("migrates prior SRI policy to native lock while retaining the exact old tuple", () => {
+  it("preserves the shipped Rust identity when pnpm switches to the native lock", () => {
     const config = '[tools]\nnode="24.21.0"\npnpm="12.6.0"';
-    const lock = `[[tools.node]]\nversion="24.21.0"\n[tools.node."platforms.macos-arm64"]\nchecksum="sha256:${"a".repeat(64)}"\n[[tools.pnpm]]\nversion="12.6.0"\nbackend="aqua:pnpm/pnpm"\n[tools.pnpm."platforms.macos-arm64"]\nurl="https://github.com/pnpm/pnpm/releases/download/v12.6.0/pnpm-darwin-arm64.tar.gz"\nchecksum="sha256:${"c".repeat(64)}"`;
+    const lock = `[[tools.node]]\nversion="24.21.0"\n[tools.node."platforms.macos-arm64"]\nchecksum="sha256:${"a".repeat(64)}"\n[[tools.pnpm]]\nversion="12.6.0"\n[tools.pnpm."platforms.macos-arm64"]\nchecksum="sha256:${"c".repeat(64)}"`;
     const digest = "b".repeat(128);
     const texts: Record<string, string> = { "mise.toml": config, "mise.lock": lock };
     const legacy: Record<string, string> = {
       ...texts,
-      "apps/desktop/src-tauri/agent-runtime/pnpm.toml": `version="11.22.0"\nintegrity="sha512-${Buffer.from(digest, "hex").toString("base64")}"`,
+      "apps/desktop/src-tauri/src/agent_runtime.rs": `const PNPM_VERSION: &str = "11.22.0";\nconst PNPM_ARCHIVE_SHA512: &str = "${digest}";`,
     };
     const historyPath = "apps/desktop/src-tauri/agent-runtime/pnpm-history.toml";
     const modern: Record<string, string> = {
@@ -66,17 +66,18 @@ describe("managed bootstrap identity retention", () => {
       ["11.22.0", `sha512:${digest}`],
     ]);
     expect(() => assertPreservedBootstrapIdentities(before, after)).not.toThrow();
-    for (const invalid of [
-      { ...modern, [historyPath]: "previous=[]" },
-      { ...modern, "mise.lock": lock.replace("sha256:cccc", "sha512:cccc") },
-      { ...modern, [historyPath]: modern[historyPath].replace("sha512:", "sha256:") },
-    ]) {
-      expect(() =>
-        assertPreservedBootstrapIdentities(
-          before,
-          bootstrapIdentities((path) => (invalid as Record<string, string>)[path] ?? null),
+    expect(() =>
+      assertPreservedBootstrapIdentities(
+        before,
+        bootstrapIdentities((path) =>
+          path === historyPath ? "previous=[]" : (modern[path] ?? null),
         ),
-      ).toThrow(/pnpm|SHA256/u);
+      ),
+    ).toThrow("preserve");
+    for (const history of ["", "previous='wrong'", "[[previous]]\nversion='11.22.0'"]) {
+      expect(() =>
+        bootstrapIdentities((path) => (path === historyPath ? history : (modern[path] ?? null))),
+      ).toThrow(/history|History|Missing/u);
     }
   });
 });

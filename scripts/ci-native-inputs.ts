@@ -16,7 +16,7 @@ export const NATIVE_CODE_INPUTS = new Set([
 // This is intentionally a bounded inventory, not a claim to interpret arbitrary Rust.
 export const NATIVE_BUILD_INPUTS = {
   "apps/desktop/src-tauri/build.rs": {
-    digest: "85cf1f91113aa1f91b83ada337193183799285f7d51d6a1f7b39cedc9446efa5",
+    digest: "489aa0cb408518084b1931dc0fb7254a79fb69476e0ed554dd9e199f18eda853",
     inputs: [
       "LICENSE",
       "NOTICE",

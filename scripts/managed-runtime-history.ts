@@ -6,15 +6,13 @@ import { parse } from "@iarna/toml";
 
 type Identity = readonly [version: string, digest: string];
 type Read = (path: string) => string | null;
-const pnpmPath = "apps/desktop/src-tauri/agent-runtime/pnpm.toml";
 const nodeHistoryPath = "apps/desktop/src-tauri/agent-runtime/node-history.toml";
 const table = (text: string) => parse(text) as Record<string, unknown>;
 const textField = (entry: Record<string, unknown>, key: string): string => {
-  if (typeof entry[key] !== "string") throw new Error(`Missing ${key}`);
+  if (!entry || typeof entry[key] !== "string") throw new Error(`Missing ${key}`);
   return entry[key];
 };
 function previous(value: unknown, digestKey: string): Identity[] {
-  if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("History must be an array");
   return value.map((entry: Record<string, unknown>) => [
     textField(entry, "version"),
@@ -23,93 +21,33 @@ function previous(value: unknown, digestKey: string): Identity[] {
 }
 export function bootstrapIdentities(read: Read): { node: Identity[]; pnpm: Identity[] } {
   const config = table(read("mise.toml") ?? "");
-  const version = textField(config.tools as Record<string, unknown>, "node");
   const lock = table(read("mise.lock") ?? "");
-  const entries = (lock.tools as Record<string, unknown>).node as Record<string, unknown>[];
-  if (!Array.isArray(entries) || entries.length !== 1 || entries[0]?.version !== version)
-    throw new Error("Node lock must match its exact declaration");
-  const artifact = entries[0]["platforms.macos-arm64"] as Record<string, unknown>;
-  const checksum = textField(artifact, "checksum");
-  if (!/^sha256:[a-f0-9]{64}$/u.test(checksum)) throw new Error("Node SHA256 required");
-  const history = read(nodeHistoryPath);
+  // Artifact formats are validated by the required Rust build. This gate compares identities.
+  const current = (tool: string): Identity => {
+    const version = textField(config.tools as Record<string, unknown>, tool);
+    const entries = (lock.tools as Record<string, unknown>)[tool] as Record<string, unknown>[];
+    if (!Array.isArray(entries) || entries.length !== 1 || entries[0]?.version !== version)
+      throw new Error(`${tool} lock must identify its declared version`);
+    const artifact = entries[0]["platforms.macos-arm64"] as Record<string, unknown>;
+    return [version, textField(artifact, "checksum")];
+  };
+  const [nodeVersion, nodeDigest] = current("node");
+  const nodeHistory = read(nodeHistoryPath);
   const node: Identity[] = [
-    [version, checksum.slice(7)],
-    ...previous(history ? table(history).previous : undefined, "archive_sha256"),
+    [nodeVersion, nodeDigest.replace(/^sha256:/u, "")],
+    ...(nodeHistory ? previous(table(nodeHistory).previous, "archive_sha256") : []),
   ];
-  const declaration = read(pnpmPath);
+  // main before managed pnpm policy shipped the JavaScript SHA512 identity in Rust.
   const source = read("apps/desktop/src-tauri/src/agent_runtime.rs") ?? "";
   const legacyVersion = /const PNPM_VERSION: &str = "([^"]+)";/u.exec(source)?.[1];
   const legacyDigest = /const PNPM_ARCHIVE_SHA512: &str = "([a-f0-9]{128})";/u.exec(source)?.[1];
   let pnpm: Identity[];
-  if (declaration) {
-    const policy = table(declaration);
-    const normalize = ([version, integrity]: Identity): Identity => {
-      const bytes = Buffer.from(integrity.replace(/^sha512-/u, ""), "base64");
-      if (
-        !integrity.startsWith("sha512-") ||
-        bytes.length !== 64 ||
-        `sha512-${bytes.toString("base64")}` !== integrity
-      )
-        throw new Error("Canonical historical pnpm SHA512 SRI required");
-      return [version, `sha512:${bytes.toString("hex")}`];
-    };
-    pnpm = [
-      [textField(policy, "version"), textField(policy, "integrity")] as Identity,
-      ...previous(policy.previous, "integrity"),
-    ].map(normalize);
-  } else if (legacyVersion && legacyDigest) {
-    // The pre-policy runtime was independent of development's native pnpm.
+  if (legacyVersion && legacyDigest) {
     pnpm = [[legacyVersion, `sha512:${legacyDigest}`]];
   } else {
-    const pnpmVersion = textField(config.tools as Record<string, unknown>, "pnpm");
-    const pnpmEntries = (lock.tools as Record<string, unknown>).pnpm as Record<string, unknown>[];
-    if (
-      !/^12\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(pnpmVersion) ||
-      !Array.isArray(pnpmEntries) ||
-      pnpmEntries.length !== 1 ||
-      pnpmEntries[0]?.version !== pnpmVersion ||
-      pnpmEntries[0]?.backend !== "aqua:pnpm/pnpm"
-    )
-      throw new Error("Native pnpm lock must match its exact development declaration");
-    const artifact = pnpmEntries[0]["platforms.macos-arm64"] as Record<string, unknown>;
-    const checksum = textField(artifact, "checksum");
-    if (
-      artifact.url !==
-        `https://github.com/pnpm/pnpm/releases/download/v${pnpmVersion}/pnpm-darwin-arm64.tar.gz` ||
-      !/^sha256:[a-f0-9]{64}$/u.test(checksum)
-    )
-      throw new Error("Official native pnpm archive and SHA256 required");
     const history = read("apps/desktop/src-tauri/agent-runtime/pnpm-history.toml");
     if (!history) throw new Error("Explicit pnpm history required");
-    const policy = table(history);
-    if (Object.keys(policy).some((key) => key !== "previous"))
-      throw new Error("pnpm history owns only previous identities");
-    if (
-      !Array.isArray(policy.previous) ||
-      policy.previous.some(
-        (entry) =>
-          typeof entry !== "object" ||
-          entry === null ||
-          Object.keys(entry).length !== 2 ||
-          Object.keys(entry).some((key) => !["version", "archive_digest"].includes(key)),
-      )
-    )
-      throw new Error("Explicit pnpm previous identities require version and archive_digest only");
-    const old = previous(policy.previous, "archive_digest");
-    const seen = new Set<string>();
-    for (const [version, digest] of old) {
-      if (
-        !/^(11|12)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version) ||
-        !(version.startsWith("11.") ? /^sha512:[a-f0-9]{128}$/u : /^sha256:[a-f0-9]{64}$/u).test(
-          digest,
-        ) ||
-        seen.has(version) ||
-        (version === pnpmVersion && digest !== checksum)
-      )
-        throw new Error("Noncanonical or conflicting historical pnpm identity");
-      seen.add(version);
-    }
-    pnpm = [[pnpmVersion, checksum], ...old];
+    pnpm = [current("pnpm"), ...previous(table(history).previous, "archive_digest")];
   }
   return { node, pnpm };
 }

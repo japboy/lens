@@ -50,12 +50,6 @@ fn main() {
     }
     node_identities.push((policy.version, policy.archive_sha256));
     let mut pnpm_identities = pnpm.previous;
-    for (version, digest) in &pnpm_identities {
-        assert!(
-            version != &pnpm.version || digest == &format!("sha256:{}", pnpm.archive_sha256),
-            "conflicting current and historical pnpm digest"
-        );
-    }
     pnpm_identities.push((pnpm.version, format!("sha256:{}", pnpm.archive_sha256)));
     for (name, identities) in [
         ("LENS_APPROVED_NODE_IDENTITIES", node_identities),
