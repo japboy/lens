@@ -2,23 +2,27 @@ import { describe, expect, it } from "vitest";
 import { inputCoverage } from "./input-coverage";
 import type { LensDeliveryCoverage } from "../types";
 
-const complete: LensDeliveryCoverage = { mode: "complete", sources: [] };
-const textOnly: LensDeliveryCoverage = { mode: "text_only_partial", sources: [] };
-const unavailable: LensDeliveryCoverage = { mode: "unavailable", sources: [] };
+const complete: LensDeliveryCoverage = {
+  mode: "complete",
+  sources: [],
+  projection_has_loss: false,
+};
 
-describe("input coverage", () => {
-  it("calls input full only when capture, projection, and current delivery are all complete", () => {
-    expect(inputCoverage("full", true, false, complete, "pending")).toBe("full");
-    expect(inputCoverage("full", true, true, complete, "pending")).toBe("partial");
-    expect(inputCoverage("full", true, undefined, complete, "pending")).toBe("unknown");
-    expect(inputCoverage("full", true, false, undefined, "pending")).toBe("pending");
-    expect(inputCoverage("full", true, false, undefined, "unknown")).toBe("unknown");
+describe("prepared input coverage", () => {
+  it("uses the receipt's completeness and availability, including legacy missing evidence", () => {
+    expect(inputCoverage(complete, "unknown")).toBe("full");
+    expect(inputCoverage({ ...complete, projection_has_loss: true }, "unknown")).toBe("partial");
+    expect(inputCoverage({ ...complete, projection_has_loss: undefined }, "unknown")).toBe(
+      "unknown",
+    );
+    expect(inputCoverage({ mode: "text_only_partial", sources: [] }, "unknown")).toBe("partial");
+    expect(
+      inputCoverage({ mode: "unavailable", sources: [], projection_has_loss: true }, "unknown"),
+    ).toBe("unavailable");
   });
 
-  it("keeps capture loss distinct from image-delivery loss and unavailable input", () => {
-    expect(inputCoverage("partial", true, false, complete, "pending")).toBe("partial");
-    expect(inputCoverage("full", true, false, textOnly, "pending")).toBe("partial");
-    expect(inputCoverage("full", true, false, unavailable, "pending")).toBe("unavailable");
-    expect(inputCoverage("unavailable", false, false, complete, "pending")).toBe("unavailable");
+  it("keeps missing preparation pending or unknown according to source currentness", () => {
+    expect(inputCoverage(undefined, "pending")).toBe("pending");
+    expect(inputCoverage(undefined, "unknown")).toBe("unknown");
   });
 });

@@ -1,3 +1,4 @@
+import { inputCoverage } from "../rendering/input-coverage";
 import { renderResponseDeliveryNotice } from "../rendering/delivery-notice";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { repeat } from "lit/directives/repeat.js";
@@ -288,7 +289,7 @@ export class LensAgentOutput extends LitElement {
       history.scopeId,
       html`<div class="lens-delivery-notices">
           ${history.responses
-            .filter((response) => response.delivery && response.delivery.mode !== "complete")
+            .filter((response) => inputCoverage(response.delivery, "unknown") !== "full")
             .map(
               (response) => html`<details
                 class="lens-response-coverage"
@@ -296,9 +297,11 @@ export class LensAgentOutput extends LitElement {
               >
                 <summary>
                   Response ${response.sequence} · Agent input:
-                  ${response.delivery?.mode === "unavailable" ? "UNAVAILABLE" : "PARTIAL"}
+                  ${inputCoverage(response.delivery, "unknown").toUpperCase()}
                 </summary>
                 ${renderResponseDeliveryNotice(response.delivery)}
+                ${response.delivery?.projection_has_loss === true ? html`<p>Text, resource, or document content was omitted when preparing this response.</p>` : nothing}
+                ${inputCoverage(response.delivery, "unknown") === "unknown" ? html`<p>Preparation information is unavailable for this response.</p>` : nothing}
               </details>`,
             )}
         </div>

@@ -1,12 +1,9 @@
-import type { ExtractionQuality, LensDeliveryCoverage } from "../types";
+import type { LensDeliveryCoverage } from "../types";
 
 export type InputCoverage = "full" | "partial" | "unavailable" | "pending" | "unknown";
 
-/** A complete input requires capture, projection, and Agent delivery to be accounted for. */
+/** Prepared completeness measures additional loss relative to the acquired source, using the preparation receipt, not capture quality or submission. */
 export function inputCoverage(
-  capture: ExtractionQuality | null | undefined,
-  hasInput: boolean | undefined,
-  projectionHasLoss: boolean | undefined,
   delivery: LensDeliveryCoverage | undefined,
   unresolved: "pending" | "unknown",
 ): InputCoverage {
@@ -15,13 +12,10 @@ export function inputCoverage(
     case "unavailable":
       return "unavailable";
     case "text_only_partial":
-      return hasInput === false || capture === "unavailable" ? "unavailable" : "partial";
+      return "partial";
     case "complete":
-      if (hasInput === false || capture === "unavailable") return "unavailable";
-      if (capture === "partial" || projectionHasLoss === true) return "partial";
-      return hasInput === true && capture === "full" && projectionHasLoss === false
-        ? "full"
-        : "unknown";
+      if (delivery.projection_has_loss === true) return "partial";
+      return delivery.projection_has_loss === false ? "full" : "unknown";
     default:
       return assertNever(delivery.mode);
   }

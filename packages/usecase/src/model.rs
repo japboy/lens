@@ -791,6 +791,7 @@ mod tests {
         let newer_source = projection(2, 'b');
         let delivered = projection(1, 'c');
         let complete = LensDeliveryCoverage {
+            projection_has_loss: Some(false),
             mode: LensDeliveryMode::Complete,
             sources: vec![LensSourceDelivery {
                 source_id: "source-0".into(),

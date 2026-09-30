@@ -12,7 +12,7 @@ export function renderResponseDeliveryNotice(delivery: LensDeliveryCoverage | un
     <p>
       ${
         unavailable
-          ? "No usable source text was available to this agent. Choose an image-capable agent or a source with accessible text."
+          ? "No usable source text or images were available to this agent. Capture the sources again, or choose an image-capable agent or a source with accessible text."
           : "Only accessible text was sent; captured images were omitted."
       }
     </p>

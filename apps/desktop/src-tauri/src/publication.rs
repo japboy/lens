@@ -201,12 +201,7 @@ fn project(snapshot: &AppSnapshot, label: &str, output_ref: Option<String>) -> W
                     source
                         .omissions
                         .iter()
-                        .any(|omission| match omission.reason {
-                            crate::lens::ProjectionOmissionReason::ApplicationChrome => false,
-                            crate::lens::ProjectionOmissionReason::TokenBudget
-                            | crate::lens::ProjectionOmissionReason::ResourceBudget
-                            | crate::lens::ProjectionOmissionReason::UnsupportedSemantics => true,
-                        })
+                        .any(crate::lens::ProjectionOmission::has_loss)
                 })
             }),
             quality: snapshot

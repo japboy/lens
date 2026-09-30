@@ -184,6 +184,7 @@ pub(crate) fn delivery() -> usecase::live_sync::LensDelivery {
         source_projection: projection.clone(),
         projection,
         coverage: usecase::live_sync::LensDeliveryCoverage {
+            projection_has_loss: Some(false),
             mode: usecase::live_sync::LensDeliveryMode::TextOnlyPartial,
             sources: vec![usecase::live_sync::LensSourceDelivery {
                 source_id: "source-0".into(),

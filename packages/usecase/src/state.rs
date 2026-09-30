@@ -480,6 +480,7 @@ mod tests {
                     source_projection: projection.clone(),
                     projection,
                     coverage: domain::projection::LensDeliveryCoverage {
+                        projection_has_loss: Some(false),
                         mode: domain::projection::LensDeliveryMode::Complete,
                         sources: vec![domain::projection::LensSourceDelivery {
                             source_id: "source-0".into(),
