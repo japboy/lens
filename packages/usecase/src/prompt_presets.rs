@@ -350,9 +350,28 @@ mod tests {
             .iter()
             .filter(|p| p.id != "evocative")
             .all(|p| p.template.common.contains(BUILT_IN_RESPONSE_INSTRUCTION)));
-        assert!(!serde_json::to_string(&catalog)
-            .unwrap()
-            .contains("description"));
+        for preset in catalog
+            .presets
+            .iter()
+            .filter(|preset| preset.id != "evocative")
+        {
+            let common = &preset.template.common;
+            assert!(common.contains("If generated images best communicate the content"));
+            assert!(common.contains("prefer an appropriate authorized MCP Apps tool"));
+            assert!(common.contains("lens_rich_html.render_html"));
+            assert!(common.contains("lens_output.publish_html"));
+            assert!(common.contains("supplementary Markdown and static HTML body text"));
+            assert!(common.contains("MCP Apps documents are not transformed"));
+        }
+        assert!(catalog.presets[3]
+            .template
+            .common
+            .contains("Generated images are the primary and required output"));
+        let serialized = serde_json::to_value(&catalog).unwrap();
+        assert!(!serialized.as_object().unwrap().contains_key("description"));
+        for preset in serialized["presets"].as_array().unwrap() {
+            assert!(!preset.as_object().unwrap().contains_key("description"));
+        }
     }
 
     #[test]

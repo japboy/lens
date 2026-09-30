@@ -18,6 +18,7 @@ hyper-util = { version = "=0.1.20", features = ["tokio", "service"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 tokio = { version = "=1.53.1", features = ["net", "rt", "macros"] }
 tokio-util = "=0.7.19"
 

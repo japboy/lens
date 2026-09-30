@@ -774,6 +774,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         projection: projection_ref,
         delivery: None,
         output_blocks: Vec::new().into(),
+        mcp_apps: Vec::new(),
         representation: None,
         response_history: Default::default(),
         pending_representation: None,

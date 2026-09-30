@@ -20,7 +20,25 @@ export interface PresentedOutputHtml {
   readonly byteLength: number;
 }
 
-export type PresentedOutputMedia = PresentedOutputImage | PresentedOutputHtml;
+export interface PresentedOutputApp {
+  readonly kind: "app";
+  readonly id: string;
+  readonly mimeType: "text/html;profile=mcp-app";
+  readonly descriptor: import("./mcp-apps/types").McpAppDescriptor;
+}
+
+export function presentMcpApps(
+  apps: readonly import("./mcp-apps/types").McpAppDescriptor[] = [],
+): PresentedOutputApp[] {
+  return apps.map((descriptor) => ({
+    kind: "app",
+    id: `app:${descriptor.id}`,
+    mimeType: "text/html;profile=mcp-app",
+    descriptor,
+  }));
+}
+
+export type PresentedOutputMedia = PresentedOutputImage | PresentedOutputHtml | PresentedOutputApp;
 
 export interface OutputNarrativeBlock {
   readonly block: LensOutputBlock;

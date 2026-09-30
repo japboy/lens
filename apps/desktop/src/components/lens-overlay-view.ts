@@ -1792,6 +1792,7 @@ export class LensOverlayView extends LitElement {
     | ((block: DeferredDocumentBlock) => Promise<DocumentBlock>)
     | undefined;
   @property({ type: Boolean }) active = initialOverlayState().active;
+  @property({ attribute: false }) appPort: import("../mcp-apps/types").McpAppsPort | undefined;
   @property({ attribute: false }) responseHistory: ResponseHistoryPresentation | undefined;
   @property({ attribute: false }) loadResponseBlock: LoadResponseBlock | undefined;
   @property({ attribute: false }) retryResponseMedia: ((id: string) => Promise<void>) | undefined;
@@ -2382,6 +2383,7 @@ export class LensOverlayView extends LitElement {
                 : html`<lens-agent-output
                     .sessionKind=${"history"}
                     .history=${this.responseHistory}
+                    .appPort=${this.appPort}
                     .notificationContent=${this.notificationSurface()}
                     .loadResponseBlock=${this.loadResponseBlock}
                     .requestMedia=${this.requestResponseMedia}
@@ -2459,6 +2461,7 @@ export class LensOverlayView extends LitElement {
           <lens-agent-output
             .lens=${displayLens}
             .history=${this.responseHistory}
+            .appPort=${this.appPort}
             .notificationContent=${this.notificationSurface()}
             .loadResponseBlock=${this.loadResponseBlock}
             .requestMedia=${this.requestResponseMedia}

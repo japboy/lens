@@ -9,10 +9,14 @@ import {
   type OutputMediaDemand,
 } from "./events";
 import type {
+  PresentedOutputApp,
   PresentedOutputImage,
   PresentedOutputHtml,
   PresentedOutputMedia,
 } from "../output-media";
+import type { McpAppsPort } from "../mcp-apps/types";
+import type { LensMcpApp } from "./lens-mcp-app";
+import "./lens-mcp-app";
 import type { HtmlOutputContent } from "../application/html-output-content";
 
 type PreparedHtml = {
@@ -48,6 +52,8 @@ interface LoadedImage {
 
 @customElement("lens-output-media")
 export class LensOutputMedia extends LitElement {
+  @property({ attribute: false }) appPort: McpAppsPort | undefined;
+  @property({ type: Boolean }) replayApps = false;
   private preparedHtml = new Map<string, PreparedHtml>();
   private static nextId = 0;
   private readonly detailsId = `lens-output-media-details-${++LensOutputMedia.nextId}`;
@@ -210,10 +216,17 @@ export class LensOutputMedia extends LitElement {
 
   private sameMedia(item: PresentedOutputMedia, previous?: PresentedOutputMedia): boolean {
     if (!previous || item.id !== previous.id || item.kind !== previous.kind) return false;
-    return item.kind === "image"
-      ? previous.kind === "image" &&
+    switch (item.kind) {
+      case "image":
+        return (
+          previous.kind === "image" &&
           (!item.source || !previous.source || item.source === previous.source)
-      : previous.kind === "html" && item.resourceId === previous.resourceId;
+        );
+      case "html":
+        return previous.kind === "html" && item.resourceId === previous.resourceId;
+      case "app":
+        return previous.kind === "app" && item.descriptor.id === previous.descriptor.id;
+    }
   }
 
   private sameNavigationTarget(
@@ -280,7 +293,11 @@ export class LensOutputMedia extends LitElement {
     const ordinal = this.selectedIndex + 1;
     const loaded = item.kind === "image" ? this.imageState(item) : undefined;
     const ready =
-      item.kind === "image" ? loaded?.status === "ready" : this.htmlState(item) === "ready";
+      item.kind === "image"
+        ? loaded?.status === "ready"
+        : item.kind === "app"
+          ? this.appReady(item.id)
+          : this.htmlState(item) === "ready";
     const expandedMedia = this.fullscreen.status === "idle" ? item : this.fullscreen.session.media;
     return html`
       <section
@@ -447,6 +464,7 @@ export class LensOutputMedia extends LitElement {
 
   private renderSlide(item: PresentedOutputMedia, index: number) {
     if (item.kind === "html") return this.renderHtmlSlide(item, index);
+    if (item.kind === "app") return this.renderAppSlide(item, index);
     const mounted = Math.abs(index - this.selectedIndex) <= 1;
     const loaded = this.imageState(item);
     return html`<figure
@@ -479,6 +497,48 @@ export class LensOutputMedia extends LitElement {
           : nothing
       }
     </figure>`;
+  }
+
+  private appReady(id: string): boolean {
+    return [...this.querySelectorAll<LensMcpApp>("lens-mcp-app")].some(
+      (app) => app.descriptor && `app:${app.descriptor.id}` === id && app.ready,
+    );
+  }
+
+  private renderAppSlide(item: PresentedOutputApp, index: number) {
+    const selected = index === this.selectedIndex;
+    return html`<section
+      class="output-media-slide output-media-html-slide"
+      aria-roledescription="slide"
+      aria-label=${`App ${index + 1} of ${this.media.length}`}
+      aria-hidden=${selected ? "false" : "true"}
+      ?inert=${!selected}
+    >
+      <div class="output-media-html-content">
+        <header class="output-html-expanded-header">
+          <span>${item.descriptor.title ?? "Interactive Interpretation"}</span
+          ><button
+            type="button"
+            class="output-media-tool output-html-expanded-close"
+            aria-label="Close Expanded App"
+            @click=${this.closeExpanded}
+          >
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </header>
+        <lens-mcp-app
+          style="display:flex;flex-direction:column;width:100%;height:100%"
+          .descriptor=${item.descriptor}
+          .port=${this.appPort}
+          .active=${selected}
+          .replay=${this.replayApps}
+          @lens-mcp-app-state=${() => {
+            this.completeNavigation();
+            this.requestUpdate();
+          }}
+        ></lens-mcp-app>
+      </div>
+    </section>`;
   }
 
   private renderHtmlSlide(item: PresentedOutputHtml, index: number) {
@@ -632,7 +692,11 @@ export class LensOutputMedia extends LitElement {
         ? this.imageState(item).status
         : item?.kind === "html"
           ? this.htmlState(item)
-          : "failed";
+          : item?.kind === "app"
+            ? this.appReady(item.id)
+              ? "ready"
+              : "loading"
+            : "failed";
     if (!item || !this.sameNavigationTarget(item, pending.media) || state === "failed") {
       this.navigation = undefined;
       pending.resolve(false);
@@ -785,7 +849,7 @@ export class LensOutputMedia extends LitElement {
     if (this.fullscreen.status !== "idle") return;
     const media = this.media[this.selectedIndex];
     const element =
-      media?.kind === "html"
+      media && media.kind !== "image"
         ? this.querySelector<HTMLElement>(
             '.output-media-html-slide[aria-hidden="false"] .output-media-html-content',
           )
@@ -793,7 +857,13 @@ export class LensOutputMedia extends LitElement {
     if (
       !element ||
       !media ||
-      (media.kind === "image" ? this.imageState(media).status : this.htmlState(media)) !== "ready"
+      (media.kind === "image"
+        ? this.imageState(media).status
+        : media.kind === "app"
+          ? this.appReady(media.id)
+            ? "ready"
+            : "loading"
+          : this.htmlState(media)) !== "ready"
     )
       return;
     this.overlay = "none";

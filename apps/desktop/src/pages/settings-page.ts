@@ -34,7 +34,11 @@ export class SettingsPage extends ReactiveElement {
       {
         name: "agent",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () => import("../components/lens-agent-settings"),
+        load: () =>
+          Promise.all([
+            import("../components/lens-agent-settings"),
+            import("../components/lens-mcp-app-settings"),
+          ]),
       },
       {
         name: "agent-defaults",
@@ -143,6 +147,9 @@ export class SettingsPage extends ReactiveElement {
         ? { scope: "settings", type: intent.type, agent: intent.agent }
         : { scope: "settings", type: intent.type };
     switch (intent.type) {
+      case "set-mcp-apps-servers":
+        await this.commands.run(identity, () => this.port.setMcpAppsServers(intent.servers));
+        return;
       case "choose-external-executable": {
         const editor =
           this.view.shadowRoot?.querySelector<LensAgentSettings>("lens-agent-settings");

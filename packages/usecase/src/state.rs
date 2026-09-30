@@ -935,6 +935,7 @@ mod tests {
             context_revision,
             projection,
             run_id: Uuid::from_u128(11),
+            mcp_apps: Vec::new(),
             output_blocks: vec![crate::model::LensOutputBlock::Markdown {
                 message_id: None,
                 text: "Settled representation".into(),

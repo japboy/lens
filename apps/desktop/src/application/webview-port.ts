@@ -1,4 +1,5 @@
 import type { SessionView, DocumentBlock } from "./session-document";
+import type { McpAppsPort, McpAppsServer } from "../mcp-apps/types";
 import { parseSettingsDestination, type SettingsDestination } from "../agent-prompt-template";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -47,7 +48,7 @@ export interface LensOutputResource {
   output_blocks: LensOutputBlock[];
 }
 
-export interface WebviewPort {
+export interface WebviewPort extends McpAppsPort {
   getLensSource(sourceRef: string): Promise<LensSourceResource>;
   getLensOutput(outputRef: string): Promise<LensOutputResource>;
   getLensImage(imageRef: string): Promise<{ image_ref: string; data: string }>;
@@ -106,6 +107,7 @@ export interface WebviewPort {
     response: InteractionResponse,
   ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
+  setMcpAppsServers(servers: McpAppsServer[]): Promise<void>;
   getAppSnapshot(): Promise<AppSnapshot>;
   openScreenRecordingSettings(): Promise<void>;
   getAccessibilityPermission(): Promise<boolean>;
@@ -138,6 +140,11 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  setMcpAppsServers: (servers) => invoke("set_mcp_apps_servers", { servers }),
+  openMcpApp: (artifactId, hostOrigin) => invoke("open_mcp_app", { artifactId, hostOrigin }),
+  mcpAppRequest: (leaseId, request) => invoke("mcp_app_request", { leaseId, request }),
+  closeMcpApp: (leaseId) => invoke("close_mcp_app", { leaseId }),
+  submitMcpAppMessage: (leaseId, draftId) => invoke("submit_mcp_app_message", { leaseId, draftId }),
   getLensSource: (sourceRef) => invoke("get_lens_source", { sourceRef }),
   getLensOutput: (outputRef) => invoke("get_lens_output", { outputRef }),
   getLensImage: (imageRef) => invoke("get_lens_image", { imageRef }),

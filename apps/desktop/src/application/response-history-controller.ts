@@ -17,6 +17,7 @@ export type ResponseBlockDescriptor = LensResponseBlockDescriptor & {
   source?: DeferredDocumentBlock;
 };
 export interface ResponseManifest {
+  mcpApps?: readonly import("../mcp-apps/types").McpAppDescriptor[];
   id: string;
   sequence: number;
   delivery?: LensDeliveryCoverage;
@@ -123,6 +124,7 @@ export class ResponseHistoryController implements ReactiveController {
         ? {
             responses: history.responses.map((response) => ({
               id: response.representation_id,
+              mcpApps: response.mcp_apps,
               sequence: response.sequence,
               delivery: response.delivery,
               blocks: response.blocks,

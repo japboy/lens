@@ -75,6 +75,7 @@ export const MEMBERS: readonly Member[] = [
         "tauri-plugin-opener",
         "thiserror",
         "tokio",
+        "tokio-util",
         "uuid",
         "zip",
       ],
@@ -145,6 +146,7 @@ export const MEMBERS: readonly Member[] = [
     implementation: "transport",
     dependencies: {
       normal: [
+        "reqwest",
         "rmcp",
         "axum",
         "hyper",

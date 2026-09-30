@@ -52,6 +52,8 @@ pub struct LensResponseManifest {
     pub block_count: usize,
     pub retained_bytes: usize,
     pub blocks: Vec<LensResponseBlockDescriptor>,
+    #[serde(default)]
+    pub mcp_apps: Vec<crate::model::McpAppDescriptor>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,6 +157,7 @@ impl LensResponseHistory {
             block_count: blocks.len(),
             retained_bytes: 0,
             blocks,
+            mcp_apps: representation.mcp_apps.clone(),
         };
         let body_bytes = representation
             .output_blocks
@@ -163,7 +166,12 @@ impl LensResponseHistory {
         let metadata_bytes = serde_json::to_vec(&manifest)
             .map_err(|_| "Response metadata could not be serialized")?
             .len();
+        let app_bytes = representation
+            .mcp_apps
+            .iter()
+            .fold(0usize, |sum, app| sum.saturating_add(app.retained_bytes));
         let bytes = body_bytes
+            .saturating_add(app_bytes)
             .saturating_add(metadata_bytes)
             .saturating_add(std::mem::size_of::<LensRepresentation>());
         let next_bytes = self.retained_bytes.checked_add(bytes);
@@ -231,6 +239,7 @@ mod tests {
                 "0".repeat(64).parse().unwrap(),
             ),
             run_id: Uuid::from_u128(run),
+            mcp_apps: Vec::new(),
             output_blocks: vec![LensOutputBlock::Markdown {
                 message_id: Some("same-message".into()),
                 text: text.into(),

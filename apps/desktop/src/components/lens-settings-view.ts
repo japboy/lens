@@ -936,6 +936,10 @@ export class LensSettingsView extends LitElement {
                 .profiles=${model?.config?.external_agents ?? []}
                 .disabled=${!this.active || !model || pending("connection")}
               ></lens-agent-settings>
+              <lens-mcp-app-settings
+                .servers=${model?.config?.mcp_apps_servers ?? []}
+                .disabled=${!this.active || !model || pending("connection")}
+              ></lens-mcp-app-settings>
               <section class="settings-group" aria-labelledby="cwd-heading">
                 <h2 id="cwd-heading">Working Directory</h2>
                 <div class="directory-row">

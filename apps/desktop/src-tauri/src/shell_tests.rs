@@ -54,6 +54,7 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
     state.runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation),
         representation: Some(LensRepresentation {
+            mcp_apps: Vec::new(),
             delivery: None,
             prompt_execution_revision: 1,
             representation_id: representation,
@@ -128,6 +129,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
     let state = test_support::state();
     let operation = Uuid::from_u128(701);
     let old = LensRepresentation {
+        mcp_apps: Vec::new(),
         delivery: None,
         prompt_execution_revision: 1,
         representation_id: Uuid::from_u128(702),
@@ -1044,6 +1046,7 @@ fn saving_external_agent_marks_retained_response_stale_at_commit() {
     let delivery = test_support::delivery();
     let projection = delivery.source_projection.clone();
     let representation = LensRepresentation {
+        mcp_apps: Vec::new(),
         prompt_execution_revision: 1,
         representation_id: Uuid::from_u128(812),
         context_id: Uuid::nil(),

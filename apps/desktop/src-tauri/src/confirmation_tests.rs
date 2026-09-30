@@ -1045,20 +1045,28 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             .to_string_lossy()
             .as_ref()
     );
-    assert_eq!(request["mcpServers"].as_array().unwrap().len(), 1);
-    let server = &request["mcpServers"][0];
-    assert_eq!(server["name"], "lens_output");
-    assert_eq!(server["type"], "http");
-    let endpoint = reqwest::Url::parse(server["url"].as_str().unwrap()).unwrap();
-    assert_eq!(endpoint.scheme(), "http");
-    assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
-    assert!(endpoint.port().is_some());
-    assert_eq!(server["headers"][0]["name"], "Authorization");
-    assert!(server["headers"][0]["value"]
-        .as_str()
-        .unwrap()
-        .starts_with("Bearer "));
-    assert!(server.get("command").is_none());
+    let servers = request["mcpServers"].as_array().unwrap();
+    assert_eq!(
+        servers
+            .iter()
+            .map(|server| server["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["lens_output", "lens_rich_html"]
+    );
+    for server in servers {
+        assert_eq!(server["type"], "http");
+        let endpoint = reqwest::Url::parse(server["url"].as_str().unwrap()).unwrap();
+        assert_eq!(endpoint.scheme(), "http");
+        assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+        assert!(endpoint.port().is_some());
+        assert_eq!(server["headers"][0]["name"], "Authorization");
+        assert!(server["headers"][0]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("Bearer "));
+        assert!(server.get("command").is_none());
+    }
+    assert_ne!(servers[0]["url"], servers[1]["url"]);
     let prompt = effects
         .iter()
         .find_map(|e| {

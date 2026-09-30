@@ -46,6 +46,7 @@ fn append(state: &mut model::LensState, ordinal: u64) -> Result<(), String> {
         context_revision: ordinal,
         projection: projection.clone(),
         run_id: Uuid::new_v4(),
+        mcp_apps: Vec::new(),
         output_blocks: blocks.into(),
     };
     state

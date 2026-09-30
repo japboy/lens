@@ -27,6 +27,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+pub mod apps;
 pub const MAX_HTML_BYTES: usize = 512 * 1024;
 /// Six-byte JSON escapes plus bounded MCP protocol overhead.
 pub const MAX_FRAME_BYTES: usize = MAX_HTML_BYTES * 6 + 16 * 1024;

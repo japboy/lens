@@ -2134,6 +2134,7 @@ mod tests {
     #[test]
     fn tray_presentation_separates_chosen_agent_from_execution_readiness() {
         let config = AppConfig {
+            mcp_apps_servers: Vec::new(),
             agent: AgentKind::Codex,
             external_agents: Vec::new(),
             working_directory: PathBuf::from("/Users/example/Work"),

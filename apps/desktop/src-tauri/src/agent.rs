@@ -145,6 +145,8 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     session: &'a mut ActiveSession<'static, Agent>,
     prompt_capabilities: &'a PromptCapabilities,
     publisher: &'a HttpPublisher,
+    apps: &'a adapter_output_mcp::apps::AppBroker,
+    app_prompt: Option<Vec<ContentBlock>>,
 }
 
 #[derive(Serialize)]
@@ -1645,6 +1647,24 @@ async fn run_persistent_session<R: tauri::Runtime>(
     let publisher = HttpPublisher::start()
         .await
         .map_err(|error| state_error(error.to_string()))?;
+    crate::mcp_apps::validate_servers(&identity.config.mcp_apps_servers).map_err(state_error)?;
+    let apps = Arc::new(
+        adapter_output_mcp::apps::AppBroker::start(
+            identity
+                .config
+                .mcp_apps_servers
+                .iter()
+                .map(|s| adapter_output_mcp::apps::SourceConfig {
+                    id: s.id.to_string(),
+                    name: s.name.clone(),
+                    url: s.url.clone(),
+                })
+                .collect(),
+            include_str!("../../src/mcp-apps/rich-html-app.html").into(),
+        )
+        .await
+        .map_err(|_| state_error("Unable to initialize an authorized MCP App source".into()))?,
+    );
     let process = transport(
         &app,
         &descriptor,
@@ -1658,6 +1678,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
     let finalizer_mailbox = Arc::clone(&mailbox);
     let mut active_turn = None;
     let active_turn_slot = &mut active_turn;
+    let apps_cleanup = Arc::clone(&apps);
     let result = agent_client_protocol::Client
         .builder()
         .name("lens")
@@ -1689,12 +1710,11 @@ async fn run_persistent_session<R: tauri::Runtime>(
             if *shutdown.borrow() {
                 return Err(Error::request_cancelled());
             }
+            let mut session_request = crate::output_mcp::session_request(&identity.effective_working_directory, &publisher);
+            session_request.mcp_servers.extend(apps.registrations().into_iter().map(|(name,url,authorization)| agent_client_protocol::schema::v1::McpServer::Http(agent_client_protocol::schema::v1::McpServerHttp::new(name,url).headers(vec![agent_client_protocol::schema::v1::HttpHeader::new("Authorization",authorization)]))));
             let mut session = tokio::select! {
                 result = connection
-                    .build_session_from(crate::output_mcp::session_request(
-                        &identity.effective_working_directory,
-                        &publisher,
-                    ))
+                    .build_session_from(session_request)
                     .block_task()
                     .start_session() => result?,
                 changed = shutdown.changed() => {
@@ -1704,6 +1724,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             };
             crate::output_mcp::require_no_publisher_failure(initialize.agent_info.as_ref().map(|info| info.name.as_str()), session.meta())?;
             let session_id = session.session_id().clone();
+            let _apps_lifetime = app.state::<AppState>().mcp_apps.install(identity.operation_id,session_id.to_string(),&apps,&identity.config).map_err(state_error)?;
             crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
             let agent_default = session_controls::advertised_mode(session.config_options(), session.modes())?;
             let defaults = identity.config.agent_preferences.get(identity.config.agent);
@@ -1755,7 +1776,11 @@ async fn run_persistent_session<R: tauri::Runtime>(
             loop {
                 let turn = {
                 let next_turn = async {
-                    wait_for_agent_turn_slot(&cadence, &mut shutdown).await?;
+                    while !mailbox.has_app_message() {
+                        let wait = wait_for_agent_turn_slot(&cadence, &mut shutdown);
+                        tokio::pin!(wait);
+                        tokio::select! { result = &mut wait => { result?; break; }, _ = mailbox.notified() => {} }
+                    }
                     next_agent_session_turn(&mailbox, &mut shutdown).await
                 };
                 tokio::pin!(next_turn);
@@ -1792,7 +1817,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     }
                 }
                 let unavailable = delivery.coverage.mode == LensDeliveryMode::Unavailable;
-                let mut unchanged_delivery = delivery.coverage.mode == LensDeliveryMode::TextOnlyPartial
+                let mut unchanged_delivery = turn.app_prompt.is_none() && delivery.coverage.mode == LensDeliveryMode::TextOnlyPartial
                     && applied_source_projection.as_ref().is_some_and(|source| source != &target_projection)
                     && applied_projection.as_ref().is_some_and(|applied: &ProjectionRef| applied.digest == delivery.projection.digest);
                 let admitted = update_lens_state_for_projection(
@@ -1841,6 +1866,8 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         session: &mut session,
                         prompt_capabilities: &initialize.agent_capabilities.prompt_capabilities,
                         publisher: &publisher,
+                        apps: &apps,
+                        app_prompt: turn.app_prompt.clone(),
                     },
                     run.key,
                     &mut run.cancellation,
@@ -1897,6 +1924,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             }
         })
         .await;
+    apps_cleanup.close().await;
     if let Some((key, cancellation)) = active_turn {
         // Make retry admission start a new session before publishing recovery.
         // Otherwise a fast retry can enter the old actor's still-open mailbox.
@@ -2456,7 +2484,7 @@ fn finish_prompt_response(
         return;
     }
 
-    if !candidate.has_output() {
+    if !candidate.has_output() && lens.mcp_apps.is_empty() {
         let error = "Agent completed without a displayable representation.".to_string();
         lens.stage = LensStage::Failed;
         lens.error = Some(error.clone());
@@ -2496,6 +2524,7 @@ fn finish_prompt_response(
         projection: target_projection,
         run_id: key.run_id,
         output_blocks: candidate.blocks().into(),
+        mcp_apps: lens.mcp_apps.clone(),
     };
     let session_id = lens
         .agent
@@ -2570,6 +2599,8 @@ async fn run_session_turn<R: tauri::Runtime>(
         session,
         prompt_capabilities,
         publisher,
+        apps,
+        app_prompt,
     } = execution;
     let AgentTurnTarget { source, delivery } = target;
     if *cancellation.borrow() || *shutdown.borrow() {
@@ -2578,16 +2609,25 @@ async fn run_session_turn<R: tauri::Runtime>(
     let publication = publisher
         .begin_turn(key.run_id)
         .map_err(|error| state_error(error.to_string()))?;
+    apps.begin_turn(key.run_id).map_err(state_error)?;
+    let _apps_turn = crate::mcp_apps::AppTurnLifetime {
+        broker: apps,
+        run_id: key.run_id,
+    };
     controls.begin_turn(key.run_id)?;
     let _turn_lifetime = session_controls::TurnLifetime { controls, app };
-    let prompt = build_prompt_blocks(
-        &identity.config.agent_prompt_template,
-        projection,
-        &delivery.projection,
-        prompt_mode,
-        prompt_capabilities,
-        identity.config.projection_layout(),
-    )?;
+    let prompt = if let Some(prompt) = app_prompt {
+        prompt
+    } else {
+        build_prompt_blocks(
+            &identity.config.agent_prompt_template,
+            projection,
+            &delivery.projection,
+            prompt_mode,
+            prompt_capabilities,
+            identity.config.projection_layout(),
+        )?
+    };
     let prompt = crate::output_mcp::publication_prompt(key.run_id, prompt);
     let session_id = session.session_id().clone();
     crate::session_view::append_prompt(app, &session_id.to_string(), &prompt)
@@ -2666,9 +2706,11 @@ async fn run_session_turn<R: tauri::Runtime>(
                         candidate.accept_published_html(published)?;
                     }
                 }
+                let app_artifacts = apps.finish_turn(key.run_id).map_err(state_error)?;
+                let app_descriptors = if cancelled { Vec::new() } else { app.state::<AppState>().mcp_apps.retain(app,identity.operation_id,&session_id.to_string(),app_artifacts).map_err(state_error)? };
                 // Terminal commit owns the candidate even if subsequent event delivery fails.
                 progress.take_pending();
-                let _ = update_lens_state_for_run(
+                let applied = update_lens_state_for_run(
                     app,
                     key,
                     &identity.config,
@@ -2679,6 +2721,7 @@ async fn run_session_turn<R: tauri::Runtime>(
                             agent.received_updates = candidate.received_updates;
                             agent.progress_text = candidate.progress_text();
                         }
+                        if !cancelled { lens.mcp_apps = app_descriptors.clone(); }
                         finish_prompt_response(
                             lens,
                             key,
@@ -2691,6 +2734,9 @@ async fn run_session_turn<R: tauri::Runtime>(
                     },
                 )
                 .map_err(state_error)?;
+                if !applied {
+                    app.state::<AppState>().mcp_apps.discard(identity.operation_id, &app_descriptors);
+                }
                 return Ok(!cancelled);
             }
             _ = mailbox.notified() => {
@@ -3938,6 +3984,7 @@ mod tests {
             "discarded prior output must not suppress a turn"
         );
         lens.representation = Some(LensRepresentation {
+            mcp_apps: Vec::new(),
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),
@@ -4008,6 +4055,7 @@ mod tests {
             LensDeliveryMode::Unavailable
         );
         let previous = LensRepresentation {
+            mcp_apps: Vec::new(),
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
             context_id: Uuid::nil(),
@@ -4361,6 +4409,7 @@ mod tests {
         let target_projection = projection_ref("New source", 2);
         let run_id = Uuid::from_u128(22);
         let old_representation = LensRepresentation {
+            mcp_apps: Vec::new(),
             delivery: None,
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
@@ -4652,6 +4701,7 @@ mod tests {
         let target_projection = projection_ref("New source", 2);
         let run_id = Uuid::from_u128(22);
         let old_representation = LensRepresentation {
+            mcp_apps: Vec::new(),
             delivery: None,
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),
@@ -4722,6 +4772,7 @@ mod tests {
         let projection = projection_ref("Source", 1);
         let run_id = Uuid::from_u128(22);
         let representation = LensRepresentation {
+            mcp_apps: Vec::new(),
             delivery: None,
             prompt_execution_revision: 1,
             representation_id: Uuid::from_u128(10),

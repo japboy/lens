@@ -9,7 +9,8 @@ import type { LensResponseBlock } from "./lens-response-block";
 import type { LensOutputMedia } from "./lens-output-media";
 import { responseBlockIdentity } from "../application/response-history-controller";
 import "./lens-response-block";
-import { composeOutputMedia } from "../output-media";
+import { composeOutputMedia, presentMcpApps } from "../output-media";
+import type { McpAppsPort } from "../mcp-apps/types";
 import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
 import { externalMarkdownUrl } from "../markdown";
@@ -34,6 +35,7 @@ export class LensAgentOutput extends LitElement {
     output_blocks: [],
     response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
   };
+  @property({ attribute: false }) appPort: McpAppsPort | undefined;
   @property({ attribute: false }) sessionKind: "live" | "history" = "live";
   @property({ attribute: false }) history: ResponseHistoryPresentation | undefined;
   @property({ attribute: false }) loadResponseBlock: LoadResponseBlock | undefined;
@@ -75,7 +77,7 @@ export class LensAgentOutput extends LitElement {
         this.historyOperation = this.history.scopeId;
         this.historyScrollTop = 0;
         this.historyAnchor = undefined;
-        this.followHistoryEnd = !this.history.media.length;
+        this.followHistoryEnd = !this.history.media.length && !this.lens?.mcp_apps?.length;
       } else {
         const output = this.querySelector<HTMLElement>(".lens-output");
         if (output) this.historyScrollTop = output.scrollTop;
@@ -118,14 +120,15 @@ export class LensAgentOutput extends LitElement {
   protected render() {
     if (this.history?.responses.length) return this.renderHistory();
     const output = lensOutputPresentation(this.lens);
-    const { media, narrative } = composeOutputMedia(output);
-    if (output.blocks.length) {
+    const { media: staticMedia, narrative } = composeOutputMedia(output);
+    const media = [...staticMedia, ...presentMcpApps(this.lens?.mcp_apps)];
+    if (output.blocks.length || media.length) {
       return html`<div
         class="lens-content lens-output ${media.length ? "has-media" : ""} ${narrative.length ? "has-narrative" : ""}"
         data-auto-scroll-container
         role="document"
       >
-        ${media.length ? html`<lens-output-media .media=${media} .notificationContent=${this.notificationContent}></lens-output-media>` : nothing}
+        ${media.length ? html`<lens-output-media .media=${media} .appPort=${this.appPort} .replayApps=${this.sessionKind === "history"} .notificationContent=${this.notificationContent}></lens-output-media>` : nothing}
         ${
           media.length && narrative.length
             ? html`
@@ -283,19 +286,26 @@ export class LensAgentOutput extends LitElement {
       response.blocks.some((block) => block.type === "markdown" || block.type === "unsupported"),
     );
     const hasNarrative = narrativeResponses.length > 0;
+    const apps = new Map(
+      history.responses.flatMap((response) => response.mcpApps ?? []).map((app) => [app.id, app]),
+    );
+    for (const app of this.lens?.mcp_apps ?? []) apps.set(app.id, app);
+    const media = [...history.media, ...presentMcpApps([...apps.values()])];
     return keyed(
       history.scopeId,
       html`<div
-        class="lens-content lens-output ${history.media.length ? "has-media" : ""} ${hasNarrative ? "has-narrative" : ""}"
+        class="lens-content lens-output ${media.length ? "has-media" : ""} ${hasNarrative ? "has-narrative" : ""}"
         data-auto-scroll-container
         role="document"
         @scroll=${this.handleHistoryScroll}
       >
         ${
-          history.media.length
+          media.length
             ? html`<lens-output-media
                 .notificationContent=${this.notificationContent}
-                .media=${history.media}
+                .media=${media}
+                .appPort=${this.appPort}
+                .replayApps=${this.sessionKind === "history"}
                 .htmlContents=${history.htmlContents}
                 .mediaErrors=${history.mediaErrors}
                 @lens-output-media-demand=${(
@@ -307,13 +317,13 @@ export class LensAgentOutput extends LitElement {
               ></lens-output-media>`
             : nothing
         }
-        ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-explanation" @click=${this.showExplanation}>Explore the Interpretation <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>` : nothing}
+        ${media.length && hasNarrative ? html`<button type="button" class="output-media-explanation" @click=${this.showExplanation}>Explore the Interpretation <i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>` : nothing}
         <div
           class="lens-output-narrative"
           @click=${this.openMarkdownLink}
           @markdown-render-error=${this.handleMarkdownRenderError}
         >
-          ${history.media.length && hasNarrative ? html`<button type="button" class="output-media-return" @click=${this.showMedia}><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to Media</button>` : nothing}
+          ${media.length && hasNarrative ? html`<button type="button" class="output-media-return" @click=${this.showMedia}><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Back to Media</button>` : nothing}
           ${repeat(
             narrativeResponses,
             (response) => response.id,

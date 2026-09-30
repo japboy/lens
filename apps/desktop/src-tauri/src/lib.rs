@@ -23,6 +23,9 @@ pub use usecase::live_sync;
 #[cfg(test)]
 mod confirmation_tests;
 mod math_asset_protocol;
+mod mcp_apps;
+#[cfg(debug_assertions)]
+mod mcp_apps_validation;
 mod media_protocol;
 mod model;
 #[cfg(target_os = "macos")]
@@ -148,6 +151,11 @@ fn command_handler<R: tauri::Runtime>(
             session_view::close_session_view,
             command_work::get_html_output,
             command_work::get_response_block,
+            mcp_apps::open_mcp_app,
+            mcp_apps::close_mcp_app,
+            mcp_apps::mcp_app_request,
+            mcp_apps::submit_mcp_app_message,
+            mcp_apps::set_mcp_apps_servers,
             commands::set_agent,
             commands::update_managed_agent,
             commands::save_external_agent,
@@ -291,6 +299,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             if std::env::var_os("LENS_VALIDATE_A11Y").is_none()
                 && std::env::var_os("LENS_VALIDATE_ACP").is_none()
                 && std::env::var_os("LENS_VALIDATE_RUNTIME").is_none()
+                && std::env::var_os("LENS_VALIDATE_MCP_APPS").is_none()
                 && !validate_rich_output
                 && !validate_target_selection
                 && !validate_interactions
@@ -317,7 +326,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 });
             }
             let state = app.state::<app_state::AppState>();
-            if !validate_rich_output && !state.platform.trust.inspect() {
+            if !validate_rich_output && std::env::var_os("LENS_VALIDATE_MCP_APPS").is_none() && !state.platform.trust.inspect() {
                 state.platform.trust.request();
             }
             Ok(())
@@ -329,6 +338,11 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             // Ready handlers must not start agents or access absent runtime state.
             if app.try_state::<app_state::AppState>().is_none() { return; }
             match event {
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if mcp_apps_validation::enabled() => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move { if let Err(error) = mcp_apps_validation::run(handle).await { eprintln!("LENS_MCP_APPS_VALIDATION=failed {error}"); } });
+            }
             #[cfg(debug_assertions)]
             tauri::RunEvent::Ready if std::env::var_os("LENS_DEBUG_SETTINGS").is_some() => {
                 if let Err(error) = ui::show_settings(app) {
