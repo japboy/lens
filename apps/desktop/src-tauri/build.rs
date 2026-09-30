@@ -20,17 +20,19 @@ fn main() {
     ] {
         println!("cargo:rustc-env={name}={value}");
     }
-    println!(
-        "cargo:rerun-if-changed={}",
-        root.join(pnpm_policy::INPUT).display()
-    );
-    let pnpm =
-        pnpm_policy::read(&root).expect("managed pnpm policy must name an approved npm tarball");
+    for input in pnpm_policy::INPUTS
+        .into_iter()
+        .chain([pnpm_policy::HISTORY_INPUT])
+    {
+        println!("cargo:rerun-if-changed={}", root.join(input).display());
+    }
+    let pnpm = pnpm_policy::read(&root)
+        .expect("managed pnpm must match the development version and native lock");
     for (name, value) in [
         ("LENS_PNPM_VERSION", pnpm.version.as_str()),
         ("LENS_PNPM_ARCHIVE_NAME", pnpm.archive_name.as_str()),
         ("LENS_PNPM_ARCHIVE_URL", pnpm.archive_url.as_str()),
-        ("LENS_PNPM_ARCHIVE_SHA512", pnpm.archive_sha512.as_str()),
+        ("LENS_PNPM_ARCHIVE_SHA256", pnpm.archive_sha256.as_str()),
     ] {
         println!("cargo:rustc-env={name}={value}");
     }
@@ -50,11 +52,11 @@ fn main() {
     let mut pnpm_identities = pnpm.previous;
     for (version, digest) in &pnpm_identities {
         assert!(
-            version != &pnpm.version || digest == &pnpm.archive_sha512,
+            version != &pnpm.version || digest == &format!("sha256:{}", pnpm.archive_sha256),
             "conflicting current and historical pnpm digest"
         );
     }
-    pnpm_identities.push((pnpm.version, pnpm.archive_sha512));
+    pnpm_identities.push((pnpm.version, format!("sha256:{}", pnpm.archive_sha256)));
     for (name, identities) in [
         ("LENS_APPROVED_NODE_IDENTITIES", node_identities),
         ("LENS_APPROVED_PNPM_IDENTITIES", pnpm_identities),

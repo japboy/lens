@@ -35,20 +35,6 @@
   customManagers: [
     {
       customType: "regex",
-      description: "Managed Agent pnpm npm tarball version and SRI update atomically.",
-      managerFilePatterns: ["/^apps/desktop/src-tauri/agent-runtime/pnpm\\.toml$/"],
-      matchStrings: [
-        '# renovate: managed-pnpm\\s+version = "(?<currentValue>\\d+\\.\\d+\\.\\d+)"\\s+integrity = "(?<currentDigest>sha512-[A-Za-z0-9+/=]+)"',
-      ],
-      depNameTemplate: "pnpm",
-      depTypeTemplate: "managed-agent-runtime",
-      autoReplaceStringTemplate: '# renovate: managed-pnpm\nversion = "{{{newValue}}}"\nintegrity = "{{{newDigest}}}"\n\n[[previous]]\nversion = "{{{currentValue}}}"\nintegrity = "{{{currentDigest}}}"',
-
-      datasourceTemplate: "npm",
-      versioningTemplate: "npm",
-    },
-    {
-      customType: "regex",
       description: "Release Please schema follows the pinned npm library.",
       managerFilePatterns: ["/^release-please-config\\.json$/"],
       matchStrings: [
@@ -143,7 +129,7 @@
       separateMajorMinor: false,
     },
     {
-      description: "pnpm version declarations in package.json and mise.toml update together.",
+      description: "Development and managed Agent pnpm share the mise version and native artifact lock.",
       matchManagers: ["npm", "mise"],
       matchPackageNames: ["pnpm"],
       groupName: "pnpm",
@@ -198,8 +184,7 @@
     {
       description: "Mirrored development tool minor updates share the same merge policy.",
       matchManagers: ["npm", "mise", "custom.regex"],
-      matchDepTypes: ["!managed-agent-runtime"],
-      matchPackageNames: ["pnpm", "release-please", "hk", "jdx/hk"],
+      matchPackageNames: ["release-please", "hk", "jdx/hk"],
       matchUpdateTypes: ["minor"],
       automerge: true,
     },
@@ -222,17 +207,8 @@
       automerge: true,
     },
     {
-      description: "Managed Agent pnpm stays on the JavaScript 11 runtime; minor updates require review.",
-      matchManagers: ["custom.regex"],
-      matchDepTypes: ["managed-agent-runtime"],
-      groupName: "Managed Agent pnpm runtime",
-      allowedVersions: "<12",
-      separateMajorMinor: true,
-    },
-    {
-      description: "Managed Agent pnpm minor updates require runtime compatibility review.",
-      matchManagers: ["custom.regex"],
-      matchDepTypes: ["managed-agent-runtime"],
+      description: "pnpm minor updates require review because the same version installs managed Agents.",
+      matchPackageNames: ["pnpm"],
       matchUpdateTypes: ["minor"],
       automerge: false,
     },

@@ -42,7 +42,41 @@ describe("managed bootstrap identity retention", () => {
       "apps/desktop/src-tauri/src/agent_runtime.rs": `const PNPM_VERSION: &str = "11.22.0";\nconst PNPM_ARCHIVE_SHA512: &str = "${"b".repeat(128)}";`,
     };
     expect(bootstrapIdentities((path) => texts[path] ?? null).pnpm).toEqual([
-      ["11.22.0", `sha512-${Buffer.from("b".repeat(128), "hex").toString("base64")}`],
+      ["11.22.0", `sha512:${"b".repeat(128)}`],
     ]);
+  });
+  it("migrates prior SRI policy to native lock while retaining the exact old tuple", () => {
+    const config = '[tools]\nnode="24.21.0"\npnpm="12.6.0"';
+    const lock = `[[tools.node]]\nversion="24.21.0"\n[tools.node."platforms.macos-arm64"]\nchecksum="sha256:${"a".repeat(64)}"\n[[tools.pnpm]]\nversion="12.6.0"\nbackend="aqua:pnpm/pnpm"\n[tools.pnpm."platforms.macos-arm64"]\nurl="https://github.com/pnpm/pnpm/releases/download/v12.6.0/pnpm-darwin-arm64.tar.gz"\nchecksum="sha256:${"c".repeat(64)}"`;
+    const digest = "b".repeat(128);
+    const texts: Record<string, string> = { "mise.toml": config, "mise.lock": lock };
+    const legacy: Record<string, string> = {
+      ...texts,
+      "apps/desktop/src-tauri/agent-runtime/pnpm.toml": `version="11.22.0"\nintegrity="sha512-${Buffer.from(digest, "hex").toString("base64")}"`,
+    };
+    const historyPath = "apps/desktop/src-tauri/agent-runtime/pnpm-history.toml";
+    const modern: Record<string, string> = {
+      ...texts,
+      [historyPath]: `[[previous]]\nversion="11.22.0"\narchive_digest="sha512:${digest}"`,
+    };
+    const before = bootstrapIdentities((path) => legacy[path] ?? null);
+    const after = bootstrapIdentities((path) => modern[path] ?? null);
+    expect(after.pnpm).toEqual([
+      ["12.6.0", `sha256:${"c".repeat(64)}`],
+      ["11.22.0", `sha512:${digest}`],
+    ]);
+    expect(() => assertPreservedBootstrapIdentities(before, after)).not.toThrow();
+    for (const invalid of [
+      { ...modern, [historyPath]: "previous=[]" },
+      { ...modern, "mise.lock": lock.replace("sha256:cccc", "sha512:cccc") },
+      { ...modern, [historyPath]: modern[historyPath].replace("sha512:", "sha256:") },
+    ]) {
+      expect(() =>
+        assertPreservedBootstrapIdentities(
+          before,
+          bootstrapIdentities((path) => (invalid as Record<string, string>)[path] ?? null),
+        ),
+      ).toThrow(/pnpm|SHA256/u);
+    }
   });
 });

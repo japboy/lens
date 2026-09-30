@@ -16,7 +16,7 @@ export const NATIVE_CODE_INPUTS = new Set([
 // This is intentionally a bounded inventory, not a claim to interpret arbitrary Rust.
 export const NATIVE_BUILD_INPUTS = {
   "apps/desktop/src-tauri/build.rs": {
-    digest: "cbacca7733c103690603d9d375783210aca84be708d8160effe4a6f17a46662a",
+    digest: "85cf1f91113aa1f91b83ada337193183799285f7d51d6a1f7b39cedc9446efa5",
     inputs: [
       "LICENSE",
       "NOTICE",
@@ -29,8 +29,14 @@ export const NATIVE_BUILD_INPUTS = {
     inputs: ["mise.toml", "mise.lock", "package.json", "apps/desktop/package.json"],
   },
   "apps/desktop/src-tauri/pnpm_policy.rs": {
-    digest: "c726c31c4e767aab04594c495eb6a5168896921aad19a9c8211d2da18efd05ed",
-    inputs: ["apps/desktop/src-tauri/agent-runtime/pnpm.toml"],
+    digest: "bcfa155bade8b2d422b2c615097033f2b9176607a6821c784655090dd77ebdc7",
+    inputs: [
+      "mise.toml",
+      "mise.lock",
+      "package.json",
+      "apps/desktop/package.json",
+      "apps/desktop/src-tauri/agent-runtime/pnpm-history.toml",
+    ],
   },
   "apps/desktop/src-tauri/bootstrap_history.rs": {
     digest: "b02d640167e8302e7385a246a27651fc749682f9eb784fc9a0809e525630a502",

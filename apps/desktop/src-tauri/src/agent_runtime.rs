@@ -35,18 +35,19 @@ const NODE_ARCHIVE_SHA256: &str = env!("LENS_NODE_ARCHIVE_SHA256");
 const NODE_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const PNPM_VERSION: &str = env!("LENS_PNPM_VERSION");
 const PNPM_ARCHIVE_NAME: &str = env!("LENS_PNPM_ARCHIVE_NAME");
-const PNPM_ARCHIVE_ROOT: &str = "package";
+const PNPM_ARCHIVE_ROOT: &str = "root";
 const PNPM_ARCHIVE_URL: &str = env!("LENS_PNPM_ARCHIVE_URL");
-const PNPM_ARCHIVE_SHA512: &str = env!("LENS_PNPM_ARCHIVE_SHA512");
+const PNPM_ARCHIVE_SHA256: &str = env!("LENS_PNPM_ARCHIVE_SHA256");
+const PNPM_ARCHIVE_DIGEST: &str = concat!("sha256:", env!("LENS_PNPM_ARCHIVE_SHA256"));
 const LEGACY_PNPM_ARCHIVE_SHA512: &str = "1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621";
 const PNPM_CLI_SHA256: &str = "ff3224d46b47fbb24a7e9fe15fededef7e00892d07d4e376b6762d4899906bfd";
 const PNPM_DIST_SHA256: &str = "a8533087155540515892e6f022ba5c673bb2e62fcbcc124b36ba2e8938ccc3da";
-const PNPM_ARCHIVE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const PNPM_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const TAKUMI_GUARD_REGISTRY: &str = "https://npm.flatt.tech/";
 const REGISTRY_MAX_BYTES: usize = 2 * 1024 * 1024;
-const AGENT_INSTALL_RECORD_VERSION: u32 = 6;
+const AGENT_INSTALL_RECORD_VERSION: u32 = 7;
 const NODE_INSTALL_RECORD_VERSION: u32 = 2;
-const PNPM_INSTALL_RECORD_VERSION: u32 = 2;
+const PNPM_INSTALL_RECORD_VERSION: u32 = 3;
 const NODE_TEAM_ID: &str = "HX7739G8FX";
 const NODE_SIGNING_IDENTIFIER: &str = "node";
 const CLAUDE_TEAM_ID: &str = "Q6L2SF6YDW";
@@ -167,7 +168,10 @@ struct InstallRecord {
     node_version: String,
     node_archive_sha256: String,
     pnpm_version: String,
+    #[serde(default)]
     pnpm_archive_sha512: String,
+    #[serde(default)]
+    pnpm_archive_digest: String,
     pnpm_lock_sha256: String,
     pnpm_workspace_sha256: String,
     #[serde(default)]
@@ -185,7 +189,10 @@ struct PnpmInstallRecord {
     schema_version: u32,
     pnpm_version: String,
     registry: String,
+    #[serde(default)]
     archive_sha512: String,
+    #[serde(default)]
+    archive_digest: String,
     cli_sha256: String,
     dist_sha256: String,
 }
@@ -1352,7 +1359,20 @@ fn approved_pnpm_identity(version: &str, digest: &str) -> bool {
     IDENTITIES.get_or_init(|| serde_json::from_str(env!("LENS_APPROVED_PNPM_IDENTITIES")).expect("build validated pnpm identities"))
         .iter().any(|(v, d)| v == version && d == digest)
         // Schema-1 migration retains the original pinned bootstrap identity.
-        || (version == "11.22.0" && digest == LEGACY_PNPM_ARCHIVE_SHA512)
+        || (version == "11.22.0" && digest == format!("sha512:{LEGACY_PNPM_ARCHIVE_SHA512}"))
+}
+fn agent_pnpm_digest(record: &InstallRecord) -> Result<String, String> {
+    if record.schema_version == AGENT_INSTALL_RECORD_VERSION {
+        if !record.pnpm_archive_sha512.is_empty() {
+            return Err("ambiguous pnpm archive identity".into());
+        }
+        Ok(record.pnpm_archive_digest.clone())
+    } else {
+        if !record.pnpm_archive_digest.is_empty() {
+            return Err("unexpected legacy pnpm archive identity".into());
+        }
+        Ok(format!("sha512:{}", record.pnpm_archive_sha512))
+    }
 }
 fn record_node_root(root: &Path, record: &InstallRecord) -> PathBuf {
     root.join("node")
@@ -1490,12 +1510,12 @@ fn read_record(path: &Path, kind: AgentKind) -> Result<InstallRecord, String> {
     )
     .map_err(|error| error.to_string())?;
     let provider = provider(kind)?;
-    if ![5, AGENT_INSTALL_RECORD_VERSION].contains(&record.schema_version)
+    if ![5, 6, AGENT_INSTALL_RECORD_VERSION].contains(&record.schema_version)
         || record.registry_id != provider.registry_id
         || record.adapter_name != provider.adapter_name
         || !valid_version(&record.adapter_version)
         || !approved_node_identity(&record.node_version, &record.node_archive_sha256)
-        || !approved_pnpm_identity(&record.pnpm_version, &record.pnpm_archive_sha512)
+        || !approved_pnpm_identity(&record.pnpm_version, &agent_pnpm_digest(&record)?)
     {
         return Err("managed Agent install record does not match runtime policy".into());
     }
@@ -1510,7 +1530,7 @@ fn read_record(path: &Path, kind: AgentKind) -> Result<InstallRecord, String> {
     {
         return Err("managed Agent dependency policy was modified".into());
     }
-    if record.schema_version == AGENT_INSTALL_RECORD_VERSION
+    if record.schema_version >= 6
         && (record.package_json_sha256.as_deref() != Some(&sha256_bytes(&package))
             || package
                 != manifest_with_bootstrap(
@@ -2030,7 +2050,7 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
 ) -> Result<PathBuf, String> {
     let final_root = pnpm_install_root(root);
     if final_root.is_dir() {
-        match verify_pnpm_runtime(node_root, &final_root).await {
+        match verify_current_pnpm_runtime(node_root, &final_root).await {
             Ok(()) => return Ok(final_root),
             Err(_) => quarantine_existing(root, &final_root, "pnpm")?,
         }
@@ -2038,9 +2058,7 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
 
     update_agent_runtime(app, operation_id, |runtime| {
         runtime.stage = AgentRuntimeStage::Downloading;
-        runtime.message = Some(format!(
-            "Downloading pnpm {PNPM_VERSION} from Takumi Guard…"
-        ));
+        runtime.message = Some(format!("Downloading pnpm {PNPM_VERSION}…"));
         runtime.downloaded_bytes = 0;
         runtime.total_bytes = None;
     })?;
@@ -2055,39 +2073,25 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
             runtime.message = Some("Verifying and extracting pnpm…".into());
         })?;
         let extraction_root = staging_root.join("extracted");
-        extract_approved_archive(
-            &archive_path,
-            &extraction_root,
-            PNPM_ARCHIVE_ROOT,
-            "pnpm",
-            staging.clone(),
-        )
-        .await?;
         let extracted_pnpm = extraction_root.join(PNPM_ARCHIVE_ROOT);
+        let payload = native_pnpm_payload(&archive_path, PNPM_ARCHIVE_SHA256)?;
+        extract_native_pnpm_payload(&payload, &extracted_pnpm)?;
         fs::copy(&archive_path, extracted_pnpm.join("lens-pnpm.tgz")).map_err(|e| e.to_string())?;
-        let (cli_sha256, dist_sha256) =
-            pnpm_archive_payload_hashes(&archive_path, PNPM_ARCHIVE_SHA512)?;
-        verify_pnpm_runtime_payload(
-            node_root,
-            &extracted_pnpm,
-            PNPM_VERSION,
-            &cli_sha256,
-            &dist_sha256,
-        )
-        .await?;
         let pnpm_record = PnpmInstallRecord {
             schema_version: PNPM_INSTALL_RECORD_VERSION,
             pnpm_version: PNPM_VERSION.into(),
             registry: TAKUMI_GUARD_REGISTRY.into(),
-            archive_sha512: PNPM_ARCHIVE_SHA512.into(),
-            cli_sha256,
-            dist_sha256,
+            archive_sha512: String::new(),
+            archive_digest: PNPM_ARCHIVE_DIGEST.into(),
+            cli_sha256: String::new(),
+            dist_sha256: String::new(),
         };
-        let pnpm_record = serde_json::to_vec_pretty(&pnpm_record)
-            .map_err(|error| format!("unable to serialize pnpm install record: {error}"))?;
-        fs::write(extracted_pnpm.join("lens-pnpm-runtime.json"), pnpm_record)
-            .map_err(|error| format!("unable to write pnpm install record: {error}"))?;
-        verify_pnpm_runtime(node_root, &extracted_pnpm).await?;
+        fs::write(
+            extracted_pnpm.join("lens-pnpm-runtime.json"),
+            serde_json::to_vec_pretty(&pnpm_record).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        verify_current_pnpm_runtime(node_root, &extracted_pnpm).await?;
         let parent = final_root
             .parent()
             .ok_or_else(|| "managed pnpm path has no parent".to_string())?;
@@ -2096,7 +2100,7 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
         match fs::rename(&extracted_pnpm, &final_root) {
             Ok(()) => Ok(final_root.clone()),
             Err(_error) if final_root.is_dir() => {
-                verify_pnpm_runtime(node_root, &final_root).await?;
+                verify_current_pnpm_runtime(node_root, &final_root).await?;
                 Ok(final_root.clone())
             }
             Err(error) => Err(format!("unable to activate managed pnpm runtime: {error}")),
@@ -2105,20 +2109,56 @@ async fn ensure_pnpm_runtime<R: tauri::Runtime>(
     .await
 }
 
-async fn verify_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
-    let record_path = pnpm_root.join("lens-pnpm-runtime.json");
-    let record_bytes = fs::read(&record_path)
-        .map_err(|error| format!("managed pnpm install record is unavailable: {error}"))?;
-    let record = serde_json::from_slice::<PnpmInstallRecord>(&record_bytes)
-        .map_err(|error| format!("managed pnpm install record is invalid: {error}"))?;
-    if record.pnpm_version != PNPM_VERSION || record.archive_sha512 != PNPM_ARCHIVE_SHA512 {
+fn pnpm_record(pnpm_root: &Path) -> Result<PnpmInstallRecord, String> {
+    serde_json::from_slice(
+        &fs::read(pnpm_root.join("lens-pnpm-runtime.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+async fn verify_current_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
+    let record = pnpm_record(pnpm_root)?;
+    if record.schema_version != PNPM_INSTALL_RECORD_VERSION
+        || record.pnpm_version != PNPM_VERSION
+        || record.archive_digest != PNPM_ARCHIVE_DIGEST
+    {
         return Err("new installations require the current pnpm bootstrap identity".into());
     }
-    if ![1, PNPM_INSTALL_RECORD_VERSION].contains(&record.schema_version)
-        || !approved_pnpm_identity(&record.pnpm_version, &record.archive_sha512)
-        || record.registry != TAKUMI_GUARD_REGISTRY
+    verify_pnpm_runtime(node_root, pnpm_root).await
+}
+async fn verify_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), String> {
+    let record = pnpm_record(pnpm_root)?;
+    if record.registry != TAKUMI_GUARD_REGISTRY {
+        return Err("unexpected pnpm registry".into());
+    }
+    if record.schema_version == PNPM_INSTALL_RECORD_VERSION {
+        if !record.archive_sha512.is_empty()
+            || !record.cli_sha256.is_empty()
+            || !record.dist_sha256.is_empty()
+            || !approved_pnpm_identity(&record.pnpm_version, &record.archive_digest)
+        {
+            return Err("invalid native pnpm identity".into());
+        }
+        let digest = record
+            .archive_digest
+            .strip_prefix("sha256:")
+            .ok_or("native pnpm requires SHA256")?;
+        let archive =
+            canonical_managed_file(pnpm_root, &pnpm_root.join("lens-pnpm.tgz"), "pnpm archive")?;
+        let payload = native_pnpm_payload(&archive, digest)?;
+        verify_native_pnpm_payload(&payload, pnpm_root)?;
+        let executable =
+            canonical_managed_file(pnpm_root, &pnpm_root.join("pnpm"), "pnpm native executable")?;
+        return verify_version_command(&executable, &["--version"], &record.pnpm_version, "pnpm")
+            .await;
+    }
+    if ![1, 2].contains(&record.schema_version)
+        || !record.archive_digest.is_empty()
+        || !approved_pnpm_identity(
+            &record.pnpm_version,
+            &format!("sha512:{}", record.archive_sha512),
+        )
     {
-        return Err("managed pnpm runtime does not match the approved install record".into());
+        return Err("unsupported legacy pnpm identity".into());
     }
     let (cli, dist) = if record.schema_version == 1 {
         if record.pnpm_version != "11.22.0" || record.archive_sha512 != LEGACY_PNPM_ARCHIVE_SHA512 {
@@ -2134,6 +2174,180 @@ async fn verify_pnpm_runtime(node_root: &Path, pnpm_root: &Path) -> Result<(), S
         return Err("managed pnpm payload identity was modified".into());
     }
     verify_pnpm_runtime_payload(node_root, pnpm_root, &record.pnpm_version, &cli, &dist).await
+}
+
+// Authenticate the complete native distribution before extraction or execution.
+// Hardlink targets are archive-root-relative and may reference only regular files.
+#[derive(Debug)]
+struct NativePnpmFile {
+    bytes: Vec<u8>,
+    mode: u32,
+}
+type NativePnpmPayload = std::collections::BTreeMap<PathBuf, NativePnpmFile>;
+fn native_pnpm_payload(path: &Path, expected: &str) -> Result<NativePnpmPayload, String> {
+    use std::io::Read;
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("pnpm archive must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(PNPM_ARCHIVE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > PNPM_ARCHIVE_MAX_BYTES || sha256_bytes(&bytes) != expected {
+        return Err("pnpm archive checksum mismatch".into());
+    }
+    let mut archive = tar::Archive::new(GzDecoder::new(bytes.as_slice()));
+    let mut payload = NativePnpmPayload::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut hardlinks = Vec::new();
+    let mut expanded = 0_u64;
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        if path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err("noncanonical native pnpm archive path".into());
+        }
+        if !seen.insert(path.clone()) {
+            return Err("duplicate native pnpm archive path".into());
+        }
+        let relative = path.clone();
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            continue;
+        }
+        if relative.as_os_str().is_empty()
+            || [
+                Path::new("lens-pnpm.tgz"),
+                Path::new("lens-pnpm-runtime.json"),
+            ]
+            .contains(&relative.as_path())
+        {
+            return Err("reserved native pnpm payload path".into());
+        }
+        let mode = entry.header().mode().map_err(|e| e.to_string())?;
+        if mode & !0o777 != 0 {
+            return Err("unsupported native pnpm file permissions".into());
+        }
+        if kind.is_hard_link() {
+            let target = entry
+                .link_name()
+                .map_err(|e| e.to_string())?
+                .ok_or("native pnpm hardlink target is missing")?
+                .into_owned();
+            if target
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                return Err("noncanonical native pnpm hardlink target".into());
+            }
+            let target = target.to_path_buf();
+            hardlinks.push((relative, target, mode));
+            continue;
+        }
+        if !kind.is_file() {
+            return Err("unsupported native pnpm archive entry".into());
+        }
+        expanded = expanded
+            .checked_add(entry.size())
+            .ok_or("native pnpm payload size overflow")?;
+        if expanded > 128 * 1024 * 1024 {
+            return Err("native pnpm payload exceeds size limit".into());
+        }
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content).map_err(|e| e.to_string())?;
+        payload.insert(
+            relative,
+            NativePnpmFile {
+                bytes: content,
+                mode,
+            },
+        );
+    }
+    let regular_paths: std::collections::BTreeSet<_> = payload.keys().cloned().collect();
+    for (path, target, mode) in hardlinks {
+        if !regular_paths.contains(&target) {
+            return Err("native pnpm hardlink must target a regular archive file".into());
+        }
+        // Deliberately do not resolve chains or cycles: only a regular archive entry is a target.
+        let file = payload
+            .get(&target)
+            .ok_or("native pnpm hardlink must target a regular archive file")?;
+        expanded = expanded
+            .checked_add(file.bytes.len() as u64)
+            .ok_or("native pnpm payload size overflow")?;
+        if expanded > 128 * 1024 * 1024 {
+            return Err("native pnpm payload exceeds size limit".into());
+        }
+        let content = file.bytes.clone();
+        payload.insert(
+            path,
+            NativePnpmFile {
+                bytes: content,
+                mode,
+            },
+        );
+    }
+    if !payload
+        .get(Path::new("pnpm"))
+        .is_some_and(|file| file.mode & 0o111 != 0)
+    {
+        return Err("native pnpm executable is missing".into());
+    }
+    Ok(payload)
+}
+fn extract_native_pnpm_payload(payload: &NativePnpmPayload, root: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    for (relative, file) in payload {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().ok_or("invalid native pnpm path")?)
+            .map_err(|e| e.to_string())?;
+        fs::write(&path, &file.bytes).map_err(|e| e.to_string())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(file.mode))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+fn verify_native_pnpm_payload(payload: &NativePnpmPayload, root: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    for (relative, file) in payload {
+        let path = root.join(relative);
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o7777 != file.mode {
+            return Err("native pnpm payload type or permissions were modified".into());
+        }
+        let canonical = canonical_managed_file(root, &path, "native pnpm payload")?;
+        if sha256_file(&canonical, "native pnpm payload")? != sha256_bytes(&file.bytes) {
+            return Err("native pnpm payload was modified".into());
+        }
+    }
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !kind.is_file() {
+                return Err("native pnpm contains an unsupported filesystem entry".into());
+            }
+            let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+            if !payload.contains_key(relative)
+                && relative != Path::new("lens-pnpm.tgz")
+                && relative != Path::new("lens-pnpm-runtime.json")
+            {
+                return Err("native pnpm contains an unexpected payload file".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn pnpm_archive_payload_hashes(path: &Path, expected: &str) -> Result<(String, String), String> {
@@ -2223,10 +2437,10 @@ async fn download_pnpm_archive<R: tauri::Runtime>(
         .get(PNPM_ARCHIVE_URL)
         .send()
         .await
-        .map_err(|error| format!("unable to download pnpm from Takumi Guard: {error}"))?
+        .map_err(|error| format!("unable to download pnpm: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("Takumi Guard pnpm download returned an error: {error}"))?;
-    download_archive_response::<R, Sha512>(
+        .map_err(|error| format!("pnpm download returned an error: {error}"))?;
+    download_archive_response::<R, Sha256>(
         app,
         operation_id,
         response,
@@ -2234,7 +2448,7 @@ async fn download_pnpm_archive<R: tauri::Runtime>(
         ArchiveDownloadPolicy {
             label: "pnpm",
             max_bytes: PNPM_ARCHIVE_MAX_BYTES,
-            checksum: PNPM_ARCHIVE_SHA512,
+            checksum: PNPM_ARCHIVE_SHA256,
         },
     )
     .await
@@ -2466,7 +2680,8 @@ async fn install_requested_candidate<R: tauri::Runtime>(
             node_version: NODE_VERSION.into(),
             node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
             pnpm_version: PNPM_VERSION.into(),
-            pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+            pnpm_archive_sha512: String::new(),
+            pnpm_archive_digest: PNPM_ARCHIVE_DIGEST.into(),
             pnpm_lock_sha256: sha256_bytes(&lock),
             pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE),
             package_json_sha256: Some(sha256_bytes(&package)),
@@ -2564,7 +2779,13 @@ async fn run_pnpm_install(
     mode: PnpmInstallMode<'_>,
 ) -> Result<PnpmInstallOutcome, String> {
     let node = canonical_managed_file(node_root, &node_root.join("bin/node"), "Node runtime")?;
-    let pnpm = canonical_managed_file(pnpm_root, &pnpm_root.join("bin/pnpm.mjs"), "pnpm CLI")?;
+    let bootstrap = pnpm_record(pnpm_root)?;
+    let native = bootstrap.schema_version == PNPM_INSTALL_RECORD_VERSION;
+    let pnpm = canonical_managed_file(
+        pnpm_root,
+        &pnpm_root.join(if native { "pnpm" } else { "bin/pnpm.mjs" }),
+        "pnpm CLI",
+    )?;
     let home = crate::agent_environment::user_home().map_err(|error| error.to_string())?;
     let resolved = crate::agent_environment::resolve(
         &home,
@@ -2576,10 +2797,12 @@ async fn run_pnpm_install(
         .validate_directory()
         .map_err(|error| error.to_string())?;
     let environment = managed_process_environment(&node, resolved.values)?;
-    let mut command = Command::new(node);
+    let mut command = Command::new(if native { &pnpm } else { &node });
     command.env_clear().envs(environment);
+    if !native {
+        command.arg(&pnpm);
+    }
     command
-        .arg(pnpm)
         .arg(match mode {
             PnpmInstallMode::ResolveEligible(_) => "add",
             _ => "install",
@@ -2977,12 +3200,12 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_pnpm_download_removes_partial_archive() {
-        cancel_archive_download::<Sha512>(
+        cancel_archive_download::<Sha256>(
             PNPM_ARCHIVE_NAME,
             ArchiveDownloadPolicy {
                 label: "pnpm",
                 max_bytes: PNPM_ARCHIVE_MAX_BYTES,
-                checksum: PNPM_ARCHIVE_SHA512,
+                checksum: PNPM_ARCHIVE_SHA256,
             },
         )
         .await;
@@ -3991,8 +4214,8 @@ mod tests {
                 ),
             ] {
                 for (pnpm_version, pnpm_digest) in [
-                    (PNPM_VERSION, PNPM_ARCHIVE_SHA512),
-                    ("11.22.0", LEGACY_PNPM_ARCHIVE_SHA512),
+                    (PNPM_VERSION, PNPM_ARCHIVE_DIGEST),
+                    ("11.22.0", concat!("sha512:", "1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621")),
                 ] {
                     let package =
                         manifest_with_bootstrap(kind, "1.2.3", node_version, pnpm_version).unwrap();
@@ -4007,7 +4230,8 @@ mod tests {
                         node_version: node_version.into(),
                         node_archive_sha256: node_digest.into(),
                         pnpm_version: pnpm_version.into(),
-                        pnpm_archive_sha512: pnpm_digest.into(),
+                        pnpm_archive_sha512: String::new(),
+                        pnpm_archive_digest: pnpm_digest.into(),
                         pnpm_lock_sha256: sha256_bytes(b"lock"),
                         pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE),
                         package_json_sha256: Some(sha256_bytes(&package)),
@@ -4030,10 +4254,10 @@ mod tests {
                     save(&record);
                     assert!(read_record(&root, kind).is_err());
                     record.node_archive_sha256 = node_digest.into();
-                    record.pnpm_archive_sha512 = "0".repeat(128);
+                    record.pnpm_archive_digest = "sha256:".to_owned() + &"0".repeat(64);
                     save(&record);
                     assert!(read_record(&root, kind).is_err());
-                    record.pnpm_archive_sha512 = pnpm_digest.into();
+                    record.pnpm_archive_digest = pnpm_digest.into();
                     record.pnpm_version = "11.999.0".into();
                     save(&record);
                     assert!(read_record(&root, kind).is_err());
@@ -4112,6 +4336,75 @@ mod tests {
     }
 
     #[test]
+    fn native_archive_authenticates_all_payload_and_rejects_ambiguous_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        fn archive(entries: &[(&str, &[u8], Option<&str>)]) -> Vec<u8> {
+            let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            for (path, bytes, target) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o755);
+                if let Some(target) = target {
+                    header.set_entry_type(tar::EntryType::Link);
+                    header.set_size(0);
+                    header.set_link_name(target).unwrap();
+                } else {
+                    header.set_size(bytes.len() as u64);
+                }
+                header.set_cksum();
+                builder.append_data(&mut header, path, *bytes).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap()
+        }
+        let root = root();
+        let archive_path = root.join("archive.tgz");
+        let valid = archive(&[
+            ("pnpm", b"native", None),
+            ("dist/source", b"supplement", None),
+            ("dist/copy", b"", Some("dist/source")),
+        ]);
+        fs::write(&archive_path, &valid).unwrap();
+        let payload = native_pnpm_payload(&archive_path, &sha256_bytes(&valid)).unwrap();
+        assert_eq!(payload[Path::new("dist/copy")].bytes, b"supplement");
+        let installed = root.join("installed");
+        extract_native_pnpm_payload(&payload, &installed).unwrap();
+        verify_native_pnpm_payload(&payload, &installed).unwrap();
+        fs::write(installed.join("dist/copy"), b"tampered").unwrap();
+        assert!(verify_native_pnpm_payload(&payload, &installed).is_err());
+        extract_native_pnpm_payload(&payload, &installed).unwrap();
+        fs::set_permissions(installed.join("pnpm"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(verify_native_pnpm_payload(&payload, &installed).is_err());
+        extract_native_pnpm_payload(&payload, &installed).unwrap();
+        fs::write(installed.join("injected.js"), b"injected").unwrap();
+        assert!(verify_native_pnpm_payload(&payload, &installed).is_err());
+        assert!(native_pnpm_payload(&archive_path, &"0".repeat(64)).is_err());
+        for entries in [
+            vec![
+                ("pnpm", b"native".as_slice(), None),
+                ("pnpm", b"duplicate".as_slice(), None),
+            ],
+            vec![
+                ("pnpm", b"native".as_slice(), None),
+                ("dist/copy", b"".as_slice(), Some("outside/file")),
+            ],
+            vec![
+                ("pnpm", b"native".as_slice(), None),
+                ("dist/copy", b"".as_slice(), Some("missing")),
+            ],
+            vec![
+                ("pnpm", b"native".as_slice(), None),
+                ("dist/a", b"".as_slice(), Some("dist/b")),
+                ("dist/b", b"".as_slice(), Some("dist/a")),
+            ],
+        ] {
+            let bytes = archive(&entries);
+            fs::write(&archive_path, &bytes).unwrap();
+            assert!(native_pnpm_payload(&archive_path, &sha256_bytes(&bytes)).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_record_requires_unpatched_schema_and_all_stored_policy_hashes() {
         let root = root();
         let kind = AgentKind::Codex;
@@ -4125,8 +4418,9 @@ mod tests {
             adapter_version: "1.2.3".into(),
             node_version: NODE_VERSION.into(),
             node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
-            pnpm_version: PNPM_VERSION.into(),
-            pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+            pnpm_version: "11.22.0".into(),
+            pnpm_archive_sha512: LEGACY_PNPM_ARCHIVE_SHA512.into(),
+            pnpm_archive_digest: String::new(),
             pnpm_lock_sha256: sha256_bytes(b"test-lock"),
             pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE),
             package_json_sha256: None,
@@ -4218,8 +4512,9 @@ mod tests {
                 adapter_version: version.into(),
                 node_version: NODE_VERSION.into(),
                 node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
-                pnpm_version: PNPM_VERSION.into(),
-                pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+                pnpm_version: "11.22.0".into(),
+                pnpm_archive_sha512: LEGACY_PNPM_ARCHIVE_SHA512.into(),
+                pnpm_archive_digest: String::new(),
                 pnpm_lock_sha256: sha256_file(&legacy.join("pnpm-lock.yaml"), "lock").unwrap(),
                 pnpm_workspace_sha256: sha256_file(
                     &legacy.join("pnpm-workspace.yaml"),
@@ -4314,6 +4609,7 @@ mod tests {
                     node_archive_sha256: source_record.node_archive_sha256.clone(),
                     pnpm_version: source_record.pnpm_version.clone(),
                     pnpm_archive_sha512: source_record.pnpm_archive_sha512.clone(),
+                    pnpm_archive_digest: source_record.pnpm_archive_digest.clone(),
                     pnpm_lock_sha256: sha256_file(&target.join("pnpm-lock.yaml"), "lock").unwrap(),
                     pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE),
                     package_json_sha256: Some(sha256_bytes(&package)),
@@ -4648,8 +4944,8 @@ mod tests {
         verify_pnpm_runtime(&node, &pnpm).await.unwrap();
         for relative in [
             "lens-pnpm.tgz",
-            "bin/pnpm.mjs",
-            "dist/pnpm.mjs",
+            "pnpm",
+            "dist/node-gyp-bin/node-gyp",
             "lens-pnpm-runtime.json",
         ] {
             let path = pnpm.join(relative);
@@ -4670,7 +4966,7 @@ mod tests {
         assert!(verify_pnpm_runtime(&node, &pnpm)
             .await
             .unwrap_err()
-            .contains("payload identity"));
+            .contains("native pnpm identity"));
         fs::write(&path, original).unwrap();
         verify_pnpm_runtime(&node, &pnpm).await.unwrap();
     }

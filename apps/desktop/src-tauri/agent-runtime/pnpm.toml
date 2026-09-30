@@ -1,4 +1,0 @@
-# Managed npm tarball bootstrap; pnpm 12 requires a separate native runtime design.
-# renovate: managed-pnpm
-version = "11.22.0"
-integrity = "sha512-H/hwxMYTPf2I+yr8Rt0T1H8JyXlLQ4xv20fKmMrzvBY4HuC+k6CRuOOCTPAfiJ9G19niCRD7C+GrD7W6qA3WIQ=="

@@ -79,7 +79,7 @@ export const MEMBERS: readonly Member[] = [
         "zip",
       ],
       dev: ["pretty_assertions", "tauri", "tokio", "toml"],
-      build: ["tauri-build", "serde_json", "toml", "base64"],
+      build: ["tauri-build", "serde_json", "toml"],
     },
   },
   {
