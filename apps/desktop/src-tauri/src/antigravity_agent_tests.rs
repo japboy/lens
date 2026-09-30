@@ -195,15 +195,6 @@ async fn managed_agent_turn(kind: AgentKind, observation: String, publish_html: 
     )
     .canonicalize()
     .unwrap();
-    assert!(
-        root.starts_with(std::env::temp_dir().canonicalize().unwrap())
-            || root.starts_with("/private/tmp")
-    );
-    assert!(root
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .starts_with("lens-"));
     let runtime = agent_runtime::resolve_managed_fixture(&root, kind)
         .await
         .expect("verified managed installation");

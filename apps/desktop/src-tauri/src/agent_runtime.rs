@@ -2944,24 +2944,6 @@ pub(crate) async fn resolve_managed_fixture(
 }
 
 #[cfg(test)]
-pub(crate) async fn resolve_antigravity_fixture(
-    root: &Path,
-) -> Result<ResolvedAgentRuntime, String> {
-    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
-    let temp = fs::canonicalize(std::env::temp_dir()).map_err(|error| error.to_string())?;
-    if (!root.starts_with(&temp) && !root.starts_with("/private/tmp"))
-        || !root
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("lens-"))
-    {
-        return Err("Antigravity validation requires a disposable lens-* temporary root".into());
-    }
-    selected_runtime(&root, AgentKind::Antigravity, true)
-        .await?
-        .ok_or_else(|| "the disposable Antigravity fixture is not installed".into())
-}
-
-#[cfg(test)]
 #[path = "agent_update_tests.rs"]
 mod update_tests;
 #[cfg(test)]
