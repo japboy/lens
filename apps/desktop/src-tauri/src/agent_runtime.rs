@@ -52,6 +52,9 @@ const CLAUDE_TEAM_ID: &str = "Q6L2SF6YDW";
 const OPENAI_TEAM_ID: &str = "2DC432GLL2";
 
 const AGENT_WORKSPACE: &[u8] = include_bytes!("../agent-runtime/pnpm-workspace.yaml");
+// Historical policy is accepted only when loading immutable existing installations.
+// New resolution and frozen installation always require AGENT_WORKSPACE.
+const AGENT_WORKSPACE_V1: &[u8] = include_bytes!("../agent-runtime/pnpm-workspace.v1.yaml");
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAgentRuntime {
@@ -651,8 +654,7 @@ fn select_candidate_or_existing(
             .cloned()
             .map(|runtime| (runtime, ResolutionStatus::UpdateBlockedByArchiveAgePolicy))
             .ok_or_else(|| {
-                "The official Antigravity archive has not met the 72-hour archive age policy."
-                    .into()
+                "The official Antigravity archive has not met the 1-hour archive age policy.".into()
             }),
         CandidateInstallation::BlockedByReleaseAgePolicy => existing
             .cloned()
@@ -665,7 +667,7 @@ fn select_candidate_or_existing(
 
 fn policy_blocked_update_message(kind: AgentKind, version: &str) -> String {
     if kind == AgentKind::Antigravity {
-        return format!("The official archive has not met the 72-hour archive age policy. Keeping verified Google Antigravity {version}.");
+        return format!("The official archive has not met the 1-hour archive age policy. Keeping verified Google Antigravity {version}.");
     }
     format!(
         "The update could not be installed under the current release age policy. Keeping verified {} {version}.",
@@ -1471,21 +1473,21 @@ fn read_record(path: &Path, kind: AgentKind) -> Result<InstallRecord, String> {
         return Err("managed Agent install record does not match runtime policy".into());
     }
     let package = fs::read(path.join("package.json")).map_err(|error| error.to_string())?;
+    let workspace =
+        fs::read(path.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?;
     let json: serde_json::Value =
         serde_json::from_slice(&package).map_err(|error| error.to_string())?;
     if json["dependencies"][provider.adapter_name].as_str() != Some(&record.adapter_version)
         || sha256_file(&path.join("pnpm-lock.yaml"), "Agent dependency lock")?
             != record.pnpm_lock_sha256
-        || sha256_file(&path.join("pnpm-workspace.yaml"), "Agent workspace policy")?
-            != record.pnpm_workspace_sha256
+        || sha256_bytes(&workspace) != record.pnpm_workspace_sha256
     {
         return Err("managed Agent dependency policy was modified".into());
     }
     if record.schema_version == AGENT_INSTALL_RECORD_VERSION
         && (record.package_json_sha256.as_deref() != Some(&sha256_bytes(&package))
             || package != manifest(kind, &record.adapter_version)?
-            || fs::read(path.join("pnpm-workspace.yaml")).map_err(|error| error.to_string())?
-                != AGENT_WORKSPACE)
+            || ![AGENT_WORKSPACE, AGENT_WORKSPACE_V1].contains(&workspace.as_slice()))
     {
         return Err("managed Agent install policy was modified".into());
     }
@@ -2222,7 +2224,7 @@ async fn install_candidate<R: tauri::Runtime>(
     {
         CandidateInstallation::Installed(runtime) => Ok(runtime),
         CandidateInstallation::BlockedByArchiveAgePolicy => {
-            Err("The official archive has not met the 72-hour archive age policy.".into())
+            Err("The official archive has not met the 1-hour archive age policy.".into())
         }
         CandidateInstallation::BlockedByReleaseAgePolicy => {
             Err("The Agent could not be installed under the current release age policy.".into())
@@ -3456,7 +3458,8 @@ mod tests {
         assert_eq!(json["engines"]["node"], NODE_VERSION);
         let policy = std::str::from_utf8(AGENT_WORKSPACE).unwrap();
         for required in [
-            "minimumReleaseAge: 4320",
+            "minimumReleaseAge: 60",
+            "minimumReleaseAgeIgnoreMissingTime: false",
             "minimumReleaseAgeStrict: true",
             "trustPolicy: no-downgrade",
             "allowBuilds: {}",
@@ -3834,6 +3837,60 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn immutable_npm_records_accept_exact_current_and_retired_policies_only() {
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            let root = root();
+            let package = manifest(kind, "1.2.3").unwrap();
+            fs::write(root.join("package.json"), &package).unwrap();
+            fs::write(root.join("pnpm-lock.yaml"), "test-lock").unwrap();
+            let mut record = InstallRecord {
+                schema_version: AGENT_INSTALL_RECORD_VERSION,
+                registry_id: provider(kind).unwrap().registry_id.into(),
+                adapter_name: provider(kind).unwrap().adapter_name.into(),
+                adapter_version: "1.2.3".into(),
+                node_version: NODE_VERSION.into(),
+                node_archive_sha256: NODE_ARCHIVE_SHA256.into(),
+                pnpm_version: PNPM_VERSION.into(),
+                pnpm_archive_sha512: PNPM_ARCHIVE_SHA512.into(),
+                pnpm_lock_sha256: sha256_bytes(b"test-lock"),
+                pnpm_workspace_sha256: String::new(),
+                package_json_sha256: Some(sha256_bytes(&package)),
+            };
+            let save = |record: &InstallRecord| {
+                fs::write(
+                    root.join("lens-runtime.json"),
+                    serde_json::to_vec(record).unwrap(),
+                )
+                .unwrap();
+            };
+            for policy in [AGENT_WORKSPACE_V1, AGENT_WORKSPACE] {
+                fs::write(root.join("pnpm-workspace.yaml"), policy).unwrap();
+                record.pnpm_workspace_sha256 = sha256_bytes(policy);
+                save(&record);
+                assert!(read_record(&root, kind).is_ok());
+
+                // A policy-file mutation cannot be hidden by retaining the stored hash.
+                fs::write(root.join("pnpm-workspace.yaml"), b"minimumReleaseAge: 0\n").unwrap();
+                assert!(read_record(&root, kind).is_err());
+
+                // Even a matching hash cannot admit an unknown policy.
+                record.pnpm_workspace_sha256 = sha256_bytes(b"minimumReleaseAge: 0\n");
+                save(&record);
+                assert!(read_record(&root, kind).is_err());
+            }
+            fs::write(root.join("pnpm-workspace.yaml"), AGENT_WORKSPACE_V1).unwrap();
+            record.pnpm_workspace_sha256 = sha256_bytes(AGENT_WORKSPACE_V1);
+            save(&record);
+            fs::write(root.join("pnpm-lock.yaml"), "tampered-lock").unwrap();
+            assert!(read_record(&root, kind).is_err());
+            fs::write(root.join("pnpm-lock.yaml"), "test-lock").unwrap();
+            fs::write(root.join("package.json"), b"{}").unwrap();
+            assert!(read_record(&root, kind).is_err());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn legacy_record_requires_unpatched_schema_and_all_stored_policy_hashes() {
         let root = root();
         let kind = AgentKind::Codex;
@@ -3967,6 +4024,67 @@ mod tests {
             assert_eq!(restored.adapter_version, version);
             assert!(legacy.exists());
             drop(restored);
+
+            // Reproduce schema-6 installations created before the age-policy change.
+            // Only disposable fixture copies are written; production installs stay immutable.
+            let current = Uuid::new_v4().to_string();
+            let previous = Uuid::new_v4().to_string();
+            for id in [&current, &previous] {
+                let installation = install_root(&migration, kind, id).unwrap();
+                copy_fixture(&root, &installation);
+                let package = manifest(kind, version).unwrap();
+                fs::write(installation.join("package.json"), &package).unwrap();
+                fs::write(installation.join("pnpm-workspace.yaml"), AGENT_WORKSPACE_V1).unwrap();
+                let immutable_record = InstallRecord {
+                    schema_version: AGENT_INSTALL_RECORD_VERSION,
+                    registry_id: record.registry_id.clone(),
+                    adapter_name: record.adapter_name.clone(),
+                    adapter_version: record.adapter_version.clone(),
+                    node_version: record.node_version.clone(),
+                    node_archive_sha256: record.node_archive_sha256.clone(),
+                    pnpm_version: record.pnpm_version.clone(),
+                    pnpm_archive_sha512: record.pnpm_archive_sha512.clone(),
+                    pnpm_lock_sha256: record.pnpm_lock_sha256.clone(),
+                    pnpm_workspace_sha256: sha256_bytes(AGENT_WORKSPACE_V1),
+                    package_json_sha256: Some(sha256_bytes(&package)),
+                };
+                fs::write(
+                    installation.join("lens-runtime.json"),
+                    serde_json::to_vec(&immutable_record).unwrap(),
+                )
+                .unwrap();
+            }
+            write_selector(
+                &migration,
+                kind,
+                &Selector {
+                    current: Some(current.clone()),
+                    previous: Some(previous.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let restored = selected_runtime(&migration, kind, true)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.installation.as_ref().unwrap().id, current);
+            drop(restored);
+            let selector = read_selector(&migration, kind).unwrap();
+            assert_eq!(selector.current.as_deref(), Some(current.as_str()));
+            assert_eq!(selector.previous.as_deref(), Some(previous.as_str()));
+            // Requiring both actual signed runtimes to load also covers recovery eligibility.
+            let recovery = load_runtime(&migration, kind, &previous).await.unwrap();
+            assert_eq!(recovery.installation.as_ref().unwrap().id, previous);
+            drop(recovery);
+            for id in [&current, &previous] {
+                let installation = install_root(&migration, kind, id).unwrap();
+                assert_eq!(
+                    fs::read(installation.join("pnpm-workspace.yaml")).unwrap(),
+                    AGENT_WORKSPACE_V1
+                );
+                assert!(read_record(&installation, kind).is_ok());
+            }
             fs::remove_dir_all(migration).unwrap();
         }
     }

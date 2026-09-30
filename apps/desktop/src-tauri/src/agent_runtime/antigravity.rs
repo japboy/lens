@@ -21,7 +21,7 @@ const RECORD_VERSION: u32 = 1;
 const ARCHIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const EXECUTABLE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const PAYLOAD_MAX_BYTES: u64 = 768 * 1024 * 1024;
-const MIN_ARCHIVE_AGE_SECONDS: i64 = 72 * 60 * 60;
+const MIN_ARCHIVE_AGE_SECONDS: i64 = 60 * 60;
 const IDENTITY_MAX_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -769,8 +769,9 @@ mod tests {
     fn archive_age_rejects_missing_invalid_future_and_young_dates() {
         let modified = "Wed, 23 Sep 2026 18:07:27 GMT";
         let time = DateTime::parse_from_rfc2822(modified).unwrap().timestamp();
-        assert!(!archive_is_mature(modified, time + MIN_ARCHIVE_AGE_SECONDS - 1).unwrap());
-        assert!(archive_is_mature(modified, time + MIN_ARCHIVE_AGE_SECONDS).unwrap());
+        assert!(!archive_is_mature(modified, time + 3599).unwrap());
+        assert!(archive_is_mature(modified, time + 3600).unwrap());
+        assert!(archive_is_mature(modified, time + 3601).unwrap());
         assert!(archive_is_mature(modified, time - 1).is_err());
         assert!(archive_is_mature("", time).is_err());
         assert!(archive_is_mature("not a date", time).is_err());
