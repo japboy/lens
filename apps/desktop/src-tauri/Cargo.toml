@@ -25,6 +25,7 @@ harness = false
 required-features = ["native-webview-lifecycle-test"]
 
 [build-dependencies]
+base64.workspace = true
 serde_json.workspace = true
 toml = "=1.1.6"
 tauri-build = { version = "=2.7.0", features = [] }
