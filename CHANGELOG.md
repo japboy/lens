@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2](https://github.com/japboy/lens/compare/v0.8.1...v0.8.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **desktop:** preserve content while resources load ([#175](https://github.com/japboy/lens/issues/175)) ([02e2078](https://github.com/japboy/lens/commit/02e207848a68170b138fcc93afa0eb4c40e067ac))
+* **desktop:** restore Grok history presentation ([#173](https://github.com/japboy/lens/issues/173)) ([0dbed21](https://github.com/japboy/lens/commit/0dbed21d2877d234b87487806a40e9a60c8bedea))
+
 ## [0.8.1](https://github.com/japboy/lens/compare/v0.8.0...v0.8.1) (2026-09-30)
 
 
