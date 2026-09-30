@@ -47,6 +47,11 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: node scripts/release/cli.ts delta
 
+      - name: Preserve verified managed bootstrap identities across updates
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/managed-runtime-history.ts
+
       - run: mise run verify:repository
 
       - name: Classify the complete tested merge-ref change set

@@ -129,7 +129,8 @@
       separateMajorMinor: false,
     },
     {
-      description: "pnpm version declarations in package.json and mise.toml update together.",
+      description: "Development and managed Agent pnpm share the mise version and native artifact lock.",
+      matchManagers: ["npm", "mise"],
       matchPackageNames: ["pnpm"],
       groupName: "pnpm",
       separateMajorMinor: false,
@@ -182,7 +183,8 @@
     },
     {
       description: "Mirrored development tool minor updates share the same merge policy.",
-      matchPackageNames: ["pnpm", "release-please", "hk", "jdx/hk"],
+      matchManagers: ["npm", "mise", "custom.regex"],
+      matchPackageNames: ["release-please", "hk", "jdx/hk"],
       matchUpdateTypes: ["minor"],
       automerge: true,
     },
@@ -203,6 +205,12 @@
       matchManagers: ["npm"],
       matchUpdateTypes: ["lockFileMaintenance"],
       automerge: true,
+    },
+    {
+      description: "pnpm minor updates require review because the same version installs managed Agents.",
+      matchPackageNames: ["pnpm"],
+      matchUpdateTypes: ["minor"],
+      automerge: false,
     },
     // Renovate enables branch automerge only when every grouped update permits it.
     // A runtime minor or any major therefore keeps the entire group under review.

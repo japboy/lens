@@ -16,7 +16,7 @@ export const NATIVE_CODE_INPUTS = new Set([
 // This is intentionally a bounded inventory, not a claim to interpret arbitrary Rust.
 export const NATIVE_BUILD_INPUTS = {
   "apps/desktop/src-tauri/build.rs": {
-    digest: "9aa10aa24fc338c8617c361a161f3e6fdf91e50c63345a4ca5ff8be5af4cba66",
+    digest: "489aa0cb408518084b1931dc0fb7254a79fb69476e0ed554dd9e199f18eda853",
     inputs: [
       "LICENSE",
       "NOTICE",
@@ -27,6 +27,20 @@ export const NATIVE_BUILD_INPUTS = {
   "apps/desktop/src-tauri/node_policy.rs": {
     digest: "167a5e2557256749b2433d7832b7f1281cc5199fca9f556da22d68aed78b19f5",
     inputs: ["mise.toml", "mise.lock", "package.json", "apps/desktop/package.json"],
+  },
+  "apps/desktop/src-tauri/pnpm_policy.rs": {
+    digest: "bcfa155bade8b2d422b2c615097033f2b9176607a6821c784655090dd77ebdc7",
+    inputs: [
+      "mise.toml",
+      "mise.lock",
+      "package.json",
+      "apps/desktop/package.json",
+      "apps/desktop/src-tauri/agent-runtime/pnpm-history.toml",
+    ],
+  },
+  "apps/desktop/src-tauri/bootstrap_history.rs": {
+    digest: "b02d640167e8302e7385a246a27651fc749682f9eb784fc9a0809e525630a502",
+    inputs: ["apps/desktop/src-tauri/agent-runtime/node-history.toml"],
   },
   "packages/adapter-platform-macos/build.rs": {
     digest: "7369b195aa7d5debc2b35b6919db9f5364bd19b0ba5eb5f4cc9de3d49e83ed59",
