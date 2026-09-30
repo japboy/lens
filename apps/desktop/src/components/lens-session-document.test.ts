@@ -332,7 +332,7 @@ describe("canonical session renderer", () => {
   });
 });
 
-it("history keyboard navigation only visits the two available tabs", async () => {
+it("history keyboard navigation visits Interpretation, Conversation and receipt Diagnostics", async () => {
   const view = new LensOverlayView();
   view.active = true;
   view.sessionView = {
@@ -346,10 +346,11 @@ it("history keyboard navigation only visits the two available tabs", async () =>
   await view.updateComplete;
   for (const [key, expected] of [
     ["ArrowRight", "conversation"],
+    ["ArrowRight", "diagnostics"],
     ["ArrowRight", "interpretation"],
-    ["End", "conversation"],
+    ["End", "diagnostics"],
     ["Home", "interpretation"],
-    ["ArrowLeft", "conversation"],
+    ["ArrowLeft", "diagnostics"],
   ]) {
     view
       .shadowRoot!.querySelector<HTMLButtonElement>('[aria-selected="true"]')!

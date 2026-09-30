@@ -504,7 +504,7 @@ fn failed_tool_result(output: &Value) -> bool {
         || output.get("error").is_some_and(|error| !error.is_null())
 }
 
-/// Check errors before normalizing Codex envelopes and Claude content/text payloads.
+/// Check errors before normalizing the supported result envelopes and text payloads.
 fn successful_tool_result(output: &Value) -> Option<SuccessfulToolResult<'_>> {
     if failed_tool_result(output) {
         return None;
@@ -512,6 +512,23 @@ fn successful_tool_result(output: &Value) -> Option<SuccessfulToolResult<'_>> {
     let result = output.get("result").unwrap_or(output);
     if failed_tool_result(result) {
         return None;
+    }
+    if result.get("type").and_then(Value::as_str) == Some("MCP") {
+        // The supported typed form is direct; combining provider envelopes is ambiguous.
+        if output.get("result").is_some() {
+            return None;
+        }
+        // Grok emits a tagged MCP result instead of ACP content. Only its explicit
+        // success variant is admitted; error or mixed variants cannot yield content.
+        let payload = result.get("output")?.as_object()?;
+        if payload.len() != 1 {
+            return None;
+        }
+        let text = payload.get("OkayOutput")?.as_str()?;
+        if serde_json::from_str::<Value>(text).is_ok_and(|value| failed_tool_result(&value)) {
+            return None;
+        }
+        return Some(SuccessfulToolResult::Text(text));
     }
     match result {
         Value::Object(_) => Some(SuccessfulToolResult::Structured(result)),
@@ -535,8 +552,33 @@ fn receipt(value: &Value) -> bool {
 
 /// A validated receipt means tool acceptance only; it never asserts host publication.
 fn accepted_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Option<String> {
+    let output = evidence.output.as_ref();
+    if let Some(output) =
+        output.filter(|output| output.get("type").and_then(Value::as_str) == Some("MCP"))
+    {
+        // Typed MCP evidence is bound to this publisher regardless of input shape.
+        if output.get("tool_name").and_then(Value::as_str) != Some("publish_html")
+            || output.get("server_name").and_then(Value::as_str) != Some("lens_output")
+            || output.get("result").is_some()
+        {
+            return None;
+        }
+    }
     let input = evidence.input.as_ref()?;
-    let input = input.get("arguments").unwrap_or(input);
+    let input = if input.get("variant").and_then(Value::as_str) == Some("UseTool") {
+        // Match the explicit MCP invocation rather than interpreting file paths or
+        // searching arbitrary nested tool data for HTML and a receipt.
+        if input.get("tool_name").and_then(Value::as_str) != Some("lens_output__publish_html")
+            || input.get("arguments").is_some()
+            || input.get("html").is_some()
+            || output?.get("type").and_then(Value::as_str) != Some("MCP")
+        {
+            return None;
+        }
+        input.get("tool_input")?
+    } else {
+        input.get("arguments").unwrap_or(input)
+    };
     let html = input.get("html")?.as_str()?;
     if html.trim().is_empty()
         || html.len() > MAX_HTML
@@ -547,9 +589,8 @@ fn accepted_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Op
     {
         return None;
     }
-    // A Codex MCP envelope carries both a result and an independent error.
     // Neither a receipt nor a rendered text block can override a failed result.
-    let output = match evidence.output.as_ref() {
+    let output = match output {
         Some(output) => Some(successful_tool_result(output)?),
         None => None,
     };
@@ -1048,6 +1089,234 @@ mod tests {
             .unwrap()
             .remove("turn_id");
         assert!(accepted_publication(&no_turn, &[]).is_none());
+    }
+
+    #[test]
+    fn grok_tagged_mcp_replay_restores_html_after_sparse_completion() {
+        // Anonymized shape of Grok Build 1.0.44's persisted session/update events:
+        // file indirection, resolved UseTool input, then completed MCP OkayOutput.
+        let updates = [
+            serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"publication",
+                "title":"use_tool","rawInput":{"file":"/tmp/publication.json"}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"publication",
+                "kind":"read","title":"Read MCP source","rawInput":{"source_file":"/tmp/publication.json"}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"publication",
+                "kind":"other","title":"lens_output__publish_html",
+                "rawInput":{"variant":"UseTool","tool_name":"lens_output__publish_html",
+                    "tool_input":{"html":"<h1>Recovered</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"publication",
+                "status":"completed","rawOutput":{"type":"MCP","tool_name":"publish_html",
+                    "server_name":"lens_output","output":{"OkayOutput":"{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}"}}}),
+        ];
+        let mut live = SessionDocument::default();
+        for update in &updates[..3] {
+            live.record_update(serde_json::from_value(update.clone()).unwrap())
+                .unwrap();
+            assert!(matches!(
+                &live.entries[0],
+                DocumentEntry::Tool {
+                    accepted_html: None,
+                    ..
+                }
+            ));
+        }
+        live.record_update(serde_json::from_value(updates[3].clone()).unwrap())
+            .unwrap();
+        let mut replay = SessionDocument::default();
+        for update in updates {
+            replay
+                .record_update(serde_json::from_value(update).unwrap())
+                .unwrap();
+        }
+        assert!(
+            matches!(&replay.entries[0], DocumentEntry::Tool { accepted_html: Some(html), blocks, .. }
+            if html == "<h1>Recovered</h1>" && matches!(&blocks[..], [DocumentBlock::Markdown { text }] if text_receipt(text)))
+        );
+        assert_eq!(
+            serde_json::to_value(&live).unwrap(),
+            serde_json::to_value(&replay).unwrap()
+        );
+        assert_accounting(&replay);
+    }
+
+    #[test]
+    fn grok_tagged_publication_rejects_errors_ambiguity_and_invalid_identity() {
+        let input = serde_json::json!({"variant":"UseTool","tool_name":"lens_output__publish_html",
+            "tool_input":{"html":"<h1>Recovered</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}});
+        let output = serde_json::json!({"type":"MCP","tool_name":"publish_html","server_name":"lens_output",
+            "output":{"OkayOutput":"{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}"}});
+        let accepted_block = DocumentBlock::Markdown {
+            text: "{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}"
+                .into(),
+        };
+        let reject = |input: Value, output: Value| {
+            let evidence = ToolEvidence {
+                input: Some(input),
+                output: Some(output),
+                ..Default::default()
+            };
+            assert!(
+                accepted_publication(&evidence, std::slice::from_ref(&accepted_block)).is_none()
+            );
+        };
+        for (field, value) in [
+            ("type", serde_json::json!("Bash")),
+            ("server_name", serde_json::json!("other_server")),
+            ("tool_name", serde_json::json!("other_tool")),
+            ("error", serde_json::json!("failed")),
+            ("isError", serde_json::json!(true)),
+            ("result", serde_json::json!({"accepted":true})),
+            ("output", serde_json::json!({"ErrorOutput":"failed"})),
+            (
+                "output",
+                serde_json::json!({"OkayOutput":"{}","ErrorOutput":"failed"}),
+            ),
+            (
+                "output",
+                serde_json::json!({"OkayOutput":{"accepted":true}}),
+            ),
+        ] {
+            let mut bad = output.clone();
+            bad[field] = value;
+            reject(input.clone(), bad);
+        }
+        for (field, value) in [
+            ("tool_name", serde_json::json!("other_tool")),
+            ("arguments", serde_json::json!({"html":"other"})),
+            ("html", serde_json::json!("other")),
+            (
+                "tool_input",
+                serde_json::json!({"html":"<h1>Recovered</h1>","turn_id":"00000000-0000-0000-0000-000000000000"}),
+            ),
+            (
+                "tool_input",
+                serde_json::json!({"html":"<h1>Recovered</h1>"}),
+            ),
+            (
+                "tool_input",
+                serde_json::json!({"html":" ","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}),
+            ),
+        ] {
+            let mut bad = input.clone();
+            bad[field] = value;
+            reject(bad, output.clone());
+        }
+        for receipt in [
+            "invalid JSON",
+            "{\"accepted\":false}",
+            "{\"accepted\":true,\"publication_id\":\"00000000-0000-0000-0000-000000000000\"}",
+        ] {
+            let mut bad = output.clone();
+            bad["output"]["OkayOutput"] = serde_json::json!(receipt);
+            let evidence = ToolEvidence {
+                input: Some(input.clone()),
+                output: Some(bad),
+                ..Default::default()
+            };
+            assert!(accepted_publication(&evidence, &[]).is_none());
+        }
+    }
+
+    #[test]
+    fn grok_tagged_result_inner_failure_cannot_be_overridden_by_content() {
+        let input = serde_json::json!({"variant":"UseTool","tool_name":"lens_output__publish_html",
+            "tool_input":{"html":"<h1>Rejected</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}});
+        let block = DocumentBlock::Markdown {
+            text: "{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}"
+                .into(),
+        };
+        for failure in [
+            serde_json::json!({"isError":true}),
+            serde_json::json!({"error":"failed"}),
+        ] {
+            let mut receipt = serde_json::json!({"accepted":true,"publication_id":"e9e57747-88ed-47b7-a301-47f6c13e4503"});
+            receipt
+                .as_object_mut()
+                .unwrap()
+                .extend(failure.as_object().unwrap().clone());
+            let evidence = ToolEvidence {
+                input: Some(input.clone()),
+                output: Some(serde_json::json!({
+                "type":"MCP","tool_name":"publish_html","server_name":"lens_output",
+                "output":{"OkayOutput":receipt.to_string()}})),
+                ..Default::default()
+            };
+            assert!(accepted_publication(&evidence, std::slice::from_ref(&block)).is_none());
+        }
+    }
+
+    #[test]
+    fn grok_tagged_publication_retains_evidence_on_null_sparse_update() {
+        let mut document = SessionDocument::default();
+        for update in [
+            serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"publication","title":"lens_output__publish_html",
+                "status":"in_progress","rawInput":{"variant":"UseTool","tool_name":"lens_output__publish_html",
+                    "tool_input":{"html":"<h1>Retained</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"}},
+                "rawOutput":{"type":"MCP","tool_name":"publish_html","server_name":"lens_output",
+                    "output":{"OkayOutput":"{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}"}}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"publication","status":"completed",
+                "rawInput":null,"rawOutput":null}),
+        ] {
+            document
+                .record_update(serde_json::from_value(update).unwrap())
+                .unwrap();
+        }
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { accepted_html: Some(html), .. } if html == "<h1>Retained</h1>")
+        );
+        assert_accounting(&document);
+    }
+
+    #[test]
+    fn typed_mcp_publication_identity_is_checked_for_legacy_input_shapes() {
+        let arguments = serde_json::json!({"html":"<h1>Rejected</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"});
+        let receipt =
+            "{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}";
+        for input in [
+            arguments.clone(),
+            serde_json::json!({"arguments":arguments}),
+        ] {
+            for (server, tool) in [
+                ("other_server", "publish_html"),
+                ("lens_output", "other_tool"),
+            ] {
+                let evidence = ToolEvidence {
+                    input: Some(input.clone()),
+                    output: Some(serde_json::json!({
+                    "type":"MCP","tool_name":tool,"server_name":server,"output":{"OkayOutput":receipt}})),
+                    ..Default::default()
+                };
+                assert!(accepted_publication(
+                    &evidence,
+                    &[DocumentBlock::Markdown {
+                        text: receipt.into()
+                    }]
+                )
+                .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn nested_typed_mcp_result_is_not_a_supported_publication_envelope() {
+        let input = serde_json::json!({"html":"<h1>Rejected</h1>","turn_id":"4cb69bd1-082a-4a73-977d-2da51db59a5a"});
+        let receipt =
+            "{\"accepted\":true,\"publication_id\":\"e9e57747-88ed-47b7-a301-47f6c13e4503\"}";
+        for server in ["lens_output", "other_server"] {
+            let evidence = ToolEvidence {
+                input: Some(input.clone()),
+                output: Some(serde_json::json!({"result":{
+                "type":"MCP","tool_name":"publish_html","server_name":server,"output":{"OkayOutput":receipt}}})),
+                ..Default::default()
+            };
+            assert!(accepted_publication(
+                &evidence,
+                &[DocumentBlock::Markdown {
+                    text: receipt.into()
+                }]
+            )
+            .is_none());
+        }
     }
 
     #[test]
