@@ -896,12 +896,13 @@ it("requires current projection evidence before the footer reports full Agent in
   const projection = { revision: 1, digest: "captured" };
   view.model = {
     ...view.model!,
-    sourceMetadata: { has_input: true, quality: "partial", projection_has_loss: false },
+    sourceMetadata: { has_input: true, quality: "partial", projection_has_loss: true },
     lens: {
       ...view.model!.lens,
       projection,
       delivery: {
         mode: "complete",
+        projection_has_loss: false,
         source_projection: projection,
         projection: { revision: 1, digest: "delivered" },
         sources: [],
@@ -918,7 +919,10 @@ it("requires current projection evidence before the footer reports full Agent in
   );
   view.model = {
     ...view.model!,
-    sourceMetadata: { ...view.model!.sourceMetadata!, projection_has_loss: true },
+    lens: {
+      ...view.model!.lens,
+      delivery: { ...view.model!.lens.delivery!, projection_has_loss: true },
+    },
   };
   await view.updateComplete;
   expect(inputButton.textContent?.trim()).toBe("PARTIAL");

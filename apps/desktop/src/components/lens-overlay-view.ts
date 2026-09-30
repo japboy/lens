@@ -1961,12 +1961,7 @@ export class LensOverlayView extends LitElement {
       lens?.stage === "cancelled"
         ? "unknown"
         : "pending";
-    const inputStatus = inputCoverage(
-      model?.sourceMetadata?.has_input,
-      model?.sourceMetadata?.projection_has_loss,
-      currentDelivery,
-      unresolvedInput,
-    );
+    const inputStatus = inputCoverage(currentDelivery, unresolvedInput);
     const announcedStatus =
       (displayLens ? overlayNotification(displayLens) : undefined) ?? this.updateOnlyNotification();
     const interactive = Boolean(
