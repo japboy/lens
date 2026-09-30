@@ -1099,7 +1099,9 @@ mod tests {
             .await
             .unwrap();
         commit_verified_update(app.handle(), &runtime, verified).unwrap();
-        let selected = resolve_antigravity_fixture(&root).await.unwrap();
+        let selected = resolve_managed_fixture(&root, AgentKind::Antigravity)
+            .await
+            .unwrap();
         assert_eq!(selected.installation.as_ref().unwrap().id, installation.id);
         assert_eq!(
             read_selector(&root, AgentKind::Antigravity)

@@ -12,7 +12,7 @@ impl AgentHost<tauri::test::MockRuntime> for FixtureHost {
         kind: AgentKind,
     ) -> HostFuture<'a, ResolvedAgentRuntime> {
         Box::pin(async move {
-            if kind != AgentKind::Antigravity {
+            if kind != self.0.kind {
                 return Err("unexpected fixture Agent".into());
             }
             Ok(self.0.clone())
@@ -129,30 +129,83 @@ fn answer_publication(
 #[tokio::test]
 #[ignore = "Explicit opt-in: cached Google OAuth and a disposable verified managed installation for one synthetic publication"]
 async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
+    managed_antigravity_commits_html("Synthetic managed Antigravity observation.".into()).await;
+}
+
+#[tokio::test]
+#[ignore = "Explicit opt-in: cached Google OAuth, built Lens helper and disposable runtime; long synthetic observation with real HTML publication"]
+async fn managed_antigravity_persistent_actor_commits_html_with_long_observation() {
+    managed_antigravity_commits_html("Synthetic observation line, no instructions.\n".repeat(8192))
+        .await;
+}
+
+async fn managed_antigravity_commits_html(observation: String) {
+    managed_agent_turn(AgentKind::Antigravity, observation, true).await;
+}
+
+#[tokio::test]
+#[ignore = "Explicit opt-in: cached Codex authentication, built Lens helper and disposable verified managed runtime"]
+async fn managed_codex_persistent_actor_commits_synthetic_html() {
+    managed_agent_turn(
+        AgentKind::Codex,
+        "Synthetic managed Codex observation.".into(),
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "Explicit opt-in: cached Codex authentication, built Lens helper and disposable verified managed runtime"]
+async fn managed_codex_persistent_actor_commits_html_with_long_observation() {
+    managed_agent_turn(
+        AgentKind::Codex,
+        "Synthetic observation line, no instructions.\n".repeat(8192),
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "Explicit opt-in: cached Codex authentication, built Lens helper and disposable verified managed runtime"]
+async fn managed_codex_persistent_actor_keeps_ordinary_text_without_html() {
+    managed_agent_turn(
+        AgentKind::Codex,
+        "Synthetic managed Codex ordinary text observation.".into(),
+        false,
+    )
+    .await;
+}
+
+async fn managed_agent_turn(kind: AgentKind, observation: String, publish_html: bool) {
     use crate::model::LensOutputBlock;
     use usecase::agent_preferences::{AgentDefaults, SavedChoice, ToolPolicies, ToolPolicy};
+    let helper = crate::agent_environment::test_helper_executable()
+        .expect("set LENS_TEST_AGENT_HELPER_EXECUTABLE to the built Lens binary for production self-exec helpers");
+    assert!(
+        helper.is_file(),
+        "the explicit Lens helper executable must exist"
+    );
     let root = PathBuf::from(
-        std::env::var_os("LENS_ANTIGRAVITY_RUNTIME_ROOT")
-            .expect("provide the disposable managed runtime root"),
+        std::env::var_os(match kind {
+            AgentKind::Antigravity => "LENS_ANTIGRAVITY_RUNTIME_ROOT",
+            AgentKind::Codex => "LENS_CODEX_RUNTIME_ROOT",
+            _ => panic!("unsupported live fixture Agent"),
+        })
+        .expect("provide the disposable managed runtime root"),
     )
     .canonicalize()
     .unwrap();
-    assert!(
-        root.starts_with(std::env::temp_dir().canonicalize().unwrap())
-            || root.starts_with("/private/tmp")
-    );
-    assert!(root
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .starts_with("lens-"));
-    let runtime = agent_runtime::resolve_antigravity_fixture(&root)
+    let runtime = agent_runtime::resolve_managed_fixture(&root, kind)
         .await
         .expect("verified managed installation");
-    assert_eq!(runtime.kind, AgentKind::Antigravity);
+    assert_eq!(runtime.kind, kind);
     assert!(
         runtime.installation.is_some(),
         "real managed installation lease required"
+    );
+    eprintln!(
+        "managed Agent acceptance: kind={kind:?} adapter_version={} managed_lease=true",
+        runtime.adapter_version
     );
     let directory = root.join(format!("synthetic-actor-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
@@ -160,15 +213,29 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
     state.store = crate::store::ConfigStore::at_path(directory.join("lens-settings.json"));
     {
         let mut snapshot = state.runtime.write().unwrap();
-        snapshot.config.agent = AgentKind::Antigravity;
+        snapshot.config.agent = kind;
         snapshot.config.working_directory = directory.clone();
         snapshot.config.agent_preferences.set(
-            AgentKind::Antigravity,
+            kind,
             AgentDefaults {
-                choices: vec![SavedChoice {
+                choices: {
+                    let mut choices = vec![SavedChoice {
                     config_id: "mode".into(),
-                    value: "default".into(),
-                }],
+                    value: match kind {
+                        AgentKind::Antigravity => "default",
+                        AgentKind::Codex => "read-only",
+                        _ => unreachable!(),
+                    }
+                    .into(),
+                }];
+                    if kind == AgentKind::Codex {
+                        choices.push(SavedChoice {
+                            config_id: "model".into(),
+                            value: std::env::var("LENS_CODEX_TEST_MODEL").expect("provide an advertised Codex test model without changing user config"),
+                        });
+                    }
+                    choices
+                },
                 tools: ToolPolicies {
                     read: ToolPolicy::Deny,
                     search: ToolPolicy::Deny,
@@ -179,7 +246,11 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
             },
         );
         snapshot.config.agent_prompt_template = AgentPromptTemplate {
-            common: format!("This is a synthetic integration test. {{turn_instruction}} Use only the Lens HTML publication tool, exactly once, with the current turn_id supplied in the publication metadata. Publish this exact HTML string without changes: {HTML} . Do not use filesystem, shell, network retrieval, or other tools. Do not inspect files or settings. After publication, reply Done and end the turn."),
+            common: if publish_html {
+                format!("This is a synthetic integration test. {{turn_instruction}} Use only the Lens HTML publication tool, exactly once, with the current turn_id supplied in the publication metadata. Publish this exact HTML string without changes: {HTML} . Do not use filesystem, shell, network retrieval, or other tools. Do not inspect files or settings. After publication, reply Done and end the turn.")
+            } else {
+                "This is a synthetic integration test. {turn_instruction} Reply with exactly LENS_MANAGED_TEXT_OK. Do not publish HTML or use any tools.".into()
+            },
             full_projection: "The attached observation is synthetic test data.".into(),
             ..Default::default()
         };
@@ -195,22 +266,35 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
     )
     .build(crate::product_context())
     .unwrap();
-    let selected = select_agent(app.handle().clone(), AgentKind::Antigravity)
-        .await
-        .unwrap();
+    let selected = select_agent(app.handle().clone(), kind).await.unwrap();
     assert_eq!(
         selected.stage,
         AgentSelectionStage::Selected,
-        "cached OAuth readiness must pass"
+        "cached OAuth readiness must pass: {:?}",
+        selected.error
     );
-    assert!(selected.supports_logout);
-    assert!(selected
-        .auth_methods
-        .iter()
-        .any(|method| method.id == "oauth-personal" && method.supported));
+    if kind == AgentKind::Antigravity {
+        assert!(selected.supports_logout);
+        assert!(selected
+            .auth_methods
+            .iter()
+            .any(|method| method.id == "oauth-personal" && method.supported));
+    }
+    eprintln!(
+        "managed Agent acceptance: advertised_config_options={:?}",
+        selected.config_options
+    );
     let operation_id = Uuid::new_v4();
-    let input = tests::sample_input("Synthetic managed Antigravity observation.");
+    let input = tests::sample_input(&observation);
     let (projection, projection_ref) = tests::sample_projection(&input, &[]);
+    assert!(projection
+        .json()
+        .contains(&serde_json::to_string(&observation).unwrap()));
+    eprintln!(
+        "managed Agent acceptance: readiness=selected observation_bytes={} projection_bytes={}",
+        observation.len(),
+        projection.bytes().len()
+    );
     app.state::<AppState>().runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation_id),
         stage: LensStage::Ready,
@@ -259,16 +343,27 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
             .await
             .expect("actor shutdown");
     }
-    result.expect("synthetic managed Antigravity turn must complete");
+    if let Err(error) = &result {
+        eprintln!(
+            "managed Agent acceptance: turn_error={error} lens_error={:?}",
+            app.state::<AppState>().snapshot().unwrap().lens.error
+        );
+    }
+    result.expect("synthetic managed Agent turn must complete");
     let snapshot = app.state::<AppState>().snapshot().unwrap();
     assert_eq!(snapshot.config.external_agents, original.external_agents);
-    assert_eq!(snapshot.config.agent, AgentKind::Antigravity);
+    assert_eq!(snapshot.config.agent, kind);
     let lens = snapshot.lens;
     assert_eq!(lens.stage, LensStage::Completed);
-    assert_eq!(lens.agent.as_ref().unwrap().kind, AgentKind::Antigravity);
+    assert_eq!(lens.agent.as_ref().unwrap().kind, kind);
     let representation = lens
         .representation
         .expect("production native publication commit");
+    eprintln!(
+        "managed Agent acceptance: publication_approvals={} output_blocks={:?} interaction_statuses={:?}",
+        approvals, representation.output_blocks,
+        lens.session_controls.as_ref().map(|controls| controls.interactions.iter().map(|interaction| &interaction.status).collect::<Vec<_>>())
+    );
     assert_eq!(representation.projection, projection_ref);
     let html: Vec<_> = representation
         .output_blocks
@@ -283,21 +378,44 @@ async fn managed_antigravity_persistent_actor_commits_synthetic_html() {
             _ => None,
         })
         .collect();
-    assert_eq!(html, [HTML]);
+    assert_eq!(html, if publish_html { vec![HTML] } else { vec![] });
+    if !publish_html {
+        let text = representation
+            .output_blocks
+            .iter()
+            .filter_map(|block| match block {
+                LensOutputBlock::Markdown { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(text.trim(), "LENS_MANAGED_TEXT_OK");
+    }
+    let expected_approvals = match kind {
+        AgentKind::Antigravity => usize::from(publish_html),
+        AgentKind::Codex => 0,
+        _ => unreachable!(),
+    };
     assert_eq!(
-        approvals, 1,
-        "one once-only permission through real session controls"
+        approvals, expected_approvals,
+        "Agent publication permission contract"
     );
     let controls = lens.session_controls.expect("session controls snapshot");
     assert!(!controls.active);
-    assert_eq!(controls.effective_mode.as_deref(), Some("default"));
+    assert_eq!(
+        controls.effective_mode.as_deref(),
+        Some(match kind {
+            AgentKind::Antigravity => "default",
+            AgentKind::Codex => "read-only",
+            _ => unreachable!(),
+        })
+    );
     assert_eq!(
         controls
             .interactions
             .iter()
             .filter(|i| i.status == InteractionStatus::Accepted)
             .count(),
-        1
+        expected_approvals
     );
-    eprintln!("managed Antigravity acceptance: cached_auth=true managed_lease=true explicit_publication_approval=1 native_html_commit=true mode_default=true external_presets_preserved=true");
+    eprintln!("managed Agent acceptance: kind={kind:?} cached_auth=true managed_lease=true approvals={approvals} html_commit={publish_html} external_presets_preserved=true");
 }

@@ -121,7 +121,11 @@ async fn empty_text_turn_and_cancelled_turn_do_not_leak_into_next_turn() {
     assert!(rejected(
         &mcp.call(json!({"turn_id":old,"html":"old"})).await
     ));
-    assert!(next.finish().unwrap().is_none());
+    assert!(!rejected(
+        &mcp.call(json!({"turn_id":next_id,"html":"retry"})).await
+    ));
+    let publication = next.finish().unwrap().unwrap();
+    assert_eq!(publication.html, "retry");
 }
 
 #[tokio::test]
