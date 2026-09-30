@@ -651,8 +651,7 @@ fn select_candidate_or_existing(
             .cloned()
             .map(|runtime| (runtime, ResolutionStatus::UpdateBlockedByArchiveAgePolicy))
             .ok_or_else(|| {
-                "The official Antigravity archive has not met the 72-hour archive age policy."
-                    .into()
+                "The official Antigravity archive has not met the 1-hour archive age policy.".into()
             }),
         CandidateInstallation::BlockedByReleaseAgePolicy => existing
             .cloned()
@@ -665,7 +664,7 @@ fn select_candidate_or_existing(
 
 fn policy_blocked_update_message(kind: AgentKind, version: &str) -> String {
     if kind == AgentKind::Antigravity {
-        return format!("The official archive has not met the 72-hour archive age policy. Keeping verified Google Antigravity {version}.");
+        return format!("The official archive has not met the 1-hour archive age policy. Keeping verified Google Antigravity {version}.");
     }
     format!(
         "The update could not be installed under the current release age policy. Keeping verified {} {version}.",
@@ -2222,7 +2221,7 @@ async fn install_candidate<R: tauri::Runtime>(
     {
         CandidateInstallation::Installed(runtime) => Ok(runtime),
         CandidateInstallation::BlockedByArchiveAgePolicy => {
-            Err("The official archive has not met the 72-hour archive age policy.".into())
+            Err("The official archive has not met the 1-hour archive age policy.".into())
         }
         CandidateInstallation::BlockedByReleaseAgePolicy => {
             Err("The Agent could not be installed under the current release age policy.".into())
@@ -3456,7 +3455,7 @@ mod tests {
         assert_eq!(json["engines"]["node"], NODE_VERSION);
         let policy = std::str::from_utf8(AGENT_WORKSPACE).unwrap();
         for required in [
-            "minimumReleaseAge: 4320",
+            "minimumReleaseAge: 60",
             "minimumReleaseAgeStrict: true",
             "trustPolicy: no-downgrade",
             "allowBuilds: {}",
