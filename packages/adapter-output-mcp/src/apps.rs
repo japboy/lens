@@ -823,14 +823,14 @@ mod tests {
             "ok"
         );
         assert!(sse_result(&complete, Some(&json!(8))).unwrap().is_none());
-        let utf8 = "data: {\"id\":7,\"result\":\"日本語\"}\n\n".as_bytes();
+        let utf8 = "data: {\"id\":7,\"result\":\"\u{65e5}\u{672c}\u{8a9e}\"}\n\n".as_bytes();
         let split = utf8.iter().position(|b| *b >= 128).unwrap() + 1;
         assert!(sse_result(&utf8[..split], Some(&json!(7)))
             .unwrap()
             .is_none());
         assert_eq!(
             sse_result(utf8, Some(&json!(7))).unwrap().unwrap()["result"],
-            "日本語"
+            "\u{65e5}\u{672c}\u{8a9e}"
         );
     }
 
@@ -857,7 +857,8 @@ mod tests {
 
     #[tokio::test]
     async fn display_retains_exact_html_and_releases_owned_listener() {
-        let html = "<!doctype html><script>window.onload=()=>{};</script><p>日本語</p>";
+        let html =
+            "<!doctype html><script>window.onload=()=>{};</script><p>\u{65e5}\u{672c}\u{8a9e}</p>";
         let display = DisplayServer::start(
             AppResource {
                 html: html.into(),

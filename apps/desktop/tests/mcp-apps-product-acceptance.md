@@ -66,3 +66,31 @@ Closing the App removed its frames and native display leases; the initial displa
 Closing the App again left zero native display leases and removed the reopened display listener. The ordinary Lens close action removed the Overlay window; CUA reported no available Lens windows. The root operator then stopped the owned debug process and external source process.
 
 This records the external original App, source-bound interaction, two trusted follow-ups in one live Agent session, and ordinary close/reopen/cleanup in the native product. It does not certify the bundled HTML fallback, latest-context replacement, or the generated document's native-key/DOM isolation diagnostics; those require separate actual native observations. No App HTML, native key value, credential or raw provider session identifier is included here.
+
+## Recorded bundled HTML native acceptance — partial
+
+The second bundled attempt used the same macOS/Tauri/Wry/SDK environment above. Actual Codex generated HTML through the bundled fallback and CUA observed it in the native Overlay. The generated document's own diagnostics reported parent DOM access `false`, top DOM access `false`, own `__TAURI_INTERNALS__` presence `false`, invoke-key property presence `false`, and own `ipc` presence `false`. WebKit IPC handler presence was `true`; the presence of that general handler is not evidence of native command authority. These observations establish the displayed document's reported access/presence behavior, not a successful native invocation attempt.
+
+| Record                            | Identifier or SHA256                                               |
+| --------------------------------- | ------------------------------------------------------------------ |
+| Second attempt operation          | `46eab68b-8445-4ee5-83b6-22b65ee8d90a`                             |
+| Second attempt session SHA256     | `35fa04200f603957e082b2c3cb81f106003b4dfc297ef6f19a8717877c376d44` |
+| Displayed generated HTML artifact | `aad4b8c4-5cdb-4b97-b8a3-e21104bb5a1b`                             |
+
+CUA clicks did not produce the expected interaction, including on a parent Lens tab; the user reported that manual tab interaction did respond. The manual tab remount then exposed a Loading state with no native lease. A connected-only remount regression fix was implemented and tested after this observation. SDK text/structured capability advertisement and CSP advertisement were also corrected. Those code/test results must not be substituted for actual generated-App context selection or trusted follow-up observations.
+
+A third run used the latest main integration at `bff1d1c`. The bounded state records in `/tmp/lens-mcp-apps-bundled-native-final.log` corroborate actual Agent completion, one retained response, the generated App artifact, and one active native display lease. CUA explicitly reported that the Mac was locked, preventing screen acquisition and actual UI operations. The user said they could not unlock it at that time. Therefore this latest build's rendered UI, context 10-to-73 replacement, trusted Send follow-up and normal Quit remain unverified.
+
+| Record                            | Identifier or SHA256                                                            |
+| --------------------------------- | ------------------------------------------------------------------------------- |
+| Third attempt operation           | `696f189e-bdb4-45d5-a136-a143e5a1a6e9`                                          |
+| Third attempt run                 | `5acc2dda-6e71-43fd-904c-4ad0cf13c7fb`                                          |
+| Third attempt session SHA256      | `4a88be26ede6551c6d575178c5d1e37f1da4295dff7e2c404cead79a702da059`              |
+| Generated HTML artifact           | `8f3753e3-b3fc-4819-8913-a8b786bae75f`                                          |
+| Native display lease / generation | `a2e23473-7f50-4a0b-97fb-971faab9e4a4` / `2fea0b71-1861-4318-820a-b8d159afb253` |
+
+The root operator stopped the third owned process with Ctrl-C and cleaned only the two known public fixture artifact directories. This forced process stop does not prove normal Quit cleanup. An explicit normal-Quit cleanup change passed eleven native tests and the latest bundled build, but actual normal Quit on that build remains pending. Actual UI acceptance is paused and no PR is being created pending the remaining observations.
+
+The first bundled attempt, operation `b75c1dca-d2cb-4507-9193-c26cee9b43c9`, session SHA256 `d5ed32e4e35bc2aa8d1d8f9392404ce69a69edd2474950868232a905ba6c908c`, was superseded into Selecting before a generated App was confirmed. Its cause is unknown. A limited audit of the exact owned session's single relevant 121-byte tool input found only an available-tool inventory lookup; it contained no selection, stop, shell or GUI operation. The input SHA256 was `db5a4b112dd7fd54f60362d62b6128ff5a9f53abea6eac3d2b6e0e8f1cf60086`. The initial native log was overwritten, so that limited audit cannot establish the transition's cause. This interrupted attempt is separate from the second attempt's confirmed native rendering and the third attempt's completed backend state.
+
+Remaining actual native acceptance: generated App Set context 10, then Set context 73, then Ask Agent; trusted Lens Send; an actual Japanese response using latest context 73 with the same live session SHA256; ordinary remount/replacement after the connected-only fix; and normal Quit cleanup on the latest build. No App HTML, native key value, credential or raw provider session identifier is recorded here.

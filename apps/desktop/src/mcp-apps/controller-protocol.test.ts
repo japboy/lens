@@ -27,7 +27,7 @@ it.each([true, false])(
         proxy_url: "http://127.0.0.1:43162/proxy",
         proxy_origin: "http://127.0.0.1:43162",
         resource: { html: "<!doctype html><p>App</p>" },
-        input: { selection: 73, nested: { text: "日本語" } },
+        input: { selection: 73, nested: { text: "\u65e5\u672c\u8a9e" } },
         result: { content: [], structuredContent: { selection: 73 } },
         host_capabilities: {
           sandbox: {
@@ -122,7 +122,7 @@ it.each([true, false])(
     await vi.waitFor(() => expect(controller.state.stage).toBe("ready"));
     expect(
       received.find((message) => message.method === "ui/notifications/tool-input")?.params,
-    ).toEqual({ arguments: { selection: 73, nested: { text: "日本語" } } });
+    ).toEqual({ arguments: { selection: 73, nested: { text: "\u65e5\u672c\u8a9e" } } });
     expect(
       received.find((message) => message.method === "ui/notifications/tool-result")?.params,
     ).toEqual({ content: [], structuredContent: { selection: 73 } });

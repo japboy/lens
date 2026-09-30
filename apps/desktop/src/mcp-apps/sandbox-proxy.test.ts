@@ -51,7 +51,7 @@ function proxy(hostOrigin = "http://localhost:1420") {
 describe("trusted sandbox proxy asset", () => {
   it("uploads exact UTF-8 resource as text/html and only forwards the opaque View", async () => {
     const test = proxy();
-    const html = "<!doctype html><title>日本語</title><script>let x=73</script>";
+    const html = "<!doctype html><title>\u65e5\u672c\u8a9e</title><script>let x=73</script>";
     await test.host({
       jsonrpc: "2.0",
       method: "ui/notifications/sandbox-resource-ready",
