@@ -2925,6 +2925,25 @@ fn display_name(kind: AgentKind) -> &'static str {
     }
 }
 #[cfg(test)]
+pub(crate) async fn resolve_managed_fixture(
+    root: &Path,
+    kind: AgentKind,
+) -> Result<ResolvedAgentRuntime, String> {
+    let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+    let temp = fs::canonicalize(std::env::temp_dir()).map_err(|error| error.to_string())?;
+    if (!root.starts_with(&temp) && !root.starts_with("/private/tmp"))
+        || !root
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("lens-"))
+    {
+        return Err("Agent validation requires a disposable lens-* temporary root".into());
+    }
+    selected_runtime(&root, kind, true)
+        .await?
+        .ok_or_else(|| "the disposable managed fixture is not installed".into())
+}
+
+#[cfg(test)]
 pub(crate) async fn resolve_antigravity_fixture(
     root: &Path,
 ) -> Result<ResolvedAgentRuntime, String> {
