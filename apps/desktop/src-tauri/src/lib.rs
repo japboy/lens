@@ -364,6 +364,9 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                 session_controls::close_active(app);
                 let state = app.state::<app_state::AppState>();
                 let _ = state.agent_control.cancel_active();
+                if let Err(error) = state.mcp_apps.shutdown() {
+                    eprintln!("Unable to release App resources during shutdown: {error}");
+                }
                 if let Some(writer) = state.history_writer.get() {
                     let _ = writer.flush();
                 }

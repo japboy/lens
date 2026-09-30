@@ -58,6 +58,7 @@ pub struct McpAppsStore {
     leases: Mutex<HashMap<Uuid, Lease>>,
     storage: Mutex<ArtifactStorage>,
     open_epoch: std::sync::atomic::AtomicU64,
+    closed: std::sync::atomic::AtomicBool,
 }
 pub struct SourceLifetime {
     store: Arc<McpAppsStore>,
@@ -120,6 +121,42 @@ pub struct AppRequestResult {
 }
 
 impl McpAppsStore {
+    fn ensure_open(&self) -> Result<(), String> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            Err("App Host is shutting down".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Event-loop exit does not guarantee managed-state destructors run.
+    /// Retire authority first, then explicitly release only this process's resources.
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.open_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        {
+            let mut leases = self.leases.lock().map_err(|_| "MCP leases unavailable")?;
+            for lease in leases.values() {
+                lease.cancellation.cancel();
+            }
+            leases.clear();
+        }
+        *self.source.lock().map_err(|_| "MCP source unavailable")? = None;
+        let directory = {
+            let mut storage = self.storage.lock().map_err(|_| "MCP storage unavailable")?;
+            storage.operation_id = None;
+            storage.directory.take()
+        };
+        if let Some(directory) = directory {
+            directory
+                .close()
+                .map_err(|_| "Unable to release App artifacts")?;
+        }
+        Ok(())
+    }
+
     pub fn install(
         self: &Arc<Self>,
         operation_id: Uuid,
@@ -132,6 +169,7 @@ impl McpAppsStore {
             .source
             .lock()
             .map_err(|_| "MCP source state unavailable")?;
+        self.ensure_open()?;
         *source = Some(SourceAuthority {
             operation_id,
             session_id,
@@ -148,6 +186,9 @@ impl McpAppsStore {
     pub(crate) fn sync_operation(&self, state: &AppState) -> Result<(), String> {
         {
             let mut storage = self.storage.lock().map_err(|_| "MCP storage unavailable")?;
+            if self.ensure_open().is_err() {
+                return Ok(());
+            }
             // Read the authoritative operation while holding storage: a delayed publication
             // must never reset a newer operation's files using its stale snapshot.
             let runtime = state
@@ -184,7 +225,8 @@ impl McpAppsStore {
         Ok(())
     }
     fn lease_live(&self, runtime: &AppSnapshot, lease: &Lease) -> bool {
-        if lease.cancellation.is_cancelled()
+        if self.ensure_open().is_err()
+            || lease.cancellation.is_cancelled()
             || !operation_eligible(runtime, &lease.artifact.descriptor)
         {
             return false;
@@ -211,6 +253,7 @@ impl McpAppsStore {
             .leases
             .lock()
             .map_err(|_| "MCP lease state unavailable")?;
+        self.ensure_open()?;
         if self.open_epoch.load(std::sync::atomic::Ordering::Acquire) != ticket {
             return Err("App display request was superseded".into());
         }
@@ -292,6 +335,7 @@ impl McpAppsStore {
     ) -> Result<Vec<McpAppDescriptor>, String> {
         let state = app.state::<AppState>();
         let mut storage = self.storage.lock().map_err(|_| "MCP storage unavailable")?;
+        self.ensure_open()?;
         let runtime = state
             .runtime
             .read()
@@ -856,6 +900,89 @@ impl Drop for AppTurnLifetime<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn orderly_shutdown_releases_owned_resources_and_rejects_late_recreation() {
+        let state = crate::test_support::state();
+        let operation = Uuid::new_v4();
+        let descriptor = descriptor(operation);
+        {
+            let mut runtime = state.runtime.write().unwrap();
+            runtime.lens.operation_id = Some(operation);
+            runtime.lens.mcp_apps = vec![descriptor.clone()];
+        }
+        let store = Arc::clone(&state.mcp_apps);
+        let broker = Arc::new(
+            AppBroker::start(Vec::new(), "<p>shell</p>".into())
+                .await
+                .unwrap(),
+        );
+        let config = state.config().unwrap();
+        let lifetime = store
+            .install(operation, descriptor.session_id.clone(), &broker, &config)
+            .unwrap();
+        store.sync_operation(&state).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let owned_path = directory.path().join("artifact.json");
+        fs::write(&owned_path, b"owned").unwrap();
+        store.storage.lock().unwrap().directory = Some(directory);
+        let unowned = tempfile::tempdir().unwrap();
+        let unowned_path = unowned.path().join("another-owner.json");
+        fs::write(&unowned_path, b"unowned").unwrap();
+        let display = lease(
+            descriptor.clone(),
+            Arc::downgrade(&broker),
+            Some(lifetime.generation),
+        )
+        .await;
+        let endpoint = display._document.proxy_url.clone();
+        let cancellation = display.cancellation.clone();
+        let ticket = store
+            .open_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
+        assert!(store
+            .commit_display(&state, ticket, Uuid::new_v4(), display)
+            .unwrap());
+        assert!(reqwest::Client::new()
+            .get(&endpoint)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        store.shutdown().unwrap();
+        store.shutdown().unwrap();
+        assert!(cancellation.is_cancelled());
+        assert!(!owned_path.exists());
+        assert!(unowned_path.exists());
+        assert!(store.leases.lock().unwrap().is_empty());
+        assert!(store.source.lock().unwrap().is_none());
+        assert!(store
+            .install(operation, descriptor.session_id.clone(), &broker, &config)
+            .is_err());
+        store.sync_operation(&state).unwrap();
+        assert!(store.storage.lock().unwrap().directory.is_none());
+        let delayed = lease(
+            descriptor,
+            Arc::downgrade(&broker),
+            Some(lifetime.generation),
+        )
+        .await;
+        assert!(store
+            .commit_display(&state, ticket, Uuid::new_v4(), delayed)
+            .is_err());
+        tokio::task::yield_now().await;
+        assert!(reqwest::Client::new().get(endpoint).send().await.is_err());
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        assert!(store
+            .retain(app.handle(), operation, "same-physical-session", Vec::new())
+            .is_err());
+        assert!(store.storage.lock().unwrap().directory.is_none());
+        drop(lifetime);
+    }
     #[test]
     fn opened_app_serializes_only_implemented_live_content_modalities() {
         let mut opened = OpenedApp {
