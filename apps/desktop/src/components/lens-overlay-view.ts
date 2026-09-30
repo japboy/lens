@@ -62,6 +62,8 @@ const LENS_TABS = [
   { id: "diagnostics", label: "Diagnostics" },
 ] as const;
 
+const HISTORY_TABS = LENS_TABS.filter(({ id }) => id === "interpretation" || id === "conversation");
+
 type LensTab = (typeof LENS_TABS)[number]["id"];
 
 interface OverlayNotification {
@@ -1875,6 +1877,8 @@ export class LensOverlayView extends LitElement {
       )
         this.activeTab = "interpretation";
     }
+    if (isHistoryView(this.sessionView) && !HISTORY_TABS.some(({ id }) => id === this.activeTab))
+      this.activeTab = "interpretation";
     if (changed.has("model")) {
       const previous = changed.get("model");
       if (previous?.lens.operation_id !== this.model?.lens.operation_id) {
@@ -2333,7 +2337,7 @@ export class LensOverlayView extends LitElement {
   private renderHistory() {
     const view = this.sessionView!;
     const identity = `${view.agent}:${view.session_id}${view.generation ? `:${view.generation}` : ""}`;
-    const activeTab = this.activeTab === "source" ? "interpretation" : this.activeTab;
+    const activeTab = this.activeTab;
     const notification = historyNotification(view) ?? this.updateOnlyNotification();
     const showNotification = Boolean(notification && this.notificationVisibility === "open");
     return html`<div
@@ -2345,7 +2349,7 @@ export class LensOverlayView extends LitElement {
       ${this.renderHeader()}
       <nav class="lens-tabs" aria-label="Lens content">
         <div role="tablist" aria-orientation="horizontal">
-          ${this.renderTab("interpretation", "Interpretation")}${this.renderTab("conversation", "Conversation")}${this.renderTab("diagnostics", "Diagnostics")}
+          ${HISTORY_TABS.map(({ id, label }) => this.renderTab(id, label))}
         </div>
       </nav>
       <main class="overlay-main" aria-busy=${view.phase === "loading" ? "true" : "false"}>
@@ -2361,26 +2365,22 @@ export class LensOverlayView extends LitElement {
         >
           ${cache(
             view.phase === "ready"
-              ? activeTab === "diagnostics"
+              ? activeTab === "conversation"
                 ? html`<div class="lens-content">
-                    ${renderResponseInputDiagnostics(this.responseHistory)}
+                    <lens-session-document
+                      .document=${view.conversation ?? view.document}
+                      .identity=${identity}
+                      .loadBlock=${this.loadSessionBlock}
+                    ></lens-session-document>
                   </div>`
-                : activeTab === "conversation"
-                  ? html`<div class="lens-content">
-                      <lens-session-document
-                        .document=${view.conversation ?? view.document}
-                        .identity=${identity}
-                        .loadBlock=${this.loadSessionBlock}
-                      ></lens-session-document>
-                    </div>`
-                  : html`<lens-agent-output
-                      .sessionKind=${"history"}
-                      .history=${this.responseHistory}
-                      .notificationContent=${this.notificationSurface()}
-                      .loadResponseBlock=${this.loadResponseBlock}
-                      .requestMedia=${this.requestResponseMedia}
-                      .retryMedia=${this.retryResponseMedia}
-                    ></lens-agent-output>`
+                : html`<lens-agent-output
+                    .sessionKind=${"history"}
+                    .history=${this.responseHistory}
+                    .notificationContent=${this.notificationSurface()}
+                    .loadResponseBlock=${this.loadResponseBlock}
+                    .requestMedia=${this.requestResponseMedia}
+                    .retryMedia=${this.retryResponseMedia}
+                  ></lens-agent-output>`
               : nothing,
           )}
         </section>
@@ -2527,9 +2527,7 @@ export class LensOverlayView extends LitElement {
   }
 
   private handleTabKeyDown = (event: KeyboardEvent): void => {
-    const tabs = isHistoryView(this.sessionView)
-      ? LENS_TABS.filter(({ id }) => id !== "source")
-      : LENS_TABS;
+    const tabs = isHistoryView(this.sessionView) ? HISTORY_TABS : LENS_TABS;
     const activeIndex = tabs.findIndex(({ id }) => id === this.activeTab);
     const nextIndex = (() => {
       switch (event.key) {

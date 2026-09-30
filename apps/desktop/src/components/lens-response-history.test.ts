@@ -625,27 +625,70 @@ describe("Overlay committed response presentation", () => {
     expect(output.querySelector(".lens-response-coverage")).toBeNull();
     const requestSource = vi.fn<(active: boolean) => void>();
     view.requestSource = requestSource;
-    view.shadowRoot!.querySelector<HTMLButtonElement>("#diagnostics-tab")!.click();
-    await view.updateComplete;
-    expect(
-      view.shadowRoot!.querySelector("#diagnostics-panel .lens-response-coverage"),
-    ).not.toBeNull();
-    expect(view.shadowRoot!.querySelector("lens-extraction-diagnostics")).toBeNull();
-    expect(requestSource).toHaveBeenLastCalledWith(false);
     view.responseHistory = {
-      ...history(1, "history:replacement"),
-      responses: [{ ...manifest(1), delivery: { mode: "text_only_partial", sources: [] } }],
+      ...history(2, "history:replacement"),
+      responses: [
+        { ...manifest(1), delivery: { mode: "text_only_partial", sources: [] } },
+        manifest(2),
+      ],
     };
     view.sessionView = { ...view.sessionView!, generation: "replacement", revision: 2 };
     await view.updateComplete;
-    expect(
-      view.shadowRoot!.querySelector<HTMLDetailsElement>(".lens-response-coverage")?.open,
-    ).toBe(false);
-    expect(view.shadowRoot!.querySelector(".lens-response-coverage")?.textContent).toContain(
-      "PARTIAL",
-    );
-    expect(view.shadowRoot!.textContent).not.toContain("UNKNOWN");
+    const root = view.shadowRoot!;
+    expect([...root.querySelectorAll('[role="tab"]')].map((tab) => tab.id)).toEqual([
+      "interpretation-tab",
+      "conversation-tab",
+    ]);
+    expect(view.responseHistory.responses[0]?.delivery?.mode).toBe("text_only_partial");
+    expect(view.responseHistory.responses[1]?.delivery).toBeUndefined();
+    for (const tab of ["interpretation", "conversation"] as const) {
+      root.querySelector<HTMLButtonElement>(`#${tab}-tab`)!.click();
+      await view.updateComplete;
+      expect(root.querySelector(".lens-response-coverage")).toBeNull();
+      expect(root.querySelector(".response-input-diagnostics")).toBeNull();
+      expect(root.querySelector("lens-extraction-diagnostics")).toBeNull();
+      expect(root.textContent).not.toContain("Agent input:");
+      expect(root.textContent).not.toContain("Response input history");
+      expect(root.textContent).not.toContain("PARTIAL");
+      expect(root.textContent).not.toContain("UNKNOWN");
+      expect(requestSource).toHaveBeenLastCalledWith(false);
+    }
   });
+  it.each(["source", "diagnostics"] as const)(
+    "returns from live %s to Interpretation when opening saved history",
+    async (previousTab) => {
+      const view = await mountOverlay(1);
+      const requestSource = vi.fn<(active: boolean) => void>();
+      view.requestSource = requestSource;
+      const root = view.shadowRoot!;
+      root.querySelector<HTMLButtonElement>(`#${previousTab}-tab`)!.click();
+      await view.updateComplete;
+      expect(requestSource).toHaveBeenLastCalledWith(true);
+      view.responseHistory = history(1, "history:saved");
+      view.sessionView = {
+        phase: "ready",
+        revision: 1,
+        generation: "saved",
+        session_id: "saved",
+        agent: "codex",
+        interpretation: { responses: [] },
+        conversation: { entries: [] },
+      };
+      await view.updateComplete;
+      expect(root.querySelector('[aria-selected="true"]')?.id).toBe("interpretation-tab");
+      expect(root.querySelector("#interpretation-panel lens-agent-output")).not.toBeNull();
+      expect(root.querySelector("#source-tab")).toBeNull();
+      expect(root.querySelector("#diagnostics-tab")).toBeNull();
+      expect(root.querySelector(".response-input-diagnostics")).toBeNull();
+      expect(requestSource).toHaveBeenLastCalledWith(false);
+      // Unsupported live tabs cannot leave history without a selected tab.
+      Reflect.set(view, "activeTab", previousTab);
+      await view.updateComplete;
+      expect(root.querySelector('[aria-selected="true"]')?.id).toBe("interpretation-tab");
+      expect(root.querySelector("#interpretation-panel")).not.toBeNull();
+      expect(requestSource).toHaveBeenLastCalledWith(false);
+    },
+  );
   it("replaces a provisional first answer exactly once and starts an operation with separate DOM identity", async () => {
     const element = document.createElement("lens-agent-output") as LensAgentOutput;
     element.lens = {

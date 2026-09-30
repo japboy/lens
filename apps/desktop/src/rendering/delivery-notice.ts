@@ -35,7 +35,7 @@ export function renderResponseDeliveryNotice(delivery: LensDeliveryCoverage | un
   </aside>`;
 }
 
-/** Diagnostics owns immutable response receipts in both live and restored sessions. */
+/** Live Diagnostics owns immutable response receipts without exposing them in saved sessions. */
 export function renderResponseInputDiagnostics(history: ResponseHistoryPresentation | undefined) {
   if (!history) return nothing;
   const affected = history.responses.filter(

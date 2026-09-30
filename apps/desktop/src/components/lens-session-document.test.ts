@@ -332,7 +332,7 @@ describe("canonical session renderer", () => {
   });
 });
 
-it("history keyboard navigation visits Interpretation, Conversation and receipt Diagnostics", async () => {
+it("history keyboard navigation visits only Interpretation and Conversation", async () => {
   const view = new LensOverlayView();
   view.active = true;
   view.sessionView = {
@@ -346,11 +346,10 @@ it("history keyboard navigation visits Interpretation, Conversation and receipt 
   await view.updateComplete;
   for (const [key, expected] of [
     ["ArrowRight", "conversation"],
-    ["ArrowRight", "diagnostics"],
     ["ArrowRight", "interpretation"],
-    ["End", "diagnostics"],
+    ["End", "conversation"],
     ["Home", "interpretation"],
-    ["ArrowLeft", "diagnostics"],
+    ["ArrowLeft", "conversation"],
   ]) {
     view
       .shadowRoot!.querySelector<HTMLButtonElement>('[aria-selected="true"]')!
