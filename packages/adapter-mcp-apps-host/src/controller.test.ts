@@ -34,9 +34,7 @@ function setup() {
     }),
     mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({
       result: {},
-      draft: { id: "draft-1", text: "Please explain 73" },
     })),
-    submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
   };
   const factory = () => {
     const bridge = {
@@ -214,18 +212,19 @@ describe("selected App lifecycle", () => {
     expect(test.container.querySelector("iframe")).toBeNull();
     expect(test.controller.state.stage).toBe("closed");
   });
-  it("never dispatches ui/message until trusted submit and rejects a late result after close", async () => {
+  it("admits ui/message immediately and rejects a late result after close", async () => {
     const test = setup();
     await test.controller.show(descriptor("a"), test.container);
     await test.initialize();
-    await test.bridges[0]!.onmessage?.(
-      { role: "user", content: [{ type: "text", text: "Please explain 73" }] },
-      {} as never,
-    );
-    expect(test.port.submitMcpAppMessage).not.toHaveBeenCalled();
-    expect(test.controller.draft?.text).toBe("Please explain 73");
-    await test.controller.submitDraft();
-    expect(test.port.submitMcpAppMessage).toHaveBeenCalledWith("lease-a", "draft-1");
+    const params = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "Please explain 73" }],
+    };
+    await expect(test.bridges[0]!.onmessage!(params, {} as never)).resolves.toEqual({});
+    expect(test.port.mcpAppRequest).toHaveBeenCalledExactlyOnceWith("lease-a", {
+      method: "ui/message",
+      params,
+    });
     let resolve!: (value: { result: unknown }) => void;
     vi.mocked(test.port.mcpAppRequest).mockImplementationOnce(
       () =>
@@ -233,7 +232,7 @@ describe("selected App lifecycle", () => {
           resolve = done;
         }),
     );
-    const pending = test.bridges[0]!.oncalltool!({ name: "inspect", arguments: {} }, {} as never);
+    const pending = test.bridges[0]!.onmessage!(params, {} as never);
     const close = test.controller.close();
     resolve({ result: { content: [] } });
     await expect(pending).rejects.toThrow("App permission expired");

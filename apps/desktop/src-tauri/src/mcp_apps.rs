@@ -15,10 +15,10 @@ use std::{
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
+pub use usecase::mcp_apps::validate_servers;
 use usecase::mcp_apps::{
     app_message_prompt, bounded, AppAuthorityFacts, AppViewInput, SourceAuthorityFacts,
 };
-pub use usecase::mcp_apps::{validate_servers, AppDraft};
 use usecase::model::{McpAppDescriptor, McpAppServer};
 use uuid::Uuid;
 
@@ -167,8 +167,6 @@ impl OpenedApp {
 #[derive(Serialize)]
 pub struct AppRequestResult {
     pub result: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub draft: Option<AppDraft>,
 }
 
 impl McpAppsStore {
@@ -277,12 +275,23 @@ impl McpAppsStore {
             if !self.lease_live(&runtime, &active.lease) {
                 // Pause retires RPC authority, but preserves the read-only display.
                 active.lease.cancellation.cancel();
-                active.lease.input.revoke_draft();
             }
         }
         Ok(())
     }
     fn lease_live(&self, runtime: &AppSnapshot, lease: &Lease) -> bool {
+        self.source
+            .lock()
+            .ok()
+            .is_some_and(|source| self.lease_live_with_source(runtime, lease, source.as_ref()))
+    }
+
+    fn lease_live_with_source(
+        &self,
+        runtime: &AppSnapshot,
+        lease: &Lease,
+        source: Option<&SourceAuthority>,
+    ) -> bool {
         let Some(artifact) = lease.content.artifact() else {
             return false;
         };
@@ -292,21 +301,36 @@ impl McpAppsStore {
         {
             return false;
         }
-        self.source.lock().ok().is_some_and(|source| {
-            source.as_ref().is_some_and(|source| {
-                authority_facts(runtime).source_matches(
-                    SourceAuthorityFacts {
-                        operation_id: source.operation_id,
-                        session_id: &source.session_id,
-                        generation: source.generation,
-                        config: &source.config,
-                    },
-                    &artifact.descriptor,
-                    lease.source_generation,
-                ) && Weak::ptr_eq(&source.broker, &lease.source)
-                    && lease.source.upgrade().is_some()
-            })
+        source.is_some_and(|source| {
+            authority_facts(runtime).source_matches(
+                SourceAuthorityFacts {
+                    operation_id: source.operation_id,
+                    session_id: &source.session_id,
+                    generation: source.generation,
+                    config: &source.config,
+                },
+                &artifact.descriptor,
+                lease.source_generation,
+            ) && Weak::ptr_eq(&source.broker, &lease.source)
+                && lease.source.upgrade().is_some()
         })
+    }
+
+    fn with_live_source<T>(
+        &self,
+        state: &AppState,
+        lease: &Lease,
+        admit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        // Retirement and synchronous admission share one source-authority boundary.
+        // All runtime→source readers also own active_lease, as this caller does.
+        let source = self.source.lock().map_err(|_| "MCP source unavailable")?;
+        if !self.lease_live_with_source(&state.snapshot()?, lease, source.as_ref()) {
+            return Err("App session authority expired".into());
+        }
+        let result = admit();
+        drop(source);
+        result
     }
     fn commit_display(
         &self,
@@ -441,7 +465,7 @@ impl McpAppsStore {
             .lock()
             .ok()
             .is_some_and(|s| s.as_ref().is_some_and(|s| s.broker.upgrade().is_some()));
-        let leases=self.active_lease.lock().map(|active| active.iter().map(|active| { let l = &active.lease; json!({"id":active.id,"artifact_id":l.content.artifact().map(|artifact| artifact.descriptor.id),"generation":l.generation,"source_live":l.source.upgrade().is_some(),"draft_id":l.input.draft().map(|d|d.id),"submitted":l.input.submitted(),"authority_active":!l.cancellation.is_cancelled()}) }).collect::<Vec<_>>()).unwrap_or_default();
+        let leases=self.active_lease.lock().map(|active| active.iter().map(|active| { let l = &active.lease; json!({"id":active.id,"artifact_id":l.content.artifact().map(|artifact| artifact.descriptor.id),"generation":l.generation,"source_live":l.source.upgrade().is_some(),"authority_active":!l.cancellation.is_cancelled()}) }).collect::<Vec<_>>()).unwrap_or_default();
         json!({"source_live":source_live,"leases":leases})
     }
     fn tool_catalogs(&self, runtime: &AppSnapshot) -> Result<Vec<McpServerToolCatalog>, String> {
@@ -1035,10 +1059,7 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
                     .open_url(destination, None::<&str>)
                     .map_err(|_| "Unable to open HTML link in default browser".into())
             })?;
-            return Ok(AppRequestResult {
-                result: json!({}),
-                draft: None,
-            });
+            return Ok(AppRequestResult { result: json!({}) });
         }
         if !state.mcp_apps.lease_live(&state.snapshot()?, lease) {
             return Err("App session authority expired".into());
@@ -1046,17 +1067,21 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
         match method {
             "ui/update-model-context" => {
                 lease.input.replace_context(params)?;
-                return Ok(AppRequestResult {
-                    result: json!({}),
-                    draft: None,
-                });
+                return Ok(AppRequestResult { result: json!({}) });
             }
             "ui/message" => {
-                let draft = lease.input.replace_message(Uuid::new_v4(), &params)?;
-                return Ok(AppRequestResult {
-                    result: json!({}),
-                    draft: Some(draft),
-                });
+                let text = usecase::mcp_apps::text_content(&params)?;
+                let artifact = lease
+                    .content
+                    .artifact()
+                    .ok_or("App source authority unavailable")?;
+                let prompt = app_message_prompt(&artifact.descriptor, &text, lease.input.context());
+                state.mcp_apps.with_live_source(&state, lease, || {
+                    state
+                        .agent_control
+                        .submit_app_message(&app, &artifact.descriptor, prompt)
+                })?;
+                return Ok(AppRequestResult { result: json!({}) });
             }
             "tools/call" | "tools/list" => {}
             _ => return Err("Unsupported App operation".into()),
@@ -1106,60 +1131,16 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
     {
         return Err("App lease expired before the tool result returned".into());
     }
-    Ok(AppRequestResult {
-        result,
-        draft: None,
-    })
+    Ok(AppRequestResult { result })
 }
-#[tauri::command]
-pub async fn submit_mcp_app_message<R: tauri::Runtime>(
-    app: AppHandle<R>,
-    lease_id: Uuid,
-    draft_id: Uuid,
-) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let receiver = {
-        let mut active = state
-            .mcp_apps
-            .active_lease
-            .lock()
-            .map_err(|_| "MCP lease state unavailable")?;
-        let lease = &mut active
-            .as_mut()
-            .filter(|active| active.id == lease_id)
-            .ok_or("App lease expired")?
-            .lease;
-        lease.input.pending_message(draft_id)?;
-        if !state.mcp_apps.lease_live(&state.snapshot()?, lease) {
-            return Err("App session expired".into());
-        }
-        let text = lease.input.pending_message(draft_id)?.text.clone();
-        let artifact = lease
-            .content
-            .artifact()
-            .ok_or("App source authority unavailable")?;
-        let prompt = app_message_prompt(&artifact.descriptor, &text, lease.input.context());
-        let receiver =
-            state
-                .agent_control
-                .submit_app_message(&app, &artifact.descriptor, prompt)?;
-        lease.input.mark_submitted();
-        receiver
-    };
-    receiver
-        .await
-        .map_err(|_| "Agent App message admission ended")??;
-    Ok(())
-}
+
 #[tauri::command]
 pub fn get_mcp_server_tool_catalogs<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<Vec<McpServerToolCatalog>, String> {
     let state = app.state::<AppState>();
-    let runtime = state
-        .runtime
-        .read()
-        .map_err(|_| "Application state unavailable")?;
+    // Do not retain runtime authority while acquiring the independent source mutex.
+    let runtime = state.snapshot()?;
     state.mcp_apps.tool_catalogs(&runtime)
 }
 
@@ -1206,6 +1187,85 @@ impl Drop for AppTurnLifetime<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn source_retirement_cannot_overtake_synchronous_message_admission() {
+        use std::sync::{mpsc, TryLockError};
+        let state = crate::test_support::state();
+        let operation = Uuid::new_v4();
+        let descriptor = descriptor(operation);
+        state.runtime.write().unwrap().lens.operation_id = Some(operation);
+        let store = Arc::clone(&state.mcp_apps);
+        let broker = Arc::new(
+            AppBroker::start(vec![], "<p>shell</p>".into())
+                .await
+                .unwrap(),
+        );
+        let lifetime = store
+            .install(
+                operation,
+                descriptor.session_id.clone(),
+                &broker,
+                &state.config().unwrap(),
+            )
+            .unwrap();
+        let generation = lifetime.generation;
+        let display = lease(
+            descriptor.clone(),
+            Arc::downgrade(&broker),
+            Some(generation),
+        )
+        .await;
+        let cancellation = display.cancellation.clone();
+        *store.active_lease.lock().unwrap() = Some(ActiveLease {
+            id: Uuid::new_v4(),
+            lease: display,
+        });
+        let (start, started) = mpsc::channel();
+        let (blocked, observed) = mpsc::channel();
+        let (retired, retirement) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let retiring_store = Arc::clone(&store);
+            let retirement_thread = scope.spawn(move || {
+                started.recv().unwrap();
+                let protected = matches!(
+                    retiring_store.source.try_lock(),
+                    Err(TryLockError::WouldBlock)
+                );
+                blocked.send(protected).unwrap();
+                drop(lifetime);
+                retired.send(()).unwrap();
+            });
+            {
+                // Production admission already owns this display gate.
+                let active = store.active_lease.lock().unwrap();
+                let lease = &active.as_ref().unwrap().lease;
+                store
+                    .with_live_source(&state, lease, || {
+                        start.send(()).unwrap();
+                        assert!(observed.recv().unwrap());
+                        assert!(matches!(
+                            retirement.try_recv(),
+                            Err(mpsc::TryRecvError::Empty)
+                        ));
+                        assert!(!cancellation.is_cancelled());
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            retirement.recv().unwrap();
+            retirement_thread.join().unwrap();
+        });
+        assert!(cancellation.is_cancelled());
+        assert!(store.source.lock().unwrap().is_none());
+        assert!(store.active_lease.lock().unwrap().is_none());
+        let stale = lease(descriptor, Arc::downgrade(&broker), Some(generation)).await;
+        assert!(store
+            .with_live_source::<()>(&state, &stale, || {
+                panic!("retired source must not admit a late message")
+            })
+            .is_err());
+        broker.close().await;
+    }
     #[tokio::test]
     async fn orderly_shutdown_releases_owned_resources_and_rejects_late_recreation() {
         let state = crate::test_support::state();

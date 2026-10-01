@@ -51,14 +51,8 @@ export interface McpAppsPort {
   mcpAppRequest(
     leaseId: string,
     request: { method: string; params?: unknown },
-  ): Promise<{ result: unknown; draft?: McpAppMessageDraft }>;
+  ): Promise<{ result: unknown }>;
   closeMcpApp(leaseId: string): Promise<void>;
-  submitMcpAppMessage(leaseId: string, draftId: string): Promise<void>;
-}
-
-export interface McpAppMessageDraft {
-  id: string;
-  text: string;
 }
 
 export type McpAppState =

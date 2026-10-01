@@ -88,7 +88,6 @@ async function mount() {
     mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
     openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(),
     prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(async () => {}),
-    submitMcpAppMessage: vi.fn<DesktopMcpAppsPort["submitMcpAppMessage"]>(async () => {}),
   };
   const view = document.createElement("lens-overlay-view") as LensOverlayView;
   const history = new ResponseHistoryController(view, {
@@ -144,7 +143,6 @@ describe("response-scoped MCP App navigation", () => {
     ).not.toBeNull();
     expect(root.activeElement?.classList.contains("output-media-details-toggle")).toBe(true);
     expect(port.openMcpApp).toHaveBeenCalledExactlyOnceWith(app.id, window.location.origin);
-    expect(port.submitMcpAppMessage).not.toHaveBeenCalled();
     expect(port.prepareMcpAppDocument).not.toHaveBeenCalled();
   });
 
@@ -165,6 +163,5 @@ describe("response-scoped MCP App navigation", () => {
     );
     expect(root.querySelector(".overlay-new-response-count")?.textContent).toBe("1 new response");
     expect(root.querySelector<HTMLButtonElement>(".lens-view-latest")?.disabled).toBe(false);
-    expect(port.submitMcpAppMessage).not.toHaveBeenCalled();
   });
 });

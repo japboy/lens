@@ -3,7 +3,6 @@ import { OriginBoundAppTransport } from "./transport";
 import type {
   McpAppDescriptor,
   McpAppLease,
-  McpAppMessageDraft,
   McpAppsPort,
   McpAppState,
   McpAppHostOptions,
@@ -76,9 +75,7 @@ async function bounded<T>(promise: Promise<T>, milliseconds: number): Promise<T 
 /** One selected App. Replacement first revokes authority, then disposes its document. */
 export class McpAppController {
   state: McpAppState = { stage: "idle" };
-  draft: McpAppMessageDraft | undefined;
-  submitting = false;
-  submissionError = "";
+  connectionError = "";
   private epoch = 0;
   private mounted: MountedApp | undefined;
   private operation: Promise<void> = Promise.resolve();
@@ -284,43 +281,13 @@ export class McpAppController {
     this.assertCurrent(mounted);
     const response = await this.port.mcpAppRequest(mounted.lease.id, { method, params });
     this.assertCurrent(mounted);
-    if (response.draft) {
-      this.draft = response.draft;
-      this.submissionError = "";
-      this.changed();
-    }
     return response.result;
-  }
-  discardDraft(): void {
-    this.draft = undefined;
-    this.submissionError = "";
-    this.changed();
-  }
-  async submitDraft(): Promise<void> {
-    const mounted = this.mounted;
-    const draft = this.draft;
-    if (!mounted || !draft || this.submitting) return;
-    this.assertCurrent(mounted);
-    this.submitting = true;
-    this.submissionError = "";
-    this.changed();
-    try {
-      await this.port.submitMcpAppMessage(mounted.lease.id, draft.id);
-      this.assertCurrent(mounted);
-      if (this.draft === draft) this.draft = undefined;
-    } catch (error) {
-      if (this.mounted === mounted && !mounted.revoked) this.submissionError = String(error);
-    } finally {
-      this.submitting = false;
-      this.changed();
-    }
   }
   private revokeCurrent(): void {
     const mounted = this.mounted;
     if (!mounted || mounted.revoked) return;
     mounted.revoked = true;
-    this.draft = undefined;
-    this.submissionError = "";
+    this.connectionError = "";
     clearTimeout(mounted.initializationTimer);
     // Start native revocation immediately; do not wait for a cooperative App.
     void this.port.closeMcpApp(mounted.lease.id).catch(() => {});
@@ -354,7 +321,7 @@ export class McpAppController {
           } catch {
             // Cleanup failure cannot poison the serialized replacement queue.
             // The owned transport and document are still released below.
-            this.submissionError = "The App connection could not close cleanly. You can reopen it.";
+            this.connectionError = "The App connection could not close cleanly. You can reopen it.";
           } finally {
             await mounted.transport.close();
             mounted.frame.remove();

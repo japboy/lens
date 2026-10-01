@@ -1,7 +1,6 @@
 //! Effect-free MCP App admission facts and finite per-view input transitions.
 //! Native callers own identities, locks, source lifetime and all effects.
 use crate::model::{AppConfig, LensMonitoringLifecycle, McpAppDescriptor, McpAppServer};
-use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -44,42 +43,21 @@ impl AppAuthorityFacts<'_> {
             && retained.into_iter().any(|app| app.id == descriptor.id)
     }
 }
-#[derive(Clone, Serialize)]
-pub struct AppDraft {
-    pub id: Uuid,
-    pub text: String,
-}
 
-/// Replacement context and latest pending requests belong to one native display lease.
-/// IDs are supplied by the native caller; no authority or ambient identity is created here.
+/// Replacement model context belongs to one native display lease.
 pub struct AppViewInput {
     context: Value,
-    draft: Option<AppDraft>,
-    submitted: bool,
 }
 impl Default for AppViewInput {
     fn default() -> Self {
-        Self {
-            context: json!({}),
-            draft: None,
-            submitted: false,
-        }
+        Self { context: json!({}) }
     }
 }
 impl AppViewInput {
     pub fn context(&self) -> &Value {
         &self.context
     }
-    pub fn draft(&self) -> Option<&AppDraft> {
-        self.draft.as_ref()
-    }
 
-    pub fn submitted(&self) -> bool {
-        self.submitted
-    }
-    pub fn revoke_draft(&mut self) {
-        self.draft = None;
-    }
     pub fn replace_context(&mut self, params: Value) -> Result<(), String> {
         bounded(&params, 32 * 1024)?;
         if !params.is_object()
@@ -104,23 +82,6 @@ impl AppViewInput {
         }
         self.context = params;
         Ok(())
-    }
-    pub fn replace_message(&mut self, id: Uuid, params: &Value) -> Result<AppDraft, String> {
-        let text = text_content(params)?;
-        bounded(params, 16 * 1024)?;
-        let draft = AppDraft { id, text };
-        self.draft = Some(draft.clone());
-        self.submitted = false;
-        Ok(draft)
-    }
-    pub fn pending_message(&self, id: Uuid) -> Result<&AppDraft, String> {
-        if self.submitted || self.draft.as_ref().is_none_or(|d| d.id != id) {
-            return Err("App message was replaced or already submitted".into());
-        }
-        Ok(self.draft.as_ref().expect("checked draft"))
-    }
-    pub fn mark_submitted(&mut self) {
-        self.submitted = true;
     }
 }
 pub fn link_destination(params: &Value) -> Result<String, String> {
@@ -152,6 +113,7 @@ pub fn bounded(value: &Value, max: usize) -> Result<(), String> {
 }
 
 pub fn text_content(params: &Value) -> Result<String, String> {
+    bounded(params, 16 * 1024)?;
     if params.get("role").and_then(Value::as_str) != Some("user") {
         return Err("Only user messages are accepted".into());
     }
@@ -317,19 +279,8 @@ mod tests {
         assert!(!facts.display_retained(&descriptor, [&descriptor].into_iter()));
     }
     #[test]
-    fn latest_inputs_are_transactional_and_submission_requires_latest_draft() {
+    fn context_replacements_are_transactional_and_messages_are_bounded_text() {
         let mut input = AppViewInput::default();
-        let first = Uuid::from_u128(1);
-        let second = Uuid::from_u128(2);
-        let message = json!({"role":"user","content":[{"type":"text","text":"explain"}]});
-        input.replace_message(first, &message).unwrap();
-        input.replace_message(second, &message).unwrap();
-        assert!(input.pending_message(first).is_err());
-        assert_eq!(input.pending_message(second).unwrap().text, "explain");
-        input.mark_submitted();
-        assert!(input.pending_message(second).is_err());
-        input.replace_message(first, &message).unwrap();
-        assert!(input.pending_message(first).is_ok());
         let context = json!({"structuredContent":{"value":73}});
         input.replace_context(context.clone()).unwrap();
         for invalid in [
@@ -343,7 +294,15 @@ mod tests {
         }
         input.replace_context(json!({})).unwrap();
         assert_eq!(input.context(), &json!({}));
-        input.revoke_draft();
-        assert!(input.pending_message(first).is_err());
+        assert_eq!(text_content(&json!({"role":"user","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]})).unwrap(), "first\nsecond");
+        for invalid in [
+            json!({"role":"assistant","content":[{"type":"text","text":"x"}]}),
+            json!({"role":"user","content":[]}),
+            json!({"role":"user","content":[{"type":"image"}]}),
+            json!({"role":"user","content":[{"type":"text","text":" "}]}),
+            json!({"role":"user","content":[{"type":"text","text":"x".repeat(16384)}]}),
+        ] {
+            assert!(text_content(&invalid).is_err());
+        }
     }
 }

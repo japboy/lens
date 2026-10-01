@@ -78,7 +78,6 @@ const nativePort = {
   openMcpApp: vi.fn<DesktopMcpAppsPort["openMcpApp"]>(),
   closeMcpApp: vi.fn<DesktopMcpAppsPort["closeMcpApp"]>(async () => {}),
   mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
-  submitMcpAppMessage: vi.fn<DesktopMcpAppsPort["submitMcpAppMessage"]>(async () => {}),
   prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(async () => {}),
   openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(
     (source) =>
@@ -615,7 +614,6 @@ describe("Interpretation media interactions", () => {
       method: "ui/open-link",
       params: { url: "https://example.com/" },
     });
-    expect(nativePort.submitMcpAppMessage).not.toHaveBeenCalled();
   });
 
   it("fullscreens the existing HTML content inside its stable slide and does not trap Tab on the close control", async () => {

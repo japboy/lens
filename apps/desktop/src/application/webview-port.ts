@@ -151,7 +151,6 @@ export const tauriWebviewPort: WebviewPort = {
     invoke("open_html_presentation", { source, hostOrigin }),
   mcpAppRequest: (leaseId, request) => invoke("mcp_app_request", { leaseId, request }),
   closeMcpApp: (leaseId) => invoke("close_mcp_app", { leaseId }),
-  submitMcpAppMessage: (leaseId, draftId) => invoke("submit_mcp_app_message", { leaseId, draftId }),
   getLensSource: (sourceRef) => invoke("get_lens_source", { sourceRef }),
   getLensOutput: (outputRef) => invoke("get_lens_output", { outputRef }),
   getLensImage: (imageRef) => invoke("get_lens_image", { imageRef }),

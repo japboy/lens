@@ -49,7 +49,6 @@ it.each([true, false])(
       })),
       closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: { tools: [] } })),
-      submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
     };
     const container = document.createElement("div");
     document.body.append(container);
@@ -171,7 +170,23 @@ it.each([true, false])(
       method: "ui/open-link",
       params: { url: "https://example.com/73" },
     });
-    expect(port.submitMcpAppMessage).not.toHaveBeenCalled();
+    const message = { role: "user", content: [{ type: "text", text: "Explain selection 73" }] };
+    vi.mocked(port.mcpAppRequest).mockResolvedValueOnce({ result: {} });
+    emit({ jsonrpc: "2.0", id: 5, method: "ui/message", params: message });
+    await vi.waitFor(() => expect(received.find((reply) => reply.id === 5)).toBeDefined());
+    expect(received.find((reply) => reply.id === 5)?.result).toEqual(live ? {} : undefined);
+    expect("error" in received.find((reply) => reply.id === 5)!).toBe(!live);
+    expect(
+      vi
+        .mocked(port.mcpAppRequest)
+        .mock.calls.filter(([, request]) => request.method === "ui/message"),
+    ).toEqual(live ? [["lease", { method: "ui/message", params: message }]] : []);
+    vi.mocked(port.mcpAppRequest).mockRejectedValueOnce(new Error("Agent is busy"));
+    emit({ jsonrpc: "2.0", id: 6, method: "ui/message", params: message });
+    await vi.waitFor(() => expect(received.find((reply) => reply.id === 6)).toBeDefined());
+    expect(received.find((reply) => reply.id === 6)?.result).toBeUndefined();
+    expect("error" in received.find((reply) => reply.id === 6)!).toBe(true);
+    expect(controller.state.stage).toBe("ready");
     await controller.close();
     expect(container.querySelector("iframe")).toBeNull();
   },

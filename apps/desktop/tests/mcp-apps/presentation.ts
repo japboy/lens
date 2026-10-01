@@ -46,7 +46,6 @@ function port(): McpAppsPort {
     openMcpApp: vi.fn<McpAppsPort["openMcpApp"]>(async () => lease),
     closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
     mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
-    submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
     openHtmlPresentation: vi.fn<McpAppsPort["openHtmlPresentation"]>(),
     prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
   };
@@ -85,7 +84,36 @@ describe("App presentation lifecycle", () => {
       params: { url: "https://example.com/path?q=73" },
     });
     expect(element.querySelector('section[aria-label="Open external link"]')).toBeNull();
-    expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
+    await element.dispose();
+  });
+  it("passes an App message directly to native admission without a Send confirmation", async () => {
+    const native = port();
+    vi.mocked(native.openMcpApp).mockResolvedValueOnce({
+      ...lease,
+      live: true,
+      host_capabilities: { message: { text: {} } },
+    });
+    const element = mount(native);
+    vi.spyOn(AppBridge.prototype, "sendSandboxResourceReady").mockResolvedValue();
+    vi.spyOn(AppBridge.prototype, "sendToolInput").mockResolvedValue();
+    vi.spyOn(AppBridge.prototype, "sendToolResult").mockResolvedValue();
+    await element.updateComplete;
+    await flush();
+    const bridge = vi.mocked(AppBridge.prototype.connect).mock.contexts.at(-1)! as AppBridge;
+    await bridge.onsandboxready?.({});
+    await bridge.oninitialized?.({});
+    const params = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "Explain selection 73" }],
+    };
+    await expect(bridge.onmessage!(params, {} as never)).resolves.toEqual({});
+    expect(native.mcpAppRequest).toHaveBeenCalledExactlyOnceWith("lease", {
+      method: "ui/message",
+      params,
+    });
+    await element.updateComplete;
+    expect(element.querySelector('section[aria-label="Message to agent"]')).toBeNull();
+    expect(element.textContent).not.toContain("Send to Agent");
     await element.dispose();
   });
   it("releases the App while a tab is cached and remounts after reconnect without changed inputs", async () => {
@@ -134,7 +162,6 @@ describe("App presentation lifecycle", () => {
     expect(element.querySelector("iframe")).not.toBeNull();
     expect(element.textContent).toContain("This App’s agent connection is closed.");
     expect(native.mcpAppRequest).not.toHaveBeenCalled();
-    expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
     await element.dispose();
   });
   it("enables the actual Reopen control after native close never resolves", async () => {

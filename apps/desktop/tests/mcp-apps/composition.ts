@@ -52,7 +52,6 @@ it.each(["external", "builtin", "static", "interactive-replay"] as const)(
       openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(async () => lease),
       prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(async () => {}),
       mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
-      submitMcpAppMessage: vi.fn<DesktopMcpAppsPort["submitMcpAppMessage"]>(async () => {}),
     };
     const container = document.createElement("div");
     document.body.append(container);

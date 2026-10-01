@@ -46,7 +46,6 @@ describe("Interpretation media App composition", () => {
       })),
       closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
-      submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
       openHtmlPresentation: vi.fn<McpAppsPort["openHtmlPresentation"]>(),
       prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
     };

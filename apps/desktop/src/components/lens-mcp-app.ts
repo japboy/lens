@@ -82,7 +82,6 @@ export class LensMcpApp extends LitElement {
   }
   protected render() {
     const state = this.controller?.state;
-    const draft = this.controller?.draft;
     const readOnly =
       !this.descriptor || "kind" in this.descriptor
         ? this.replay
@@ -95,29 +94,7 @@ export class LensMcpApp extends LitElement {
         ${readOnly ? html`<p role="status">This App’s agent connection is closed.</p>` : nothing}
         ${state?.stage === "opening" || state?.stage === "initializing" ? html`<p role="status">Loading interactive Interpretation…</p>` : nothing}
         ${state?.stage === "failed" ? html`<p class="output-media-error" role="alert">${state.message}</p>` : nothing}
-        ${this.controller?.submissionError ? html`<p class="output-media-error" role="alert">${this.controller.submissionError}</p>` : nothing}
-        ${
-          draft
-            ? html`<section aria-label="Message to agent">
-                <p>${draft.text}</p>
-                <button
-                  type="button"
-                  data-lens-button-role="primary"
-                  ?disabled=${this.controller?.submitting}
-                  @click=${() => void this.controller?.submitDraft()}
-                >
-                  Send to Agent</button
-                ><button
-                  type="button"
-                  data-lens-button-role="normal"
-                  ?disabled=${this.controller?.submitting}
-                  @click=${() => this.controller?.discardDraft()}
-                >
-                  Discard
-                </button>
-              </section>`
-            : nothing
-        }
+        ${this.controller?.connectionError ? html`<p class="output-media-error" role="alert">${this.controller.connectionError}</p>` : nothing}
         ${
           this.active && (this.stopped || state?.stage === "failed" || state?.stage === "closed")
             ? html`<button
