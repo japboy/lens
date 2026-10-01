@@ -10,7 +10,7 @@
   },
   "scripts": {
     "check:types": "tsc --build",
-    "test": "vitest run"
+    "test": "vitest run --config ../../vitest.config.ts --project mcp-apps-view"
   },
   "dependencies": {
     "adapter-math-renderer": "workspace:*",

@@ -12,6 +12,8 @@ describe("framework-free web package boundaries", () => {
     'require("node:fs")',
     "await import(dynamicPath)",
     'export * from "./node/assets"',
+    'import { fixture } from "../tests/protocol/handshake.ts"',
+    'export * from "./controller.test.ts"',
   ])("rejects native, reverse, renderer and dynamic source escape: %s", (source) => {
     expect(webSourceViolations(path, source, owner)).not.toEqual([]);
   });

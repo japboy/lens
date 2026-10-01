@@ -44,10 +44,7 @@ function proxy(hostOrigin = "http://localhost:1420") {
       body: { append: (frame: (typeof frames)[number]) => frames.push(frame), textContent: "" },
     },
   };
-  runInNewContext(
-    readFileSync(new URL("../src/assets/sandbox-proxy.js", import.meta.url), "utf8"),
-    context,
-  );
+  runInNewContext(readFileSync(new URL("./sandbox-proxy.js", import.meta.url), "utf8"), context);
   const host = (data: unknown) => receive({ source: parent, origin: hostOrigin, data });
   return { fetch, parent, frames, host, receive };
 }

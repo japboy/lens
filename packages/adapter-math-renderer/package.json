@@ -11,7 +11,7 @@
   },
   "scripts": {
     "check:types": "tsc --build",
-    "test": "vitest run"
+    "test": "vitest run --config ../../vitest.config.ts --project math-renderer"
   },
   "dependencies": {
     "katex": "0.18.7",

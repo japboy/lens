@@ -1,5 +1,6 @@
 import { portableSourceViolations } from "./rust-source-boundaries.ts";
 import { rustDeclarationSurface } from "./rust-source-surface.ts";
+import { isTypescriptTestSupport } from "./typescript-test-paths.ts";
 import { NATIVE_CODE_INPUTS } from "./ci-native-inputs.ts";
 
 export type VerificationRequirements =
@@ -24,7 +25,6 @@ export type ChangeRequirement = {
 export const FRONTEND_TEST_INPUTS = [
   "apps/desktop/tooling/build-paths.test.ts",
   "apps/desktop/tooling/html-math-assets.test.ts",
-  "apps/desktop/tooling/math-assets.test.ts",
   "apps/desktop/tests/styles.ts",
   "apps/desktop/tests/overlay-close.ts",
 ] as const;
@@ -92,7 +92,9 @@ export function classifyChange(change: Change): ChangeRequirement {
     /(?:^|\/)(?:Cargo\.toml|Cargo\.lock|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$/u.test(
       path,
     ) ||
+    path === "vitest.config.ts" ||
     path.startsWith("scripts/") ||
+    path.startsWith("tests/") ||
     path.startsWith("mise-tasks/") ||
     path.startsWith("packages/typescript-config/") ||
     path.startsWith(".github/") ||
@@ -135,7 +137,10 @@ export function classifyChange(change: Change): ChangeRequirement {
       ? require("shared-rust-body", "Only portable Rust implementation bodies changed", shared)
       : require("shared-rust-surface", "Shared Rust declarations changed and require native consumers", code);
   }
-  if ((FRONTEND_TEST_INPUTS as readonly string[]).includes(path))
+  if (
+    (FRONTEND_TEST_INPUTS as readonly string[]).includes(path) ||
+    (path.startsWith("apps/desktop/") && isTypescriptTestSupport(path))
+  )
     return require("frontend-test", "Reviewed test-only frontend owner", frontend);
   if (
     /^apps\/desktop\/src\/.+\.(?:html|ts|css|svg)$/u.test(path) ||

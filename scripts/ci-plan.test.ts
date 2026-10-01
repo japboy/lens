@@ -37,6 +37,11 @@ describe("finite verification requirements with per-input reasons", () => {
     ["apps/desktop/src-tauri/agent-runtime/pnpm-workspace.yaml", dmg, "control-plane"],
     ["apps/desktop/src/package.json", dmg, "control-plane"],
     ["scripts/new-policy.ts", dmg, "control-plane"],
+    ["vitest.config.ts", dmg, "control-plane"],
+    ["tests/workspace/inventory.ts", dmg, "control-plane"],
+    ["tests/workspace/helpers/fixture.ts", dmg, "control-plane"],
+    ["apps/desktop/tests/mcp-apps/presentation.ts", frontend, "frontend-test"],
+    ["apps/desktop/tests/mcp-apps/helpers/view.ts", frontend, "frontend-test"],
     ["mise-tasks/check/identity.ts", dmg, "control-plane"],
     ["packages/typescript-config/base.json", dmg, "control-plane"],
     ["packages/adapter-mcp-apps-host/src/controller.ts", app, "shared-web-adapter"],
@@ -47,7 +52,7 @@ describe("finite verification requirements with per-input reasons", () => {
     ["mise.lock", dmg, "unreviewed-input"],
     ["package.json", dmg, "control-plane"],
     ["apps/desktop/package.json", dmg, "control-plane"],
-    ["apps/desktop/tooling/new.test.ts", dmg, "unreviewed-input"],
+    ["apps/desktop/tooling/new.test.ts", frontend, "frontend-test"],
     ["unknown/path", dmg, "unreviewed-input"],
   ] as const)("classifies %s with explicit ownership", (path, requirements, ruleId) => {
     const result = classifyChange(pathChange(path));

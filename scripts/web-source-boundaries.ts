@@ -1,3 +1,4 @@
+import { isTypescriptTestSupport } from "./typescript-test-paths.ts";
 import { builtinModules } from "node:module";
 import { dirname, resolve, relative } from "node:path";
 
@@ -24,6 +25,8 @@ export function webSourceViolations(path: string, source: string, owner: string)
         "\\",
         "/",
       );
+      if (isTypescriptTestSupport(`${owner}/${local}`))
+        errors.push(`Test-only source reachable from runtime: ${specifier}`);
       if (local === ".." || local.startsWith("../"))
         errors.push(`Cross-package relative import: ${specifier}`);
       if (local.startsWith("src/node/") && !path.includes("/src/node/"))

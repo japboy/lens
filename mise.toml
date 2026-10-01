@@ -55,7 +55,7 @@ run = "pnpm run build:assets"
 [tasks."test:repository"]
 description = "Run repository policy tests"
 dir = "{{config_root}}"
-run = "pnpm exec vitest run"
+run = "pnpm exec vitest run --project repository"
 
 [tasks."test:frontend"]
 description = "Run desktop frontend tests after shared web adapter tests"

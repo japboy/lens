@@ -10,7 +10,7 @@
   },
   "scripts": {
     "check:types": "tsc --build",
-    "test": "vitest run"
+    "test": "vitest run --config ../../vitest.config.ts --project mcp-apps-host"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.3"

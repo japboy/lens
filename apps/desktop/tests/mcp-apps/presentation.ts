@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppBridge } from "adapter-mcp-apps-host";
 import { html, render } from "lit";
 import { cache } from "lit/directives/cache.js";
-import { LensMcpApp } from "./lens-mcp-app";
+import { LensMcpApp } from "../../src/components/lens-mcp-app";
 import type { McpAppLease } from "adapter-mcp-apps-host";
-import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../../src/mcp-apps/composition";
 
 const lease: McpAppLease = {
   id: "lease",

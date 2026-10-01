@@ -4,6 +4,6 @@
     "types": ["vite/client", "node"],
     "tsBuildInfoFile": "./.build/cache/typescript/test.tsbuildinfo"
   },
-  "include": ["tests/**/*.ts", "src/**/*.d.ts"],
-  "exclude": []
+  "include": ["src/**/*.test.ts", "src/**/*.d.ts", "tests/**/*.ts"],
+  "exclude": ["**/helpers/**", "**/fixtures/**", "**/*.test-helper.ts", "**/*.fixture.ts"]
 }

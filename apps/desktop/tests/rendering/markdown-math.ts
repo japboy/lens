@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { Marked, type Token } from "marked";
-import { renderMarkdownFragment } from "./markdown";
-import { excludeHtmlMath, MATH_LIMITS, readMathSpan } from "adapter-math-renderer";
+import { renderMarkdownFragment } from "../../src/markdown";
+import { MATH_LIMITS } from "adapter-math-renderer";
 
 function render(source: string): HTMLDivElement {
   const host = document.createElement("div");
@@ -81,10 +80,6 @@ $$x^2$$`);
     expect(host.querySelectorAll(".lens-math-fallback")).toHaveLength(1);
   });
 
-  it("handles escaped closing delimiters and disallows inline newlines", () => {
-    expect(readMathSpan(String.raw`\(a\\)b\)`)?.tex).toBe(String.raw`a\\)b`);
-    expect(readMathSpan("\\(a\nb\\)")).toBeUndefined();
-  });
   it("keeps TeX emphasis characters opaque and preserves ordinary escaped text emphasis", () => {
     const host = render(
       String.raw`*before \(x * y\) after* and \\(ordinary **bold**\) and ` +
@@ -195,45 +190,6 @@ Text <!-- <div> --> \(outside\)`);
       "cellStillHidden",
     ])
       expect(host.textContent).toContain(String.raw`\(${hidden}\)`);
-  });
-
-  it("uses the local parser's extension child fields in synchronous source order", () => {
-    const parser = new Marked({ async: false });
-    parser.use({
-      extensions: [
-        {
-          name: "fixture",
-          childTokens: ["content"],
-          level: "block",
-          tokenizer: () => undefined,
-          renderer: () => "",
-        },
-      ],
-    });
-    const html = (raw: string): Token => ({ type: "html", raw, text: raw, block: false });
-    const math = (tex: string): Token & { literal?: boolean } => ({
-      type: "lensMath",
-      raw: String.raw`\(${tex}\)`,
-      tex,
-    });
-    const hidden = math("hidden");
-    const visible = math("visible");
-    const ignored = math("ignored");
-    const tokens: Token[] = [
-      {
-        type: "fixture",
-        raw: "",
-        content: [html("<span>"), [hidden, html("</span>"), visible]],
-        tokens: [html("<span>"), ignored],
-      },
-    ];
-    const outside = math("outside");
-    tokens.push(outside);
-    excludeHtmlMath(parser, tokens);
-    expect(hidden.literal).toBe(true);
-    expect(visible.literal).toBeUndefined();
-    expect(ignored.literal).toBeUndefined();
-    expect(outside.literal).toBeUndefined();
   });
 
   it("does not treat tag-like script text as HTML boundaries", () => {

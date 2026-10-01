@@ -1,5 +1,5 @@
-import { BUILD_PATHS } from "../apps/desktop/tooling/build-paths.ts";
-import { PAGE_ENTRIES } from "../apps/desktop/src/page-entries.ts";
+import { BUILD_PATHS } from "../../apps/desktop/tooling/build-paths.ts";
+import { PAGE_ENTRIES } from "../../apps/desktop/src/page-entries.ts";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -15,15 +15,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createHtmlMathAssets } from "adapter-math-renderer/node";
-import { HTML_MATH_MANIFEST } from "../apps/desktop/tooling/html-math-manifest.ts";
-import { frontendArtifact, frontendFiles } from "./frontend-artifact.ts";
-import { generationFiles } from "../apps/desktop/tooling/prerender/verify.ts";
-import { sourceDigest, sourceInputs } from "../apps/desktop/tooling/prerender/source.ts";
+import { HTML_MATH_MANIFEST } from "../../apps/desktop/tooling/html-math-manifest.ts";
+import { frontendArtifact, frontendFiles } from "../../scripts/frontend-artifact.ts";
+import { generationFiles } from "../../apps/desktop/tooling/prerender/verify.ts";
+import { sourceDigest, sourceInputs } from "../../apps/desktop/tooling/prerender/source.ts";
 
 let mathAssets: Awaited<ReturnType<typeof createHtmlMathAssets>>;
 beforeAll(async () => {
   mathAssets = await createHtmlMathAssets(
-    fileURLToPath(new URL("../apps/desktop", import.meta.url)),
+    fileURLToPath(new URL("../../apps/desktop", import.meta.url)),
   );
 });
 
@@ -96,7 +96,7 @@ describe("same-source frontend artifact integrity", () => {
       for (const file of files) {
         const destination = join(root, file);
         mkdirSync(dirname(destination), { recursive: true });
-        writeFileSync(destination, readFileSync(new URL(`../${file}`, import.meta.url)));
+        writeFileSync(destination, readFileSync(new URL(`../../${file}`, import.meta.url)));
       }
       execFileSync("git", ["add", "scripts", "apps", "packages"], { cwd: root });
       execFileSync(

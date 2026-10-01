@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { isBoundedRpcMessage, OriginBoundAppTransport } from "../src/transport";
+import { isBoundedRpcMessage, OriginBoundAppTransport } from "./transport";
 describe("App message admission", () => {
   it("rejects malformed methods and oversized serialized messages", () => {
     expect(isBoundedRpcMessage({ jsonrpc: "2.0", method: 7, id: 1 })).toBe(false);

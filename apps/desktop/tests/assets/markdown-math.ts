@@ -1,9 +1,11 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { BUILD_PATHS } from "./build-paths";
+import { fileURLToPath } from "node:url";
+import { BUILD_PATHS } from "../../tooling/build-paths";
 
-const output = resolve(BUILD_PATHS.tests);
+const desktop = fileURLToPath(new URL("../../", import.meta.url));
+const output = resolve(desktop, BUILD_PATHS.tests);
 const overlay = readFileSync(join(output, "overlay.html"), "utf8");
 
 describe("bundled Markdown math assets", () => {

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { assertGenerationOutput, BUILD_PATHS } from "./build-paths.ts";
@@ -26,10 +25,5 @@ describe("generated output ownership", () => {
     "src",
   ])("rejects destructive output replacement at %s", (path) => {
     expect(() => assertGenerationOutput(desktop, resolve(desktop, path))).toThrow("Output must");
-  });
-
-  it("packages only the admitted WebView output", () => {
-    const config = JSON.parse(readFileSync(resolve("src-tauri/tauri.conf.json"), "utf8"));
-    expect(resolve("src-tauri", config.build.frontendDist)).toBe(resolve(BUILD_PATHS.webview));
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { McpAppController } from "../src/controller";
-import type { McpAppsPort } from "../src/types";
+import { McpAppController } from "../../src/controller";
+import type { McpAppsPort } from "../../src/types";
 
 afterEach(() => {
   document.body.replaceChildren();

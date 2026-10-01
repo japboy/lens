@@ -13,7 +13,7 @@ function shell(capabilities: Record<string, unknown>) {
   };
   const status = { textContent: "", remove: vi.fn<Element["remove"]>() };
   const append = vi.fn<(frame: unknown) => void>();
-  const source = readFileSync(new URL("../src/assets/rich-html-app.html", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./rich-html-app.html", import.meta.url), "utf8");
   const script = source.match(/<script>([\s\S]*?)<\/script>/)![1]!;
   runInNewContext(script, {
     parent,

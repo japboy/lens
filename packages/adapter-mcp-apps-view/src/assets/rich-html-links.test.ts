@@ -24,19 +24,16 @@ function links() {
       return download;
     }
   }
-  runInNewContext(
-    readFileSync(new URL("../src/assets/rich-html-links.js", import.meta.url), "utf8"),
-    {
-      document: {
-        addEventListener: (_: string, callback: typeof handler) => {
-          handler = callback;
-        },
+  runInNewContext(readFileSync(new URL("./rich-html-links.js", import.meta.url), "utf8"), {
+    document: {
+      addEventListener: (_: string, callback: typeof handler) => {
+        handler = callback;
       },
-      Element,
-      URL,
-      parent,
     },
-  );
+    Element,
+    URL,
+    parent,
+  });
   const click = (options: Partial<Parameters<typeof handler>[0]> = {}) => {
     const preventDefault = vi.fn<() => void>();
     handler({

@@ -2,7 +2,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { McpAppDescriptor, McpAppLease } from "adapter-mcp-apps-host";
 import { version } from "../../package.json";
-import { createDesktopMcpAppController, type DesktopMcpAppsPort } from "./composition";
+import {
+  createDesktopMcpAppController,
+  type DesktopMcpAppsPort,
+} from "../../src/mcp-apps/composition";
 
 afterEach(() => {
   document.body.replaceChildren();

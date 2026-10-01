@@ -15,7 +15,13 @@ export default defineConfig({
   },
   overrides: [
     {
-      files: ["*.config.ts", "apps/desktop/*.config.ts", "scripts/**/*.ts", "mise-tasks/**/*.ts"],
+      files: [
+        "*.config.ts",
+        "apps/desktop/*.config.ts",
+        "scripts/**/*.ts",
+        "mise-tasks/**/*.ts",
+        "tests/**/*.ts",
+      ],
       env: {
         browser: false,
         node: true,

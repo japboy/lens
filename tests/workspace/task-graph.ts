@@ -12,9 +12,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.js";
+import { BUILD_VARIANTS, variantArguments } from "../../scripts/workspace-policy.js";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+const root = fileURLToPath(new URL("../..", import.meta.url));
 type Task = {
   name: string;
   source: string;
@@ -106,7 +106,7 @@ describe("repository task ownership", () => {
 
   it("does not discover adjacent non-executable test modules as tasks", () => {
     const testFiles = [...globSync("mise-tasks/**/*.test.ts", { cwd: root })];
-    expect(testFiles).toHaveLength(6);
+    expect(testFiles).toHaveLength(5);
     for (const file of testFiles) {
       expect(statSync(resolve(root, file)).mode & 0o111).toBe(0);
       expect(tasks.map((task) => task.source)).not.toContain(resolve(root, file));
@@ -278,5 +278,10 @@ describe("repository task ownership", () => {
     expect(result.completed).toContain("check:rust");
     expect(result.completed).not.toContain("rust:clippy");
     expect(result.completed).not.toContain("rust:test");
+  });
+  it("selects only the repository Vitest owner from the repository task", () => {
+    expect(tasks.find((task) => task.name === "test:repository")?.run).toEqual([
+      "pnpm exec vitest run --project repository",
+    ]);
   });
 });

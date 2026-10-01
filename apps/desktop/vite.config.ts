@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite";
 import { BUILD_PATHS } from "./tooling/build-paths.ts";
 import { PAGE_ENTRIES } from "./src/page-entries.js";
 import { htmlMathAssetsPlugin } from "./tooling/html-math-assets.ts";
@@ -11,12 +11,6 @@ export default defineConfig({
   plugins: [await htmlMathAssetsPlugin(applicationRoot)],
   root: clientRoot,
   clearScreen: false,
-  test: {
-    root: applicationRoot,
-    include: ["src/**/*.test.ts", "tooling/**/*.test.ts", "tests/*.ts"],
-    setupFiles: ["./tooling/browser-observers.ts"],
-    globalSetup: ["./tooling/prerender/test-setup.ts"],
-  },
   build: {
     outDir: fileURLToPath(new URL(BUILD_PATHS.webview, import.meta.url)),
     emptyOutDir: true,

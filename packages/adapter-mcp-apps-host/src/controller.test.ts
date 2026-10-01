@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { APP_TEARDOWN_TIMEOUT_MS, McpAppController } from "../src/controller";
-import type { McpAppDescriptor, McpAppLease, McpAppsPort, McpAppHostOptions } from "../src/types";
+import { APP_TEARDOWN_TIMEOUT_MS, McpAppController } from "./controller";
+import type { McpAppDescriptor, McpAppLease, McpAppsPort, McpAppHostOptions } from "./types";
 
 const descriptor = (id: string): McpAppDescriptor => ({
   id,
