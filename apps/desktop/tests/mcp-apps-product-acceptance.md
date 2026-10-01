@@ -224,3 +224,61 @@ interrupted before Rust tests completed; it is not a completed native gate.
 The earlier full 607-test native gate was not rerun for this change. Independent
 source review found no blocker. This step supplies no new GUI or actual Codex
 interaction evidence, and tool schemas and turn admission remain unchanged.
+
+## Approved standard-session boundary and cross-agent qualification — 2026-10-01
+
+Following the specification-first investigation, the user approved retaining the
+standard ACP v1 session boundary: one MCP broker per physical Agent session and
+serialized prompt turns. The common contract requires neither Codex-specific
+metadata nor a caller-supplied turn argument, and does not recreate the Agent
+session for every turn. ACP `toolCallId` identifies a tool call within its
+session; the standard does not require it to equal an MCP request ID or metadata
+field. See [ACP v1 tool calls](https://agentclientprotocol.com/protocol/v1/tool-calls)
+and [MCP message identity](https://modelcontextprotocol.io/specification/2025-11-25/basic#messages).
+
+Lens's `run_id` records the Host's capture association, rather than proving the
+caller's originating prompt. An already-admitted tool result retains its captured
+run and cannot attach to a replacement run. Cancellation and transport-error
+retirement revoke the previous session's broker and App authority; stale App
+completions are checked again before publication. These are the existing contracts
+in the [MCP broker](../../../packages/adapter-mcp-server/src/apps.rs),
+[session actor](../src-tauri/src/agent.rs) and
+[native App authority](../src-tauri/src/mcp_apps.rs).
+
+A delayed request arriving for the first time after a new prompt starts does not
+carry a mandatory cross-protocol originating-turn identity. Logical ACP prompt
+completion is not a cross-transport remote-quiescence acknowledgment: MCP timeout
+and cancellation permit races and requests that cannot be cancelled. This is a
+specification limit, not a reproduced production defect or a claim that such a
+request was observed. See [ACP v1 prompt turns](https://agentclientprotocol.com/protocol/v1/prompt-turn),
+[MCP timeouts](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#timeouts)
+and [MCP cancellation](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation).
+
+Separate public-fixture probes used the installed adapters and the normal
+source-derived login-shell environment, with existing configured choices applied
+session-locally. GitHub Copilot 1.0.83, Grok Build, Antigravity 1.2.1 and Claude ACP
+0.84.0 each advertised HTTP MCP support and successfully completed ACP
+`initialize` and `session/new` with an HTTP fixture registration. Optional
+load/resume/close capabilities were inventoried, not operation-tested. Claude's
+initialization result does not establish model authentication.
+
+| Agent                 | Actual public-fixture result                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub Copilot 1.0.83 | Two prompts in the same ACP session each called the unchanged `public_echo(message: string)` tool once. Original nonempty inputs `blue square` and `orange circle` and their text/structured results were preserved. Both reported tool completion before `end_turn`; no late tool notifications or MCP calls were observed within each 1,200 ms post-terminal window. MCP request metadata contained only `progressToken`, without a Codex-style `callId`. |
+| Grok Build            | The first `session/prompt` failed with code `-32003` before any MCP tool call. The error classifier identified a rate limit, rather than authentication. Testing stopped without retry.                                                                                                                                                                                                                                                                     |
+| Antigravity 1.2.1     | A message matched the usage-limit notice detector before any MCP tool call. The probe sent cancellation and stopped without retry. No prompt terminal response or explicit ACP error code was obtained.                                                                                                                                                                                                                                                     |
+| Claude ACP 0.84.0     | Initialization and session creation only; no model turn was attempted in this normal-environment inventory.                                                                                                                                                                                                                                                                                                                                                 |
+
+Grok and Antigravity remain inconclusive for model/tool execution; these failures
+do not establish that they lack MCP support. The probes exercised standard
+ACP/HTTP MCP with a public dummy tool. They did not exercise MCP Apps resources,
+the product session actor, native Overlay, App UI, cancellation fault recovery or
+load/resume/close behavior.
+
+This approval resolves the previously undecided common turn-boundary policy.
+Historical references above to a pending separate turn decision describe those
+earlier checkpoints. Fresh native replacement parity after removing the old
+publisher and extracting the packages remains unverified: math, authored App
+interaction, trusted link opening and trusted follow-up still require actual
+product acceptance. The earlier Codex/Overlay observations remain evidence for
+their recorded build, not for the latest structure or every Agent/platform.
