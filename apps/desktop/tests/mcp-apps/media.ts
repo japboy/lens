@@ -35,7 +35,6 @@ describe("Interpretation media App composition", () => {
       openMcpApp: vi.fn<McpAppsPort["openMcpApp"]>(async () => ({
         id: "lease",
         artifact_id: descriptor.id,
-        generation: "generation",
         proxy_url: "http://127.0.0.1:43162/proxy",
         proxy_origin: "http://127.0.0.1:43162",
         resource: { html: "<p>Original App</p>" },

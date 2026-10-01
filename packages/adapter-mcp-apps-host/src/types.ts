@@ -35,7 +35,6 @@ export interface McpAppsServer {
 export interface McpAppLease {
   id: string;
   artifact_id: string;
-  generation: string;
   proxy_url: string;
   proxy_origin: string;
   resource: { html: string; meta?: { ui?: McpUiResourceMeta } };

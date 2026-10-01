@@ -7,7 +7,6 @@ use adapter_mcp_server::apps::{AppArtifact, AppBroker, AppResource, DisplayServe
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
     fs,
     io::Write,
     sync::{Arc, Mutex, Weak},
@@ -37,6 +36,11 @@ struct Lease {
     input: AppViewInput,
     cancellation: CancellationToken,
 }
+struct ActiveLease {
+    id: Uuid,
+    lease: Lease,
+}
+
 struct SourceAuthority {
     operation_id: Uuid,
     session_id: String,
@@ -53,7 +57,7 @@ struct ArtifactStorage {
 #[derive(Default)]
 pub struct McpAppsStore {
     source: Mutex<Option<SourceAuthority>>,
-    leases: Mutex<HashMap<Uuid, Lease>>,
+    active_lease: Mutex<Option<ActiveLease>>,
     storage: Mutex<ArtifactStorage>,
     open_epoch: std::sync::atomic::AtomicU64,
     closed: std::sync::atomic::AtomicBool,
@@ -72,15 +76,14 @@ impl Drop for SourceLifetime {
                 *source = None;
             }
         }
-        if let Ok(mut leases) = self.store.leases.lock() {
-            leases.retain(|_, lease| {
-                if lease.source_generation == Some(self.generation) {
-                    lease.cancellation.cancel();
-                    false
-                } else {
-                    true
-                }
-            });
+        if let Ok(mut active) = self.store.active_lease.lock() {
+            if active
+                .as_ref()
+                .is_some_and(|active| active.lease.source_generation == Some(self.generation))
+            {
+                let active = active.take().expect("checked source generation");
+                active.lease.cancellation.cancel();
+            }
         }
     }
 }
@@ -88,7 +91,6 @@ impl Drop for SourceLifetime {
 pub struct OpenedApp {
     pub id: Uuid,
     pub artifact_id: Uuid,
-    pub generation: Uuid,
     pub proxy_url: String,
     pub proxy_origin: String,
     pub resource: AppResource,
@@ -137,12 +139,13 @@ impl McpAppsStore {
             .store(true, std::sync::atomic::Ordering::Release);
         self.open_epoch
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if let Some(active) = self
+            .active_lease
+            .lock()
+            .map_err(|_| "MCP lease unavailable")?
+            .take()
         {
-            let mut leases = self.leases.lock().map_err(|_| "MCP leases unavailable")?;
-            for lease in leases.values() {
-                lease.cancellation.cancel();
-            }
-            leases.clear();
+            active.lease.cancellation.cancel();
         }
         *self.source.lock().map_err(|_| "MCP source unavailable")? = None;
         let directory = {
@@ -204,25 +207,27 @@ impl McpAppsStore {
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         }
-        let mut leases = self.leases.lock().map_err(|_| "MCP leases unavailable")?;
+        let mut active = self
+            .active_lease
+            .lock()
+            .map_err(|_| "MCP lease unavailable")?;
         let runtime = state
             .runtime
             .read()
             .map_err(|_| "Application state unavailable")?;
         let operation_id = runtime.lens.operation_id;
-        leases.retain(|_, lease| {
-            if Some(lease.artifact.descriptor.operation_id) != operation_id {
-                lease.cancellation.cancel();
-                false
-            } else {
-                if !self.lease_live(&runtime, lease) {
-                    // Pause retires RPC authority, but preserves the read-only display.
-                    lease.cancellation.cancel();
-                    lease.input.revoke_draft();
-                }
-                true
+        if active.as_ref().is_some_and(|active| {
+            Some(active.lease.artifact.descriptor.operation_id) != operation_id
+        }) {
+            let active = active.take().expect("checked operation");
+            active.lease.cancellation.cancel();
+        } else if let Some(active) = active.as_mut() {
+            if !self.lease_live(&runtime, &active.lease) {
+                // Pause retires RPC authority, but preserves the read-only display.
+                active.lease.cancellation.cancel();
+                active.lease.input.revoke_draft();
             }
-        });
+        }
         Ok(())
     }
     fn lease_live(&self, runtime: &AppSnapshot, lease: &Lease) -> bool {
@@ -255,8 +260,8 @@ impl McpAppsStore {
         id: Uuid,
         lease: Lease,
     ) -> Result<bool, String> {
-        let mut leases = self
-            .leases
+        let mut active = self
+            .active_lease
             .lock()
             .map_err(|_| "MCP lease state unavailable")?;
         self.ensure_open()?;
@@ -280,11 +285,10 @@ impl McpAppsStore {
             return Err("App operation expired before display opened".into());
         }
         let live = self.lease_live(&latest, &lease);
-        for old in leases.values() {
-            old.cancellation.cancel();
+        if let Some(previous) = active.take() {
+            previous.lease.cancellation.cancel();
         }
-        leases.clear();
-        leases.insert(id, lease);
+        *active = Some(ActiveLease { id, lease });
         Ok(live)
     }
     fn artifact_path(&self, id: Uuid) -> Result<std::path::PathBuf, String> {
@@ -321,7 +325,7 @@ impl McpAppsStore {
             .lock()
             .ok()
             .is_some_and(|s| s.as_ref().is_some_and(|s| s.broker.upgrade().is_some()));
-        let leases=self.leases.lock().map(|leases| leases.iter().map(|(id,l)| json!({"id":id,"artifact_id":l.artifact.descriptor.id,"generation":l.generation,"source_live":l.source.upgrade().is_some(),"draft_id":l.input.draft().map(|d|d.id),"submitted":l.input.submitted(),"authority_active":!l.cancellation.is_cancelled()})).collect::<Vec<_>>()).unwrap_or_default();
+        let leases=self.active_lease.lock().map(|active| active.iter().map(|active| { let l = &active.lease; json!({"id":active.id,"artifact_id":l.artifact.descriptor.id,"generation":l.generation,"source_live":l.source.upgrade().is_some(),"draft_id":l.input.draft().map(|d|d.id),"submitted":l.input.submitted(),"authority_active":!l.cancellation.is_cancelled()}) }).collect::<Vec<_>>()).unwrap_or_default();
         json!({"source_live":source_live,"leases":leases})
     }
     fn is_live(&self, descriptor: &McpAppDescriptor) -> bool {
@@ -365,9 +369,6 @@ impl McpAppsStore {
         if storage.operation_id != Some(operation_id) {
             storage.directory = None;
             storage.operation_id = Some(operation_id);
-        }
-        if storage.operation_id != Some(operation_id) {
-            return Err("MCP artifact operation expired".into());
         }
         if storage.directory.is_none() {
             storage.directory = Some(
@@ -589,7 +590,6 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
     let mut response = OpenedApp {
         id,
         artifact_id,
-        generation,
         proxy_url: display.proxy_url.clone(),
         proxy_origin: display.origin.clone(),
         resource: artifact.artifact.resource.clone(),
@@ -634,12 +634,12 @@ pub fn close_mcp_app<R: tauri::Runtime>(app: AppHandle<R>, lease_id: Uuid) -> Re
     let state = app.state::<AppState>();
     if let Some(lease) = state
         .mcp_apps
-        .leases
+        .active_lease
         .lock()
         .map_err(|_| "MCP lease state unavailable")?
-        .remove(&lease_id)
+        .take_if(|active| active.id == lease_id)
     {
-        lease.cancellation.cancel();
+        lease.lease.cancellation.cancel();
     }
     Ok(())
 }
@@ -686,12 +686,16 @@ pub fn prepare_mcp_app_document<R: tauri::Runtime>(
 ) -> Result<(), String> {
     ensure_host(&app, &window)?;
     let state = app.state::<AppState>();
-    let leases = state
+    let active = state
         .mcp_apps
-        .leases
+        .active_lease
         .lock()
-        .map_err(|_| "MCP leases unavailable")?;
-    let lease = leases.get(&lease_id).ok_or("App lease expired")?;
+        .map_err(|_| "MCP lease unavailable")?;
+    let lease = &active
+        .as_ref()
+        .filter(|active| active.id == lease_id)
+        .ok_or("App lease expired")?
+        .lease;
     ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
     if lease.artifact.artifact.server_id != adapter_mcp_server::apps::FALLBACK_SERVER {
         return Err("Only bundled HTML documents can be prepared".into());
@@ -708,12 +712,16 @@ pub fn submit_mcp_app_link<R: tauri::Runtime>(
     ensure_host(&app, &window)?;
     let state = app.state::<AppState>();
     let destination = {
-        let mut leases = state
+        let mut active = state
             .mcp_apps
-            .leases
+            .active_lease
             .lock()
-            .map_err(|_| "MCP leases unavailable")?;
-        let lease = leases.get_mut(&lease_id).ok_or("App lease expired")?;
+            .map_err(|_| "MCP lease unavailable")?;
+        let lease = &mut active
+            .as_mut()
+            .filter(|active| active.id == lease_id)
+            .ok_or("App lease expired")?
+            .lease;
         ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
         lease.input.take_link(link_id)?
     };
@@ -736,12 +744,16 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
     let params = request.get("params").cloned().unwrap_or(json!({}));
     let state = app.state::<AppState>();
     let (artifact, source, generation, cancellation) = {
-        let mut leases = state
+        let mut active = state
             .mcp_apps
-            .leases
+            .active_lease
             .lock()
             .map_err(|_| "MCP lease state unavailable")?;
-        let lease = leases.get_mut(&lease_id).ok_or("App lease expired")?;
+        let lease = &mut active
+            .as_mut()
+            .filter(|active| active.id == lease_id)
+            .ok_or("App lease expired")?
+            .lease;
         if method == "ui/open-link" {
             ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
             let link = lease.input.replace_link(Uuid::new_v4(), &params)?;
@@ -796,18 +808,22 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
         }
     };
     let result = tokio::select! {_=cancellation.cancelled()=>return Err("App lease expired".into()),result=tokio::time::timeout(Duration::from_secs(30),operation)=>result.map_err(|_|"App tool request timed out")??};
-    let leases = state
+    let active = state
         .mcp_apps
-        .leases
+        .active_lease
         .lock()
         .map_err(|_| "MCP lease state unavailable")?;
     let runtime = state
         .runtime
         .read()
         .map_err(|_| "Application state unavailable")?;
-    if leases
-        .get(&lease_id)
-        .is_none_or(|l| l.generation != generation || !state.mcp_apps.lease_live(&runtime, l))
+    if active
+        .as_ref()
+        .filter(|active| active.id == lease_id)
+        .is_none_or(|active| {
+            active.lease.generation != generation
+                || !state.mcp_apps.lease_live(&runtime, &active.lease)
+        })
         || cancellation.is_cancelled()
     {
         return Err("App lease expired before the tool result returned".into());
@@ -826,12 +842,16 @@ pub async fn submit_mcp_app_message<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let receiver = {
-        let mut leases = state
+        let mut active = state
             .mcp_apps
-            .leases
+            .active_lease
             .lock()
             .map_err(|_| "MCP lease state unavailable")?;
-        let lease = leases.get_mut(&lease_id).ok_or("App lease expired")?;
+        let lease = &mut active
+            .as_mut()
+            .filter(|active| active.id == lease_id)
+            .ok_or("App lease expired")?
+            .lease;
         lease.input.pending_message(draft_id)?;
         if !state.mcp_apps.lease_live(&state.snapshot()?, lease) {
             return Err("App session expired".into());
@@ -948,7 +968,7 @@ mod tests {
         assert!(cancellation.is_cancelled());
         assert!(!owned_path.exists());
         assert!(unowned_path.exists());
-        assert!(store.leases.lock().unwrap().is_empty());
+        assert!(store.active_lease.lock().unwrap().is_none());
         assert!(store.source.lock().unwrap().is_none());
         assert!(store
             .install(operation, descriptor.session_id.clone(), &broker, &config)
@@ -982,7 +1002,6 @@ mod tests {
         let mut opened = OpenedApp {
             id: Uuid::new_v4(),
             artifact_id: Uuid::new_v4(),
-            generation: Uuid::new_v4(),
             proxy_url: "http://127.0.0.1:1234/proxy/test".into(),
             proxy_origin: "http://127.0.0.1:1234".into(),
             resource: AppResource {
@@ -1127,16 +1146,24 @@ mod tests {
         )
         .await;
         let cancellation = new_lease.cancellation.clone();
-        store.leases.lock().unwrap().insert(new_id, new_lease);
+        *store.active_lease.lock().unwrap() = Some(ActiveLease {
+            id: new_id,
+            lease: new_lease,
+        });
         drop(old);
-        assert!(store.leases.lock().unwrap().contains_key(&new_id));
+        assert!(store
+            .active_lease
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|active| active.id == new_id));
         assert!(!cancellation.is_cancelled());
         assert_eq!(
             store.source.lock().unwrap().as_ref().unwrap().generation,
             newer.generation
         );
         drop(newer);
-        assert!(store.leases.lock().unwrap().is_empty());
+        assert!(store.active_lease.lock().unwrap().is_none());
         assert!(cancellation.is_cancelled());
     }
     #[tokio::test]
@@ -1164,6 +1191,7 @@ mod tests {
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
             + 1;
         let new = lease(second, Weak::new(), None).await;
+        let new_endpoint = new._document.proxy_url.clone();
         let new_id = Uuid::new_v4();
         let new_cancel = new.cancellation.clone();
         assert!(!store
@@ -1172,11 +1200,46 @@ mod tests {
         assert!(store
             .commit_display(&state, old_ticket, Uuid::new_v4(), old)
             .is_err());
-        assert!(store.leases.lock().unwrap().contains_key(&new_id));
+        assert!(store
+            .active_lease
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|active| active.id == new_id));
         assert!(!new_cancel.is_cancelled());
         tokio::task::yield_now().await;
         assert!(reqwest::Client::new()
             .get(old_endpoint)
+            .send()
+            .await
+            .is_err());
+        let replacement = descriptor(operation);
+        state
+            .runtime
+            .write()
+            .unwrap()
+            .lens
+            .mcp_apps
+            .push(replacement.clone());
+        let replacement = lease(replacement, Weak::new(), None).await;
+        let replacement_id = Uuid::new_v4();
+        let replacement_ticket = store
+            .open_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
+        store
+            .commit_display(&state, replacement_ticket, replacement_id, replacement)
+            .unwrap();
+        assert!(new_cancel.is_cancelled());
+        assert!(store
+            .active_lease
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|active| active.id == replacement_id));
+        tokio::task::yield_now().await;
+        assert!(reqwest::Client::new()
+            .get(new_endpoint)
             .send()
             .await
             .is_err());
@@ -1368,6 +1431,8 @@ mod tests {
             .unwrap()
             .status()
             .is_success());
+        // A delayed close for another display must not remove the active lease.
+        close_mcp_app(handle.clone(), Uuid::new_v4()).unwrap();
         let first_link = mcp_app_request(
             handle.clone(),
             id,
@@ -1390,11 +1455,13 @@ mod tests {
         assert_eq!(
             app.state::<AppState>()
                 .mcp_apps
-                .leases
+                .active_lease
                 .lock()
                 .unwrap()
-                .get(&id)
+                .as_ref()
+                .filter(|active| active.id == id)
                 .unwrap()
+                .lease
                 .input
                 .link()
                 .unwrap()

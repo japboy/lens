@@ -10,7 +10,6 @@ import type { DesktopMcpAppsPort as McpAppsPort } from "../../src/mcp-apps/compo
 const lease: McpAppLease = {
   id: "lease",
   artifact_id: "artifact",
-  generation: "generation",
   proxy_url: "http://127.0.0.1:43162/proxy",
   proxy_origin: "http://127.0.0.1:43162",
   resource: { html: "<p>Saved content</p>" },

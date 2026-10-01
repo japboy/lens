@@ -15,7 +15,6 @@ const descriptor = (id: string): McpAppDescriptor => ({
 const lease = (id: string): McpAppLease => ({
   id: `lease-${id}`,
   artifact_id: id,
-  generation: "generation-1",
   proxy_url: "http://127.0.0.1:43162/proxy",
   proxy_origin: "http://127.0.0.1:43162",
   resource: { html: "<!doctype html><p>Original\u65e5\u672c\u8a9e</p>" },

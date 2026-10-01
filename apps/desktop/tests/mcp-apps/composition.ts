@@ -33,7 +33,6 @@ it.each([false, true])(
     const lease: McpAppLease = {
       id: "lease",
       artifact_id: "artifact",
-      generation: "generation",
       proxy_url: "http://127.0.0.1:43162/proxy",
       proxy_origin: "http://127.0.0.1:43162",
       resource: { html: "<!doctype html><p>App shell</p>" },
