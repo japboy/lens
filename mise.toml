@@ -50,6 +50,7 @@ run = "pnpm run dev"
 description = "Build desktop assets after frontend TypeScript checks"
 dir = "{{config_root}}/apps/desktop"
 depends = ["check:types:frontend"]
+wait_for = ["test:frontend"]
 run = "pnpm run build:assets"
 
 [tasks."test:repository"]
@@ -58,10 +59,10 @@ dir = "{{config_root}}"
 run = "pnpm exec vitest run --project repository"
 
 [tasks."test:frontend"]
-description = "Run desktop frontend tests after shared web adapter tests"
-dir = "{{config_root}}/apps/desktop"
-depends = ["test:mcp-apps-host", "test:mcp-apps-view", "test:math-renderer"]
-run = "pnpm test"
+description = "Run all frontend projects in one Vitest worker budget"
+dir = "{{config_root}}"
+depends = ["check:types:frontend"]
+run = "pnpm exec vitest run --project desktop --project mcp-apps-host --project mcp-apps-view --project math-renderer"
 
 [tasks."test:mcp-apps-host"]
 description = "Run framework-free MCP Apps Host tests"

@@ -216,9 +216,6 @@ describe("repository task ownership", () => {
       "frontend:build",
       "test:repository",
       "test:frontend",
-      "test:mcp-apps-host",
-      "test:mcp-apps-view",
-      "test:math-renderer",
     ]) {
       expect(result.completed.indexOf(leaf)).toBeGreaterThanOrEqual(0);
       expect(result.completed.indexOf(leaf)).toBeLessThan(rust);
@@ -234,14 +231,7 @@ describe("repository task ownership", () => {
     expect(repository.completed).toContain("check:types:repository");
     expect(repository.completed).toContain("test:repository");
     expect(frontend.completed.toSorted()).toEqual(
-      [
-        "check:types:frontend",
-        "frontend:build",
-        "test:frontend",
-        "test:mcp-apps-host",
-        "test:mcp-apps-view",
-        "test:math-renderer",
-      ].toSorted(),
+      ["check:types:frontend", "frontend:build", "test:frontend"].toSorted(),
     );
     expect(repository.completed.filter((name) => frontend.completed.includes(name))).toEqual([]);
     expect(portable.completed.toSorted()).toEqual(
@@ -253,6 +243,36 @@ describe("repository task ownership", () => {
     expect(tasks.find((task) => task.name === "check:types:frontend")!.run).toEqual([
       "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer apps/desktop",
     ]);
+  });
+
+  it("shares one frontend worker budget and finishes tests before production asset generation", () => {
+    const frontend = tasks.find((task) => task.name === "test:frontend")!;
+    expect(frontend.dir).toBe(root.replace(/\/$/u, ""));
+    expect(frontend.depends).toEqual(["check:types:frontend"]);
+    expect(frontend.run).toEqual([
+      "pnpm exec vitest run --project desktop --project mcp-apps-host --project mcp-apps-view --project math-renderer",
+    ]);
+    const result = replay("verify:frontend");
+    expect(result.status).toBe(0);
+    expect(result.completed.indexOf("check:types:frontend")).toBeLessThan(
+      result.completed.indexOf("test:frontend"),
+    );
+    expect(result.completed.indexOf("test:frontend")).toBeLessThan(
+      result.completed.indexOf("frontend:build"),
+    );
+    for (const task of ["test:mcp-apps-host", "test:mcp-apps-view", "test:math-renderer"])
+      expect(result.completed).not.toContain(task);
+    expect(replay("frontend:build")).toMatchObject({
+      status: 0,
+      completed: ["check:types:frontend", "frontend:build"],
+    });
+  });
+
+  it("does not start production asset generation after frontend testing fails", () => {
+    const result = replay("verify:frontend", "test:frontend");
+    expect(result.status).not.toBe(0);
+    expect(result.completed).toContain("test:frontend");
+    expect(result.completed).not.toContain("frontend:build");
   });
 
   it("keeps the build-only seed independent of frontend installation and packaging", () => {
