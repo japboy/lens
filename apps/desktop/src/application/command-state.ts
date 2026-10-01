@@ -46,6 +46,7 @@ export function commandLane(command: CommandIdentity): CommandLane {
       case "update-managed-agent":
       case "choose-external-executable":
       case "set-mcp-apps-servers":
+      case "reset-mcp-presets":
       case "save-external-agent":
       case "delete-external-agent":
       case "reset-agent-presets":

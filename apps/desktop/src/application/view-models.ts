@@ -91,6 +91,7 @@ function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestinati
     case "update-managed-agent":
     case "choose-external-executable":
     case "set-mcp-apps-servers":
+    case "reset-mcp-presets":
     case "save-external-agent":
     case "delete-external-agent":
     case "reset-agent-presets":
@@ -142,7 +143,9 @@ function settingsPendingMessage(command: SettingsCommandType): string {
     case "choose-external-executable":
       return "Choosing executable…";
     case "set-mcp-apps-servers":
-      return "Saving MCP Apps servers…";
+      return "Saving MCP presets…";
+    case "reset-mcp-presets":
+      return "Resetting MCP presets…";
     case "save-external-agent":
       return "Saving Agent preset…";
     case "delete-external-agent":

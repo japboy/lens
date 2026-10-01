@@ -158,6 +158,7 @@ fn command_handler<R: tauri::Runtime>(
             mcp_apps::submit_mcp_app_link,
             mcp_apps::submit_mcp_app_message,
             mcp_apps::set_mcp_apps_servers,
+            mcp_apps::get_mcp_server_tool_catalogs,
             commands::set_agent,
             commands::update_managed_agent,
             commands::save_external_agent,

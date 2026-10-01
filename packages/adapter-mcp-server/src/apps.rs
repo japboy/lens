@@ -175,6 +175,22 @@ impl AppBroker {
             task,
         })
     }
+    /// Already-discovered model tools only; never performs upstream discovery.
+    pub fn model_tool_names(&self, source_id: &str) -> Option<Vec<String>> {
+        if self.state.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let source = self.state.sources.get(source_id)?;
+        let mut names: Vec<_> = source
+            .tools
+            .iter()
+            .filter(|(_, tool)| visible(tool, "model"))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        Some(names)
+    }
+
     pub fn registrations(&self) -> Vec<(String, String, String)> {
         let mut registrations: Vec<_> = self
             .state
@@ -1202,6 +1218,12 @@ mod tests {
                     "initialize" => {
                         json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{},"prompts":{},"logging":{}},"serverInfo":{"name":tag,"version":"1"}})
                     }
+                    "tools/list" if tag == "settings-empty" => json!({"tools":[]}),
+                    "tools/list" if tag == "settings-catalog" => json!({"tools":[
+                        {"name":"ordinary_tool","inputSchema":{"type":"object"}},
+                        {"name":"app_only","inputSchema":{"type":"object"},"_meta":{"ui":{"visibility":["app"]}}},
+                        {"name":"render_chart","inputSchema":{"type":"object"},"_meta":{"ui":{"resourceUri":"ui://fixture/app.html"}}}
+                    ]}),
                     "tools/list" => {
                         let read = catalog_reads.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                         let visibility = if tag == "authority-changed" && read > 0 {
@@ -1312,6 +1334,30 @@ mod tests {
         broker.close().await;
         task.abort();
     }
+    #[tokio::test]
+    async fn cached_model_tool_catalogs_do_not_open_or_refresh_connections() {
+        let (loaded, loaded_task) = fixture_source("settings-catalog", false, None).await;
+        let (empty, empty_task) = fixture_source("settings-empty", false, None).await;
+        let broker = AppBroker::start(vec![loaded, empty], "<p>shell</p>".into())
+            .await
+            .unwrap();
+        loaded_task.abort();
+        empty_task.abort();
+        tokio::task::yield_now().await;
+        assert_eq!(
+            broker.model_tool_names("settings-catalog"),
+            Some(vec!["ordinary_tool".into(), "render_chart".into()])
+        );
+        assert_eq!(broker.model_tool_names("settings-empty"), Some(Vec::new()));
+        assert_eq!(broker.model_tool_names("not-connected"), None);
+        assert_eq!(
+            broker.model_tool_names(FALLBACK_SERVER),
+            Some(vec!["render_html".into()])
+        );
+        broker.close().await;
+        assert_eq!(broker.model_tool_names("settings-catalog"), None);
+    }
+
     #[tokio::test]
     async fn app_visibility_is_refreshed_instead_of_reusing_initial_model_catalog() {
         let (config, task) = fixture_source("authority-changed", false, None).await;

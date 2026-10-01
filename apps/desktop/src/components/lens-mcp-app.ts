@@ -132,20 +132,18 @@ export class LensMcpApp extends LitElement {
             : nothing
         }
         ${
-          this.active
+          this.active && (this.stopped || state?.stage === "failed" || state?.stage === "closed")
             ? html`<button
                 type="button"
                 data-lens-button-role="normal"
                 ?disabled=${state?.stage === "closing"}
                 @click=${() => {
-                  if (this.stopped || state?.stage === "failed") {
-                    this.stopped = false;
-                    this.openingIdentity = undefined;
-                    this.requestUpdate();
-                  } else void this.dispose();
+                  this.stopped = false;
+                  this.openingIdentity = undefined;
+                  this.requestUpdate();
                 }}
               >
-                ${this.stopped || state?.stage === "failed" ? "Reopen App" : "Close App"}
+                Reopen App
               </button>`
             : nothing
         }

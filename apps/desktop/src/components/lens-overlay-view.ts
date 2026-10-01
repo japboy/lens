@@ -32,6 +32,7 @@ import type { InputCoverage } from "../rendering/input-coverage";
 import { composeOutputMedia } from "../output-media";
 import {
   accessibilityStyles,
+  emptyStateStyles,
   controlStyles,
   feedbackStyles,
   reducedMotionStyles,
@@ -117,6 +118,7 @@ export class LensOverlayView extends LitElement {
   static styles = [
     viewHostStyles,
     controlStyles,
+    emptyStateStyles,
     css`
       lens-agent-output,
       lens-media-gallery,
@@ -1498,21 +1500,6 @@ export class LensOverlayView extends LitElement {
         }
       }
 
-      .empty-state {
-        flex: 1 1 auto;
-        min-height: 0;
-        margin: 0;
-        padding: 28px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-      }
-
-      .empty-state {
-        color: GrayText;
-      }
-
       .overlay-main > .error,
       .overlay-main > .notice {
         margin: 8px 14px;
@@ -2492,9 +2479,9 @@ export class LensOverlayView extends LitElement {
                     ><code>${sourceJson}</code></pre>
                   </section>
                 </div>`
-              : html`<div class="lens-content">
-                  ${sourcePending || this.model?.sourceResource?.stage === "failed" ? nothing : html`<p class="empty-state">No normalized source data is available.</p>`}
-                </div>`
+              : sourcePending || this.model?.sourceResource?.stage === "failed"
+                ? nothing
+                : html`<p class="empty-state">No normalized source data is available.</p>`
           }
         </section>`;
       case "diagnostics":

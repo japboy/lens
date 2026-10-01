@@ -10,6 +10,7 @@ import {
   type PreparedConversationBlock,
 } from "../application/conversation-render-cache";
 import "./lens-conversation-text";
+import { emptyStateStyles } from "../styles/component-styles";
 
 export interface ConversationRow {
   id: string;
@@ -86,39 +87,45 @@ export class LensSessionDocument extends LitElement {
   private restoring = false;
   private restoreOnUpdate = false;
   private restorationRevision = 0;
-  static styles = css`
-    :host {
-      display: block;
-      min-height: 0;
-      height: 100%;
-      overflow: hidden;
-      overflow-wrap: anywhere;
-    }
-    lit-virtualizer {
-      display: block;
-      height: 100%;
-      min-height: 0;
-      overflow: auto;
-    }
-    .heading {
-      box-sizing: border-box;
-      min-height: 40px;
-      padding: 16px 16px 4px;
-      font: inherit;
-      font-weight: 600;
-    }
-    .status {
-      font-size: 0.85em;
-      font-weight: normal;
-      opacity: 0.7;
-    }
-    lens-conversation-block {
-      display: block;
-      min-height: 24px;
-      padding: 0 16px 12px;
-      box-sizing: border-box;
-    }
-  `;
+  static styles = [
+    emptyStateStyles,
+    css`
+      :host {
+        display: block;
+        min-height: 0;
+        height: 100%;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+      }
+      lit-virtualizer {
+        display: block;
+        height: 100%;
+        min-height: 0;
+        overflow: auto;
+      }
+      .heading {
+        box-sizing: border-box;
+        min-height: 40px;
+        padding: 16px 16px 4px;
+        font: inherit;
+        font-weight: 600;
+      }
+      .status {
+        font-size: 0.85em;
+        font-weight: normal;
+        opacity: 0.7;
+      }
+      lens-conversation-block {
+        display: block;
+        min-height: 24px;
+        padding: 0 16px 12px;
+        box-sizing: border-box;
+      }
+      .empty-state {
+        height: 100%;
+      }
+    `,
+  ];
   connectedCallback(): void {
     super.connectedCallback();
     if (this.hasUpdated && retained.identity === this.identity) {
@@ -240,7 +247,7 @@ export class LensSessionDocument extends LitElement {
           @touchstart=${this.cancelRestorationOnInput}
           @keydown=${this.cancelRestorationOnInput}
         ></lit-virtualizer>`
-      : html`<p>No session content is available.</p>`;
+      : html`<p class="empty-state">No session content is available.</p>`;
   }
   private renderRow = (row: ConversationRow) =>
     row.block

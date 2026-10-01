@@ -216,6 +216,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (command === "get_release_availability") return { revision: 0, stage: "checking" };
     if (command === "retry_release_availability_check") return { revision: 3, stage: "checking" };
     if (command === "get_window_snapshot") return windowSnapshot();
+    if (command === "get_mcp_server_tool_catalogs") return [];
     if (command === "get_lens_source")
       return {
         source_ref: snapshot.source_ref,
@@ -1483,7 +1484,9 @@ describe("Lens Settings", () => {
       const managedUpdate = [...editor.querySelectorAll("button")].find(
         (item) => item.textContent?.trim() === "Install",
       )!;
-      expect(editor.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+      expect(
+        editor.querySelectorAll(".managed-agent-actions button[data-lens-button-role]"),
+      ).toHaveLength(1);
       managedUpdate.click();
       await vi.waitFor(() =>
         expect(invoke).toHaveBeenCalledWith("update_managed_agent", { agent: "claude" }),
@@ -2038,6 +2041,162 @@ it("recovery requires explicit prompt-only confirmation and sends the inspected 
   }
 });
 
+it("invalidates cached MCP tools when execution config or selection changes and rejects late replies", async () => {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { listen } = await import("@tauri-apps/api/event");
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const previousConfig = snapshot.config;
+  const previousSelection = snapshot.agent_selection;
+  const server = { id: "mcp-test", name: "Test", url: "https://example.com/mcp" };
+  snapshot.config = { ...snapshot.config, mcp_apps_servers: [server] };
+  let reads = 0;
+  let resolveOld!: (value: import("./types").McpServerToolCatalog[]) => void;
+  const old = new Promise<import("./types").McpServerToolCatalog[]>((resolve) => {
+    resolveOld = resolve;
+  });
+  vi.mocked(invoke).mockImplementation((command, ...arguments_) => {
+    if (command === "get_mcp_server_tool_catalogs") {
+      reads++;
+      return reads === 1
+        ? Promise.resolve([{ server, tools: ["initial_tool"] }])
+        : reads === 2
+          ? old
+          : Promise.resolve([]);
+    }
+    return original(command, ...arguments_);
+  });
+  try {
+    const page = await createPage("settings");
+    const root = viewRoot(page, "lens-settings-view")!;
+    const editor = root.querySelector("lens-mcp-app-settings")!;
+    await vi.waitFor(() => expect(editor.querySelector("lens-select")).not.toBeNull());
+    const select = editor.querySelector<LensSelect>("lens-select")!;
+    select.value = server.id;
+    select.dispatchEvent(new Event("change"));
+    const summary = () => editor.querySelector(".mcp-preset-summary")?.textContent;
+    await vi.waitFor(() => expect(summary()).toContain("initial_tool"));
+    const listener = vi
+      .mocked(listen)
+      .mock.calls.find(([event]) => event === "window-app-state-changed")![1];
+    const publish = () => {
+      snapshot.revision++;
+      listener({ event: "window-app-state-changed", id: 1, payload: windowSnapshot() });
+    };
+    // Lens operation/session/stage are unchanged while execution authority changes.
+    snapshot.config = { ...snapshot.config, working_directory: "/different-session-directory" };
+    publish();
+    await vi.waitFor(() => {
+      expect(reads).toBe(2);
+      expect(summary()).toContain("Not loaded");
+      expect(summary()).not.toContain("initial_tool");
+    });
+    snapshot.agent_selection = {
+      ...snapshot.agent_selection,
+      operation_id: "selection-replacement",
+    };
+    publish();
+    await vi.waitFor(() => expect(reads).toBe(3));
+    resolveOld([{ server, tools: ["late_old_tool"] }]);
+    await old;
+    await page.updateComplete;
+    expect(summary()).toContain("Not loaded");
+    expect(summary()).not.toContain("late_old_tool");
+    expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+  } finally {
+    snapshot.config = previousConfig;
+    snapshot.agent_selection = previousSelection;
+    vi.mocked(invoke).mockImplementation(original);
+  }
+});
+
+it.each(["cancel", "success", "failure"] as const)(
+  "MCP Presets reset handles %s and keeps other presets unchanged",
+  async (outcome) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    const previousConfig = snapshot.config;
+    const server = { id: "mcp-test", name: "Test", url: "https://example.com/mcp" };
+    snapshot.config = { ...snapshot.config, mcp_apps_servers: [server] };
+    vi.mocked(confirm).mockResolvedValue(outcome !== "cancel");
+    vi.mocked(invoke).mockImplementation(async (command, ...arguments_) => {
+      if (command === "get_mcp_server_tool_catalogs")
+        return [{ server, tools: ["ordinary_tool", "render_chart"] }];
+      if (command === "set_mcp_apps_servers") {
+        if (outcome === "failure") throw new Error("MCP reset write failed");
+        snapshot.config = { ...snapshot.config, mcp_apps_servers: [] };
+        snapshot.revision++;
+        const listener = vi
+          .mocked(listen)
+          .mock.calls.find(([event]) => event === "window-app-state-changed")?.[1];
+        listener?.({ event: "window-app-state-changed", id: 1, payload: windowSnapshot() });
+        return windowSnapshot();
+      }
+      return original(command, ...arguments_);
+    });
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      const editor =
+        root.querySelector<import("./components/lens-mcp-app-settings").LensMcpAppSettings>(
+          "lens-mcp-app-settings",
+        )!;
+      await vi.waitFor(() => expect(editor.querySelector("lens-select")).not.toBeNull());
+      const select = editor.querySelector<LensSelect>("lens-select")!;
+      select.value = server.id;
+      select.dispatchEvent(new Event("change"));
+      await vi.waitFor(() =>
+        expect(editor.querySelector(".mcp-preset-summary")?.textContent).toContain("ordinary_tool"),
+      );
+      expect(editor.querySelector(".mcp-preset-summary")?.textContent).toContain("render_chart");
+      const click = (label: string) =>
+        [...editor.querySelectorAll("button")]
+          .find((button) => button.textContent?.trim() === label)!
+          .click();
+      click("Add Preset");
+      await vi.waitFor(() =>
+        expect(editor.querySelector('[aria-label="MCP preset name"]')).not.toBeNull(),
+      );
+      const name = editor.querySelector<HTMLInputElement>('[aria-label="MCP preset name"]')!;
+      name.value = "Unsaved";
+      name.dispatchEvent(new Event("input"));
+      const draftId = select.value;
+      click("Reset Presets…");
+      await vi.waitFor(() =>
+        expect(confirm).toHaveBeenCalledWith(expect.stringContaining("unsaved MCP drafts"), {
+          title: "Reset MCP Presets?",
+          kind: "warning",
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(
+          vi.mocked(invoke).mock.calls.filter(([command]) => command === "set_mcp_apps_servers"),
+        ).toHaveLength(outcome === "cancel" ? 0 : 1);
+        expect(
+          editor.querySelector<HTMLInputElement>('[aria-label="MCP preset name"]')?.value ?? null,
+        ).toBe(outcome === "success" ? null : "Unsaved");
+        expect(root.textContent?.includes("MCP reset write failed")).toBe(outcome === "failure");
+        expect(editor.servers).toEqual(outcome === "success" ? [] : [server]);
+      });
+      expect(
+        vi.mocked(invoke).mock.calls.filter(([command]) => command === "set_mcp_apps_servers"),
+      ).toEqual(outcome === "cancel" ? [] : [["set_mcp_apps_servers", { servers: [] }]]);
+      expect(select.value).toBe(outcome === "success" ? "lens_rich_content" : draftId);
+      expect(snapshot.config.agent).toEqual(previousConfig.agent);
+      expect(snapshot.config.external_agents).toEqual(previousConfig.external_agents);
+      expect(snapshot.config.prompt_presets).toEqual(previousConfig.prompt_presets);
+      expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());
+      expect(invoke).not.toHaveBeenCalledWith("reset_external_agents");
+      expect(invoke).not.toHaveBeenCalledWith("reset_prompt_presets");
+    } finally {
+      snapshot.config = previousConfig;
+      vi.mocked(invoke).mockImplementation(original);
+      vi.mocked(confirm).mockReset();
+    }
+  },
+);
+
 it.each(["cancel", "success", "failure"] as const)(
   "Agent Presets reset handles %s without implicitly launching an agent",
   async (outcome) => {
@@ -2111,14 +2270,19 @@ it.each(["cancel", "success", "failure"] as const)(
         ).toEqual(
           outcome === "success"
             ? [
-                "ChatGPT Codex",
-                "Claude Code",
+                "ChatGPT Codex · Built-in",
+                "Claude Code · Built-in",
                 "GitHub Copilot",
-                "Google Antigravity",
+                "Google Antigravity · Built-in",
                 "Goose",
                 "Grok Build",
               ]
-            : ["ChatGPT Codex", "Claude Code", "Google Antigravity", "New preset (unsaved)"],
+            : [
+                "ChatGPT Codex · Built-in",
+                "Claude Code · Built-in",
+                "Google Antigravity · Built-in",
+                "New preset (unsaved)",
+              ],
         );
       });
       expect(invoke).not.toHaveBeenCalledWith("set_agent", expect.anything());

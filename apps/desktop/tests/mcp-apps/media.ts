@@ -59,7 +59,7 @@ describe("Interpretation media App composition", () => {
     );
     const app = element.querySelector<HTMLElement & { dispose(): Promise<void> }>("lens-mcp-app")!;
     await vi.waitFor(() => expect(app.querySelector("iframe")).not.toBeNull());
-    expect(app.textContent).toContain("Close App");
+    expect(app.textContent).not.toContain("Close App");
     await app.dispose();
     expect(app.querySelector("iframe")).toBeNull();
   });

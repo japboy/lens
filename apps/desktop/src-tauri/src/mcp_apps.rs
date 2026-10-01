@@ -88,6 +88,12 @@ impl Drop for SourceLifetime {
     }
 }
 #[derive(Serialize)]
+pub struct McpServerToolCatalog {
+    server: McpAppServer,
+    tools: Vec<String>,
+}
+
+#[derive(Serialize)]
 pub struct OpenedApp {
     pub id: Uuid,
     pub artifact_id: Uuid,
@@ -328,6 +334,36 @@ impl McpAppsStore {
         let leases=self.active_lease.lock().map(|active| active.iter().map(|active| { let l = &active.lease; json!({"id":active.id,"artifact_id":l.artifact.descriptor.id,"generation":l.generation,"source_live":l.source.upgrade().is_some(),"draft_id":l.input.draft().map(|d|d.id),"submitted":l.input.submitted(),"authority_active":!l.cancellation.is_cancelled()}) }).collect::<Vec<_>>()).unwrap_or_default();
         json!({"source_live":source_live,"leases":leases})
     }
+    fn tool_catalogs(&self, runtime: &AppSnapshot) -> Result<Vec<McpServerToolCatalog>, String> {
+        self.ensure_open()?;
+        let source = self
+            .source
+            .lock()
+            .map_err(|_| "MCP source state unavailable")?;
+        let Some(source) = source.as_ref().filter(|source| {
+            runtime.lens.operation_id == Some(source.operation_id)
+                && source.config.same_active_session_config(&runtime.config)
+        }) else {
+            return Ok(Vec::new());
+        };
+        let Some(broker) = source.broker.upgrade() else {
+            return Ok(Vec::new());
+        };
+        Ok(source
+            .config
+            .mcp_apps_servers
+            .iter()
+            .filter_map(|server| {
+                broker
+                    .model_tool_names(&server.id.to_string())
+                    .map(|tools| McpServerToolCatalog {
+                        server: server.clone(),
+                        tools,
+                    })
+            })
+            .collect())
+    }
+
     fn is_live(&self, descriptor: &McpAppDescriptor) -> bool {
         self.source
             .lock()
@@ -870,6 +906,18 @@ pub async fn submit_mcp_app_message<R: tauri::Runtime>(
         .map_err(|_| "Agent App message admission ended")??;
     Ok(())
 }
+#[tauri::command]
+pub fn get_mcp_server_tool_catalogs<R: tauri::Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<McpServerToolCatalog>, String> {
+    let state = app.state::<AppState>();
+    let runtime = state
+        .runtime
+        .read()
+        .map_err(|_| "Application state unavailable")?;
+    state.mcp_apps.tool_catalogs(&runtime)
+}
+
 #[tauri::command]
 pub async fn set_mcp_apps_servers<R: tauri::Runtime>(
     app: AppHandle<R>,

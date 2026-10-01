@@ -53,14 +53,17 @@ describe("MCP preset settings", () => {
     const { element, intents } = await mount([]);
     const selector = element.querySelector<LensSelect>("lens-select")!;
     expect(selector.options).toEqual([
-      { value: "lens_rich_content", label: "Lens HTML · Built-in" },
+      { value: "lens_rich_content", label: "lens_rich_content · Built-in" },
     ]);
     expect(element.querySelector("h2")!.textContent).toBe("MCP");
     expect(element.textContent).toContain("render_html");
     expect(button(element, "Delete Preset")).toBeUndefined();
-    expect(button(element, "Save Preset")).toBeUndefined();
+    expect(button(element, "Save")).toBeUndefined();
     button(element, "Add Preset").click();
     await element.updateComplete;
+    const serverSummary = element.querySelector(".mcp-preset-summary dd")!;
+    expect(serverSummary.textContent?.trim()).toBe("Not registered");
+    expect(serverSummary.querySelector("code")).toBeNull();
     const controls = element.querySelectorAll("input");
     expect([...controls].map((item) => item.value)).toEqual(["", ""]);
     expect([...controls].map((item) => item.placeholder)).toEqual([
@@ -76,14 +79,14 @@ describe("MCP preset settings", () => {
   it("retains unsaved text across equal snapshots and selection and saves the entire registry", async () => {
     const { element, intents } = await mount();
     await select(element, first.id);
-    await input(element, "MCP endpoint", "https://example.com/new-mcp");
+    await input(element, "Streamable HTTP URL", "https://example.com/new-mcp");
     element.servers = element.servers.map((server) => ({ ...server }));
     await element.updateComplete;
     await select(element, second.id);
     await select(element, first.id);
-    expect(element.querySelector<HTMLInputElement>('input[aria-label="MCP endpoint"]')!.value).toBe(
-      "https://example.com/new-mcp",
-    );
+    expect(
+      element.querySelector<HTMLInputElement>('input[aria-label="Streamable HTTP URL"]')!.value,
+    ).toBe("https://example.com/new-mcp");
     expect(intents).toEqual([]);
     await save(element);
     expect(intents).toEqual([
@@ -94,9 +97,9 @@ describe("MCP preset settings", () => {
     ]);
     element.servers = [{ ...first, url: "https://example.com/saved" }, second];
     await element.updateComplete;
-    expect(element.querySelector<HTMLInputElement>('input[aria-label="MCP endpoint"]')!.value).toBe(
-      "https://example.com/saved",
-    );
+    expect(
+      element.querySelector<HTMLInputElement>('input[aria-label="Streamable HTTP URL"]')!.value,
+    ).toBe("https://example.com/saved");
   });
 
   it("adds only the reviewed draft, retains other registrations, and deletes only the selected external preset", async () => {
@@ -104,7 +107,7 @@ describe("MCP preset settings", () => {
     button(element, "Add Preset").click();
     await element.updateComplete;
     await input(element, "MCP preset name", " Third ");
-    await input(element, "MCP endpoint", " https://third.example/mcp ");
+    await input(element, "Streamable HTTP URL", " https://third.example/mcp ");
     await save(element);
     expect(intents[0]).toMatchObject({
       type: "set-mcp-apps-servers",
@@ -117,16 +120,65 @@ describe("MCP preset settings", () => {
     expect(element.servers).toEqual([first, second]);
   });
 
-  it("discards edits without altering the authoritative registry", async () => {
+  it("keeps saved preset actions distinct from unsaved draft actions", async () => {
     const { element, intents } = await mount();
     await select(element, first.id);
     await input(element, "MCP preset name", "Changed");
-    button(element, "Discard Draft").click();
+    expect(button(element, "Delete Preset")).toBeDefined();
+    expect(button(element, "Discard Draft")).toBeUndefined();
+    expect(button(element, "Save").disabled).toBe(false);
+    expect(
+      element
+        .querySelector("form")!
+        .compareDocumentPosition(element.querySelector(".mcp-preset-summary")!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    button(element, "Add Preset").click();
     await element.updateComplete;
+    expect(button(element, "Delete Preset")).toBeUndefined();
+    expect(button(element, "Discard Draft")).toBeDefined();
+    expect(intents).toEqual([]);
+  });
+
+  it("preserves drafts until an accepted reset clears the complete MCP editor", async () => {
+    const { element, intents } = await mount();
+    await select(element, first.id);
+    await input(element, "MCP preset name", "Changed");
+    button(element, "Add Preset").click();
+    await element.updateComplete;
+    await input(element, "MCP preset name", "Unsaved");
+    button(element, "Reset Presets…").click();
+    await element.updateComplete;
+    expect(intents).toEqual([{ type: "reset-mcp-presets" }]);
     expect(
       element.querySelector<HTMLInputElement>('input[aria-label="MCP preset name"]')!.value,
-    ).toBe(first.name);
-    expect(intents).toEqual([]);
+    ).toBe("Unsaved");
+    element.acceptResetPresets();
+    await element.updateComplete;
+    expect(element.servers).toEqual([]);
+    expect(element.querySelector<LensSelect>("lens-select")!.options).toEqual([
+      { value: "lens_rich_content", label: "lens_rich_content · Built-in" },
+    ]);
+    expect(element.querySelector("form")).toBeNull();
+    expect(element.querySelector(".mcp-preset-summary")!.textContent).toContain("render_html");
+  });
+
+  it("distinguishes unloaded, empty and source-matched cached tool catalogs", async () => {
+    const { element } = await mount();
+    await select(element, first.id);
+    const tools = () => element.querySelector(".mcp-preset-summary")!.textContent;
+    expect(tools()).toContain("Not loaded");
+    element.catalogs = [{ server: { ...first }, tools: [] }];
+    await element.updateComplete;
+    expect(tools()).toContain("No tools");
+    element.catalogs = [{ server: { ...first }, tools: ["ordinary_tool", "render_chart"] }];
+    await element.updateComplete;
+    expect(tools()).toContain("ordinary_tool");
+    expect(tools()).toContain("render_chart");
+    element.servers = [{ ...first, url: "https://replacement.example/mcp" }, second];
+    await element.updateComplete;
+    expect(tools()).toContain("Not loaded");
+    expect(tools()).not.toContain("ordinary_tool");
   });
 
   it.each([
@@ -160,7 +212,7 @@ describe("MCP preset settings", () => {
   ])("rejects unsupported endpoint %s", async (url) => {
     const { element, intents } = await mount();
     await select(element, first.id);
-    await input(element, "MCP endpoint", url);
+    await input(element, "Streamable HTTP URL", url);
     await save(element);
     expect(intents).toEqual([]);
     expect(element.querySelector('[role="alert"]')).not.toBeNull();

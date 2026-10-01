@@ -109,6 +109,7 @@ export interface WebviewPort extends McpAppsPort {
   ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
   setMcpAppsServers(servers: McpAppsServer[]): Promise<void>;
+  getMcpServerToolCatalogs(): Promise<import("../types").McpServerToolCatalog[]>;
   getAppSnapshot(): Promise<AppSnapshot>;
   openScreenRecordingSettings(): Promise<void>;
   getAccessibilityPermission(): Promise<boolean>;
@@ -142,6 +143,7 @@ export interface WebviewPort extends McpAppsPort {
 
 export const tauriWebviewPort: WebviewPort = {
   setMcpAppsServers: (servers) => invoke("set_mcp_apps_servers", { servers }),
+  getMcpServerToolCatalogs: () => invoke("get_mcp_server_tool_catalogs"),
   openMcpApp: (artifactId, hostOrigin) => invoke("open_mcp_app", { artifactId, hostOrigin }),
   prepareMcpAppDocument: (leaseId, document) =>
     invoke("prepare_mcp_app_document", { leaseId, document }),

@@ -2,6 +2,7 @@
 import type { LensSelect } from "./lens-select";
 import { afterEach, expect, it } from "vitest";
 import { LensAgentSettings } from "./lens-agent-settings";
+import type { LensSettingsHelp } from "./lens-settings-help";
 import type { AgentIntent } from "./events";
 import type { AgentSelectionState } from "../types";
 
@@ -217,7 +218,9 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   element.runtime = { agent: "claude", stage: "ready", downloaded_bytes: 0 };
   await element.updateComplete;
   expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("claude");
-  expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+  expect(
+    element.querySelectorAll(".managed-agent-actions button:not(.settings-info)"),
+  ).toHaveLength(1);
   expect(
     button(element, "Add Preset").compareDocumentPosition(button(element, "Install")) &
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -232,7 +235,9 @@ it("updates the managed Agent shown in the selector and preserves progress", asy
   element.runtime = { agent: "codex", stage: "ready", downloaded_bytes: 0 };
   await element.updateComplete;
   expect(element.querySelector<LensSelect>("lens-select")?.value).toBe("codex");
-  expect(element.querySelectorAll(".managed-agent-actions button")).toHaveLength(1);
+  expect(
+    element.querySelectorAll(".managed-agent-actions button:not(.settings-info)"),
+  ).toHaveLength(1);
   button(element, "Install").click();
   expect(intents.at(-1)).toEqual({ type: "update-managed-agent", agent: "codex" });
   element.updatePending = true;
@@ -307,25 +312,51 @@ it("groups preset management and keeps Choose beside the executable", async () =
   ).toBe(false);
 });
 
-it("shows control help on focus and hover and dismisses it with Escape", async () => {
-  const { element } = await mount();
-  const add = button(element, "Add Preset");
-  const help = element.querySelector<HTMLElement>("#agent-add-help")!;
-  expect(add.getAttribute("aria-describedby")).toBe(help.id);
+it("shows help from its independent info trigger without running the adjacent action", async () => {
+  const { element, intents } = await mount();
+  const save = button(element, "Save and Verify");
+  const info = save.parentElement!.querySelector<LensSettingsHelp>("lens-settings-help")!;
+  await info.updateComplete;
+  const trigger = info.querySelector<HTMLButtonElement>("button")!;
+  const help = element.querySelector<HTMLElement>("#agent-save-help")!;
+  expect(save.getAttribute("aria-describedby")).toBe(help.id);
+  expect(trigger.getAttribute("aria-describedby")).toBe(help.id);
+  expect(trigger.querySelector(".fa-circle-info")).not.toBeNull();
   expect(help.hidden).toBe(true);
-  add.focus();
-  await element.updateComplete;
+  save.focus();
+  await info.updateComplete;
+  expect(help.hidden).toBe(true);
+  trigger.focus();
+  await info.updateComplete;
   expect(help.hidden).toBe(false);
-  add.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  await element.updateComplete;
+  trigger.click();
+  expect(intents).toEqual([]);
+  expect(element.querySelector<HTMLInputElement>('[aria-label="Connection name"]')?.value).toBe(
+    "Goose",
+  );
+  trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await info.updateComplete;
   expect(help.hidden).toBe(true);
-  add.blur();
-  add.parentElement!.dispatchEvent(new Event("pointerenter"));
-  await element.updateComplete;
+  trigger.blur();
+  trigger.dispatchEvent(new Event("pointerenter"));
+  await info.updateComplete;
   expect(help.hidden).toBe(false);
-  add.parentElement!.dispatchEvent(new Event("pointerleave"));
-  await element.updateComplete;
+  trigger.dispatchEvent(new Event("pointerleave"));
+  await info.updateComplete;
   expect(help.hidden).toBe(true);
+  expect(element.querySelector(".preset-add-actions lens-settings-help")).toBeNull();
+  expect(element.querySelector(".agent-reset-actions lens-settings-help")).toBeNull();
+  expect(element.querySelector(".executable-row lens-settings-help")).toBeNull();
+  for (const [field, helpId] of [
+    [command(element), "agent-executable-help"],
+    [argumentsField(element), "agent-arguments-help"],
+  ] as const) {
+    expect(field.getAttribute("aria-describedby")).toBe(helpId);
+    const labelHelp = field
+      .closest(".settings-field")
+      ?.querySelector<LensSettingsHelp>(".settings-label-help lens-settings-help");
+    expect(labelHelp?.helpId).toBe(helpId);
+  }
 });
 
 it("keeps Add Preset available while Claude is displayed", async () => {
@@ -565,10 +596,10 @@ it("renders all first-run external presets with managed agents in the single sel
   expect(element.querySelectorAll("lens-select")).toHaveLength(1);
   const selector = element.querySelector<LensSelect>("lens-select")!;
   expect(selector.options.map((option) => option.label)).toEqual([
-    "ChatGPT Codex",
-    "Claude Code",
+    "ChatGPT Codex · Built-in",
+    "Claude Code · Built-in",
     "GitHub Copilot",
-    "Google Antigravity",
+    "Google Antigravity · Built-in",
     "Goose",
     "Grok Build",
   ]);

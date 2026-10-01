@@ -1,4 +1,5 @@
 import "./lens-select";
+import "./lens-settings-help";
 import { LensSelect } from "./lens-select";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -233,27 +234,34 @@ export class LensPromptSettings extends LitElement {
               descriptor.variables.length
                 ? descriptor.variables.map((variable) => {
                     const count = occurrences.filter(({ name }) => name === variable.name).length;
-                    return html`<button
-                      data-lens-button-role="normal"
-                      type="button"
-                      class="prompt-variable-token"
-                      data-variable=${variable.name}
-                      data-state=${count === 0 ? "available" : count === 1 ? "inserted" : "duplicate"}
-                      aria-label=${
-                        count === 0
-                          ? `Insert ${variable.label} ${variable.token}`
-                          : `Select ${variable.label} ${variable.token}`
-                      }
-                      title=${variable.description}
-                      @click=${() => this.insertVariable(variable, section, advanced)}
-                      ?disabled=${this.disabled || !this.agentPromptTemplate}
-                    >
-                      <span>${variable.label}</span>
-                      <code>${variable.token}</code>
-                      <span class="prompt-variable-state">
-                        ${count === 0 ? "Insert" : count === 1 ? "Inserted" : `${count} used`}
-                      </span>
-                    </button>`;
+                    const helpId = `${advanced ? "prompt-request" : "prompt"}-${section}-${variable.name}-help`;
+                    return html`<span class="prompt-variable-group"
+                      ><button
+                        data-lens-button-role="normal"
+                        type="button"
+                        class="prompt-variable-token"
+                        data-variable=${variable.name}
+                        data-state=${count === 0 ? "available" : count === 1 ? "inserted" : "duplicate"}
+                        aria-label=${
+                          count === 0
+                            ? `Insert ${variable.label} ${variable.token}`
+                            : `Select ${variable.label} ${variable.token}`
+                        }
+                        aria-describedby=${helpId}
+                        @click=${() => this.insertVariable(variable, section, advanced)}
+                        ?disabled=${this.disabled || !this.agentPromptTemplate}
+                      >
+                        <span>${variable.label}</span>
+                        <code>${variable.token}</code>
+                        <span class="prompt-variable-state">
+                          ${count === 0 ? "Insert" : count === 1 ? "Inserted" : `${count} used`}
+                        </span></button
+                      ><lens-settings-help
+                        .helpId=${helpId}
+                        .label=${`About ${variable.label}`}
+                        .text=${variable.description}
+                      ></lens-settings-help
+                    ></span>`;
                   })
                 : html`<span class="prompt-no-variables">None for this request type</span>`
             }

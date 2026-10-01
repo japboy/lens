@@ -112,6 +112,9 @@ describe("App presentation lifecycle", () => {
       await element.updateComplete;
       expect(element.isConnected).toBe(false);
       await vi.waitFor(() => expect(element.querySelector("iframe")).toBeNull());
+      expect(native.closeMcpApp).toHaveBeenCalledWith("lease");
+      expect(AppBridge.prototype.teardownResource).toHaveBeenCalled();
+      expect(AppBridge.prototype.close).toHaveBeenCalled();
       // Native cleanup schedules Lit updates even in the disconnected cached tree.
       element.requestUpdate();
       await element.updateComplete;
@@ -145,9 +148,11 @@ describe("App presentation lifecycle", () => {
     const element = mount(native);
     await element.updateComplete;
     await flush();
-    (element.querySelector("button") as HTMLButtonElement).click();
+    expect(element.textContent).not.toContain("Close App");
+    const disposal = element.dispose();
     await flush();
     await vi.advanceTimersByTimeAsync(1_010);
+    await disposal;
     await element.updateComplete;
     expect(element.querySelector("iframe")).toBeNull();
     const reopen = element.querySelector("button") as HTMLButtonElement;

@@ -1,6 +1,8 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { McpAppsServer } from "adapter-mcp-apps-host";
+import type { McpServerToolCatalog } from "../types";
+import "./lens-settings-help";
 import { dispatchComponentEvent, SETTINGS_INTENT_EVENT } from "./events";
 import "./lens-select";
 import type { LensSelect } from "./lens-select";
@@ -8,6 +10,7 @@ const BUILTIN = "lens_rich_content";
 @customElement("lens-mcp-app-settings")
 export class LensMcpAppSettings extends LitElement {
   @property({ attribute: false }) servers: readonly McpAppsServer[] = [];
+  @property({ attribute: false }) catalogs: readonly McpServerToolCatalog[] = [];
   @property({ type: Boolean }) disabled = false;
   @state() private drafts: Record<string, McpAppsServer> = {};
   @state() private editingId = BUILTIN;
@@ -37,6 +40,15 @@ export class LensMcpAppSettings extends LitElement {
     if (this.editingId !== BUILTIN && !next[this.editingId]) this.editingId = BUILTIN;
     this.error = "";
   }
+  acceptResetPresets(): void {
+    this.servers = [];
+    this.authoritativeServers = [];
+    this.drafts = {};
+    this.catalogs = [];
+    this.editingId = BUILTIN;
+    this.error = "";
+  }
+
   private edit(field: "name" | "url", value: string): void {
     if (this.disabled || !this.drafts[this.editingId]) return;
     this.drafts = {
@@ -53,15 +65,11 @@ export class LensMcpAppSettings extends LitElement {
     this.error = "";
   }
   private discard(): void {
-    if (this.disabled) return;
-    const saved = this.servers.find((server) => server.id === this.editingId);
-    if (saved) this.drafts = { ...this.drafts, [saved.id]: { ...saved } };
-    else {
-      const next = { ...this.drafts };
-      delete next[this.editingId];
-      this.drafts = next;
-      this.editingId = BUILTIN;
-    }
+    if (this.disabled || this.servers.some((server) => server.id === this.editingId)) return;
+    const next = { ...this.drafts };
+    delete next[this.editingId];
+    this.drafts = next;
+    this.editingId = BUILTIN;
     this.error = "";
   }
   private publish(servers: McpAppsServer[]): void {
@@ -143,19 +151,30 @@ export class LensMcpAppSettings extends LitElement {
     const draft = this.drafts[this.editingId],
       saved = this.servers.find((server) => server.id === this.editingId);
     const dirty = Boolean(draft && JSON.stringify(draft) !== JSON.stringify(saved));
+    const catalog =
+      saved &&
+      this.catalogs.find(
+        (catalog) =>
+          catalog.server.id === saved.id &&
+          catalog.server.name === saved.name &&
+          catalog.server.url === saved.url,
+      );
     return html`<section class="settings-group" aria-labelledby="mcp-apps-heading">
-      <h2 id="mcp-apps-heading">MCP</h2>
-      <p class="help">
-        Edit connection presets here. All registered MCP servers remain available together; this
-        selection only chooses the preset to edit.
-      </p>
+      <div class="settings-heading-row">
+        <h2 id="mcp-apps-heading">MCP</h2>
+        <lens-settings-help
+          .helpId=${"mcp-presets-help"}
+          .label=${"About MCP presets"}
+          .text=${"All registered MCP servers are available together. Changing this selector only chooses the preset to edit."}
+        ></lens-settings-help>
+      </div>
       <div class="settings-field">
         <lens-select
-          label="MCP preset to edit"
+          label="MCP Preset"
           .value=${this.editingId}
           .disabled=${this.disabled}
           .options=${[
-            { value: BUILTIN, label: "Lens HTML · Built-in" },
+            { value: BUILTIN, label: "lens_rich_content · Built-in" },
             ...Object.values(this.drafts).map((server) => ({
               value: server.id,
               label: `${server.name || "New preset"}${this.servers.some((saved) => saved.id === server.id) ? "" : " (unsaved)"}`,
@@ -167,7 +186,7 @@ export class LensMcpAppSettings extends LitElement {
           }}
         ></lens-select>
       </div>
-      <div class="agent-actions preset-add-actions">
+      <div class="agent-actions preset-add-actions mcp-preset-actions">
         <button
           type="button"
           data-lens-button-role="normal"
@@ -186,100 +205,129 @@ export class LensMcpAppSettings extends LitElement {
               >
                 Delete Preset
               </button>`
-            : nothing
-        }
-        ${
-          draft && !saved
-            ? html`<button
-                type="button"
-                data-lens-button-role="cancel"
-                ?disabled=${this.disabled}
-                @click=${() => this.discard()}
-              >
-                Discard Draft
-              </button>`
-            : nothing
+            : draft
+              ? html`<button
+                  type="button"
+                  data-lens-button-role="cancel"
+                  ?disabled=${this.disabled}
+                  @click=${() => this.discard()}
+                >
+                  Discard Draft
+                </button>`
+              : nothing
         }
       </div>
       ${
-        this.editingId === BUILTIN
-          ? html`
-              <p class="help">
-                Lens HTML is always available. Its render_html tool displays rich, interactive HTML
-                in Lens. This built-in preset cannot be edited or deleted.
-              </p>
-              <dl>
-                <dt>MCP server</dt>
-                <dd>lens_rich_content</dd>
-                <dt>Tool</dt>
-                <dd>render_html</dd>
-              </dl>
-            `
-          : draft
-            ? html`<form @submit=${this.save}>
-                <fieldset class="agent-preset-settings" ?disabled=${this.disabled}>
-                  <legend class="visually-hidden">MCP preset settings</legend>
-                  <label class="settings-field"
-                    ><span>Name</span
-                    ><input
-                      class="external-executable-field"
-                      data-lens-control="text-entry"
-                      aria-label="MCP preset name"
-                      type="text"
-                      maxlength="64"
-                      placeholder="Reference"
-                      .value=${draft.name}
-                      @input=${(event: Event) => this.edit("name", (event.target as HTMLInputElement).value)}
-                  /></label>
-                  <label class="settings-field"
-                    ><span>MCP Endpoint</span
-                    ><input
-                      class="external-executable-field"
-                      data-lens-control="text-entry"
-                      aria-label="MCP endpoint"
-                      type="url"
-                      placeholder="https://mcp.example.com/mcp"
-                      .value=${draft.url}
-                      @input=${(event: Event) => this.edit("url", (event.target as HTMLInputElement).value)}
-                  /></label>
-                  <p class="help">
-                    Use a unique name of 1–64 ASCII letters, numbers, underscores or hyphens. Up to
-                    16 external presets are supported.
-                  </p>
-                  <p class="help">
-                    Streamable HTTP only. Authentication and stdio are not supported. Endpoints
-                    cannot contain credentials, a query or a fragment.
-                  </p>
-                  <div class="agent-actions">
-                    ${
-                      saved
-                        ? html`<button
-                            type="button"
-                            data-lens-button-role="cancel"
-                            ?disabled=${this.disabled || !dirty}
-                            @click=${() => this.discard()}
-                          >
-                            Discard Draft
-                          </button>`
-                        : nothing
-                    }
-                    <button
-                      type="submit"
-                      data-lens-button-role="primary"
-                      ?disabled=${this.disabled || !dirty}
-                    >
-                      Save Preset
-                    </button>
+        draft
+          ? html`<form @submit=${this.save}>
+              <fieldset class="agent-preset-settings" ?disabled=${this.disabled}>
+                <legend class="visually-hidden">MCP preset settings</legend>
+                <div class="settings-field">
+                  <div class="settings-label-help">
+                    <label for="mcp-preset-name">Name</label>
+                    <lens-settings-help
+                      .helpId=${"mcp-name-help"}
+                      .label=${"About MCP preset name"}
+                      .text=${"Use a unique name of 1–64 ASCII letters, numbers, underscores or hyphens. Up to 16 external presets are supported. lens_rich_content and lens_output are reserved."}
+                    ></lens-settings-help>
                   </div>
-                </fieldset>
-              </form>`
-            : nothing
+                  <input
+                    id="mcp-preset-name"
+                    class="external-executable-field"
+                    data-lens-control="text-entry"
+                    aria-label="MCP preset name"
+                    aria-describedby="mcp-name-help"
+                    type="text"
+                    maxlength="64"
+                    placeholder="Reference"
+                    autocomplete="off"
+                    .value=${draft.name}
+                    @input=${(event: Event) => this.edit("name", (event.target as HTMLInputElement).value)}
+                  />
+                </div>
+                <div class="settings-field">
+                  <div class="settings-label-help">
+                    <label for="mcp-preset-url">Streamable HTTP URL</label>
+                    <lens-settings-help
+                      .helpId=${"mcp-transport-help"}
+                      .label=${"About MCP transport"}
+                      .text=${"Streamable HTTP only. Authentication and stdio are not supported. URLs cannot contain credentials, a query or a fragment."}
+                    ></lens-settings-help>
+                  </div>
+                  <input
+                    id="mcp-preset-url"
+                    class="external-executable-field"
+                    data-lens-control="text-entry"
+                    aria-label="Streamable HTTP URL"
+                    aria-describedby="mcp-transport-help"
+                    type="url"
+                    placeholder="https://mcp.example.com/mcp"
+                    autocomplete="off"
+                    .value=${draft.url}
+                    @input=${(event: Event) => this.edit("url", (event.target as HTMLInputElement).value)}
+                  />
+                </div>
+                <div class="agent-actions mcp-preset-editor-actions">
+                  <button
+                    type="submit"
+                    data-lens-button-role="primary"
+                    aria-describedby="mcp-save-help"
+                    ?disabled=${this.disabled || !dirty}
+                  >
+                    Save
+                  </button>
+                  <lens-settings-help
+                    .helpId=${"mcp-save-help"}
+                    .label=${"About saving MCP presets"}
+                    .text=${"Saving or deleting a preset closes the current Agent connection. The updated MCP presets are used for the next Interpretation."}
+                  ></lens-settings-help>
+                </div>
+              </fieldset>
+            </form>`
+          : nothing
       }
       ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
-      <p class="help">
-        Saving or deleting a preset closes the current Agent connection. The full registry is used
-        when you start the next Interpretation.
-      </p>
+      <dl class="mcp-preset-summary">
+        <div>
+          <dt>MCP server</dt>
+          <dd>
+            ${
+              draft && !saved
+                ? html`<span>Not registered</span>`
+                : html`<code>${saved?.name ?? BUILTIN}</code>`
+            }
+          </dd>
+        </div>
+        <div>
+          <dt>Tools</dt>
+          <dd>
+            ${
+              !draft
+                ? html`<code>render_html</code>`
+                : !saved
+                  ? html`<span>Not registered</span>`
+                  : !catalog
+                    ? html`<span>Not loaded</span>`
+                    : catalog.tools.length === 0
+                      ? html`<span>No tools</span>`
+                      : catalog.tools.map((tool) => html`<div><code>${tool}</code></div>`)
+            }
+          </dd>
+        </div>
+      </dl>
+      <div class="mcp-preset-reset-actions">
+        <button
+          type="button"
+          data-lens-button-role="destructive"
+          ?disabled=${this.disabled}
+          @click=${() => {
+            if (!this.disabled)
+              dispatchComponentEvent(this, SETTINGS_INTENT_EVENT, { type: "reset-mcp-presets" });
+          }}
+        >
+          Reset Presets…
+        </button>
+      </div>
     </section>`;
   }
 }

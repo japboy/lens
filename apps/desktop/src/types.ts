@@ -80,6 +80,11 @@ export type PromptPresetChange =
   | { type: "select"; id: string }
   | { type: "reset_all"; expected_catalog_revision: number };
 
+export interface McpServerToolCatalog {
+  server: import("adapter-mcp-apps-host").McpAppsServer;
+  tools: readonly string[];
+}
+
 export interface AppConfig {
   mcp_apps_servers?: import("adapter-mcp-apps-host").McpAppsServer[];
   agent_preferences?: Partial<Record<ManagedAgentKind, AgentDefaults>> & {

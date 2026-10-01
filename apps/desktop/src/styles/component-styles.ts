@@ -14,6 +14,21 @@ export const viewHostStyles = css`
   }
 `;
 
+export const emptyStateStyles = css`
+  .empty-state {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: 0;
+    padding: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: GrayText;
+  }
+`;
+
 const textEntrySelector = css`[data-lens-control="text-entry"]:is(
   input:not([type]),
   input:is([type="text"], [type="search"], [type="url"], [type="tel"], [type="email"], [type="password"], [type="number"]),
