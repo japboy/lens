@@ -37,6 +37,8 @@ function setup() {
       draft: { id: "draft-1", text: "Please explain 73" },
     })),
     submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
+    submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
+    prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
   };
   const factory = () => {
     const bridge = {
@@ -71,6 +73,75 @@ afterEach(() => {
 });
 
 describe("selected App lifecycle", () => {
+  it("prepares only the built-in derivative before mounting while retaining original result and input", async () => {
+    const test = setup();
+    const original = {
+      ...lease("a"),
+      input: { html: String.raw`<!doctype html><p>\(x\)</p><script>window.fixture=73</script>` },
+      document_url: "http://127.0.0.1:43162/document/lease-a",
+    };
+    vi.mocked(test.port.openMcpApp).mockResolvedValueOnce(original);
+    let resolve!: () => void;
+    vi.mocked(test.port.prepareMcpAppDocument).mockImplementationOnce(
+      () =>
+        new Promise<void>((done) => {
+          resolve = done;
+        }),
+    );
+    const opening = test.controller.show(
+      { ...descriptor("a"), server_id: "lens_rich_html" },
+      test.container,
+    );
+    await vi.waitFor(() => expect(test.port.prepareMcpAppDocument).toHaveBeenCalledOnce());
+    expect(test.container.querySelector("iframe")).toBeNull();
+    const prepared = vi.mocked(test.port.prepareMcpAppDocument).mock.calls[0]!;
+    expect(prepared[0]).toBe("lease-a");
+    expect(prepared[1]).toContain("lens-html-math");
+    expect(prepared[1]).toContain("<script>window.fixture=73</script>");
+    resolve();
+    await opening;
+    await test.initialize();
+    expect(test.bridges[0]!.sendToolInput).toHaveBeenCalledWith({ arguments: original.input });
+    expect(test.bridges[0]!.sendToolResult).toHaveBeenCalledWith(original.result);
+    await test.controller.close();
+  });
+  it.each(["late", "missing"])(
+    "revokes a built-in lease after Close with a %s preparation reply",
+    async (reply) => {
+      vi.useFakeTimers();
+      const test = setup();
+      vi.mocked(test.port.openMcpApp).mockResolvedValueOnce({
+        ...lease("a"),
+        input: { html: "<p>plain</p>" },
+        document_url: "http://127.0.0.1:43162/document/lease-a",
+      });
+      let resolve!: () => void;
+      vi.mocked(test.port.prepareMcpAppDocument).mockImplementationOnce(
+        () =>
+          new Promise<void>((done) => {
+            resolve = done;
+          }),
+      );
+      const opening = test.controller.show(
+        { ...descriptor("a"), server_id: "lens_rich_html" },
+        test.container,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(test.port.prepareMcpAppDocument).toHaveBeenCalledOnce();
+      const close = test.controller.close();
+      if (reply === "late") resolve();
+      await vi.advanceTimersByTimeAsync(10_010);
+      await opening;
+      await close;
+      expect(test.port.closeMcpApp).toHaveBeenCalledWith("lease-a");
+      expect(test.bridges).toHaveLength(0);
+      expect(test.container.querySelector("iframe")).toBeNull();
+      await test.controller.show(descriptor("b"), test.container);
+      await test.initialize();
+      expect(test.controller.state.stage).toBe("ready");
+      await test.controller.close();
+    },
+  );
   it("can show the next App after native close never resolves", async () => {
     vi.useFakeTimers();
     const test = setup();

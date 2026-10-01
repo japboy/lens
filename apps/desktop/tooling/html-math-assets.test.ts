@@ -8,7 +8,7 @@ import {
   HTML_MATH_MANIFEST,
   HTML_MATH_RESOURCE_LIMIT,
 } from "./html-math-manifest.ts";
-import { createHtmlMathAssets } from "./html-math-assets.ts";
+import { createHtmlMathAssets, inlineHtmlMathCss } from "./html-math-assets.ts";
 
 const desktop = resolve(".");
 const temporary: string[] = [];
@@ -47,6 +47,14 @@ describe("public HTML math asset generation", () => {
     for (const url of urls)
       expect(sources.has(join(dirname(manifest.stylesheetPath), url))).toBe(true);
     expect(css).not.toMatch(/data:|https?:|@import/u);
+    const inline = inlineHtmlMathCss(manifest, sources);
+    const inlineFonts = [...inline.matchAll(/url\("data:font\/woff2;base64,([^"]+)"\)/gu)].map(
+      (match) => Buffer.from(match[1]!, "base64"),
+    );
+    expect(inlineFonts).toEqual(
+      urls.map((url) => sources.get(join(dirname(manifest.stylesheetPath), url))),
+    );
+    expect(inline).not.toMatch(/https?:|@import|url\((?!"data:font\/woff2;base64,)/u);
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/gu)];
     for (const rule of rules.filter((rule) => rule[1]!.trim() === "@font-face"))
       expect(rule[2]).toMatch(/font-family:\s*"?LensHtml_KaTeX_/u);

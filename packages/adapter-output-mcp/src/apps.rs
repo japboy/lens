@@ -11,6 +11,7 @@ use axum::{
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -144,7 +145,7 @@ impl AppBroker {
                 }),
             );
         }
-        let tool = json!({"name":"render_html","title":"Render interactive HTML","description":"Render self-contained HTML/CSS/JavaScript as an interactive Lens interpretation. Provide complete HTML, not a path, URL or Markdown. For interactive input, send standard MCP Apps JSON-RPC to window.parent.postMessage(message, '*'). Supported methods: ui/message with {role:'user',content:[{type:'text',text:'message'}]}, ui/update-model-context with {content,structuredContent}, and tools/call with {name,arguments}. Include jsonrpc:'2.0' and a unique id. Responses arrive as window message events. User messages become a Lens draft and require the trusted Lens Send control. External network and native access are unavailable. Prefer an appropriate external renderer if one is available.","inputSchema":{"type":"object","properties":{"html":{"type":"string","maxLength":524288}},"required":["html"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"_meta":{"ui":{"resourceUri":FALLBACK_URI,"visibility":["model"]}}});
+        let tool = json!({"name":"render_html","title":"Render interactive HTML","description":"Render self-contained HTML/CSS/JavaScript as an interactive Lens interpretation. Provide complete HTML, not a path, URL or Markdown. For interactive input, send standard MCP Apps JSON-RPC to window.parent.postMessage(message, '*'). Initial HTML body LaTeX using \\(...\\) and \\[...\\] is rendered by Lens. Normal HTTP(S) anchors request a trusted Lens Open control; never open links automatically. Supported methods: ui/open-link with {url}, ui/message with {role:'user',content:[{type:'text',text:'message'}]}, ui/update-model-context with {content,structuredContent}, and tools/call with {name,arguments}. Include jsonrpc:'2.0' and a unique id. Responses arrive as window message events. User messages become a Lens draft and require the trusted Lens Send control. External network and native access are unavailable. Prefer an appropriate external renderer if one is available.","inputSchema":{"type":"object","properties":{"html":{"type":"string","maxLength":524288}},"required":["html"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"_meta":{"ui":{"resourceUri":FALLBACK_URI,"visibility":["model"]}}});
         sources.insert(FALLBACK_SERVER.into(),Arc::new(Source {id:FALLBACK_SERVER.into(),name:FALLBACK_SERVER.into(),peer:json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":FALLBACK_SERVER,"version":env!("CARGO_PKG_VERSION")}}),tools:HashMap::from([("render_html".into(),tool)]),upstream:None,shell}));
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -222,6 +223,9 @@ impl AppBroker {
         let _ = tokio::time::timeout(Duration::from_secs(3), cleanup).await;
     }
     pub fn begin_turn(&self, id: Uuid) -> Result<(), String> {
+        if id.is_nil() {
+            return Err("MCP turn identity must be non-nil".into());
+        }
         let mut turn = self
             .state
             .turn
@@ -455,26 +459,7 @@ impl Source {
             .map_err(|_| "MCP source request timed out")?;
         }
         match method {
-            "tools/call" => {
-                if params.get("name").and_then(Value::as_str) != Some("render_html") {
-                    return Err("Unknown built-in tool".into());
-                }
-                let args = params
-                    .get("arguments")
-                    .and_then(Value::as_object)
-                    .ok_or("Missing render arguments")?;
-                if args.len() != 1 {
-                    return Err("Only html is accepted".into());
-                }
-                let html = args
-                    .get("html")
-                    .and_then(Value::as_str)
-                    .filter(|h| !h.trim().is_empty() && h.len() <= crate::MAX_HTML_BYTES)
-                    .ok_or("Invalid HTML size")?;
-                Ok(
-                    json!({"content":[{"type":"text","text":"Interactive HTML rendered in Lens."}],"structuredContent":{"html":html}}),
-                )
-            }
+            "tools/call" => Err("Bundled HTML publication requires an active Agent turn".into()),
             "resources/read" => {
                 if params.get("uri").and_then(Value::as_str) != Some(FALLBACK_URI) {
                     return Err("Unknown UI resource".into());
@@ -601,6 +586,9 @@ async fn proxy_request(
                 .get(name)
                 .filter(|t| visible(t, "model"))
                 .ok_or("Tool not model-visible")?;
+            if source.id == FALLBACK_SERVER {
+                return publish_builtin(state, source, &params, run_id);
+            }
             let result = source.call(method, params.clone()).await?;
             let uri = tool
                 .pointer("/_meta/ui/resourceUri")
@@ -650,6 +638,66 @@ async fn proxy_request(
         "resources/read" => source.call(method, params).await,
         _ => Err("Unsupported MCP method".into()),
     }
+}
+
+fn publish_builtin(
+    state: &BrokerState,
+    source: &Source,
+    params: &Value,
+    run_id: Uuid,
+) -> Result<Value, ServerError> {
+    let args = params
+        .get("arguments")
+        .and_then(Value::as_object)
+        .ok_or("Missing render arguments")?;
+    if args.len() != 1 {
+        return Err("Only html is accepted".into());
+    }
+    let html = args
+        .get("html")
+        .and_then(Value::as_str)
+        .filter(|html| !html.trim().is_empty() && html.len() <= crate::MAX_HTML_BYTES)
+        .ok_or("Invalid HTML size")?;
+    let mut turn = state.turn.lock().map_err(|_| "MCP turn unavailable")?;
+    let turn = turn
+        .as_mut()
+        .filter(|turn| turn.id == run_id)
+        .ok_or("Agent turn expired")?;
+    if let Some(previous) = turn
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.server_id == FALLBACK_SERVER && artifact.input == json!(args))
+    {
+        return Ok(previous.result.clone());
+    }
+    let id = Uuid::new_v4();
+    let digest: String = Sha256::digest(html.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let receipt = json!({"kind":"lens_rich_html_publication","schema_version":1,"accepted":true,"publication_id":id,"turn_id":run_id,"html_sha256":digest});
+    let result = json!({"content":[{"type":"text","text":receipt.to_string()}],"structuredContent":{"html":html,"publication":receipt}});
+    let artifact = AppArtifact {
+        id,
+        run_id,
+        server_id: FALLBACK_SERVER.into(),
+        tool_name: "render_html".into(),
+        resource_uri: FALLBACK_URI.into(),
+        title: "Render interactive HTML".into(),
+        resource: AppResource {
+            html: source.shell.clone(),
+            meta: json!({}),
+        },
+        input: json!(args),
+        result: result.clone(),
+    };
+    let bytes = serde_json::to_vec(&artifact)?.len();
+    if turn.artifacts.len() >= MAX_ARTIFACTS || turn.retained_bytes + bytes > 16 * 1024 * 1024 {
+        return Err("App publication budget is full".into());
+    }
+    turn.retained_bytes += bytes;
+    turn.artifacts.push(artifact);
+    Ok(result)
 }
 
 /// Validate server-declared CSP origins without interpolating arbitrary directive text.
@@ -735,6 +783,7 @@ pub struct DisplayServer {
     pub proxy_url: String,
     pub view_url: String,
     pub document_url: Option<String>,
+    document: Arc<Mutex<Option<String>>>,
     task: JoinHandle<()>,
 }
 impl Drop for DisplayServer {
@@ -743,6 +792,21 @@ impl Drop for DisplayServer {
     }
 }
 impl DisplayServer {
+    /// Presentation derivative only; the original resource and tool transaction stay immutable.
+    pub fn prepare_document(&self, document: String) -> Result<(), String> {
+        if document.len() > MAX_RPC_BYTES {
+            return Err("HTML presentation exceeds size limit".into());
+        }
+        let mut current = self
+            .document
+            .lock()
+            .map_err(|_| "HTML presentation unavailable")?;
+        if current.is_none() {
+            return Err("Only bundled HTML documents can be prepared".into());
+        }
+        *current = Some(document);
+        Ok(())
+    }
     pub async fn start(
         resource: AppResource,
         document: Option<String>,
@@ -773,11 +837,17 @@ impl DisplayServer {
             .route("/sandbox-proxy.js",axum::routing::get(move||{let js=proxy_js.clone();async move {([(axum::http::header::CONTENT_TYPE,"text/javascript; charset=utf-8")],js)}}))
             .route(&format!("/view/{token}"),post(move|body:Bytes|{let html=route_html.clone();let ready=Arc::clone(&route_ready);async move {if body.as_ref()!=html.as_bytes(){return StatusCode::FORBIDDEN;}ready.store(true,std::sync::atomic::Ordering::Release);StatusCode::OK}}).get(move||{let html=html.clone();let ready=Arc::clone(&ready);let resource_policy=resource_policy.clone();async move {if !ready.load(std::sync::atomic::Ordering::Acquire){return(StatusCode::NOT_FOUND,[(axum::http::header::CONTENT_TYPE,"text/html".to_owned()),(axum::http::header::CONTENT_SECURITY_POLICY,resource_policy)],String::new());}(StatusCode::OK,[(axum::http::header::CONTENT_TYPE,"text/html; charset=utf-8".to_owned()),(axum::http::header::CONTENT_SECURITY_POLICY,resource_policy)],html)}}))
             .layer(axum::extract::DefaultBodyLimit::max(MAX_RPC_BYTES));
-        let router = if let Some(document) = document {
+        let document = Arc::new(Mutex::new(document));
+        let route_document = Arc::clone(&document);
+        let router = if document_url.is_some() {
             router.route(
                 &format!("/document/{token}"),
                 axum::routing::get(move || {
-                    let html = document.clone();
+                    let html = route_document
+                        .lock()
+                        .ok()
+                        .and_then(|document| document.clone())
+                        .unwrap_or_default();
                     async move {
                         (
                             [
@@ -803,6 +873,7 @@ impl DisplayServer {
             proxy_url,
             view_url,
             document_url,
+            document,
             task,
         })
     }
@@ -915,6 +986,167 @@ mod tests {
         assert!(client.get(endpoint).send().await.is_err());
     }
 
+    #[tokio::test]
+    async fn builtin_inventory_replaces_old_publisher_and_receipts_are_run_scoped() {
+        let broker = AppBroker::start(Vec::new(), "<p>shell</p>".into())
+            .await
+            .unwrap();
+        let source = broker.state.sources.get(FALLBACK_SERVER).unwrap();
+        assert_eq!(
+            broker
+                .registrations()
+                .iter()
+                .map(|entry| entry.0.as_str())
+                .collect::<Vec<_>>(),
+            vec![FALLBACK_SERVER]
+        );
+        let list = proxy_request(&broker.state, source, &json!({"method":"tools/list"}))
+            .await
+            .unwrap();
+        assert_eq!(list["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(list["tools"][0]["name"], "render_html");
+        let resource = proxy_request(
+            &broker.state,
+            source,
+            &json!({"method":"resources/read","params":{"uri":FALLBACK_URI}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resource["contents"][0]["uri"], FALLBACK_URI);
+        assert_eq!(
+            resource["contents"][0]["mimeType"],
+            "text/html;profile=mcp-app"
+        );
+        assert_eq!(resource["contents"][0]["text"], "<p>shell</p>");
+        assert!(proxy_request(
+            &broker.state,
+            source,
+            &json!({"method":"resources/read","params":{"uri":"ui://unknown/resource"}})
+        )
+        .await
+        .is_err());
+
+        let request = |html: Value| json!({"method":"tools/call","params":{"name":"render_html","arguments":{"html":html}}});
+        assert!(
+            proxy_request(&broker.state, source, &request(json!("<p>A</p>")))
+                .await
+                .is_err()
+        );
+        assert!(broker.begin_turn(Uuid::nil()).is_err());
+        let run = Uuid::new_v4();
+        broker.begin_turn(run).unwrap();
+        let first = proxy_request(&broker.state, source, &request(json!("<p>A</p>")))
+            .await
+            .unwrap();
+        let retry = proxy_request(&broker.state, source, &request(json!("<p>A</p>")))
+            .await
+            .unwrap();
+        assert_eq!(first, retry);
+        let other = proxy_request(&broker.state, source, &request(json!("<p>B</p>")))
+            .await
+            .unwrap();
+        assert_ne!(
+            first["structuredContent"]["publication"]["publication_id"],
+            other["structuredContent"]["publication"]["publication_id"]
+        );
+        let receipt = &first["structuredContent"]["publication"];
+        assert_eq!(receipt["turn_id"], json!(run));
+        assert_eq!(receipt["schema_version"], 1);
+        assert_eq!(receipt["kind"], "lens_rich_html_publication");
+        let digest: String = Sha256::digest(b"<p>A</p>")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(receipt["html_sha256"], digest);
+        assert!(proxy_request(
+            &broker.state,
+            source,
+            &request(json!("x".repeat(crate::MAX_HTML_BYTES + 1)))
+        )
+        .await
+        .is_err());
+        assert!(proxy_request(&broker.state,source,&json!({"method":"tools/call","params":{"name":"publish_html","arguments":{"html":"<p>A</p>"}}})).await.is_err());
+        let artifacts = broker.finish_turn(run).unwrap();
+        assert_eq!(artifacts.len(), 2);
+        assert_eq!(json!(artifacts[0].id), receipt["publication_id"]);
+        let next = Uuid::new_v4();
+        broker.begin_turn(next).unwrap();
+        let next_result = proxy_request(&broker.state, source, &request(json!("<p>A</p>")))
+            .await
+            .unwrap();
+        assert_ne!(
+            next_result["structuredContent"]["publication"]["publication_id"],
+            receipt["publication_id"]
+        );
+        broker.close().await;
+    }
+    #[tokio::test]
+    async fn prepared_document_is_separate_from_original_resource_and_bounded() {
+        let display = DisplayServer::start(
+            AppResource {
+                html: "<p>original shell</p>".into(),
+                meta: json!({}),
+            },
+            Some("<p>original document</p>".into()),
+            "tauri://localhost".into(),
+            "__SETTINGS_JSON__".into(),
+            "".into(),
+        )
+        .await
+        .unwrap();
+        assert!(display
+            .prepare_document("x".repeat(MAX_RPC_BYTES + 1))
+            .is_err());
+        display
+            .prepare_document("<p>presentation derivative</p>".into())
+            .unwrap();
+        let client = reqwest::Client::new();
+        assert_eq!(
+            client
+                .get(display.document_url.as_ref().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "<p>presentation derivative</p>"
+        );
+        assert_eq!(
+            client
+                .post(&display.view_url)
+                .body("<p>original shell</p>")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            client
+                .get(&display.view_url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "<p>original shell</p>"
+        );
+        let external = DisplayServer::start(
+            AppResource {
+                html: "<p>external</p>".into(),
+                meta: json!({}),
+            },
+            None,
+            "tauri://localhost".into(),
+            "".into(),
+            "".into(),
+        )
+        .await
+        .unwrap();
+        assert!(external.prepare_document("<p>changed</p>".into()).is_err());
+    }
     #[tokio::test]
     async fn builtin_broker_preserves_raw_transaction_and_does_not_authorize_model_only_tools() {
         let broker = AppBroker::start(Vec::new(), "<p>fixed App</p>".into())

@@ -14,6 +14,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 use usecase::model::{McpAppDescriptor, McpAppServer};
 use uuid::Uuid;
@@ -28,6 +29,11 @@ pub struct AppDraft {
     pub id: Uuid,
     pub text: String,
 }
+#[derive(Clone, Serialize)]
+pub struct AppLink {
+    pub id: Uuid,
+    pub url: String,
+}
 struct Lease {
     artifact: RetainedArtifact,
     source: Weak<AppBroker>,
@@ -36,6 +42,7 @@ struct Lease {
     _document: DisplayServer,
     context: Value,
     draft: Option<AppDraft>,
+    link: Option<AppLink>,
     submitted: bool,
     cancellation: CancellationToken,
 }
@@ -109,6 +116,7 @@ impl OpenedApp {
         } else {
             json!({})
         };
+        self.host_capabilities["openLinks"] = json!({});
         self.host_capabilities["sandbox"] = sandbox;
         Ok(())
     }
@@ -118,6 +126,8 @@ pub struct AppRequestResult {
     pub result: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<AppDraft>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<AppLink>,
 }
 
 impl McpAppsStore {
@@ -604,6 +614,7 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
             _document: display,
             context: json!({}),
             draft: None,
+            link: None,
             submitted: false,
             cancellation: CancellationToken::new(),
         },
@@ -625,6 +636,107 @@ pub fn close_mcp_app<R: tauri::Runtime>(app: AppHandle<R>, lease_id: Uuid) -> Re
     }
     Ok(())
 }
+
+fn ensure_display(
+    store: &McpAppsStore,
+    snapshot: &AppSnapshot,
+    lease: &Lease,
+) -> Result<(), String> {
+    store.ensure_open()?;
+    let descriptor = &lease.artifact.descriptor;
+    if snapshot.lens.operation_id != Some(descriptor.operation_id)
+        || !(snapshot
+            .lens
+            .mcp_apps
+            .iter()
+            .any(|app| app.id == descriptor.id)
+            || snapshot
+                .lens
+                .response_history
+                .responses
+                .iter()
+                .any(|response| response.mcp_apps.iter().any(|app| app.id == descriptor.id)))
+    {
+        return Err("App display expired".into());
+    }
+    Ok(())
+}
+fn link_destination(params: &Value) -> Result<String, String> {
+    let destination = params
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| url.len() <= 4096)
+        .ok_or("Invalid App link")?;
+    let url = reqwest::Url::parse(destination).map_err(|_| "Invalid App link")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Only credential-free HTTP(S) links are supported".into());
+    }
+    Ok(url.to_string())
+}
+fn ensure_host<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let url = window.url().map_err(|_| "Unable to inspect Host URL")?;
+    if window.label() != crate::ui::LENS_WINDOW_LABEL
+        || !known_host_url(&url, app.config().build.dev_url.as_ref())
+    {
+        return Err("App Host mismatch".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+pub fn prepare_mcp_app_document<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    lease_id: Uuid,
+    document: String,
+) -> Result<(), String> {
+    ensure_host(&app, &window)?;
+    let state = app.state::<AppState>();
+    let leases = state
+        .mcp_apps
+        .leases
+        .lock()
+        .map_err(|_| "MCP leases unavailable")?;
+    let lease = leases.get(&lease_id).ok_or("App lease expired")?;
+    ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
+    if lease.artifact.artifact.server_id != adapter_output_mcp::apps::FALLBACK_SERVER {
+        return Err("Only bundled HTML documents can be prepared".into());
+    }
+    lease._document.prepare_document(document)
+}
+#[tauri::command]
+pub fn submit_mcp_app_link<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    lease_id: Uuid,
+    link_id: Uuid,
+) -> Result<(), String> {
+    ensure_host(&app, &window)?;
+    let state = app.state::<AppState>();
+    let destination = {
+        let mut leases = state
+            .mcp_apps
+            .leases
+            .lock()
+            .map_err(|_| "MCP leases unavailable")?;
+        let lease = leases.get_mut(&lease_id).ok_or("App lease expired")?;
+        ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
+        if lease.link.as_ref().is_none_or(|link| link.id != link_id) {
+            return Err("App link was replaced or already opened".into());
+        }
+        lease.link.take().expect("checked link").url
+    };
+    app.opener()
+        .open_url(destination, None::<&str>)
+        .map_err(|_| "Unable to open App link in default browser".into())
+}
+
 fn bounded(value: &Value, max: usize) -> Result<(), String> {
     if serde_json::to_vec(value)
         .map_err(|_| "Invalid App request")?
@@ -682,6 +794,20 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
             .lock()
             .map_err(|_| "MCP lease state unavailable")?;
         let lease = leases.get_mut(&lease_id).ok_or("App lease expired")?;
+        if method == "ui/open-link" {
+            ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
+            let url = link_destination(&params)?;
+            let link = AppLink {
+                id: Uuid::new_v4(),
+                url,
+            };
+            lease.link = Some(link.clone());
+            return Ok(AppRequestResult {
+                result: json!({"isError":false}),
+                draft: None,
+                link: Some(link),
+            });
+        }
         if !state.mcp_apps.lease_live(&state.snapshot()?, lease)
             || state.lens()?.operation_id != Some(lease.artifact.descriptor.operation_id)
         {
@@ -714,6 +840,7 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
                 return Ok(AppRequestResult {
                     result: json!({}),
                     draft: None,
+                    link: None,
                 });
             }
             "ui/message" => {
@@ -728,6 +855,7 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
                 return Ok(AppRequestResult {
                     result: json!({}),
                     draft: Some(draft),
+                    link: None,
                 });
             }
             "tools/call" | "tools/list" => {}
@@ -772,6 +900,7 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
     Ok(AppRequestResult {
         result,
         draft: None,
+        link: None,
     })
 }
 #[tauri::command]
@@ -984,6 +1113,27 @@ mod tests {
         drop(lifetime);
     }
     #[test]
+    fn link_requests_are_bounded_and_never_accept_native_or_credential_destinations() {
+        assert_eq!(
+            link_destination(&json!({"url":"https://example.com/path?q=1#x"})).unwrap(),
+            "https://example.com/path?q=1#x"
+        );
+        for url in [
+            "javascript:alert(1)",
+            "file:///tmp/test.html",
+            "tauri://localhost",
+            "data:text/html,hi",
+            "https://user:secret@example.com/",
+            "mailto:hello@example.com",
+        ] {
+            assert!(link_destination(&json!({"url":url})).is_err(), "{url}");
+        }
+        assert!(link_destination(
+            &json!({"url":format!("https://example.com/{}","x".repeat(4096))})
+        )
+        .is_err());
+    }
+    #[test]
     fn opened_app_serializes_only_implemented_live_content_modalities() {
         let mut opened = OpenedApp {
             id: Uuid::new_v4(),
@@ -1009,6 +1159,7 @@ mod tests {
             serialized["host_capabilities"],
             json!({
                 "serverTools": {},
+                "openLinks": {},
                 "message": {"text": {}},
                 "updateModelContext": {"text": {}, "structuredContent": {}},
                 "sandbox": {"csp": {"resourceDomains": [], "connectDomains": []}, "permissions": {}}
@@ -1019,7 +1170,7 @@ mod tests {
         assert_eq!(serialized["live"], false);
         assert_eq!(
             serialized["host_capabilities"],
-            json!({"sandbox":{"csp":{"resourceDomains":[],"connectDomains":[]},"permissions":{}}})
+            json!({"openLinks":{},"sandbox":{"csp":{"resourceDomains":[],"connectDomains":[]},"permissions":{}}})
         );
         opened.resource.meta = json!({"ui":{"csp":{
             "resourceDomains":["https://cdn.example/", "https://*.assets.example"],
@@ -1029,7 +1180,7 @@ mod tests {
         let serialized = serde_json::to_value(&opened).unwrap();
         assert_eq!(
             serialized["host_capabilities"],
-            json!({"sandbox":{"csp":{
+            json!({"openLinks":{},"sandbox":{"csp":{
             "resourceDomains":["https://cdn.example", "https://*.assets.example"],
             "connectDomains":["wss://api.example", "https://api.example:8443"]
         },"permissions":{}}})
@@ -1097,6 +1248,7 @@ mod tests {
             .unwrap(),
             context: json!({}),
             draft: None,
+            link: None,
             submitted: false,
             cancellation: CancellationToken::new(),
         }
@@ -1392,6 +1544,39 @@ mod tests {
             .unwrap()
             .status()
             .is_success());
+        let first_link = mcp_app_request(
+            handle.clone(),
+            id,
+            json!({"method":"ui/open-link","params":{"url":"https://example.com/first"}}),
+        )
+        .await
+        .unwrap()
+        .link
+        .unwrap();
+        let second_link = mcp_app_request(
+            handle.clone(),
+            id,
+            json!({"method":"ui/open-link","params":{"url":"https://example.com/second"}}),
+        )
+        .await
+        .unwrap()
+        .link
+        .unwrap();
+        assert_ne!(first_link.id, second_link.id);
+        assert_eq!(
+            app.state::<AppState>()
+                .mcp_apps
+                .leases
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .link
+                .as_ref()
+                .unwrap()
+                .id,
+            second_link.id
+        );
         for method in [
             "tools/list",
             "tools/call",
@@ -1416,7 +1601,14 @@ mod tests {
             state.mcp_apps.sync_operation(&state).unwrap();
         }
         assert!(mcp_app_request(handle.clone(),id,json!({"method":"ui/message","params":{"role":"user","content":[{"type":"text","text":"late"}]}})).await.is_err());
-        close_mcp_app(handle, id).unwrap();
+        close_mcp_app(handle.clone(), id).unwrap();
+        assert!(mcp_app_request(
+            handle,
+            id,
+            json!({"method":"ui/open-link","params":{"url":"https://example.com/"}})
+        )
+        .await
+        .is_err());
         tokio::task::yield_now().await;
         assert!(reqwest::Client::new().get(endpoint).send().await.is_err());
         drop(lifetime);

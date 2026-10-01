@@ -20,7 +20,7 @@ use crate::{
     },
     prompt_template::{AgentPromptMode, AgentPromptTemplate},
 };
-use adapter_output_mcp::HttpPublisher;
+use adapter_output_mcp::apps::AppBroker;
 use agent_client_protocol::{
     schema::{
         v1::{
@@ -144,7 +144,6 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     shutdown: &'a mut watch::Receiver<bool>,
     session: &'a mut ActiveSession<'static, Agent>,
     prompt_capabilities: &'a PromptCapabilities,
-    publisher: &'a HttpPublisher,
     apps: &'a adapter_output_mcp::apps::AppBroker,
     app_prompt: Option<Vec<ContentBlock>>,
 }
@@ -991,9 +990,12 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
     let expected_runtime_operation = expected.agent_runtime.operation_id;
     let expected_runtime_agent = expected.agent_runtime.agent;
     let cwd = crate::store::effective_working_directory(&config);
-    let publisher = HttpPublisher::start()
-        .await
-        .map_err(|error| ManagedVerificationError::Retryable(error.to_string()))?;
+    let apps = AppBroker::start(
+        Vec::new(),
+        include_str!("../../src/mcp-apps/rich-html-app.html").into(),
+    )
+    .await
+    .map_err(|error| ManagedVerificationError::Retryable(error.to_string()))?;
     let process = transport(
         app,
         &descriptor,
@@ -1026,16 +1028,17 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
             let max_attempts = defaults.choices.len().min(32) + 1;
             for _ in 0..max_attempts {
                 let session = connection
-                    .build_session_from(crate::output_mcp::session_request(&cwd, &publisher))
+                    .build_session_from(crate::output_mcp::session_request(&cwd, &apps))
                     .block_task()
                     .start_session()
                     .await?;
-                if let Err(error) = crate::output_mcp::require_no_publisher_failure(
+                if let Err(error) = crate::output_mcp::require_no_app_failure(
                     initialize
                         .agent_info
                         .as_ref()
                         .map(|info| info.name.as_str()),
                     session.meta(),
+                    &apps,
                 ) {
                     incompatible_in_probe.store(true, Ordering::Release);
                     return Err(error);
@@ -1644,9 +1647,6 @@ async fn run_persistent_session<R: tauri::Runtime>(
     if *shutdown.borrow() {
         return Err(Error::request_cancelled());
     }
-    let publisher = HttpPublisher::start()
-        .await
-        .map_err(|error| state_error(error.to_string()))?;
     crate::mcp_apps::validate_servers(&identity.config.mcp_apps_servers).map_err(state_error)?;
     let apps = Arc::new(
         adapter_output_mcp::apps::AppBroker::start(
@@ -1710,8 +1710,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             if *shutdown.borrow() {
                 return Err(Error::request_cancelled());
             }
-            let mut session_request = crate::output_mcp::session_request(&identity.effective_working_directory, &publisher);
-            session_request.mcp_servers.extend(apps.registrations().into_iter().map(|(name,url,authorization)| agent_client_protocol::schema::v1::McpServer::Http(agent_client_protocol::schema::v1::McpServerHttp::new(name,url).headers(vec![agent_client_protocol::schema::v1::HttpHeader::new("Authorization",authorization)]))));
+            let session_request = crate::output_mcp::session_request(&identity.effective_working_directory, &apps);
             let mut session = tokio::select! {
                 result = connection
                     .build_session_from(session_request)
@@ -1722,7 +1721,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     return Err(Error::request_cancelled());
                 }
             };
-            crate::output_mcp::require_no_publisher_failure(initialize.agent_info.as_ref().map(|info| info.name.as_str()), session.meta())?;
+            crate::output_mcp::require_no_app_failure(initialize.agent_info.as_ref().map(|info| info.name.as_str()), session.meta(), &apps)?;
             let session_id = session.session_id().clone();
             let _apps_lifetime = app.state::<AppState>().mcp_apps.install(identity.operation_id,session_id.to_string(),&apps,&identity.config).map_err(state_error)?;
             crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
@@ -1865,7 +1864,6 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         shutdown: &mut shutdown,
                         session: &mut session,
                         prompt_capabilities: &initialize.agent_capabilities.prompt_capabilities,
-                        publisher: &publisher,
                         apps: &apps,
                         app_prompt: turn.app_prompt.clone(),
                     },
@@ -2598,7 +2596,6 @@ async fn run_session_turn<R: tauri::Runtime>(
         shutdown,
         session,
         prompt_capabilities,
-        publisher,
         apps,
         app_prompt,
     } = execution;
@@ -2606,9 +2603,6 @@ async fn run_session_turn<R: tauri::Runtime>(
     if *cancellation.borrow() || *shutdown.borrow() {
         return Err(Error::request_cancelled());
     }
-    let publication = publisher
-        .begin_turn(key.run_id)
-        .map_err(|error| state_error(error.to_string()))?;
     apps.begin_turn(key.run_id).map_err(state_error)?;
     let _apps_turn = crate::mcp_apps::AppTurnLifetime {
         broker: apps,
@@ -2700,12 +2694,6 @@ async fn run_session_turn<R: tauri::Runtime>(
                 let cancelled = stop_reason == StopReason::Cancelled
                     || *cancellation.borrow()
                     || *shutdown.borrow();
-                let published = publication.finish().map_err(|error| state_error(error.to_string()))?;
-                if !cancelled {
-                    if let Some(published) = published {
-                        candidate.accept_published_html(published)?;
-                    }
-                }
                 let app_artifacts = apps.finish_turn(key.run_id).map_err(state_error)?;
                 let app_descriptors = if cancelled { Vec::new() } else { app.state::<AppState>().mcp_apps.retain(app,identity.operation_id,&session_id.to_string(),app_artifacts).map_err(state_error)? };
                 // Terminal commit owns the candidate even if subsequent event delivery fails.
@@ -3256,7 +3244,7 @@ mod tests {
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
-        use adapter_output_mcp::HttpPublisher;
+        use adapter_output_mcp::apps::AppBroker;
         use agent_client_protocol::{
             schema::v1::{NewSessionRequest, NewSessionResponse},
             Client, Responder,
@@ -3269,9 +3257,11 @@ mod tests {
         let agent_response = expected.clone();
         let working_directory = std::env::current_dir().unwrap();
         let expected_directory = working_directory.clone();
-        let publisher = HttpPublisher::start().await.unwrap();
+        let apps = AppBroker::start(Vec::new(), "<p>shell</p>".into())
+            .await
+            .unwrap();
         let expected_servers =
-            crate::output_mcp::session_request(&working_directory, &publisher).mcp_servers;
+            crate::output_mcp::session_request(&working_directory, &apps).mcp_servers;
         let agent = Agent.builder().on_receive_request(
             async move |request: NewSessionRequest,
                         responder: Responder<NewSessionResponse>,
@@ -3289,7 +3279,7 @@ mod tests {
                 let session = connection
                     .build_session_from(crate::output_mcp::session_request(
                         &working_directory,
-                        &publisher,
+                        &apps,
                     ))
                     .block_task()
                     .start_session()

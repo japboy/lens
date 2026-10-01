@@ -45,7 +45,7 @@ function shell(capabilities: Record<string, unknown>) {
       structuredContent: { html: "<!doctype html><script>unchanged</script>" },
     },
   });
-  return { parent, frame, append, host, child };
+  return { parent, frame, append, host, child, receive };
 }
 
 describe("bundled rich HTML App shell", () => {
@@ -75,6 +75,74 @@ describe("bundled rich HTML App shell", () => {
       }),
       "*",
     );
+  });
+  it("forwards standard open-link for a read-only App only when its capability is negotiated", () => {
+    const test = shell({ openLinks: {} });
+    const params = { url: "https://example.com/73" };
+    test.child({ jsonrpc: "2.0", id: "anchor-1", method: "ui/open-link", params });
+    expect(test.parent.postMessage).toHaveBeenLastCalledWith(
+      { jsonrpc: "2.0", id: "lens-document-1", method: "ui/open-link", params },
+      "*",
+    );
+    test.host({ jsonrpc: "2.0", id: "lens-document-1", result: { isError: false } });
+    expect(test.frame.contentWindow.postMessage).toHaveBeenLastCalledWith(
+      { jsonrpc: "2.0", id: "anchor-1", result: { isError: false } },
+      "*",
+    );
+    test.child({ jsonrpc: "2.0", id: "context", method: "ui/update-model-context", params: {} });
+    expect(test.frame.contentWindow.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        id: "context",
+        error: { code: -32601, message: "App operation unavailable" },
+      }),
+      "*",
+    );
+  });
+  it("rejects foreign frames, nonopaque children, unmatched and replaced-document responses", () => {
+    const test = shell({ openLinks: {} });
+    const request = {
+      jsonrpc: "2.0",
+      id: "same-child-id",
+      method: "ui/open-link",
+      params: { url: "https://example.com" },
+    };
+    const before = test.parent.postMessage.mock.calls.length;
+    test.receive({ source: {}, origin: "null", data: request });
+    test.receive({
+      source: test.frame.contentWindow,
+      origin: "https://example.com",
+      data: request,
+    });
+    expect(test.parent.postMessage).toHaveBeenCalledTimes(before);
+    test.child(request);
+    test.child(request);
+    expect(
+      test.parent.postMessage.mock.calls
+        .slice(-2)
+        .map(([message]) => (message as { id: string }).id),
+    ).toEqual(["lens-document-1", "lens-document-2"]);
+    const replies = test.frame.contentWindow.postMessage.mock.calls.length;
+    test.receive({
+      source: {},
+      origin: "http://127.0.0.1:43162",
+      data: { jsonrpc: "2.0", id: "lens-document-1", result: { isError: false } },
+    });
+    test.host({ jsonrpc: "2.0", id: "unmatched", result: {} });
+    expect(test.frame.contentWindow.postMessage).toHaveBeenCalledTimes(replies);
+    test.host({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: {} });
+    test.host({ jsonrpc: "2.0", id: "lens-document-1", result: { isError: false } });
+    test.host({ jsonrpc: "2.0", id: "lens-document-2", result: { isError: false } });
+    expect(test.frame.contentWindow.postMessage).toHaveBeenCalledTimes(replies);
+    test.child(request);
+    test.host({ jsonrpc: "2.0", id: "lens-document-3", result: { isError: false } });
+    expect(test.frame.contentWindow.postMessage).toHaveBeenLastCalledWith(
+      { jsonrpc: "2.0", id: "same-child-id", result: { isError: false } },
+      "*",
+    );
+    test.host({ jsonrpc: "2.0", id: "teardown", method: "ui/resource-teardown", params: {} });
+    const closedReplies = test.frame.contentWindow.postMessage.mock.calls.length;
+    test.host({ jsonrpc: "2.0", id: "lens-document-3", result: { isError: false } });
+    expect(test.frame.contentWindow.postMessage).toHaveBeenCalledTimes(closedReplies);
   });
   it("keeps retained historical content read-only and revokes pending messages on teardown", () => {
     const test = shell({});

@@ -129,8 +129,29 @@ export async function createHtmlMathAssets(desktopRoot: string): Promise<{
   return { manifest, sources };
 }
 
+/** Embed only the validated, closed package font graph in an opaque App document. */
+export function inlineHtmlMathCss(manifest: HtmlMathAssets, sources: Map<string, Buffer>): string {
+  const css = sources.get(manifest.stylesheetPath)?.toString();
+  if (!css) throw new Error("Bundled math stylesheet is missing");
+  const used = new Set<string>();
+  const inline = css.replace(
+    /url\(["']?(?:\.\/)?(fonts\/KaTeX_[A-Za-z0-9-]+\.woff2)["']?\)/gu,
+    (_, name: string) => {
+      const path = `${manifest.stylesheetPath.slice(0, manifest.stylesheetPath.lastIndexOf("/"))}/${name}`;
+      const bytes = sources.get(path);
+      if (!bytes || !manifest.fontPaths.includes(path)) throw new Error("Unexpected math font URL");
+      used.add(path);
+      return `url("data:font/woff2;base64,${bytes.toString("base64")}")`;
+    },
+  );
+  if (used.size !== 20 || /@import|https?:|url\((?!["']?data:font\/woff2;base64,)/u.test(inline))
+    throw new Error("Inline math stylesheet is not a closed package graph");
+  return inline;
+}
+
 export async function htmlMathAssetsPlugin(desktopRoot: string): Promise<Plugin> {
   const { manifest, sources } = await createHtmlMathAssets(desktopRoot);
+  const inlineCss = inlineHtmlMathCss(manifest, sources);
   const name = "virtual:lens-html-math-assets";
   let building = false;
   return {
@@ -142,7 +163,8 @@ export async function htmlMathAssetsPlugin(desktopRoot: string): Promise<Plugin>
       if (id === name) return `\0${name}`;
     },
     load(id) {
-      if (id === `\0${name}`) return `export const htmlMathAssets = ${JSON.stringify(manifest)};`;
+      if (id === `\0${name}`)
+        return `export const htmlMathAssets = ${JSON.stringify(manifest)}; export const htmlMathInlineCss = ${JSON.stringify(inlineCss)};`;
     },
     buildStart() {
       if (!building) return;

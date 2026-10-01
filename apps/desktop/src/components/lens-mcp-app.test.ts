@@ -46,6 +46,8 @@ function port(): McpAppsPort {
     closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
     mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
     submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
+    submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
+    prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
   };
 }
 afterEach(async () => {
@@ -56,6 +58,40 @@ afterEach(async () => {
 });
 
 describe("App presentation lifecycle", () => {
+  it("shows a read-only App link URL and opens it only through the trusted Lens button", async () => {
+    const native = port();
+    vi.mocked(native.openMcpApp).mockResolvedValueOnce({
+      ...lease,
+      host_capabilities: { openLinks: {} },
+    });
+    vi.mocked(native.mcpAppRequest).mockResolvedValueOnce({
+      result: { isError: false },
+      link: { id: "link-1", url: "https://example.com/path?q=73" },
+    });
+    const element = mount(native, true);
+
+    vi.spyOn(AppBridge.prototype, "sendSandboxResourceReady").mockResolvedValue();
+    vi.spyOn(AppBridge.prototype, "sendToolInput").mockResolvedValue();
+    vi.spyOn(AppBridge.prototype, "sendToolResult").mockResolvedValue();
+    await element.updateComplete;
+    await flush();
+    const bridge = vi.mocked(AppBridge.prototype.connect).mock.contexts.at(-1)! as AppBridge;
+    await bridge.onsandboxready?.({});
+    await bridge.oninitialized?.({});
+    await bridge.onopenlink?.({ url: "https://example.com/path?q=73" }, {} as never);
+    await element.updateComplete;
+    const controls = element.querySelector('section[aria-label="Open external link"]')!;
+    expect(controls.querySelector("p")!.textContent).toBe("https://example.com/path?q=73");
+    expect(native.submitMcpAppLink).not.toHaveBeenCalled();
+    expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
+    (controls.querySelector("button") as HTMLButtonElement).click();
+    await flush();
+    await element.updateComplete;
+    expect(native.submitMcpAppLink).toHaveBeenCalledWith("lease", "link-1");
+    expect(element.querySelector('section[aria-label="Open external link"]')).toBeNull();
+    expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
+    await element.dispose();
+  });
   it("releases the App while a tab is cached and remounts after reconnect without changed inputs", async () => {
     const native = port();
     const element = mount(native);

@@ -1,4 +1,5 @@
 declare module "virtual:lens-html-math-assets" {
+  export const htmlMathInlineCss: string;
   export const htmlMathAssets: {
     readonly resourceDigest: string;
     readonly stylesheetPath: string;

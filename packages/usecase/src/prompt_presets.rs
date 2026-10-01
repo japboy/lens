@@ -359,9 +359,9 @@ mod tests {
             assert!(common.contains("If generated images best communicate the content"));
             assert!(common.contains("prefer an appropriate authorized MCP Apps tool"));
             assert!(common.contains("lens_rich_html.render_html"));
-            assert!(common.contains("lens_output.publish_html"));
-            assert!(common.contains("supplementary Markdown and static HTML body text"));
-            assert!(common.contains("MCP Apps documents are not transformed"));
+            assert!(!common.contains("lens_output.publish_html"));
+            assert!(common.contains("supplementary Markdown and the bundled HTML App body text"));
+            assert!(common.contains("For external MCP Apps"));
         }
         assert!(catalog.presets[3]
             .template

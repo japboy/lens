@@ -147,15 +147,14 @@ export const MEMBERS: readonly Member[] = [
     dependencies: {
       normal: [
         "reqwest",
-        "rmcp",
         "axum",
         "hyper",
         "hyper-util",
         "serde",
         "serde_json",
+        "sha2",
         "uuid",
         "tokio",
-        "tokio-util",
       ],
       dev: ["reqwest", "tokio"],
     },

@@ -6,6 +6,7 @@ use agent_client_protocol::schema::v1::{
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use usecase::live_sync::{LensDeliveryCoverage, LensDeliveryMode};
 
 const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -98,6 +99,7 @@ struct ToolEvidence {
     input: Option<Value>,
     output: Option<Value>,
     explicit_content: bool,
+    tool_name: Option<String>,
 }
 
 impl SessionDocument {
@@ -395,6 +397,9 @@ impl SessionDocument {
                 self.entries.len() - 1
             });
         let evidence = self.tools.entry(id).or_default();
+        if let Some(title) = fields.title.as_ref() {
+            evidence.tool_name = Some(title.clone());
+        }
         if fields.raw_input.is_some() {
             evidence.input = fields.raw_input;
         }
@@ -439,12 +444,174 @@ impl SessionDocument {
                 }
             }
             *accepted_html = if *status == ToolCallStatus::Completed {
-                accepted_publication(evidence, blocks)
+                if rich_publication_source(evidence) {
+                    accepted_rich_publication(evidence, blocks)
+                } else {
+                    accepted_publication(evidence, blocks)
+                }
             } else {
                 None
             };
         }
     }
+}
+
+/// Saved App output is presentation evidence only: it reuses the inert history
+/// renderer and never recreates an MCP source, lease, session, or script authority.
+fn rich_publication_source(evidence: &ToolEvidence) -> bool {
+    evidence.tool_name.as_deref().is_some_and(|name| {
+        matches!(
+            name,
+            "mcp__lens_rich_html__render_html" | "lens_rich_html__render_html"
+        )
+    }) || evidence.input.as_ref().is_some_and(|input| {
+        input.get("server").and_then(Value::as_str) == Some("lens_rich_html")
+            || input.get("tool_name").and_then(Value::as_str) == Some("lens_rich_html__render_html")
+    }) || evidence.output.as_ref().is_some_and(|output| {
+        output.get("server_name").and_then(Value::as_str) == Some("lens_rich_html")
+    })
+}
+fn rich_result_body_matches(value: &Value, digest: &str) -> bool {
+    value.pointer("/structuredContent/html").is_none_or(|html| {
+        html.as_str().is_some_and(|html| {
+            let actual: String = Sha256::digest(html.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            actual == digest
+        })
+    })
+}
+fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Option<String> {
+    let input = evidence.input.as_ref()?;
+    let output = evidence.output.as_ref();
+    if let Some(typed) =
+        output.filter(|output| output.get("type").and_then(Value::as_str) == Some("MCP"))
+    {
+        if typed.get("server_name").and_then(Value::as_str) != Some("lens_rich_html")
+            || typed.get("tool_name").and_then(Value::as_str) != Some("render_html")
+            || typed.get("result").is_some()
+        {
+            return None;
+        }
+    }
+    let arguments = if input.get("variant").and_then(Value::as_str) == Some("UseTool") {
+        if input.get("tool_name").and_then(Value::as_str) != Some("lens_rich_html__render_html")
+            || input.get("arguments").is_some()
+            || input.get("html").is_some()
+        {
+            return None;
+        }
+        input.get("tool_input")?
+    } else if input.get("server").is_some() || input.get("tool").is_some() {
+        if input.get("server").and_then(Value::as_str) != Some("lens_rich_html")
+            || input.get("tool").and_then(Value::as_str) != Some("render_html")
+            || input.get("html").is_some()
+            || input.get("tool_input").is_some()
+        {
+            return None;
+        }
+        input.get("arguments")?
+    } else {
+        if !matches!(
+            evidence.tool_name.as_deref(),
+            Some("mcp__lens_rich_html__render_html" | "lens_rich_html__render_html")
+        ) {
+            return None;
+        }
+        if input.get("arguments").is_some()
+            && (input.get("html").is_some() || input.get("tool_input").is_some())
+        {
+            return None;
+        }
+        input.get("arguments").unwrap_or(input)
+    };
+    let arguments = arguments.as_object().filter(|args| args.len() == 1)?;
+    let html = arguments.get("html")?.as_str()?;
+    if html.trim().is_empty() || html.len() > MAX_HTML {
+        return None;
+    }
+    let result = match output {
+        Some(output) => Some(successful_tool_result(output)?),
+        None => None,
+    };
+    let digest: String = Sha256::digest(html.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if output.is_some_and(|output| {
+        !rich_result_body_matches(output.get("result").unwrap_or(output), &digest)
+    }) {
+        return None;
+    }
+    let valid = |value: &Value| rich_receipt(value, &digest);
+    let accepted = result.as_ref().is_some_and(|result| match result {
+        SuccessfulToolResult::Structured(value) => {
+            rich_result_body_matches(value, &digest)
+                && (valid(value)
+                    || value
+                        .pointer("/structuredContent/publication")
+                        .is_some_and(valid)
+                    || value
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item.get("type").and_then(Value::as_str) == Some("text")
+                                    && item
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|text| rich_text_receipt(text, &digest))
+                            })
+                        }))
+        }
+        SuccessfulToolResult::Content(items) => items.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("text")
+                && item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| rich_text_receipt(text, &digest))
+        }),
+        SuccessfulToolResult::Text(text) => rich_text_receipt(text, &digest),
+    }) || blocks.iter().any(
+        |block| matches!(block,DocumentBlock::Markdown{text} if rich_text_receipt(text,&digest)),
+    );
+    accepted.then(|| html.to_owned())
+}
+fn rich_receipt(value: &Value, digest: &str) -> bool {
+    value.get("kind").and_then(Value::as_str) == Some("lens_rich_html_publication")
+        && value.get("schema_version") == Some(&Value::from(1))
+        && receipt(value)
+        && value
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()))
+        && value.get("html_sha256").and_then(Value::as_str) == Some(digest)
+}
+fn rich_text_receipt(text: &str, digest: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|value| {
+        !failed_tool_result(&value)
+            && rich_result_body_matches(&value, digest)
+            && (rich_receipt(&value, digest)
+                || value
+                    .pointer("/structuredContent/publication")
+                    .is_some_and(|receipt| rich_receipt(receipt, digest))
+                || value
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("text")
+                                && item
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| {
+                                        serde_json::from_str::<Value>(text)
+                                            .is_ok_and(|receipt| rich_receipt(&receipt, digest))
+                                    })
+                        })
+                    }))
+    })
 }
 
 /// Borrowed adapter payload shapes; strings are text, never recursive envelopes.
@@ -952,6 +1119,164 @@ mod tests {
             ),
             None
         );
+    }
+    fn rich_evidence(html: &str) -> ToolEvidence {
+        let digest: String = Sha256::digest(html.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let receipt = serde_json::json!({"kind":"lens_rich_html_publication","schema_version":1,"accepted":true,"publication_id":uuid::Uuid::new_v4(),"turn_id":uuid::Uuid::new_v4(),"html_sha256":digest});
+        ToolEvidence {
+            input: Some(
+                serde_json::json!({"server":"lens_rich_html","tool":"render_html","arguments":{"html":html}}),
+            ),
+            output: Some(
+                serde_json::json!({"result":{"content":[{"type":"text","text":receipt.to_string()}],"structuredContent":{"html":html,"publication":receipt}},"error":null}),
+            ),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn rich_html_receipt_checks_source_success_hash_and_capacity() {
+        let original = rich_evidence("<p>Saved</p><script>never replay authority</script>");
+        let html = original.input.as_ref().unwrap()["arguments"]["html"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            accepted_rich_publication(&original, &[]).as_deref(),
+            Some(html)
+        );
+        for change in [
+            "source",
+            "tool",
+            "hash",
+            "body",
+            "failed",
+            "missing",
+            "arguments",
+        ] {
+            let mut evidence = original.clone();
+            match change {
+                "source" => evidence.input.as_mut().unwrap()["server"] = serde_json::json!("other"),
+                "tool" => evidence.input.as_mut().unwrap()["tool"] = serde_json::json!("other"),
+                "hash" => {
+                    evidence.input.as_mut().unwrap()["arguments"]["html"] =
+                        serde_json::json!("<p>Changed</p>")
+                }
+                "body" => {
+                    evidence.output.as_mut().unwrap()["result"]["structuredContent"]["html"] =
+                        serde_json::json!("<p>Conflicting</p>")
+                }
+                "failed" => {
+                    evidence.output.as_mut().unwrap()["result"]["isError"] = serde_json::json!(true)
+                }
+                "missing" => evidence.output = Some(serde_json::json!({"result":{}})),
+                "arguments" => {
+                    evidence.input.as_mut().unwrap()["arguments"]["path"] =
+                        serde_json::json!("/tmp/generated.html")
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                accepted_rich_publication(&evidence, &[]).is_none(),
+                "{change}"
+            );
+        }
+        assert!(
+            accepted_rich_publication(&rich_evidence(&"x".repeat(MAX_HTML + 1)), &[]).is_none()
+        );
+        assert!(accepted_rich_publication(&rich_evidence(" "), &[]).is_none());
+    }
+    #[test]
+    fn rich_receipt_supported_provider_shapes_and_invalid_receipt_cannot_use_legacy_reader() {
+        let original = rich_evidence("<p>Provider saved body</p>");
+        let args = original.input.as_ref().unwrap()["arguments"].clone();
+        let result = original.output.as_ref().unwrap()["result"].clone();
+        let receipt = result["structuredContent"]["publication"].clone();
+        for evidence in [
+            ToolEvidence {
+                input: Some(args.clone()),
+                tool_name: Some("mcp__lens_rich_html__render_html".into()),
+                output: Some(result.clone()),
+                ..Default::default()
+            },
+            ToolEvidence {
+                input: Some(
+                    serde_json::json!({"variant":"UseTool","tool_name":"lens_rich_html__render_html","tool_input":args}),
+                ),
+                output: Some(
+                    serde_json::json!({"type":"MCP","server_name":"lens_rich_html","tool_name":"render_html","output":{"OkayOutput":result.to_string()}}),
+                ),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                accepted_rich_publication(&evidence, &[]).as_deref(),
+                Some("<p>Provider saved body</p>")
+            );
+        }
+        for field in [
+            "kind",
+            "schema_version",
+            "publication_id",
+            "turn_id",
+            "html_sha256",
+        ] {
+            let mut invalid = receipt.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(
+                !rich_text_receipt(
+                    &invalid.to_string(),
+                    receipt["html_sha256"].as_str().unwrap()
+                ),
+                "{field}"
+            );
+        }
+        let mut doc = SessionDocument::default();
+        doc.tool_unchecked("invalid".into(),ToolCallUpdateFields::new().title("mcp__lens_rich_html__render_html").raw_input(serde_json::json!({"html":"<p>Legacy-shaped input</p>","turn_id":uuid::Uuid::new_v4()})).raw_output(serde_json::json!({"accepted":true,"publication_id":uuid::Uuid::new_v4()})).status(ToolCallStatus::Completed));
+        assert!(matches!(
+            &doc.entries[0],
+            DocumentEntry::Tool {
+                accepted_html: None,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn rich_html_receipts_are_correlated_per_tool_call_and_never_grant_live_authority() {
+        let mut document = SessionDocument::default();
+        let first = rich_evidence("<p>First</p>");
+        let second = rich_evidence("<p>Second</p>");
+        document.tool_unchecked(
+            "first".into(),
+            ToolCallUpdateFields::new()
+                .title("mcp__lens_rich_html__render_html")
+                .raw_input(first.input.unwrap())
+                .raw_output(second.output.clone().unwrap())
+                .status(ToolCallStatus::Completed),
+        );
+        document.tool_unchecked(
+            "second".into(),
+            ToolCallUpdateFields::new()
+                .title("mcp__lens_rich_html__render_html")
+                .raw_input(second.input.unwrap())
+                .raw_output(second.output.unwrap())
+                .status(ToolCallStatus::Completed),
+        );
+        assert!(matches!(
+            &document.entries[0],
+            DocumentEntry::Tool {
+                accepted_html: None,
+                ..
+            }
+        ));
+        assert!(
+            matches!(&document.entries[1], DocumentEntry::Tool{accepted_html:Some(html),..} if html=="<p>Second</p>")
+        );
+        let serialized = serde_json::to_value(&document).unwrap();
+        assert!(serialized.to_string().contains("accepted_html"));
+        assert!(!serialized.to_string().contains("host_capabilities"));
+        assert!(!serialized.to_string().contains("session_id"));
     }
     fn codex_result(content: Value) -> Value {
         serde_json::json!({"result":{"content":content},"error":null})

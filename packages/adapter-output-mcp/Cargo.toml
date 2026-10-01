@@ -1,26 +1,21 @@
 [package]
 name = "adapter-output-mcp"
 version.workspace = true
-description = "Lens embedded static HTML publication MCP server"
+description = "Lens MCP Apps broker and isolated HTML display services"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-rmcp = { version = "=3.2.0", default-features = false, features = [
-  "server",
-  "macros",
-  "transport-streamable-http-server",
-] }
 axum = "=0.8.9"
 hyper = { version = "=1.11.0", features = ["server", "http1"] }
 hyper-util = { version = "=0.1.20", features = ["tokio", "service"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 tokio = { version = "=1.53.1", features = ["net", "rt", "macros"] }
-tokio-util = "=0.7.19"
 
 [dev-dependencies]
 reqwest.workspace = true

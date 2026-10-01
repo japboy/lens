@@ -37,12 +37,19 @@ export interface McpAppLease {
 
 export interface McpAppsPort {
   openMcpApp(artifactId: string, hostOrigin: string): Promise<McpAppLease>;
+  prepareMcpAppDocument(leaseId: string, document: string): Promise<void>;
   mcpAppRequest(
     leaseId: string,
     request: { method: string; params?: unknown },
-  ): Promise<{ result: unknown; draft?: McpAppMessageDraft }>;
+  ): Promise<{ result: unknown; draft?: McpAppMessageDraft; link?: McpAppLinkDraft }>;
   closeMcpApp(leaseId: string): Promise<void>;
   submitMcpAppMessage(leaseId: string, draftId: string): Promise<void>;
+  submitMcpAppLink(leaseId: string, linkId: string): Promise<void>;
+}
+
+export interface McpAppLinkDraft {
+  id: string;
+  url: string;
 }
 
 export interface McpAppMessageDraft {

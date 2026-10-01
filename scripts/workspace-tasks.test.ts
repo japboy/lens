@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 type Task = {
@@ -115,17 +116,18 @@ describe("repository task ownership", () => {
     );
   });
 
-  it("runs real MCP HTTP tests on both admitted native test hosts", () => {
-    for (const [taskName, variant, target] of [
-      ["rust:test", "macos-test", "aarch64-apple-darwin"],
-      ["rust:test:linux", "linux-common-test", "x86_64-unknown-linux-gnu"],
+  it("runs the MCP Apps broker library tests in both native variants", () => {
+    for (const [taskName, variant] of [
+      ["rust:test", "macos-test"],
+      ["rust:test:linux", "linux-common-test"],
     ] as const) {
       const commands = tasks.find((task) => task.name === taskName)!.run;
-      const integration = `cargo test --locked -p adapter-output-mcp --test http --target ${target}`;
-      expect(commands).toContain(integration);
-      expect(commands.indexOf(integration)).toBeGreaterThan(
-        commands.indexOf(`node scripts/run-workspace-variant.ts ${variant}`),
-      );
+      expect(commands).toContain(`node scripts/run-workspace-variant.ts ${variant}`);
+      expect(commands.some((command) => command.includes("--test http"))).toBe(false);
+      const declaration = BUILD_VARIANTS.find((entry) => entry.id === variant)!;
+      expect(declaration.operation).toBe("test");
+      expect(declaration.packages).toContain("adapter-output-mcp");
+      expect(variantArguments(declaration)).toContain("--lib");
     }
   });
 

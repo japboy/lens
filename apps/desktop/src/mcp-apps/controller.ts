@@ -1,10 +1,12 @@
 import { AppBridge, type McpUiHostCapabilities } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { OriginBoundAppTransport } from "./transport";
 import { version } from "../../package.json";
+import { prepareRichHtmlDocument } from "./rich-html-document";
 import type {
   McpAppDescriptor,
   McpAppLease,
   McpAppMessageDraft,
+  McpAppLinkDraft,
   McpAppsPort,
   McpAppState,
 } from "./types";
@@ -32,6 +34,7 @@ interface MountedApp {
 function hostCapabilities(source: McpUiHostCapabilities): McpUiHostCapabilities {
   // Only advertise implementations available through the native source-bound port.
   return {
+    ...(source.openLinks ? { openLinks: {} } : {}),
     ...(source.serverTools ? { serverTools: source.serverTools } : {}),
     ...(source.serverResources ? { serverResources: source.serverResources } : {}),
     ...(source.message?.text ? { message: { text: {} } } : {}),
@@ -81,6 +84,9 @@ async function bounded<T>(promise: Promise<T>, milliseconds: number): Promise<T 
 export class McpAppController {
   state: McpAppState = { stage: "idle" };
   draft: McpAppMessageDraft | undefined;
+  link: McpAppLinkDraft | undefined;
+  openingLink = false;
+  linkError = "";
   submitting = false;
   submissionError = "";
   private epoch = 0;
@@ -115,6 +121,21 @@ export class McpAppController {
           if (epoch !== this.epoch || !container.isConnected) {
             await bounded(this.port.closeMcpApp(lease.id), BACKEND_CLOSE_TIMEOUT_MS);
             return;
+          }
+          if (lease.document_url) {
+            if (descriptor.server_id !== "lens_rich_html" || typeof lease.input.html !== "string")
+              throw new Error("Invalid built-in App document");
+            const prepared = await bounded(
+              this.port
+                .prepareMcpAppDocument(lease.id, prepareRichHtmlDocument(lease.input.html))
+                .then(() => true),
+              APP_INITIALIZATION_TIMEOUT_MS,
+            );
+            if (!prepared) throw new Error("App document preparation timed out");
+            if (epoch !== this.epoch || !container.isConnected) {
+              await bounded(this.port.closeMcpApp(lease.id), BACKEND_CLOSE_TIMEOUT_MS);
+              return;
+            }
           }
           const proxy = new URL(lease.proxy_url);
           if (
@@ -178,6 +199,11 @@ export class McpAppController {
                 NonNullable<AppBridge["onreadresource"]>
               >;
           }
+          if (capabilities.openLinks)
+            bridge.onopenlink = (params) =>
+              this.request(mounted, "ui/open-link", params) as ReturnType<
+                NonNullable<AppBridge["onopenlink"]>
+              >;
           if (capabilities.message)
             bridge.onmessage = (params) =>
               this.request(mounted, "ui/message", params) as ReturnType<
@@ -254,6 +280,11 @@ export class McpAppController {
       this.submissionError = "";
       this.changed();
     }
+    if (response.link) {
+      this.link = response.link;
+      this.linkError = "";
+      this.changed();
+    }
     return response.result;
   }
   discardDraft(): void {
@@ -280,12 +311,38 @@ export class McpAppController {
       this.changed();
     }
   }
+  discardLink(): void {
+    this.link = undefined;
+    this.linkError = "";
+    this.changed();
+  }
+  async submitLink(): Promise<void> {
+    const mounted = this.mounted;
+    const link = this.link;
+    if (!mounted || !link || this.openingLink) return;
+    this.assertCurrent(mounted);
+    this.openingLink = true;
+    this.linkError = "";
+    this.changed();
+    try {
+      await this.port.submitMcpAppLink(mounted.lease.id, link.id);
+      this.assertCurrent(mounted);
+      if (this.link === link) this.link = undefined;
+    } catch (error) {
+      if (this.mounted === mounted && !mounted.revoked) this.linkError = String(error);
+    } finally {
+      this.openingLink = false;
+      this.changed();
+    }
+  }
   private revokeCurrent(): void {
     const mounted = this.mounted;
     if (!mounted || mounted.revoked) return;
     mounted.revoked = true;
     this.draft = undefined;
     this.submissionError = "";
+    this.link = undefined;
+    this.linkError = "";
     clearTimeout(mounted.initializationTimer);
     // Start native revocation immediately; do not wait for a cooperative App.
     void this.port.closeMcpApp(mounted.lease.id).catch(() => {});

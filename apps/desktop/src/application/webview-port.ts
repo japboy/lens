@@ -142,6 +142,9 @@ export interface WebviewPort extends McpAppsPort {
 export const tauriWebviewPort: WebviewPort = {
   setMcpAppsServers: (servers) => invoke("set_mcp_apps_servers", { servers }),
   openMcpApp: (artifactId, hostOrigin) => invoke("open_mcp_app", { artifactId, hostOrigin }),
+  prepareMcpAppDocument: (leaseId, document) =>
+    invoke("prepare_mcp_app_document", { leaseId, document }),
+  submitMcpAppLink: (leaseId, linkId) => invoke("submit_mcp_app_link", { leaseId, linkId }),
   mcpAppRequest: (leaseId, request) => invoke("mcp_app_request", { leaseId, request }),
   closeMcpApp: (leaseId) => invoke("close_mcp_app", { leaseId }),
   submitMcpAppMessage: (leaseId, draftId) => invoke("submit_mcp_app_message", { leaseId, draftId }),

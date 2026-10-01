@@ -71,6 +71,7 @@ export class LensMcpApp extends LitElement {
   protected render() {
     const state = this.controller?.state;
     const draft = this.controller?.draft;
+    const link = this.controller?.link;
     const readOnly = this.replay || (state?.stage === "ready" && !state.live);
     return html`<div
         class="mcp-app-document"
@@ -97,6 +98,30 @@ export class LensMcpApp extends LitElement {
                   data-lens-button-role="normal"
                   ?disabled=${this.controller?.submitting}
                   @click=${() => this.controller?.discardDraft()}
+                >
+                  Discard
+                </button>
+              </section>`
+            : nothing
+        }
+        ${this.controller?.linkError ? html`<p class="output-media-error" role="alert">${this.controller.linkError}</p>` : nothing}
+        ${
+          link
+            ? html`<section aria-label="Open external link">
+                <p>${link.url}</p>
+                <button
+                  type="button"
+                  data-lens-button-role="primary"
+                  ?disabled=${this.controller?.openingLink}
+                  @click=${() => void this.controller?.submitLink()}
+                >
+                  Open in Browser
+                </button>
+                <button
+                  type="button"
+                  data-lens-button-role="normal"
+                  ?disabled=${this.controller?.openingLink}
+                  @click=${() => this.controller?.discardLink()}
                 >
                   Discard
                 </button>

@@ -30,6 +30,7 @@ it.each([true, false])(
         input: { selection: 73, nested: { text: "\u65e5\u672c\u8a9e" } },
         result: { content: [], structuredContent: { selection: 73 } },
         host_capabilities: {
+          openLinks: {},
           sandbox: {
             csp: {
               resourceDomains: ["https://cdn.example"],
@@ -50,6 +51,8 @@ it.each([true, false])(
       closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: { tools: [] } })),
       submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
+      submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
+      prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
     };
     const container = document.createElement("div");
     document.body.append(container);
@@ -135,7 +138,7 @@ it.each([true, false])(
       content: [{ type: "text", text: "Selection 73" }],
       structuredContent: { selected_value: 73 },
     };
-    vi.mocked(port.mcpAppRequest).mockResolvedValueOnce({ result: {} });
+    vi.mocked(port.mcpAppRequest).mockResolvedValue({ result: {} });
     emit({ jsonrpc: "2.0", id: 3, method: "ui/update-model-context", params: context });
     await vi.waitFor(() => expect(received.find((message) => message.id === 3)).toBeDefined());
     const contextResponse = received.find((message) => message.id === 3)!;
@@ -149,6 +152,25 @@ it.each([true, false])(
           ]
         : [],
     );
+    expect(port.prepareMcpAppDocument).not.toHaveBeenCalled();
+    expect(initializeResult.hostCapabilities).toMatchObject({ openLinks: {} });
+    vi.mocked(port.mcpAppRequest).mockResolvedValueOnce({
+      result: { isError: false },
+      link: { id: "link-1", url: "https://example.com/73" },
+    });
+    emit({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "ui/open-link",
+      params: { url: "https://example.com/73" },
+    });
+    await vi.waitFor(() => expect(received.find((message) => message.id === 4)).toBeDefined());
+    expect(received.find((message) => message.id === 4)?.result).toEqual({ isError: false });
+    expect(controller.link).toEqual({ id: "link-1", url: "https://example.com/73" });
+    expect(port.submitMcpAppLink).not.toHaveBeenCalled();
+    await controller.submitLink();
+    expect(port.submitMcpAppLink).toHaveBeenCalledWith("lease", "link-1");
+    expect(controller.link).toBeUndefined();
     expect(port.submitMcpAppMessage).not.toHaveBeenCalled();
     await controller.close();
     expect(container.querySelector("iframe")).toBeNull();

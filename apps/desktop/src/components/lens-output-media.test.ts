@@ -139,6 +139,8 @@ describe("Interpretation media interactions", () => {
       closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
       submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
+      submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
+      prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
     };
     const element = await mount([
       { kind: "app", id: "app:artifact", mimeType: "text/html;profile=mcp-app", descriptor },
