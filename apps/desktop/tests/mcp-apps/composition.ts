@@ -26,7 +26,7 @@ it.each([false, true])(
       id: "artifact",
       operation_id: "operation",
       session_id: "session",
-      server_id: builtin ? "lens_rich_html" : "external",
+      server_id: builtin ? "lens_rich_content" : "external",
       tool_name: "render",
       resource_uri: "ui://fixture",
     };

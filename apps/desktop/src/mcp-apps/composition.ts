@@ -28,7 +28,7 @@ export function createDesktopMcpAppController(
       }),
       prepareDocument: (lease, descriptor) => {
         if (!lease.document_url) return;
-        if (descriptor.server_id !== "lens_rich_html" || typeof lease.input.html !== "string")
+        if (descriptor.server_id !== "lens_rich_content" || typeof lease.input.html !== "string")
           throw new Error("Invalid built-in App document");
         return port.prepareMcpAppDocument(
           lease.id,

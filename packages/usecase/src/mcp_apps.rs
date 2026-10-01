@@ -243,7 +243,7 @@ pub fn validate_servers(servers: &[McpAppServer]) -> Result<(), String> {
                 .name
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-            || server.name == "lens_rich_html"
+            || server.name == "lens_rich_content"
             || server.name == "lens_output"
             || !names.insert(server.name.clone())
         {

@@ -462,13 +462,14 @@ fn rich_publication_source(evidence: &ToolEvidence) -> bool {
     evidence.tool_name.as_deref().is_some_and(|name| {
         matches!(
             name,
-            "mcp__lens_rich_html__render_html" | "lens_rich_html__render_html"
+            "mcp__lens_rich_content__render_html" | "lens_rich_content__render_html"
         )
     }) || evidence.input.as_ref().is_some_and(|input| {
-        input.get("server").and_then(Value::as_str) == Some("lens_rich_html")
-            || input.get("tool_name").and_then(Value::as_str) == Some("lens_rich_html__render_html")
+        input.get("server").and_then(Value::as_str) == Some("lens_rich_content")
+            || input.get("tool_name").and_then(Value::as_str)
+                == Some("lens_rich_content__render_html")
     }) || evidence.output.as_ref().is_some_and(|output| {
-        output.get("server_name").and_then(Value::as_str) == Some("lens_rich_html")
+        output.get("server_name").and_then(Value::as_str) == Some("lens_rich_content")
     })
 }
 fn rich_result_body_matches(value: &Value, digest: &str) -> bool {
@@ -488,7 +489,7 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
     if let Some(typed) =
         output.filter(|output| output.get("type").and_then(Value::as_str) == Some("MCP"))
     {
-        if typed.get("server_name").and_then(Value::as_str) != Some("lens_rich_html")
+        if typed.get("server_name").and_then(Value::as_str) != Some("lens_rich_content")
             || typed.get("tool_name").and_then(Value::as_str) != Some("render_html")
             || typed.get("result").is_some()
         {
@@ -496,7 +497,7 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
         }
     }
     let arguments = if input.get("variant").and_then(Value::as_str) == Some("UseTool") {
-        if input.get("tool_name").and_then(Value::as_str) != Some("lens_rich_html__render_html")
+        if input.get("tool_name").and_then(Value::as_str) != Some("lens_rich_content__render_html")
             || input.get("arguments").is_some()
             || input.get("html").is_some()
         {
@@ -504,7 +505,7 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
         }
         input.get("tool_input")?
     } else if input.get("server").is_some() || input.get("tool").is_some() {
-        if input.get("server").and_then(Value::as_str) != Some("lens_rich_html")
+        if input.get("server").and_then(Value::as_str) != Some("lens_rich_content")
             || input.get("tool").and_then(Value::as_str) != Some("render_html")
             || input.get("html").is_some()
             || input.get("tool_input").is_some()
@@ -515,7 +516,7 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
     } else {
         if !matches!(
             evidence.tool_name.as_deref(),
-            Some("mcp__lens_rich_html__render_html" | "lens_rich_html__render_html")
+            Some("mcp__lens_rich_content__render_html" | "lens_rich_content__render_html")
         ) {
             return None;
         }
@@ -1128,7 +1129,7 @@ mod tests {
         let receipt = serde_json::json!({"kind":"lens_rich_html_publication","schema_version":1,"accepted":true,"publication_id":uuid::Uuid::from_u128(1),"turn_id":uuid::Uuid::from_u128(1),"html_sha256":digest});
         ToolEvidence {
             input: Some(
-                serde_json::json!({"server":"lens_rich_html","tool":"render_html","arguments":{"html":html}}),
+                serde_json::json!({"server":"lens_rich_content","tool":"render_html","arguments":{"html":html}}),
             ),
             output: Some(
                 serde_json::json!({"result":{"content":[{"type":"text","text":receipt.to_string()}],"structuredContent":{"html":html,"publication":receipt}},"error":null}),
@@ -1196,16 +1197,16 @@ mod tests {
         for evidence in [
             ToolEvidence {
                 input: Some(args.clone()),
-                tool_name: Some("mcp__lens_rich_html__render_html".into()),
+                tool_name: Some("mcp__lens_rich_content__render_html".into()),
                 output: Some(result.clone()),
                 ..Default::default()
             },
             ToolEvidence {
                 input: Some(
-                    serde_json::json!({"variant":"UseTool","tool_name":"lens_rich_html__render_html","tool_input":args}),
+                    serde_json::json!({"variant":"UseTool","tool_name":"lens_rich_content__render_html","tool_input":args}),
                 ),
                 output: Some(
-                    serde_json::json!({"type":"MCP","server_name":"lens_rich_html","tool_name":"render_html","output":{"OkayOutput":result.to_string()}}),
+                    serde_json::json!({"type":"MCP","server_name":"lens_rich_content","tool_name":"render_html","output":{"OkayOutput":result.to_string()}}),
                 ),
                 ..Default::default()
             },
@@ -1233,7 +1234,7 @@ mod tests {
             );
         }
         let mut doc = SessionDocument::default();
-        doc.tool_unchecked("invalid".into(),ToolCallUpdateFields::new().title("mcp__lens_rich_html__render_html").raw_input(serde_json::json!({"html":"<p>Legacy-shaped input</p>","turn_id":uuid::Uuid::from_u128(1)})).raw_output(serde_json::json!({"accepted":true,"publication_id":uuid::Uuid::from_u128(1)})).status(ToolCallStatus::Completed));
+        doc.tool_unchecked("invalid".into(),ToolCallUpdateFields::new().title("mcp__lens_rich_content__render_html").raw_input(serde_json::json!({"html":"<p>Legacy-shaped input</p>","turn_id":uuid::Uuid::from_u128(1)})).raw_output(serde_json::json!({"accepted":true,"publication_id":uuid::Uuid::from_u128(1)})).status(ToolCallStatus::Completed));
         assert!(matches!(
             &doc.entries[0],
             DocumentEntry::Tool {
@@ -1250,7 +1251,7 @@ mod tests {
         document.tool_unchecked(
             "first".into(),
             ToolCallUpdateFields::new()
-                .title("mcp__lens_rich_html__render_html")
+                .title("mcp__lens_rich_content__render_html")
                 .raw_input(first.input.unwrap())
                 .raw_output(second.output.clone().unwrap())
                 .status(ToolCallStatus::Completed),
@@ -1258,7 +1259,7 @@ mod tests {
         document.tool_unchecked(
             "second".into(),
             ToolCallUpdateFields::new()
-                .title("mcp__lens_rich_html__render_html")
+                .title("mcp__lens_rich_content__render_html")
                 .raw_input(second.input.unwrap())
                 .raw_output(second.output.unwrap())
                 .status(ToolCallStatus::Completed),

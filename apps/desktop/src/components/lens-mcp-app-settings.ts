@@ -4,7 +4,7 @@ import type { McpAppsServer } from "adapter-mcp-apps-host";
 import { dispatchComponentEvent, SETTINGS_INTENT_EVENT } from "./events";
 import "./lens-select";
 import type { LensSelect } from "./lens-select";
-const BUILTIN = "lens_rich_html";
+const BUILTIN = "lens_rich_content";
 @customElement("lens-mcp-app-settings")
 export class LensMcpAppSettings extends LitElement {
   @property({ attribute: false }) servers: readonly McpAppsServer[] = [];
@@ -82,7 +82,7 @@ export class LensMcpAppSettings extends LitElement {
         names.has(server.name)
       )
         throw new Error(
-          "Use a unique name of 1–64 ASCII letters, numbers, underscores or hyphens. lens_rich_html and lens_output are reserved.",
+          "Use a unique name of 1–64 ASCII letters, numbers, underscores or hyphens. lens_rich_content and lens_output are reserved.",
         );
       names.add(server.name);
       let url: URL;
@@ -210,7 +210,7 @@ export class LensMcpAppSettings extends LitElement {
               </p>
               <dl>
                 <dt>MCP server</dt>
-                <dd>lens_rich_html</dd>
+                <dd>lens_rich_content</dd>
                 <dt>Tool</dt>
                 <dd>render_html</dd>
               </dl>

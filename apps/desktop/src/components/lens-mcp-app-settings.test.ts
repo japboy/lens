@@ -52,7 +52,9 @@ describe("MCP preset settings", () => {
   it("starts with only the permanent built-in and does not register example values", async () => {
     const { element, intents } = await mount([]);
     const selector = element.querySelector<LensSelect>("lens-select")!;
-    expect(selector.options).toEqual([{ value: "lens_rich_html", label: "Lens HTML · Built-in" }]);
+    expect(selector.options).toEqual([
+      { value: "lens_rich_content", label: "Lens HTML · Built-in" },
+    ]);
     expect(element.querySelector("h2")!.textContent).toBe("MCP");
     expect(element.textContent).toContain("render_html");
     expect(button(element, "Delete Preset")).toBeUndefined();
@@ -133,7 +135,7 @@ describe("MCP preset settings", () => {
     "\u65e5\u672c\u8a9e",
     "a".repeat(65),
     "Other",
-    "lens_rich_html",
+    "lens_rich_content",
     "lens_output",
   ])("rejects invalid or conflicting source name %s without losing the draft", async (name) => {
     const { element, intents } = await mount();

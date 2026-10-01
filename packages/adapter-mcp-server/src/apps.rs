@@ -27,7 +27,7 @@ use uuid::Uuid;
 pub const MAX_RESOURCE_BYTES: usize = 1024 * 1024;
 pub const MAX_RPC_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_ARTIFACTS: usize = 32;
-pub const FALLBACK_SERVER: &str = "lens_rich_html";
+pub const FALLBACK_SERVER: &str = "lens_rich_content";
 pub const FALLBACK_URI: &str = "ui://lens/rich-html.html";
 
 #[derive(Clone)]

@@ -486,7 +486,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         if new_session.scenario == Scenario::GoosePublisherFailure {
                             response = response.meta(
                                 json!({"extensionResults":[{
-                                    "name":"lens_rich_html", "success":false, "error":"SECRET"
+                                    "name":"lens_rich_content", "success":false, "error":"SECRET"
                                 }]})
                                 .as_object()
                                 .unwrap()
@@ -1060,7 +1060,7 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             .iter()
             .map(|server| server["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["lens_rich_html"]
+        ["lens_rich_content"]
     );
     for server in servers {
         assert_eq!(server["type"], "http");
@@ -1131,7 +1131,7 @@ fn html_app_capture_commits_descriptors_for_all_non_cancelled_stops() {
         assert_eq!(first.stage, LensStage::Completed, "{stop_reason:?}");
         let retained = harness.app.state::<AppState>().lens().unwrap();
         assert_eq!(retained.mcp_apps.len(), 1, "{stop_reason:?}");
-        assert_eq!(retained.mcp_apps[0].server_id, "lens_rich_html");
+        assert_eq!(retained.mcp_apps[0].server_id, "lens_rich_content");
         assert_eq!(retained.mcp_apps[0].tool_name, "render_html");
         assert_eq!(
             retained.response_history.responses[0].mcp_apps,
