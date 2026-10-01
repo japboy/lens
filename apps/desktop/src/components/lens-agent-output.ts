@@ -7,9 +7,12 @@ import type {
 } from "../application/response-history-controller";
 import type { LensResponseBlock } from "./lens-response-block";
 import type { LensOutputMedia } from "./lens-output-media";
-import { responseBlockIdentity } from "../application/response-history-controller";
+import {
+  presentResponseMedia,
+  responseBlockIdentity,
+} from "../application/response-history-controller";
 import "./lens-response-block";
-import { composeOutputMedia, presentMcpApps } from "../output-media";
+import { composeOutputMedia } from "../output-media";
 import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
@@ -77,7 +80,7 @@ export class LensAgentOutput extends LitElement {
         this.historyOperation = this.history.scopeId;
         this.historyScrollTop = 0;
         this.historyAnchor = undefined;
-        this.followHistoryEnd = !this.history.media.length && !this.lens?.mcp_apps?.length;
+        this.followHistoryEnd = !this.history.media.length;
       } else {
         const output = this.querySelector<HTMLElement>(".lens-output");
         if (output) this.historyScrollTop = output.scrollTop;
@@ -89,8 +92,10 @@ export class LensAgentOutput extends LitElement {
     const previousLens = changed.get("lens");
     const previousOutput = previousLens ? lensOutputPresentation(previousLens) : undefined;
     const output = lensOutputPresentation(this.lens);
-    const hasMedia = composeOutputMedia(output).media.length > 0;
-    const hadMedia = previousOutput ? composeOutputMedia(previousOutput).media.length > 0 : false;
+    const hasMedia = composeOutputMedia(output, this.lens?.mcp_apps).media.length > 0;
+    const hadMedia = previousOutput
+      ? composeOutputMedia(previousOutput, previousLens?.mcp_apps).media.length > 0
+      : false;
     this.revealFirstMedia =
       hasMedia && (!hadMedia || previousLens?.operation_id !== this.lens.operation_id);
   }
@@ -120,8 +125,7 @@ export class LensAgentOutput extends LitElement {
   protected render() {
     if (this.history?.responses.length) return this.renderHistory();
     const output = lensOutputPresentation(this.lens);
-    const { media: staticMedia, narrative } = composeOutputMedia(output);
-    const media = [...staticMedia, ...presentMcpApps(this.lens?.mcp_apps)];
+    const { media, narrative } = composeOutputMedia(output, this.lens?.mcp_apps);
     if (output.blocks.length || media.length) {
       return html`<div
         class="lens-content lens-output ${media.length ? "has-media" : ""} ${narrative.length ? "has-narrative" : ""}"
@@ -233,9 +237,7 @@ export class LensAgentOutput extends LitElement {
         ? this.history.responses.find((item) => item.id === responseId)
         : undefined;
     if (!response) return false;
-    const mediaBlock = response.blocks.find(
-      (block) => block.type === "image" || block.type === "html",
-    );
+    const responseMedia = presentResponseMedia(scopeId, response)[0];
     const narrativeBlock = response.blocks.find(
       (block) => block.type === "markdown" || block.type === "unsupported",
     );
@@ -245,12 +247,12 @@ export class LensAgentOutput extends LitElement {
     if (media && !(await media.exitFullscreen())) return false;
     if (!current()) return false;
     this.followHistoryEnd = false;
-    if (mediaBlock && (preferred === "media" || !narrativeBlock) && media) {
+    if (responseMedia && (preferred === "media" || !narrativeBlock) && media) {
       this.historyAnchor = undefined;
       this.historyScrollTop = 0;
       output.scrollTop = 0;
-      const mediaId = responseBlockIdentity(scopeId, responseId, mediaBlock.block_index);
-      await this.retryMedia?.(mediaId);
+      const mediaId = responseMedia.id;
+      if (responseMedia.kind !== "app") await this.retryMedia?.(mediaId);
       await this.updateComplete;
       await media.updateComplete;
       if (!current()) return false;
@@ -286,11 +288,7 @@ export class LensAgentOutput extends LitElement {
       response.blocks.some((block) => block.type === "markdown" || block.type === "unsupported"),
     );
     const hasNarrative = narrativeResponses.length > 0;
-    const apps = new Map(
-      history.responses.flatMap((response) => response.mcpApps ?? []).map((app) => [app.id, app]),
-    );
-    for (const app of this.lens?.mcp_apps ?? []) apps.set(app.id, app);
-    const media = [...history.media, ...presentMcpApps([...apps.values()])];
+    const media = history.media;
     return keyed(
       history.scopeId,
       html`<div

@@ -1,6 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { McpAppController, type McpAppDescriptor } from "adapter-mcp-apps-host";
+import { McpAppController, type McpAppDescriptor, type McpAppState } from "adapter-mcp-apps-host";
 import {
   createDesktopMcpAppController,
   type DesktopMcpAppsPort as McpAppsPort,
@@ -68,8 +68,8 @@ export class LensMcpApp extends LitElement {
     this.openingIdentity = undefined;
     await this.controller?.close();
   }
-  get ready(): boolean {
-    return this.controller?.state.stage === "ready";
+  get stage(): McpAppState["stage"] {
+    return this.controller?.state.stage ?? "idle";
   }
   protected render() {
     const state = this.controller?.state;

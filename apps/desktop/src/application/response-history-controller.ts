@@ -6,7 +6,7 @@ import type {
   LensState,
 } from "../types";
 import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
-import type { PresentedOutputMedia } from "../output-media";
+import { presentMcpApps, type PresentedOutputMedia } from "../output-media";
 import { imageDataUrl } from "../view-model";
 import { MAX_HTML_OUTPUT_BYTES, type HtmlOutputContent } from "./html-output-content";
 import type { WebviewPort } from "./webview-port";
@@ -22,6 +22,28 @@ export interface ResponseManifest {
   sequence: number;
   delivery?: LensDeliveryCoverage;
   blocks: readonly ResponseBlockDescriptor[];
+}
+
+/** One response-scoped projection owns media identity for display and navigation. */
+export function presentResponseMedia(
+  scopeId: string,
+  response: ResponseManifest,
+): PresentedOutputMedia[] {
+  const media: PresentedOutputMedia[] = [];
+  for (const block of response.blocks) {
+    const id = responseBlockIdentity(scopeId, response.id, block.block_index);
+    if (block.type === "image") media.push({ kind: "image", id, mimeType: block.mime_type });
+    else if (block.type === "html")
+      media.push({
+        kind: "html",
+        id,
+        resourceId: block.resource_id,
+        mimeType: "text/html",
+        uri: block.uri,
+        byteLength: block.byte_length,
+      });
+  }
+  return [...media, ...presentMcpApps(response.mcpApps)];
 }
 interface ResponseManifestSet {
   responses: readonly ResponseManifest[];
@@ -480,29 +502,17 @@ export class ResponseHistoryController implements ReactiveController {
   private publish(): void {
     if (!this.operation || !this.manifest) return;
     const operation = this.operation;
-    const media: PresentedOutputMedia[] = [];
-    for (const response of this.manifest.responses)
-      for (const block of response.blocks) {
-        const id = responseBlockIdentity(operation, response.id, block.block_index);
-        if (block.type === "image") {
-          const body = this.mediaBodies.get(id) ?? this.provisionalBlocks.get(id)?.body;
-          media.push({
-            kind: "image",
-            id,
-            mimeType: block.mime_type,
-            source: body?.type === "image" ? imageDataUrl(body) : undefined,
-            provisional: !this.mediaBodies.has(id) && this.provisionalBlocks.has(id),
-          });
-        } else if (block.type === "html")
-          media.push({
-            kind: "html",
-            id,
-            resourceId: block.resource_id,
-            mimeType: "text/html",
-            uri: block.uri,
-            byteLength: block.byte_length,
-          });
-      }
+    const media = this.manifest.responses.flatMap((response) =>
+      presentResponseMedia(operation, response).map((item) => {
+        if (item.kind !== "image") return item;
+        const body = this.mediaBodies.get(item.id) ?? this.provisionalBlocks.get(item.id)?.body;
+        return {
+          ...item,
+          source: body?.type === "image" ? imageDataUrl(body) : undefined,
+          provisional: !this.mediaBodies.has(item.id) && this.provisionalBlocks.has(item.id),
+        };
+      }),
+    );
     this.presentation = {
       scopeId: operation,
       responses: this.manifest.responses,

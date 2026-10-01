@@ -296,7 +296,7 @@ export class LensOutputMedia extends LitElement {
       item.kind === "image"
         ? loaded?.status === "ready"
         : item.kind === "app"
-          ? this.appReady(item.id)
+          ? this.appState(item.id) === "ready"
           : this.htmlState(item) === "ready";
     const expandedMedia = this.fullscreen.status === "idle" ? item : this.fullscreen.session.media;
     return html`
@@ -499,10 +499,20 @@ export class LensOutputMedia extends LitElement {
     </figure>`;
   }
 
-  private appReady(id: string): boolean {
-    return [...this.querySelectorAll<LensMcpApp>("lens-mcp-app")].some(
-      (app) => app.descriptor && `app:${app.descriptor.id}` === id && app.ready,
+  private appState(id: string): "loading" | "ready" | "failed" {
+    const app = [...this.querySelectorAll<LensMcpApp>("lens-mcp-app")].find(
+      (app) => app.descriptor && `app:${app.descriptor.id}` === id,
     );
+    switch (app?.stage) {
+      case "ready":
+        return "ready";
+      case "failed":
+      case "closing":
+      case "closed":
+        return "failed";
+      default:
+        return "loading";
+    }
   }
 
   private renderAppSlide(item: PresentedOutputApp, index: number) {
@@ -693,9 +703,7 @@ export class LensOutputMedia extends LitElement {
         : item?.kind === "html"
           ? this.htmlState(item)
           : item?.kind === "app"
-            ? this.appReady(item.id)
-              ? "ready"
-              : "loading"
+            ? this.appState(item.id)
             : "failed";
     if (!item || !this.sameNavigationTarget(item, pending.media) || state === "failed") {
       this.navigation = undefined;
@@ -860,9 +868,7 @@ export class LensOutputMedia extends LitElement {
       (media.kind === "image"
         ? this.imageState(media).status
         : media.kind === "app"
-          ? this.appReady(media.id)
-            ? "ready"
-            : "loading"
+          ? this.appState(media.id)
           : this.htmlState(media)) !== "ready"
     )
       return;

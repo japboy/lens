@@ -1984,14 +1984,14 @@ export class LensOverlayView extends LitElement {
     );
     const persistentStatus = liveStatus;
     const outputMedia = displayLens
-      ? composeOutputMedia(lensOutputPresentation(displayLens))
+      ? composeOutputMedia(lensOutputPresentation(displayLens), displayLens.mcp_apps)
       : { media: [], narrative: [] };
     const historyBlocks = this.responseHistory?.responses.flatMap((response) => response.blocks);
     const hasMediaCue =
       this.activeTab === "interpretation" &&
-      (historyBlocks?.length
-        ? historyBlocks.some((block) => block.type === "image" || block.type === "html") &&
-          historyBlocks.some((block) => block.type !== "image" && block.type !== "html")
+      (this.responseHistory?.responses.length
+        ? this.responseHistory.media.length > 0 &&
+          historyBlocks?.some((block) => block.type === "markdown" || block.type === "unsupported")
         : outputMedia.media.length > 0 && outputMedia.narrative.length > 0);
 
     return html`

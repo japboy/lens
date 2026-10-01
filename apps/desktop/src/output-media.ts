@@ -54,7 +54,10 @@ export interface OutputMediaComposition {
  * Standalone typed images are output artifacts; Markdown owns its inline media.
  * This product policy uses the published block contract, never DOM order or prose.
  */
-export function composeOutputMedia(output: LensOutputPresentation): OutputMediaComposition {
+export function composeOutputMedia(
+  output: LensOutputPresentation,
+  apps: readonly import("adapter-mcp-apps-host").McpAppDescriptor[] = [],
+): OutputMediaComposition {
   const media: PresentedOutputMedia[] = [];
   const narrative: OutputNarrativeBlock[] = [];
   output.blocks.forEach((block, index) => {
@@ -81,5 +84,5 @@ export function composeOutputMedia(output: LensOutputPresentation): OutputMediaC
       narrative.push({ block, index });
     }
   });
-  return { media, narrative };
+  return { media: [...media, ...presentMcpApps(apps)], narrative };
 }
