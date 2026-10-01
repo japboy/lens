@@ -82,16 +82,11 @@ export class LensMcpApp extends LitElement {
   }
   protected render() {
     const state = this.controller?.state;
-    const readOnly =
-      !this.descriptor || "kind" in this.descriptor
-        ? this.replay
-        : this.replay || (state?.stage === "ready" && !state.live);
     return html`<div
         class="mcp-app-document"
         style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden"
       ></div>
       <div class="mcp-app-controls">
-        ${readOnly ? html`<p role="status">This App’s agent connection is closed.</p>` : nothing}
         ${state?.stage === "opening" || state?.stage === "initializing" ? html`<p role="status">Loading interactive Interpretation…</p>` : nothing}
         ${state?.stage === "failed" ? html`<p class="output-media-error" role="alert">${state.message}</p>` : nothing}
         ${this.controller?.connectionError ? html`<p class="output-media-error" role="alert">${this.controller.connectionError}</p>` : nothing}

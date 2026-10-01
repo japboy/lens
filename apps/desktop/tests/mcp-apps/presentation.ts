@@ -160,7 +160,7 @@ describe("App presentation lifecycle", () => {
     await flush();
     expect(native.openMcpApp).toHaveBeenCalledWith("artifact", window.location.origin);
     expect(element.querySelector("iframe")).not.toBeNull();
-    expect(element.textContent).toContain("This App’s agent connection is closed.");
+    expect(element.textContent).not.toContain("This App’s agent connection is closed.");
     expect(native.mcpAppRequest).not.toHaveBeenCalled();
     await element.dispose();
   });
