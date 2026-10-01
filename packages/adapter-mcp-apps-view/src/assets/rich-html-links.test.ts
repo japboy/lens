@@ -26,6 +26,8 @@ function links() {
   }
   runInNewContext(readFileSync(new URL("./rich-html-links.js", import.meta.url), "utf8"), {
     document: {
+      URL: "http://127.0.0.1/document/selected",
+      baseURI: "http://127.0.0.1/document/selected",
       addEventListener: (_: string, callback: typeof handler) => {
         handler = callback;
       },
@@ -78,7 +80,7 @@ describe("built-in document link helper", () => {
     expect(test.click({ button: 1 })).not.toHaveBeenCalled();
     for (const href of [
       "#section",
-      "/relative",
+      "http://127.0.0.1/document/selected#section",
       "file:///private",
       "javascript:alert(1)",
       "mailto:a@example.com",

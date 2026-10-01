@@ -49,18 +49,12 @@ pub struct AppDraft {
     pub id: Uuid,
     pub text: String,
 }
-#[derive(Clone, Serialize)]
-pub struct AppLink {
-    pub id: Uuid,
-    pub url: String,
-}
 
 /// Replacement context and latest pending requests belong to one native display lease.
 /// IDs are supplied by the native caller; no authority or ambient identity is created here.
 pub struct AppViewInput {
     context: Value,
     draft: Option<AppDraft>,
-    link: Option<AppLink>,
     submitted: bool,
 }
 impl Default for AppViewInput {
@@ -68,7 +62,6 @@ impl Default for AppViewInput {
         Self {
             context: json!({}),
             draft: None,
-            link: None,
             submitted: false,
         }
     }
@@ -80,9 +73,7 @@ impl AppViewInput {
     pub fn draft(&self) -> Option<&AppDraft> {
         self.draft.as_ref()
     }
-    pub fn link(&self) -> Option<&AppLink> {
-        self.link.as_ref()
-    }
+
     pub fn submitted(&self) -> bool {
         self.submitted
     }
@@ -130,20 +121,6 @@ impl AppViewInput {
     }
     pub fn mark_submitted(&mut self) {
         self.submitted = true;
-    }
-    pub fn replace_link(&mut self, id: Uuid, params: &Value) -> Result<AppLink, String> {
-        let link = AppLink {
-            id,
-            url: link_destination(params)?,
-        };
-        self.link = Some(link.clone());
-        Ok(link)
-    }
-    pub fn take_link(&mut self, id: Uuid) -> Result<String, String> {
-        if self.link.as_ref().is_none_or(|link| link.id != id) {
-            return Err("App link was replaced or already opened".into());
-        }
-        Ok(self.link.take().expect("checked link").url)
     }
 }
 pub fn link_destination(params: &Value) -> Result<String, String> {
@@ -366,15 +343,6 @@ mod tests {
         }
         input.replace_context(json!({})).unwrap();
         assert_eq!(input.context(), &json!({}));
-        input
-            .replace_link(first, &json!({"url":"https://example.com/one"}))
-            .unwrap();
-        input
-            .replace_link(second, &json!({"url":"https://example.com/two"}))
-            .unwrap();
-        assert!(input.take_link(first).is_err());
-        assert_eq!(input.take_link(second).unwrap(), "https://example.com/two");
-        assert!(input.take_link(second).is_err());
         input.revoke_draft();
         assert!(input.pending_message(first).is_err());
     }

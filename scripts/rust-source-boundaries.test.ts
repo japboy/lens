@@ -106,7 +106,7 @@ describe("explicit native shared web resource ownership", () => {
       ).toEqual([]);
     },
   );
-  it("admits the canonical built-in renderer shell only to its Agent owner", () => {
+  it("admits the canonical built-in renderer shell to its Agent broker", () => {
     expect(
       sourceInclusionViolations(
         root,
@@ -117,8 +117,27 @@ describe("explicit native shared web resource ownership", () => {
     ).toEqual([]);
   });
   it.each([
+    ["rich-html-app.html", "include_str"],
+    ["rich-html-links.js", "include_str"],
+    ["rich-html-links.js", "include_bytes"],
+  ])("admits the canonical HTML display asset %s through %s", (asset, macro) => {
+    expect(
+      sourceInclusionViolations(
+        root,
+        host,
+        include(`adapter-mcp-apps-view/src/assets/${asset}`, macro),
+        "apps/desktop",
+      ),
+    ).toEqual([]);
+  });
+  it.each([
     [host, "adapter-mcp-apps-host/src/controller.ts", "include_str"],
-    [host, "adapter-mcp-apps-view/src/assets/rich-html-app.html", "include_str"],
+    [
+      "apps/desktop/src-tauri/src/agent.rs",
+      "adapter-mcp-apps-view/src/assets/rich-html-links.js",
+      "include_str",
+    ],
+    [host, "adapter-mcp-apps-view/src/assets/rich-html-app.html", "include_bytes"],
     [host, "adapter-mcp-apps-host/src/assets/sandbox-proxy.js", "include_bytes"],
     [
       "apps/desktop/src-tauri/src/other.rs",

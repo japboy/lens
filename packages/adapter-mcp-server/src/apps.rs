@@ -793,6 +793,37 @@ fn resource_policy(resource: &AppResource) -> Result<(String, Value), String> {
     Ok((format!("default-src 'none'; script-src 'unsafe-inline' {resources}; style-src 'unsafe-inline' {resources}; img-src data: blob: {resources}; font-src data: {resources}; media-src data: blob: {resources}; connect-src {}; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",if connects.is_empty(){"'none'"}else{&connects}), json!({"csp":{"resourceDomains":resource_domains,"connectDomains":connect_domains},"permissions":{}})))
 }
 
+/// Chosen only by the trusted composition root, never by generated HTML.
+pub enum DocumentPolicy {
+    Interactive,
+    Static { trusted_script_sha256: String },
+}
+impl DocumentPolicy {
+    fn csp(&self) -> Result<String, ServerError> {
+        let scripts = match self {
+            Self::Interactive => "'unsafe-inline'".to_owned(),
+            Self::Static {
+                trusted_script_sha256,
+            } => {
+                use base64::Engine;
+                if !base64::engine::general_purpose::STANDARD
+                    .decode(trusted_script_sha256)
+                    .is_ok_and(|digest| digest.len() == 32)
+                {
+                    return Err(std::io::Error::other("Invalid trusted HTML script digest").into());
+                }
+                format!("'sha256-{trusted_script_sha256}'")
+            }
+        };
+        let attributes = if matches!(self, Self::Static { .. }) {
+            "; script-src-attr 'none'"
+        } else {
+            ""
+        };
+        Ok(format!("default-src 'none'; script-src {scripts}{attributes}; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"))
+    }
+}
+
 /// Independent origin for trusted Sandbox proxy and opaque Views. No native authority.
 pub struct DisplayServer {
     pub origin: String,
@@ -829,6 +860,7 @@ impl DisplayServer {
         host_origin: String,
         proxy_html: String,
         proxy_js: String,
+        document_policy: DocumentPolicy,
     ) -> Result<Self, ServerError> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -847,7 +879,7 @@ impl DisplayServer {
         let html = resource.html.clone();
         let route_html = html.clone();
         let resource_policy = resource_csp(&resource).map_err(std::io::Error::other)?;
-        let csp="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
+        let csp = document_policy.csp()?;
         let router=Router::new()
             .route(&format!("/sandbox/{token}"),axum::routing::get(move||{let html=proxy_html.clone();async move {([(axum::http::header::CONTENT_TYPE,"text/html; charset=utf-8"),(axum::http::header::CONTENT_SECURITY_POLICY,"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'")],html)}}))
             .route("/sandbox-proxy.js",axum::routing::get(move||{let js=proxy_js.clone();async move {([(axum::http::header::CONTENT_TYPE,"text/javascript; charset=utf-8")],js)}}))
@@ -864,10 +896,14 @@ impl DisplayServer {
                         .ok()
                         .and_then(|document| document.clone())
                         .unwrap_or_default();
+                    let csp = csp.clone();
                     async move {
                         (
                             [
-                                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                                (
+                                    axum::http::header::CONTENT_TYPE,
+                                    "text/html; charset=utf-8".to_owned(),
+                                ),
                                 (axum::http::header::CONTENT_SECURITY_POLICY, csp),
                             ],
                             html,
@@ -955,6 +991,7 @@ mod tests {
             "tauri://localhost".into(),
             "<script src='/sandbox-proxy.js'></script>__SETTINGS_JSON__".into(),
             "/* proxy */".into(),
+            DocumentPolicy::Interactive,
         )
         .await
         .unwrap();
@@ -1097,6 +1134,67 @@ mod tests {
         broker.close().await;
     }
     #[tokio::test]
+    async fn static_document_csp_allows_only_the_composition_root_script_hash() {
+        use base64::Engine;
+        let helper = "document.addEventListener('click',()=>{});\n";
+        let digest =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(helper.as_bytes()));
+        let display = DisplayServer::start(
+            AppResource {
+                html: "<script>trusted shell()</script>".into(),
+                meta: json!({}),
+            },
+            Some("<script>untrusted()</script>".into()),
+            "tauri://localhost".into(),
+            "__SETTINGS_JSON__".into(),
+            String::new(),
+            DocumentPolicy::Static {
+                trusted_script_sha256: digest.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let response = client
+            .get(display.document_url.as_ref().unwrap())
+            .send()
+            .await
+            .unwrap();
+        let policy = response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(policy.contains(&format!("script-src 'sha256-{digest}'")));
+        assert!(policy.contains("script-src-attr 'none'"));
+        assert!(!policy.contains("script-src 'unsafe-inline'"));
+        assert!(!policy.contains("'unsafe-eval'"));
+        assert!(DocumentPolicy::Static {
+            trusted_script_sha256: "not-a-hash; script-src *".into()
+        }
+        .csp()
+        .is_err());
+        let interactive = DocumentPolicy::Interactive.csp().unwrap();
+        assert!(interactive.contains("script-src 'unsafe-inline'"));
+        assert!(!interactive.contains("sha256-"));
+        display
+            .prepare_document(format!("<script>{helper}</script>"))
+            .unwrap();
+        assert_eq!(
+            client
+                .get(display.document_url.as_ref().unwrap())
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            format!("<script>{helper}</script>")
+        );
+    }
+
+    #[tokio::test]
     async fn prepared_document_is_separate_from_original_resource_and_bounded() {
         let display = DisplayServer::start(
             AppResource {
@@ -1107,6 +1205,7 @@ mod tests {
             "tauri://localhost".into(),
             "__SETTINGS_JSON__".into(),
             "".into(),
+            DocumentPolicy::Interactive,
         )
         .await
         .unwrap();
@@ -1158,6 +1257,7 @@ mod tests {
             "tauri://localhost".into(),
             "".into(),
             "".into(),
+            DocumentPolicy::Interactive,
         )
         .await
         .unwrap();

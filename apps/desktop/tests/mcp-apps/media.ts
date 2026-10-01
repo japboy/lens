@@ -35,6 +35,7 @@ describe("Interpretation media App composition", () => {
       openMcpApp: vi.fn<McpAppsPort["openMcpApp"]>(async () => ({
         id: "lease",
         artifact_id: descriptor.id,
+        document_mode: null,
         proxy_url: "http://127.0.0.1:43162/proxy",
         proxy_origin: "http://127.0.0.1:43162",
         resource: { html: "<p>Original App</p>" },
@@ -46,7 +47,7 @@ describe("Interpretation media App composition", () => {
       closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
       submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
-      submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
+      openHtmlPresentation: vi.fn<McpAppsPort["openHtmlPresentation"]>(),
       prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
     };
     const element = await mount([

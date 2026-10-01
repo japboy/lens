@@ -22,6 +22,7 @@ it.each([true, false])(
       openMcpApp: vi.fn<McpAppsPort["openMcpApp"]>(async () => ({
         id: "lease",
         artifact_id: "artifact",
+        document_mode: null,
         proxy_url: "http://127.0.0.1:43162/proxy",
         proxy_origin: "http://127.0.0.1:43162",
         resource: { html: "<!doctype html><p>App</p>" },
@@ -49,7 +50,6 @@ it.each([true, false])(
       closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: { tools: [] } })),
       submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
-      submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
     };
     const container = document.createElement("div");
     document.body.append(container);
@@ -158,7 +158,6 @@ it.each([true, false])(
     expect(initializeResult.hostCapabilities).toMatchObject({ openLinks: {} });
     vi.mocked(port.mcpAppRequest).mockResolvedValueOnce({
       result: { isError: false },
-      link: { id: "link-1", url: "https://example.com/73" },
     });
     emit({
       jsonrpc: "2.0",
@@ -168,11 +167,10 @@ it.each([true, false])(
     });
     await vi.waitFor(() => expect(received.find((message) => message.id === 4)).toBeDefined());
     expect(received.find((message) => message.id === 4)?.result).toEqual({ isError: false });
-    expect(controller.link).toEqual({ id: "link-1", url: "https://example.com/73" });
-    expect(port.submitMcpAppLink).not.toHaveBeenCalled();
-    await controller.submitLink();
-    expect(port.submitMcpAppLink).toHaveBeenCalledWith("lease", "link-1");
-    expect(controller.link).toBeUndefined();
+    expect(port.mcpAppRequest).toHaveBeenLastCalledWith("lease", {
+      method: "ui/open-link",
+      params: { url: "https://example.com/73" },
+    });
     expect(port.submitMcpAppMessage).not.toHaveBeenCalled();
     await controller.close();
     expect(container.querySelector("iframe")).toBeNull();

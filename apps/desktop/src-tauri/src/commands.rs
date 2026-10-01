@@ -141,7 +141,7 @@ pub fn get_response_block<R: tauri::Runtime>(
     response_block(&state.lens()?, operation_id, representation_id, block_index)
 }
 
-fn response_block(
+pub(crate) fn response_block(
     lens: &LensState,
     operation_id: Uuid,
     representation_id: Uuid,

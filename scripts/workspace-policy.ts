@@ -178,6 +178,7 @@ export const MEMBERS: readonly Member[] = [
     implementation: "transport",
     dependencies: {
       normal: [
+        "base64",
         "reqwest",
         "axum",
         "hyper",

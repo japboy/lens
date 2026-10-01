@@ -8,7 +8,7 @@ import {
   responseBlockIdentity,
   RESPONSE_BODY_CACHE_BYTES,
 } from "./response-history-controller";
-import { MAX_HTML_OUTPUT_BYTES } from "./html-output-content";
+import { MAX_HTML_SOURCE_BYTES } from "adapter-mcp-apps-view";
 
 function response(id: string, sequence: number): LensResponseManifest {
   return {
@@ -222,7 +222,7 @@ describe("initial response body handoff", () => {
 });
 
 describe("committed response history bodies", () => {
-  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, MAX_HTML_OUTPUT_BYTES + 1])(
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, MAX_HTML_SOURCE_BYTES + 1])(
     "rejects invalid HTML descriptor size %s before IPC",
     async (bytes) => {
       const { controller, port } = setup();
@@ -231,10 +231,8 @@ describe("committed response history bodies", () => {
       if (descriptor.type !== "html") throw new Error("Expected HTML");
       descriptor.byte_length = bytes;
       controller.synchronize(state);
-      const id = responseBlockIdentity("op", "r1", 1);
-      controller.requestMedia([id]);
-      await vi.waitFor(() =>
-        expect(controller.presentation?.htmlContents.get(id)?.status).toBe("failed"),
+      await expect(controller.loadBlock("op", "r1", 1)).rejects.toThrow(
+        "HTML content exceeds the supported size.",
       );
       expect(port.getHtmlOutput).not.toHaveBeenCalled();
       expect(controller.presentation?.responses).toHaveLength(1);
@@ -243,8 +241,8 @@ describe("committed response history bodies", () => {
   it.each([
     ["\u3042", 3, "ready"],
     ["\u3042", 1, "failed"],
-    ["x".repeat(MAX_HTML_OUTPUT_BYTES), MAX_HTML_OUTPUT_BYTES, "ready"],
-    ["x".repeat(MAX_HTML_OUTPUT_BYTES + 1), MAX_HTML_OUTPUT_BYTES, "failed"],
+    ["x".repeat(MAX_HTML_SOURCE_BYTES), MAX_HTML_SOURCE_BYTES, "ready"],
+    ["x".repeat(MAX_HTML_SOURCE_BYTES + 1), MAX_HTML_SOURCE_BYTES, "failed"],
   ] as const)("checks exact UTF-8 HTML bytes (case %#)", async (content, bytes, status) => {
     const { controller, port } = setup();
     const state = lens();
@@ -253,11 +251,8 @@ describe("committed response history bodies", () => {
     descriptor.byte_length = bytes;
     port.getHtmlOutput.mockResolvedValue(content);
     controller.synchronize(state);
-    const id = responseBlockIdentity("op", "r1", 1);
-    controller.requestMedia([id]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(id)?.status).toBe(status),
-    );
+    const [outcome] = await Promise.allSettled([controller.loadBlock("op", "r1", 1)]);
+    expect(outcome?.status).toBe(status === "ready" ? "fulfilled" : "rejected");
     expect(port.getHtmlOutput).toHaveBeenCalledExactlyOnceWith("op", "r1", "shared");
   });
   it.each(["stop", "replace", "disconnect"] as const)(
@@ -267,15 +262,13 @@ describe("committed response history bodies", () => {
       const pending = deferred<string>();
       port.getHtmlOutput.mockReturnValueOnce(pending.promise);
       controller.synchronize(lens());
-      const oldId = responseBlockIdentity("op", "r1", 1);
-      controller.requestMedia([oldId]);
-      expect(controller.presentation?.htmlContents.get(oldId)?.status).toBe("loading");
+      const outcome = Promise.allSettled([controller.loadBlock("op", "r1", 1)]);
       if (action === "disconnect") controller.hostDisconnected();
       else controller.synchronize(action === "stop" ? undefined : lens("replacement"));
       pending.resolve("abc");
       await pending.promise;
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      expect(controller.presentation?.htmlContents.has(oldId)).toBeFalsy();
+      expect((await outcome)[0]?.status).toBe("rejected");
       expect(controller.presentation?.scopeId).toBe(
         action === "replace" ? "replacement" : undefined,
       );
@@ -297,48 +290,37 @@ describe("committed response history bodies", () => {
     controller.synchronize(lens("op", 3));
     expect(controller.presentation?.responses).toHaveLength(3);
   });
-  it("loads old HTML by response scope, keeps IDs stable on append, and reloads evicted presentation demand from cache", async () => {
+  it("loads HTML by response scope and retains cached bodies across manifest appends", async () => {
     const { controller, port } = setup();
     controller.synchronize(lens("op", 2));
-    const first = responseBlockIdentity("op", "r1", 1),
-      second = responseBlockIdentity("op", "r2", 1);
-    controller.requestMedia([first]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(first)?.status).toBe("ready"),
-    );
+    const first = responseBlockIdentity("op", "r1", 1);
+    await expect(controller.loadBlock("op", "r1", 1)).resolves.toMatchObject({
+      type: "html",
+      text: "abc",
+    });
     controller.synchronize(lens("op", 3));
     expect(controller.presentation?.media[0]?.id).toBe(first);
-    controller.requestMedia([second]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(second)?.status).toBe("ready"),
-    );
-    expect(controller.presentation?.htmlContents.has(first)).toBe(false);
-    controller.requestMedia([first]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(first)?.status).toBe("ready"),
-    );
+    await controller.loadBlock("op", "r2", 1);
+    await controller.loadBlock("op", "r1", 1);
     expect(port.getHtmlOutput.mock.calls).toEqual([
       ["op", "r1", "shared"],
       ["op", "r2", "shared"],
     ]);
   });
-  it("retries a failed native media body only after explicit navigation requests it", async () => {
+  it("does not fetch HTML for media demand and permits an explicit body retry", async () => {
     const { controller, port } = setup();
     port.getHtmlOutput.mockRejectedValueOnce(new Error("temporarily unavailable"));
     controller.synchronize(lens());
     const id = responseBlockIdentity("op", "r1", 1);
     controller.requestMedia([id]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(id)?.status).toBe("failed"),
-    );
-    controller.requestMedia([id]);
+    expect(port.getHtmlOutput).not.toHaveBeenCalled();
+    await expect(controller.loadBlock("op", "r1", 1)).rejects.toThrow("temporarily unavailable");
     controller.synchronize(lens());
     expect(port.getHtmlOutput).toHaveBeenCalledTimes(1);
-    await controller.retryMedia(id);
-    expect(port.getHtmlOutput).toHaveBeenCalledTimes(2);
-    expect(controller.presentation?.htmlContents.get(id)?.status).toBe("ready");
-    expect(controller.presentation?.mediaErrors.has(id)).toBe(false);
-    await controller.retryMedia(id);
+    await expect(controller.loadBlock("op", "r1", 1)).resolves.toMatchObject({
+      type: "html",
+      text: "abc",
+    });
     expect(port.getHtmlOutput).toHaveBeenCalledTimes(2);
   });
   it("deduplicates concurrent body requests and ignores stale operation results without blocking new demand", async () => {
@@ -378,11 +360,7 @@ describe("committed response history bodies", () => {
     pending[2]!.resolve({ type: "unsupported", content_type: "audio" });
     expect((await settled).map((r) => r.status)).toEqual(["fulfilled", "rejected", "rejected"]);
     port.getHtmlOutput.mockRejectedValue(new Error("native denied"));
-    const id = responseBlockIdentity("op", "r1", 1);
-    controller.requestMedia([id]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(id)?.status).toBe("failed"),
-    );
+    await expect(controller.loadBlock("op", "r1", 1)).rejects.toThrow("native denied");
     expect(controller.presentation?.responses).toHaveLength(3);
   });
   it("evicts cached bodies within a fixed budget, while retaining authoritative manifests", async () => {
@@ -536,14 +514,9 @@ describe("restored session response history", () => {
     expect(controller.presentation?.media).toHaveLength(3);
     expect(loader).not.toHaveBeenCalled();
     expect(controller.presentation?.responses[0]).not.toHaveProperty("run_id");
-    const id = responseBlockIdentity("history:replay-one", "response-1", 1);
-    controller.requestMedia([id]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(id)).toMatchObject({
-        content: "old",
-        status: "ready",
-      }),
-    );
+    await expect(
+      controller.loadBlock("history:replay-one", "response-1", 1),
+    ).resolves.toMatchObject({ type: "html", text: "old" });
     expect(loader).toHaveBeenCalledWith(
       expect.objectContaining({ entry_id: "tool-1", block_index: 2 }),
     );
@@ -553,15 +526,10 @@ describe("restored session response history", () => {
     });
     expect(port.getResponseBlock).not.toHaveBeenCalled();
     expect(port.getHtmlOutput).not.toHaveBeenCalled();
-    const next = responseBlockIdentity("history:replay-one", "response-3", 1);
-    controller.requestMedia([next]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(next)?.status).toBe("ready"),
-    );
-    controller.requestMedia([id]);
-    await vi.waitFor(() =>
-      expect(controller.presentation?.htmlContents.get(id)).toMatchObject({ content: "old" }),
-    );
+    await controller.loadBlock("history:replay-one", "response-3", 1);
+    await expect(
+      controller.loadBlock("history:replay-one", "response-1", 1),
+    ).resolves.toMatchObject({ text: "old" });
     expect(loader).toHaveBeenCalledTimes(3);
   });
   it("rejects stale replay bodies after another session or live operation becomes authoritative", async () => {

@@ -2,7 +2,7 @@
   "name": "adapter-mcp-apps-view",
   "version": "0.8.2",
   "private": true,
-  "description": "Built-in HTML MCP Apps View, shell and source-preserving preparation",
+  "description": "HTML MCP Apps View and shared static/interactive document preparation",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -17,6 +17,7 @@
     "parse5": "8.0.1"
   },
   "devDependencies": {
+    "@types/jsdom": "30.0.0",
     "@types/node": "24.13.6",
     "jsdom": "30.1.1",
     "typescript": "7.0.2",

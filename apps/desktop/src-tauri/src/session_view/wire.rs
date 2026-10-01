@@ -69,6 +69,18 @@ fn deferred_block(
     if let Some(DocumentBlock::Image { mime_type, .. }) = blocks(entry).get(index) {
         descriptor["mime_type"] = serde_json::Value::String(mime_type.clone());
     }
+    if kind == "html" {
+        let mode = match entry {
+            DocumentEntry::Tool {
+                blocks,
+                accepted_html_mode,
+                ..
+            } if index == blocks.len() => *accepted_html_mode,
+            _ => usecase::session_document::HtmlMode::Static,
+        };
+        descriptor["document_mode"] =
+            serde_json::to_value(mode).expect("HTML mode is serializable");
+    }
     descriptor
 }
 
@@ -313,6 +325,51 @@ pub(crate) fn get_session_block<R: Runtime>(
     read_block(&view, request)
 }
 
+/// Resolve a selected HTML body without granting source/session execution authority.
+pub(crate) fn html_document(
+    view: &SessionView,
+    generation: Uuid,
+    entry_id_value: &str,
+    revision: u64,
+    block_index: usize,
+) -> Result<(String, usecase::session_document::HtmlMode), String> {
+    if view.phase != ViewPhase::Ready {
+        return Err("History HTML is not ready".into());
+    }
+    let response = read_block(
+        view,
+        BlockRequest {
+            generation,
+            entry_id: entry_id_value.into(),
+            revision,
+            block_index,
+            offset: 0,
+        },
+    )?;
+    let DocumentBlock::Html { text } = response.block else {
+        return Err("Selected history block is not HTML".into());
+    };
+    let entry = view
+        .document
+        .as_ref()
+        .and_then(|document| {
+            document
+                .entries
+                .iter()
+                .find(|entry| entry_id(entry) == entry_id_value)
+        })
+        .ok_or("Session entry unavailable")?;
+    let mode = match entry {
+        DocumentEntry::Tool {
+            blocks,
+            accepted_html_mode,
+            ..
+        } if block_index == blocks.len() => *accepted_html_mode,
+        _ => usecase::session_document::HtmlMode::Static,
+    };
+    Ok((text, mode))
+}
+
 fn read_block(view: &SessionView, request: BlockRequest) -> Result<BlockResponse, String> {
     if view.generation != request.generation
         || !matches!(view.phase, ViewPhase::Live | ViewPhase::Ready)
@@ -401,6 +458,7 @@ mod tests {
                         data: "private-image-data".into(),
                     },
                 ],
+                accepted_html_mode: usecase::session_document::HtmlMode::Static,
                 accepted_html: Some("<style>body{color:red}</style>private HTML".into()),
             },
         ];
@@ -444,6 +502,7 @@ mod tests {
             title: "Synthetic publication".into(),
             status,
             blocks: vec![],
+            accepted_html_mode: usecase::session_document::HtmlMode::Static,
             accepted_html: html.map(str::to_owned),
         }
     }
@@ -621,6 +680,7 @@ mod tests {
                         mime_type: "image/png".into(),
                         data: "c3ludGhldGlj".into(),
                     }],
+                    accepted_html_mode: usecase::session_document::HtmlMode::Static,
                     accepted_html: Some("must not be admitted".into()),
                 },
                 DocumentEntry::Message {
@@ -763,6 +823,44 @@ mod tests {
         }
         view.phase = ViewPhase::Ready;
         assert!(read_block(&view, request(&view, "message:0", 0, 4, 0)).is_ok());
+    }
+
+    #[test]
+    fn archived_html_mode_is_authoritative_and_live_or_stale_views_cannot_replay() {
+        use usecase::session_document::HtmlMode;
+        let mut view = fixture();
+        assert!(html_document(&view, view.generation, "tool:1", 7, 2).is_err());
+        view.phase = ViewPhase::Ready;
+        assert_eq!(
+            html_document(&view, view.generation, "tool:1", 7, 2)
+                .unwrap()
+                .1,
+            HtmlMode::Static
+        );
+        if let DocumentEntry::Tool {
+            accepted_html_mode, ..
+        } = &mut view.document.as_mut().unwrap().entries[1]
+        {
+            *accepted_html_mode = HtmlMode::Interactive;
+        }
+        assert_eq!(
+            html_document(&view, view.generation, "tool:1", 7, 2)
+                .unwrap()
+                .1,
+            HtmlMode::Interactive
+        );
+        let entry = &view.document.as_ref().unwrap().entries[1];
+        assert_eq!(
+            deferred_block(entry, 7, 2, "html", 42)["document_mode"],
+            "interactive"
+        );
+        assert!(html_document(&view, Uuid::new_v4(), "tool:1", 7, 2).is_err());
+        assert!(html_document(&view, view.generation, "tool:1", 8, 2).is_err());
+        assert!(html_document(&view, view.generation, "tool:1", 7, 0).is_err());
+        for phase in [ViewPhase::Idle, ViewPhase::Loading, ViewPhase::Live] {
+            view.phase = phase;
+            assert!(html_document(&view, view.generation, "tool:1", 7, 2).is_err());
+        }
     }
 
     #[test]

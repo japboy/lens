@@ -11,7 +11,6 @@ mod command_work;
 mod commands;
 mod configuration_writer;
 mod external_agent;
-mod html_preview;
 mod publication;
 mod settings_recovery;
 use usecase::confirm_targets;
@@ -155,7 +154,7 @@ fn command_handler<R: tauri::Runtime>(
             mcp_apps::close_mcp_app,
             mcp_apps::mcp_app_request,
             mcp_apps::prepare_mcp_app_document,
-            mcp_apps::submit_mcp_app_link,
+            mcp_apps::open_html_presentation,
             mcp_apps::submit_mcp_app_message,
             mcp_apps::set_mcp_apps_servers,
             mcp_apps::get_mcp_server_tool_catalogs,

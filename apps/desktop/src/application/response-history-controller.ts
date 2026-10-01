@@ -8,7 +8,7 @@ import type {
 import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
 import { presentMcpApps, type PresentedOutputMedia } from "../output-media";
 import { imageDataUrl } from "../view-model";
-import { MAX_HTML_OUTPUT_BYTES, type HtmlOutputContent } from "./html-output-content";
+import { MAX_HTML_SOURCE_BYTES } from "adapter-mcp-apps-view";
 import type { WebviewPort } from "./webview-port";
 
 export const RESPONSE_BODY_CACHE_BYTES = 16 * 1024 * 1024;
@@ -41,6 +41,19 @@ export function presentResponseMedia(
         mimeType: "text/html",
         uri: block.uri,
         byteLength: block.byte_length,
+        presentationSource: block.source
+          ? {
+              kind: "history",
+              generation: scopeId.slice("history:".length),
+              entry_id: block.source.entry_id,
+              revision: block.source.revision,
+              block_index: block.source.block_index,
+            }
+          : {
+              kind: "live",
+              output_ref: { operation_id: scopeId, representation_id: response.id },
+              block_index: block.block_index,
+            },
       });
   }
   return [...media, ...presentMcpApps(response.mcpApps)];
@@ -53,7 +66,6 @@ export interface ResponseHistoryPresentation {
   scopeId: string;
   responses: readonly ResponseManifest[];
   media: readonly PresentedOutputMedia[];
-  htmlContents: ReadonlyMap<string, HtmlOutputContent>;
   mediaErrors: ReadonlyMap<string, string>;
   capacityReached: boolean;
   /** Previously displayed initial output; never authoritative committed bodies. */
@@ -94,7 +106,6 @@ export class ResponseHistoryController implements ReactiveController {
   private active = 0;
   private mediaDemand = new Set<string>();
   private mediaBodies = new Map<string, LensOutputBlock>();
-  private htmlContents = new Map<string, HtmlOutputContent>();
   private mediaErrors = new Map<string, string>();
   private initialProjection:
     | {
@@ -131,7 +142,6 @@ export class ResponseHistoryController implements ReactiveController {
     this.queue = [];
     this.mediaDemand.clear();
     this.mediaBodies.clear();
-    this.htmlContents.clear();
     this.mediaErrors.clear();
     this.initialProjection = undefined;
     this.provisionalBlocks.clear();
@@ -272,6 +282,15 @@ export class ResponseHistoryController implements ReactiveController {
   readonly loadBlock: LoadResponseBlock = async (operation, response, index) => {
     const descriptor = this.descriptor(operation, response, index);
     const key = responseBlockIdentity(operation, response, index);
+    if (descriptor.type === "html")
+      return {
+        type: "html",
+        resource_id: descriptor.resource_id,
+        mime_type: "text/html",
+        uri: descriptor.uri,
+        byte_length: descriptor.byte_length,
+        text: await this.loadHtmlBody(operation, response, descriptor, key),
+      };
     return (await this.obtain(key, async () => {
       const block = descriptor.source
         ? await this.loadReplayBlock(descriptor)
@@ -300,7 +319,6 @@ export class ResponseHistoryController implements ReactiveController {
     if (!changed) return;
     this.mediaDemand = demand;
     for (const id of this.mediaBodies.keys()) if (!demand.has(id)) this.mediaBodies.delete(id);
-    for (const id of this.htmlContents.keys()) if (!demand.has(id)) this.htmlContents.delete(id);
     for (const id of this.mediaErrors.keys()) if (!demand.has(id)) this.mediaErrors.delete(id);
     for (const [id, entry] of this.provisionalBlocks)
       if (entry.body.type === "image" && !demand.has(id)) this.releaseProvisional(id, entry, false);
@@ -310,11 +328,8 @@ export class ResponseHistoryController implements ReactiveController {
     for (const response of this.manifest?.responses ?? [])
       for (const descriptor of response.blocks) {
         const id = responseBlockIdentity(operation, response.id, descriptor.block_index);
-        if (!demand.has(id) || (descriptor.type !== "image" && descriptor.type !== "html"))
-          continue;
-        if (this.mediaBodies.has(id) || this.htmlContents.has(id)) continue;
-        if (descriptor.type === "html")
-          this.htmlContents.set(id, { resourceId: descriptor.resource_id, status: "loading" });
+        if (!demand.has(id) || descriptor.type !== "image") continue;
+        if (this.mediaBodies.has(id)) continue;
         void this.materializeMedia(operation, response.id, descriptor, id, generation);
       }
     this.publish();
@@ -327,10 +342,8 @@ export class ResponseHistoryController implements ReactiveController {
       const descriptor = response.blocks.find(
         (block) => responseBlockIdentity(operation, response.id, block.block_index) === id,
       );
-      if (!descriptor || (descriptor.type !== "image" && descriptor.type !== "html")) continue;
+      if (!descriptor || descriptor.type !== "image") continue;
       this.mediaErrors.delete(id);
-      if (descriptor.type === "html")
-        this.htmlContents.set(id, { resourceId: descriptor.resource_id, status: "loading" });
       this.publish();
       await this.materializeMedia(operation, response.id, descriptor, id, this.generation);
       return;
@@ -344,46 +357,32 @@ export class ResponseHistoryController implements ReactiveController {
     generation: number,
   ): Promise<void> {
     try {
-      const value = await this.loadMedia(operation, response, descriptor, id);
+      const value = await this.loadBlock(operation, response, descriptor.block_index);
       if (generation !== this.generation || !this.mediaDemand.has(id)) return;
       this.mediaErrors.delete(id);
-      if (typeof value === "string" && descriptor.type === "html")
-        this.htmlContents.set(id, {
-          resourceId: descriptor.resource_id,
-          status: "ready",
-          content: value,
-        });
-      else if (typeof value !== "string") this.mediaBodies.set(id, value);
+      this.mediaBodies.set(id, value);
       const provisional = this.provisionalBlocks.get(id);
       if (provisional) this.releaseProvisional(id, provisional, false);
     } catch {
       if (generation !== this.generation || !this.mediaDemand.has(id)) return;
       const message = "This response media could not be loaded.";
       this.mediaErrors.set(id, message);
-      if (descriptor.type === "html")
-        this.htmlContents.set(id, {
-          resourceId: descriptor.resource_id,
-          status: "failed",
-          message,
-        });
     }
     this.publish();
   }
-  private async loadMedia(
+  private async loadHtmlBody(
     operation: string,
     response: string,
-    descriptor: ResponseBlockDescriptor,
+    descriptor: Extract<ResponseBlockDescriptor, { type: "html" }>,
     id: string,
-  ): Promise<string | LensOutputBlock> {
-    if (descriptor.type !== "html")
-      return this.loadBlock(operation, response, descriptor.block_index);
+  ): Promise<string> {
     if (
       !Number.isSafeInteger(descriptor.byte_length) ||
       descriptor.byte_length < 0 ||
-      descriptor.byte_length > MAX_HTML_OUTPUT_BYTES
+      descriptor.byte_length > MAX_HTML_SOURCE_BYTES
     )
       throw new Error("HTML content exceeds the supported size.");
-    return this.obtain(`${id}:html`, async () => {
+    return (await this.obtain(`${id}:html`, async () => {
       let content: string;
       if (descriptor.source) {
         if (!this.loadHistoryBlock) throw new Error("Session block loader unavailable.");
@@ -394,7 +393,7 @@ export class ResponseHistoryController implements ReactiveController {
       if (new TextEncoder().encode(content).byteLength !== descriptor.byte_length)
         throw new Error("HTML content does not match its descriptor.");
       return content;
-    });
+    })) as string;
   }
   private async loadReplayBlock(descriptor: ResponseBlockDescriptor): Promise<LensOutputBlock> {
     if (!descriptor.source || !this.loadHistoryBlock)
@@ -406,15 +405,7 @@ export class ResponseHistoryController implements ReactiveController {
       case "unsupported":
         return block;
       case "html":
-        if (descriptor.type !== "html")
-          throw new Error("Session HTML does not match its descriptor.");
-        return {
-          type: "html",
-          resource_id: descriptor.resource_id,
-          uri: descriptor.uri,
-          mime_type: descriptor.mime_type,
-          byte_length: descriptor.byte_length,
-        };
+        throw new Error("Session content does not match its descriptor.");
       case "deferred":
         throw new Error("Session content was not materialized.");
     }
@@ -517,7 +508,6 @@ export class ResponseHistoryController implements ReactiveController {
       scopeId: operation,
       responses: this.manifest.responses,
       media,
-      htmlContents: new Map(this.htmlContents),
       mediaErrors: new Map(this.mediaErrors),
       capacityReached: this.manifest.capacityReached,
       provisionalBlocks: new Map(this.provisionalBlocks),

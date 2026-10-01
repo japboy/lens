@@ -48,13 +48,18 @@ describe("live/replay media contract", () => {
               .length,
         )
         .toBe(choice === "none" ? 0 : choice === "single" ? 1 : 3);
-      const expectedHtml =
-        choice === "mixed"
-          ? [{ resourceId: "fixture-html", status: "ready", content: artifact }]
-          : [];
-      await expect
-        .poll(() => [...controller.presentation!.htmlContents.values()])
-        .toEqual(expectedHtml);
+      const htmlBlocks = expected.filter((block) => block.type === "html");
+      for (const block of htmlBlocks) {
+        await expect(
+          controller.loadBlock(
+            presentation.scopeId,
+            presentation.responses[0]!.id,
+            block.block_index,
+          ),
+        ).resolves.toMatchObject({ type: "html", text: artifact });
+      }
+      for (const media of presentation.media.filter((media) => media.kind === "html"))
+        expect(media.presentationSource?.kind).toBe(controller === live ? "live" : "history");
     }
   });
 });

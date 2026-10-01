@@ -10,6 +10,7 @@ import type { DesktopMcpAppsPort as McpAppsPort } from "../../src/mcp-apps/compo
 const lease: McpAppLease = {
   id: "lease",
   artifact_id: "artifact",
+  document_mode: null,
   proxy_url: "http://127.0.0.1:43162/proxy",
   proxy_origin: "http://127.0.0.1:43162",
   resource: { html: "<p>Saved content</p>" },
@@ -46,7 +47,7 @@ function port(): McpAppsPort {
     closeMcpApp: vi.fn<McpAppsPort["closeMcpApp"]>(async () => {}),
     mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
     submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
-    submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
+    openHtmlPresentation: vi.fn<McpAppsPort["openHtmlPresentation"]>(),
     prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
   };
 }
@@ -58,7 +59,7 @@ afterEach(async () => {
 });
 
 describe("App presentation lifecycle", () => {
-  it("shows a read-only App link URL and opens it only through the trusted Lens button", async () => {
+  it("routes read-only App links directly to the Host without an agent message or second prompt", async () => {
     const native = port();
     vi.mocked(native.openMcpApp).mockResolvedValueOnce({
       ...lease,
@@ -66,7 +67,6 @@ describe("App presentation lifecycle", () => {
     });
     vi.mocked(native.mcpAppRequest).mockResolvedValueOnce({
       result: { isError: false },
-      link: { id: "link-1", url: "https://example.com/path?q=73" },
     });
     const element = mount(native, true);
 
@@ -80,14 +80,10 @@ describe("App presentation lifecycle", () => {
     await bridge.oninitialized?.({});
     await bridge.onopenlink?.({ url: "https://example.com/path?q=73" }, {} as never);
     await element.updateComplete;
-    const controls = element.querySelector('section[aria-label="Open external link"]')!;
-    expect(controls.querySelector("p")!.textContent).toBe("https://example.com/path?q=73");
-    expect(native.submitMcpAppLink).not.toHaveBeenCalled();
-    expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
-    (controls.querySelector("button") as HTMLButtonElement).click();
-    await flush();
-    await element.updateComplete;
-    expect(native.submitMcpAppLink).toHaveBeenCalledWith("lease", "link-1");
+    expect(native.mcpAppRequest).toHaveBeenCalledWith("lease", {
+      method: "ui/open-link",
+      params: { url: "https://example.com/path?q=73" },
+    });
     expect(element.querySelector('section[aria-label="Open external link"]')).toBeNull();
     expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
     await element.dispose();
@@ -136,7 +132,7 @@ describe("App presentation lifecycle", () => {
     await flush();
     expect(native.openMcpApp).toHaveBeenCalledWith("artifact", window.location.origin);
     expect(element.querySelector("iframe")).not.toBeNull();
-    expect(element.textContent).toContain("read-only");
+    expect(element.textContent).toContain("This App’s agent connection is closed.");
     expect(native.mcpAppRequest).not.toHaveBeenCalled();
     expect(native.submitMcpAppMessage).not.toHaveBeenCalled();
     await element.dispose();

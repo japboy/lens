@@ -15,6 +15,7 @@ const descriptor = (id: string): McpAppDescriptor => ({
 const lease = (id: string): McpAppLease => ({
   id: `lease-${id}`,
   artifact_id: id,
+  document_mode: null,
   proxy_url: "http://127.0.0.1:43162/proxy",
   proxy_origin: "http://127.0.0.1:43162",
   resource: { html: "<!doctype html><p>Original\u65e5\u672c\u8a9e</p>" },
@@ -36,7 +37,6 @@ function setup() {
       draft: { id: "draft-1", text: "Please explain 73" },
     })),
     submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
-    submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
   };
   const factory = () => {
     const bridge = {
@@ -82,6 +82,32 @@ afterEach(() => {
 });
 
 describe("selected App lifecycle", () => {
+  it("mounts a source-owned document lease without manufacturing an MCP artifact", async () => {
+    const test = setup();
+    const original = {
+      ...lease("history"),
+      artifact_id: null,
+      document_mode: "static" as const,
+      live: false,
+      host_capabilities: {},
+    };
+    const open = vi.fn<(origin: string) => Promise<McpAppLease>>(async () => original);
+    await test.controller.showDocument(
+      { id: "history-document", title: "Saved HTML" },
+      test.container,
+      open,
+    );
+    await test.initialize();
+    expect(test.port.openMcpApp).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledExactlyOnceWith(window.location.origin);
+    expect(test.prepareDocument).toHaveBeenCalledWith(original);
+    expect(test.controller.state).toMatchObject({ stage: "ready", live: false });
+    await test.controller.close();
+    expect(test.calls).toContain("revoke:lease-history");
+    expect(test.calls).toContain("teardown");
+    expect(test.calls.at(-1)).toBe("bridge-close");
+    expect(test.container.querySelector("iframe")).toBeNull();
+  });
   it("awaits the injected preparer before mounting while retaining original result and input", async () => {
     const test = setup();
     const original = {
@@ -102,7 +128,6 @@ describe("selected App lifecycle", () => {
     expect(test.container.querySelector("iframe")).toBeNull();
     const prepared = vi.mocked(test.prepareDocument).mock.calls[0]!;
     expect(prepared[0]).toBe(original);
-    expect(prepared[1]).toEqual(descriptor("a"));
     resolve();
     await opening;
     await test.initialize();

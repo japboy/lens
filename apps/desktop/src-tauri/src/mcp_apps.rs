@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use usecase::mcp_apps::{
     app_message_prompt, bounded, AppAuthorityFacts, AppViewInput, SourceAuthorityFacts,
 };
-pub use usecase::mcp_apps::{validate_servers, AppDraft, AppLink};
+pub use usecase::mcp_apps::{validate_servers, AppDraft};
 use usecase::model::{McpAppDescriptor, McpAppServer};
 use uuid::Uuid;
 
@@ -27,8 +27,51 @@ struct RetainedArtifact {
     descriptor: McpAppDescriptor,
     artifact: AppArtifact,
 }
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HtmlOutputRef {
+    operation_id: Uuid,
+    representation_id: Uuid,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HtmlPresentationSource {
+    Live {
+        output_ref: HtmlOutputRef,
+        block_index: usize,
+    },
+    History {
+        generation: Uuid,
+        entry_id: String,
+        revision: u64,
+        block_index: usize,
+    },
+}
+enum DisplayContent {
+    Mcp(Box<RetainedArtifact>),
+    Html {
+        source: HtmlPresentationSource,
+        mode: usecase::session_document::HtmlMode,
+    },
+}
+impl DisplayContent {
+    fn artifact(&self) -> Option<&RetainedArtifact> {
+        match self {
+            Self::Mcp(artifact) => Some(artifact),
+            Self::Html { .. } => None,
+        }
+    }
+    fn document_mode(&self) -> Option<usecase::session_document::HtmlMode> {
+        match self {
+            Self::Mcp(artifact) => (artifact.artifact.server_id
+                == adapter_mcp_server::apps::FALLBACK_SERVER)
+                .then_some(usecase::session_document::HtmlMode::Interactive),
+            Self::Html { mode, .. } => Some(*mode),
+        }
+    }
+}
+
 struct Lease {
-    artifact: RetainedArtifact,
+    content: DisplayContent,
     source: Weak<AppBroker>,
     generation: Uuid,
     source_generation: Option<Uuid>,
@@ -96,7 +139,8 @@ pub struct McpServerToolCatalog {
 #[derive(Serialize)]
 pub struct OpenedApp {
     pub id: Uuid,
-    pub artifact_id: Uuid,
+    pub artifact_id: Option<Uuid>,
+    pub document_mode: Option<usecase::session_document::HtmlMode>,
     pub proxy_url: String,
     pub proxy_origin: String,
     pub resource: AppResource,
@@ -125,8 +169,6 @@ pub struct AppRequestResult {
     pub result: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<AppDraft>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub link: Option<AppLink>,
 }
 
 impl McpAppsStore {
@@ -223,7 +265,11 @@ impl McpAppsStore {
             .map_err(|_| "Application state unavailable")?;
         let operation_id = runtime.lens.operation_id;
         if active.as_ref().is_some_and(|active| {
-            Some(active.lease.artifact.descriptor.operation_id) != operation_id
+            active
+                .lease
+                .content
+                .artifact()
+                .is_some_and(|artifact| Some(artifact.descriptor.operation_id) != operation_id)
         }) {
             let active = active.take().expect("checked operation");
             active.lease.cancellation.cancel();
@@ -237,9 +283,12 @@ impl McpAppsStore {
         Ok(())
     }
     fn lease_live(&self, runtime: &AppSnapshot, lease: &Lease) -> bool {
+        let Some(artifact) = lease.content.artifact() else {
+            return false;
+        };
         if self.ensure_open().is_err()
             || lease.cancellation.is_cancelled()
-            || !operation_eligible(runtime, &lease.artifact.descriptor)
+            || !operation_eligible(runtime, &artifact.descriptor)
         {
             return false;
         }
@@ -252,7 +301,7 @@ impl McpAppsStore {
                         generation: source.generation,
                         config: &source.config,
                     },
-                    &lease.artifact.descriptor,
+                    &artifact.descriptor,
                     lease.source_generation,
                 ) && Weak::ptr_eq(&source.broker, &lease.source)
                     && lease.source.upgrade().is_some()
@@ -274,28 +323,89 @@ impl McpAppsStore {
         if self.open_epoch.load(std::sync::atomic::Ordering::Acquire) != ticket {
             return Err("App display request was superseded".into());
         }
-        let latest = state
-            .runtime
-            .read()
-            .map_err(|_| "Application state unavailable")?;
-        let descriptor = &lease.artifact.descriptor;
-        if latest.lens.operation_id != Some(descriptor.operation_id)
-            || !(latest.lens.mcp_apps.iter().any(|a| a.id == descriptor.id)
-                || latest
-                    .lens
-                    .response_history
-                    .responses
-                    .iter()
-                    .any(|r| r.mcp_apps.iter().any(|a| a.id == descriptor.id)))
-        {
-            return Err("App operation expired before display opened".into());
+        let install = |active: &mut Option<ActiveLease>, lease: Lease, live: bool| {
+            if let Some(previous) = active.take() {
+                previous.lease.cancellation.cancel();
+            }
+            *active = Some(ActiveLease { id, lease });
+            Ok(live)
+        };
+        match &lease.content {
+            DisplayContent::Html {
+                source:
+                    HtmlPresentationSource::History {
+                        generation,
+                        entry_id,
+                        revision,
+                        block_index,
+                    },
+                mode,
+            } => {
+                let (generation, entry_id, revision, block_index, expected_mode) = (
+                    *generation,
+                    entry_id.clone(),
+                    *revision,
+                    *block_index,
+                    *mode,
+                );
+                state.session_view.with_html_document(
+                    generation,
+                    &entry_id,
+                    revision,
+                    block_index,
+                    |_, mode| {
+                        if mode != expected_mode {
+                            return Err("History HTML permission changed".into());
+                        }
+                        install(&mut active, lease, false)
+                    },
+                )
+            }
+            _ => {
+                let latest = state
+                    .runtime
+                    .read()
+                    .map_err(|_| "Application state unavailable")?;
+                match &lease.content {
+                    DisplayContent::Mcp(artifact) => {
+                        if !authority_facts(&latest).display_retained(
+                            &artifact.descriptor,
+                            latest.lens.mcp_apps.iter().chain(
+                                latest
+                                    .lens
+                                    .response_history
+                                    .responses
+                                    .iter()
+                                    .flat_map(|response| response.mcp_apps.iter()),
+                            ),
+                        ) {
+                            return Err("App operation expired before display opened".into());
+                        }
+                    }
+                    DisplayContent::Html {
+                        source:
+                            HtmlPresentationSource::Live {
+                                output_ref,
+                                block_index,
+                            },
+                        ..
+                    } => {
+                        let block = crate::commands::response_block(
+                            &latest.lens,
+                            output_ref.operation_id,
+                            output_ref.representation_id,
+                            *block_index,
+                        )?;
+                        if !matches!(block, crate::model::LensOutputBlock::Html { .. }) {
+                            return Err("Selected response block is not HTML".into());
+                        }
+                    }
+                    _ => unreachable!("history branch handled above"),
+                }
+                let live = self.lease_live(&latest, &lease);
+                install(&mut active, lease, live)
+            }
         }
-        let live = self.lease_live(&latest, &lease);
-        if let Some(previous) = active.take() {
-            previous.lease.cancellation.cancel();
-        }
-        *active = Some(ActiveLease { id, lease });
-        Ok(live)
     }
     fn artifact_path(&self, id: Uuid) -> Result<std::path::PathBuf, String> {
         let storage = self.storage.lock().map_err(|_| "MCP storage unavailable")?;
@@ -331,7 +441,7 @@ impl McpAppsStore {
             .lock()
             .ok()
             .is_some_and(|s| s.as_ref().is_some_and(|s| s.broker.upgrade().is_some()));
-        let leases=self.active_lease.lock().map(|active| active.iter().map(|active| { let l = &active.lease; json!({"id":active.id,"artifact_id":l.artifact.descriptor.id,"generation":l.generation,"source_live":l.source.upgrade().is_some(),"draft_id":l.input.draft().map(|d|d.id),"submitted":l.input.submitted(),"authority_active":!l.cancellation.is_cancelled()}) }).collect::<Vec<_>>()).unwrap_or_default();
+        let leases=self.active_lease.lock().map(|active| active.iter().map(|active| { let l = &active.lease; json!({"id":active.id,"artifact_id":l.content.artifact().map(|artifact| artifact.descriptor.id),"generation":l.generation,"source_live":l.source.upgrade().is_some(),"draft_id":l.input.draft().map(|d|d.id),"submitted":l.input.submitted(),"authority_active":!l.cancellation.is_cancelled()}) }).collect::<Vec<_>>()).unwrap_or_default();
         json!({"source_live":source_live,"leases":leases})
     }
     fn tool_catalogs(&self, runtime: &AppSnapshot) -> Result<Vec<McpServerToolCatalog>, String> {
@@ -552,6 +662,142 @@ fn known_host_url(url: &reqwest::Url, dev_url: Option<&reqwest::Url>) -> bool {
     embedded || dev_url.is_some_and(|dev| dev.origin() == url.origin())
 }
 
+fn html_source(
+    state: &AppState,
+    source: &HtmlPresentationSource,
+) -> Result<(String, usecase::session_document::HtmlMode), String> {
+    match source {
+        HtmlPresentationSource::Live {
+            output_ref,
+            block_index,
+        } => {
+            let runtime = state
+                .runtime
+                .read()
+                .map_err(|_| "Application state unavailable")?;
+            let block = crate::commands::response_block(
+                &runtime.lens,
+                output_ref.operation_id,
+                output_ref.representation_id,
+                *block_index,
+            )?;
+            match block {
+                crate::model::LensOutputBlock::Html { text, .. } => {
+                    Ok((text, usecase::session_document::HtmlMode::Static))
+                }
+                _ => Err("Selected response block is not HTML".into()),
+            }
+        }
+        HtmlPresentationSource::History {
+            generation,
+            entry_id,
+            revision,
+            block_index,
+        } => state.session_view.with_html_document(
+            *generation,
+            entry_id,
+            *revision,
+            *block_index,
+            |html, mode| Ok((html, mode)),
+        ),
+    }
+}
+fn document_policy(
+    mode: usecase::session_document::HtmlMode,
+) -> adapter_mcp_server::apps::DocumentPolicy {
+    match mode {
+        usecase::session_document::HtmlMode::Interactive => {
+            adapter_mcp_server::apps::DocumentPolicy::Interactive
+        }
+        usecase::session_document::HtmlMode::Static => {
+            use base64::Engine;
+            use sha2::Digest;
+            let helper = include_str!(
+                "../../../../packages/adapter-mcp-apps-view/src/assets/rich-html-links.js"
+            );
+            adapter_mcp_server::apps::DocumentPolicy::Static {
+                trusted_script_sha256: base64::engine::general_purpose::STANDARD
+                    .encode(sha2::Sha256::digest(helper.as_bytes())),
+            }
+        }
+    }
+}
+#[tauri::command]
+pub async fn open_html_presentation<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    source: HtmlPresentationSource,
+    host_origin: String,
+) -> Result<OpenedApp, String> {
+    ensure_host(&app, &window)?;
+    if !host_origin_matches(
+        &window.url().map_err(|_| "Unable to inspect Host URL")?,
+        &host_origin,
+    ) {
+        return Err("HTML Host origin mismatch".into());
+    }
+    let state = app.state::<AppState>();
+    let ticket = state
+        .mcp_apps
+        .open_epoch
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
+    let (html, mode) = html_source(&state, &source)?;
+    if html.len() > adapter_mcp_server::MAX_HTML_BYTES {
+        return Err("HTML document exceeds size limit".into());
+    }
+    let resource = AppResource {
+        html: include_str!(
+            "../../../../packages/adapter-mcp-apps-view/src/assets/rich-html-app.html"
+        )
+        .into(),
+        meta: json!({}),
+    };
+    let display = DisplayServer::start(
+        resource.clone(),
+        Some(html.clone()),
+        host_origin,
+        include_str!("../../../../packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.html")
+            .into(),
+        include_str!("../../../../packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js")
+            .into(),
+        document_policy(mode),
+    )
+    .await
+    .map_err(|_| "Unable to start HTML sandbox")?;
+    let id = Uuid::new_v4();
+    let mut opened = OpenedApp {
+        id,
+        artifact_id: None,
+        document_mode: Some(mode),
+        proxy_url: display.proxy_url.clone(),
+        proxy_origin: display.origin.clone(),
+        resource,
+        // Display-only shell input; this is not a saved MCP transaction.
+        input: json!({"html": html}),
+        result: json!({"content": []}),
+        host_capabilities: json!({}),
+        live: false,
+        document_url: display.document_url.clone(),
+    };
+    state.mcp_apps.commit_display(
+        &state,
+        ticket,
+        id,
+        Lease {
+            content: DisplayContent::Html { source, mode },
+            source: Weak::new(),
+            generation: Uuid::new_v4(),
+            source_generation: None,
+            _document: display,
+            input: AppViewInput::default(),
+            cancellation: CancellationToken::new(),
+        },
+    )?;
+    opened.set_live(false)?;
+    Ok(opened)
+}
+
 #[tauri::command]
 pub async fn open_mcp_app<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -617,6 +863,7 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
             .into(),
         include_str!("../../../../packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js")
             .into(),
+        adapter_mcp_server::apps::DocumentPolicy::Interactive,
     )
     .await
     .map_err(|_| "Unable to start App sandbox")?;
@@ -625,7 +872,11 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
     // The SDK gets the original result; the bundled shell reads this Host-context value.
     let mut response = OpenedApp {
         id,
-        artifact_id,
+        artifact_id: Some(artifact_id),
+        document_mode: display
+            .document_url
+            .as_ref()
+            .map(|_| usecase::session_document::HtmlMode::Interactive),
         proxy_url: display.proxy_url.clone(),
         proxy_origin: display.origin.clone(),
         resource: artifact.artifact.resource.clone(),
@@ -653,7 +904,7 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
         open_ticket,
         id,
         Lease {
-            artifact,
+            content: DisplayContent::Mcp(Box::new(artifact)),
             source,
             generation,
             source_generation,
@@ -680,24 +931,28 @@ pub fn close_mcp_app<R: tauri::Runtime>(app: AppHandle<R>, lease_id: Uuid) -> Re
     Ok(())
 }
 
-fn ensure_display(
-    store: &McpAppsStore,
-    snapshot: &AppSnapshot,
-    lease: &Lease,
-) -> Result<(), String> {
-    store.ensure_open()?;
-    if !authority_facts(snapshot).display_retained(
-        &lease.artifact.descriptor,
-        snapshot.lens.mcp_apps.iter().chain(
-            snapshot
-                .lens
-                .response_history
-                .responses
-                .iter()
-                .flat_map(|response| response.mcp_apps.iter()),
-        ),
-    ) {
-        return Err("App display expired".into());
+fn ensure_display(state: &AppState, lease: &Lease) -> Result<(), String> {
+    state.mcp_apps.ensure_open()?;
+    match &lease.content {
+        DisplayContent::Mcp(artifact) => {
+            let snapshot = state.snapshot()?;
+            if !authority_facts(&snapshot).display_retained(
+                &artifact.descriptor,
+                snapshot.lens.mcp_apps.iter().chain(
+                    snapshot
+                        .lens
+                        .response_history
+                        .responses
+                        .iter()
+                        .flat_map(|response| response.mcp_apps.iter()),
+                ),
+            ) {
+                return Err("App display expired".into());
+            }
+        }
+        DisplayContent::Html { source, .. } => {
+            html_source(state, source)?;
+        }
     }
     Ok(())
 }
@@ -732,38 +987,22 @@ pub fn prepare_mcp_app_document<R: tauri::Runtime>(
         .filter(|active| active.id == lease_id)
         .ok_or("App lease expired")?
         .lease;
-    ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
-    if lease.artifact.artifact.server_id != adapter_mcp_server::apps::FALLBACK_SERVER {
-        return Err("Only bundled HTML documents can be prepared".into());
+    ensure_display(&state, lease)?;
+    if lease.content.document_mode().is_none() {
+        return Err("Only HTML documents can be prepared".into());
     }
     lease._document.prepare_document(document)
 }
-#[tauri::command]
-pub fn submit_mcp_app_link<R: tauri::Runtime>(
-    app: AppHandle<R>,
-    window: tauri::WebviewWindow<R>,
-    lease_id: Uuid,
-    link_id: Uuid,
+
+fn open_link_with(
+    state: &AppState,
+    lease: &Lease,
+    params: &Value,
+    open: impl FnOnce(String) -> Result<(), String>,
 ) -> Result<(), String> {
-    ensure_host(&app, &window)?;
-    let state = app.state::<AppState>();
-    let destination = {
-        let mut active = state
-            .mcp_apps
-            .active_lease
-            .lock()
-            .map_err(|_| "MCP lease unavailable")?;
-        let lease = &mut active
-            .as_mut()
-            .filter(|active| active.id == lease_id)
-            .ok_or("App lease expired")?
-            .lease;
-        ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
-        lease.input.take_link(link_id)?
-    };
-    app.opener()
-        .open_url(destination, None::<&str>)
-        .map_err(|_| "Unable to open App link in default browser".into())
+    ensure_display(state, lease)?;
+    let destination = usecase::mcp_apps::link_destination(params)?;
+    open(destination)
 }
 
 #[tauri::command]
@@ -791,17 +1030,17 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
             .ok_or("App lease expired")?
             .lease;
         if method == "ui/open-link" {
-            ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
-            let link = lease.input.replace_link(Uuid::new_v4(), &params)?;
+            open_link_with(&state, lease, &params, |destination| {
+                app.opener()
+                    .open_url(destination, None::<&str>)
+                    .map_err(|_| "Unable to open HTML link in default browser".into())
+            })?;
             return Ok(AppRequestResult {
-                result: json!({"isError":false}),
+                result: json!({}),
                 draft: None,
-                link: Some(link),
             });
         }
-        if !state.mcp_apps.lease_live(&state.snapshot()?, lease)
-            || state.lens()?.operation_id != Some(lease.artifact.descriptor.operation_id)
-        {
+        if !state.mcp_apps.lease_live(&state.snapshot()?, lease) {
             return Err("App session authority expired".into());
         }
         match method {
@@ -810,7 +1049,6 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
                 return Ok(AppRequestResult {
                     result: json!({}),
                     draft: None,
-                    link: None,
                 });
             }
             "ui/message" => {
@@ -818,7 +1056,6 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
                 return Ok(AppRequestResult {
                     result: json!({}),
                     draft: Some(draft),
-                    link: None,
                 });
             }
             "tools/call" | "tools/list" => {}
@@ -830,7 +1067,12 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
             return Err("Agent is busy; retry the App operation when it finishes".into());
         }
         (
-            lease.artifact.artifact.clone(),
+            lease
+                .content
+                .artifact()
+                .ok_or("App source authority unavailable")?
+                .artifact
+                .clone(),
             lease.source.upgrade().ok_or("MCP source unavailable")?,
             lease.generation,
             lease.cancellation.clone(),
@@ -867,7 +1109,6 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
     Ok(AppRequestResult {
         result,
         draft: None,
-        link: None,
     })
 }
 #[tauri::command]
@@ -893,11 +1134,15 @@ pub async fn submit_mcp_app_message<R: tauri::Runtime>(
             return Err("App session expired".into());
         }
         let text = lease.input.pending_message(draft_id)?.text.clone();
-        let prompt = app_message_prompt(&lease.artifact.descriptor, &text, lease.input.context());
+        let artifact = lease
+            .content
+            .artifact()
+            .ok_or("App source authority unavailable")?;
+        let prompt = app_message_prompt(&artifact.descriptor, &text, lease.input.context());
         let receiver =
             state
                 .agent_control
-                .submit_app_message(&app, &lease.artifact.descriptor, prompt)?;
+                .submit_app_message(&app, &artifact.descriptor, prompt)?;
         lease.input.mark_submitted();
         receiver
     };
@@ -1049,7 +1294,8 @@ mod tests {
     fn opened_app_serializes_only_implemented_live_content_modalities() {
         let mut opened = OpenedApp {
             id: Uuid::new_v4(),
-            artifact_id: Uuid::new_v4(),
+            artifact_id: Some(Uuid::new_v4()),
+            document_mode: None,
             proxy_url: "http://127.0.0.1:1234/proxy/test".into(),
             proxy_origin: "http://127.0.0.1:1234".into(),
             resource: AppResource {
@@ -1131,7 +1377,7 @@ mod tests {
             meta: json!({}),
         };
         Lease {
-            artifact: RetainedArtifact {
+            content: DisplayContent::Mcp(Box::new(RetainedArtifact {
                 artifact: AppArtifact {
                     id: descriptor.id,
                     run_id: Uuid::new_v4(),
@@ -1144,7 +1390,7 @@ mod tests {
                     result: json!({}),
                 },
                 descriptor,
-            },
+            })),
             source,
             generation: Uuid::new_v4(),
             source_generation,
@@ -1154,6 +1400,7 @@ mod tests {
                 "tauri://localhost".into(),
                 "__SETTINGS_JSON__".into(),
                 String::new(),
+                adapter_mcp_server::apps::DocumentPolicy::Interactive,
             )
             .await
             .unwrap(),
@@ -1161,6 +1408,216 @@ mod tests {
             cancellation: CancellationToken::new(),
         }
     }
+    #[test]
+    fn static_document_policy_hashes_exact_trusted_link_helper_bytes() {
+        use base64::Engine;
+        use sha2::Digest;
+        let policy = document_policy(usecase::session_document::HtmlMode::Static);
+        let adapter_mcp_server::apps::DocumentPolicy::Static {
+            trusted_script_sha256,
+        } = policy
+        else {
+            panic!("static history must not enable authored JavaScript");
+        };
+        assert_eq!(
+            trusted_script_sha256,
+            base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(include_bytes!(
+                "../../../../packages/adapter-mcp-apps-view/src/assets/rich-html-links.js"
+            )))
+        );
+        assert!(matches!(
+            document_policy(usecase::session_document::HtmlMode::Interactive),
+            adapter_mcp_server::apps::DocumentPolicy::Interactive
+        ));
+    }
+
+    #[tokio::test]
+    async fn html_presentation_command_returns_exact_prepare_input_without_mcp_artifact_authority()
+    {
+        use usecase::session_document::{DocumentEntry, HtmlMode, SessionDocument};
+        let state = crate::test_support::state();
+        let html = "<p>saved</p><script>localTabs()</script>";
+        let mut document = SessionDocument::default();
+        document.entries.push(DocumentEntry::Tool {
+            id: "render".into(),
+            title: "render_html".into(),
+            status: agent_client_protocol::schema::v1::ToolCallStatus::Completed,
+            blocks: vec![],
+            accepted_html: Some(html.into()),
+            accepted_html_mode: HtmlMode::Interactive,
+        });
+        state
+            .session_view
+            .install_validation_document(document)
+            .unwrap();
+        let source = HtmlPresentationSource::History {
+            generation: state.session_view.configuration_authority().unwrap().0,
+            entry_id: "render".into(),
+            revision: state.session_view.view().unwrap().revision,
+            block_index: 0,
+        };
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        let overlay = tauri::WebviewWindowBuilder::new(
+            &app,
+            crate::ui::LENS_WINDOW_LABEL,
+            Default::default(),
+        )
+        .build()
+        .unwrap();
+        let origin = overlay.url().unwrap().origin().ascii_serialization();
+        let opened = open_html_presentation(app.handle().clone(), overlay.clone(), source, origin)
+            .await
+            .unwrap();
+        let serialized = serde_json::to_value(&opened).unwrap();
+        assert!(serialized["artifact_id"].is_null());
+        assert_eq!(serialized["document_mode"], "interactive");
+        assert_eq!(serialized["input"]["html"], html);
+        assert_eq!(serialized["result"], json!({"content": []}));
+        assert_eq!(serialized["live"], false);
+        assert!(serialized["host_capabilities"].get("message").is_none());
+        assert!(serialized["host_capabilities"].get("serverTools").is_none());
+        assert_eq!(
+            reqwest::get(opened.document_url.unwrap())
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            html
+        );
+        prepare_mcp_app_document(
+            app.handle().clone(),
+            overlay,
+            opened.id,
+            "<p>prepared</p>".into(),
+        )
+        .unwrap();
+        assert!(mcp_app_request(app.handle().clone(), opened.id, json!({"method": "ui/message", "params": {"content": [{"type": "text", "text": "forbidden"}]}})).await.is_err());
+        assert!(mcp_app_request(
+            app.handle().clone(),
+            opened.id,
+            json!({"method": "tools/list"})
+        )
+        .await
+        .is_err());
+        close_mcp_app(app.handle().clone(), opened.id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn archived_html_display_has_only_local_and_link_authority_and_rejects_replacement() {
+        use usecase::session_document::{DocumentEntry, HtmlMode, SessionDocument};
+        let state = crate::test_support::state();
+        let mut document = SessionDocument::default();
+        document.entries.push(DocumentEntry::Tool {
+            id: "render".into(),
+            title: "render_html".into(),
+            status: agent_client_protocol::schema::v1::ToolCallStatus::Completed,
+            blocks: vec![],
+            accepted_html: Some("<button>Details</button><script>localTabs()</script>".into()),
+            accepted_html_mode: HtmlMode::Interactive,
+        });
+        state
+            .session_view
+            .install_validation_document(document.clone())
+            .unwrap();
+        let view = state.session_view.view().unwrap();
+        let source = HtmlPresentationSource::History {
+            generation: state.session_view.configuration_authority().unwrap().0,
+            entry_id: "render".into(),
+            revision: view.revision,
+            block_index: 0,
+        };
+        assert_eq!(
+            html_source(&state, &source).unwrap().1,
+            HtmlMode::Interactive
+        );
+        let mut stale_revision = source.clone();
+        if let HtmlPresentationSource::History { revision, .. } = &mut stale_revision {
+            *revision += 1;
+        }
+        assert!(html_source(&state, &stale_revision).is_err());
+        let display = DisplayServer::start(
+            AppResource {
+                html: "<p>shell</p>".into(),
+                meta: json!({}),
+            },
+            Some("<p>document</p>".into()),
+            "tauri://localhost".into(),
+            "__SETTINGS_JSON__".into(),
+            String::new(),
+            document_policy(HtmlMode::Interactive),
+        )
+        .await
+        .unwrap();
+        let endpoint = display.proxy_url.clone();
+        let id = Uuid::new_v4();
+        let lease = Lease {
+            content: DisplayContent::Html {
+                source: source.clone(),
+                mode: HtmlMode::Interactive,
+            },
+            source: Weak::new(),
+            source_generation: None,
+            generation: Uuid::new_v4(),
+            _document: display,
+            input: AppViewInput::default(),
+            cancellation: CancellationToken::new(),
+        };
+        assert!(!state.mcp_apps.commit_display(&state, 0, id, lease).unwrap());
+        assert!(state.runtime.read().unwrap().lens.operation_id.is_none());
+        {
+            let active = state.mcp_apps.active_lease.lock().unwrap();
+            let lease = &active.as_ref().unwrap().lease;
+            assert!(!state.mcp_apps.lease_live(&state.snapshot().unwrap(), lease));
+            let mut opened = None;
+            open_link_with(
+                &state,
+                lease,
+                &json!({"url":"https://example.com/?from=history#details"}),
+                |destination| {
+                    opened = Some(destination);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                opened.as_deref(),
+                Some("https://example.com/?from=history#details")
+            );
+        }
+        // A different archived selection has a new generation even when its entry/body are equal.
+        state
+            .session_view
+            .install_validation_document(document)
+            .unwrap();
+        {
+            let active = state.mcp_apps.active_lease.lock().unwrap();
+            let lease = &active.as_ref().unwrap().lease;
+            assert!(ensure_display(&state, lease).is_err());
+            assert!(open_link_with(
+                &state,
+                lease,
+                &json!({"url":"https://example.com/"}),
+                |_| panic!("expired archive must not open links")
+            )
+            .is_err());
+        }
+        state.session_view.clear().unwrap();
+        assert!(html_source(&state, &source).is_err());
+        {
+            let active = state.mcp_apps.active_lease.lock().unwrap();
+            assert!(ensure_display(&state, &active.as_ref().unwrap().lease).is_err());
+        }
+        let old = state.mcp_apps.active_lease.lock().unwrap().take().unwrap();
+        old.lease.cancellation.cancel();
+        drop(old);
+        tokio::task::yield_now().await;
+        assert!(reqwest::Client::new().get(endpoint).send().await.is_err());
+    }
+
     #[tokio::test]
     async fn delayed_old_source_drop_cannot_revoke_new_source_lease() {
         let store = Arc::new(McpAppsStore::default());
@@ -1421,7 +1878,9 @@ mod tests {
             Some(lifetime.generation),
         )
         .await;
-        display.artifact.artifact.server_id = adapter_mcp_server::apps::FALLBACK_SERVER.into();
+        if let DisplayContent::Mcp(artifact) = &mut display.content {
+            artifact.artifact.server_id = adapter_mcp_server::apps::FALLBACK_SERVER.into();
+        }
         let endpoint = display._document.proxy_url.clone();
         let cancel = display.cancellation.clone();
         let id = Uuid::new_v4();
@@ -1481,41 +1940,30 @@ mod tests {
             .is_success());
         // A delayed close for another display must not remove the active lease.
         close_mcp_app(handle.clone(), Uuid::new_v4()).unwrap();
-        let first_link = mcp_app_request(
-            handle.clone(),
-            id,
-            json!({"method":"ui/open-link","params":{"url":"https://example.com/first"}}),
-        )
-        .await
-        .unwrap()
-        .link
-        .unwrap();
-        let second_link = mcp_app_request(
-            handle.clone(),
-            id,
-            json!({"method":"ui/open-link","params":{"url":"https://example.com/second"}}),
-        )
-        .await
-        .unwrap()
-        .link
-        .unwrap();
-        assert_ne!(first_link.id, second_link.id);
-        assert_eq!(
-            app.state::<AppState>()
-                .mcp_apps
-                .active_lease
-                .lock()
-                .unwrap()
-                .as_ref()
-                .filter(|active| active.id == id)
-                .unwrap()
-                .lease
-                .input
-                .link()
-                .unwrap()
-                .id,
-            second_link.id
-        );
+        let state = app.state::<AppState>();
+        {
+            let active = state.mcp_apps.active_lease.lock().unwrap();
+            let lease = &active.as_ref().unwrap().lease;
+            let mut opened = Vec::new();
+            for url in ["https://example.com/first", "https://example.com/second"] {
+                open_link_with(&state, lease, &json!({"url":url}), |destination| {
+                    opened.push(destination);
+                    Ok(())
+                })
+                .unwrap();
+            }
+            assert_eq!(
+                opened,
+                ["https://example.com/first", "https://example.com/second"]
+            );
+            assert!(open_link_with(
+                &state,
+                lease,
+                &json!({"url":"file:///private"}),
+                |_| panic!("must not open")
+            )
+            .is_err());
+        }
         for method in [
             "tools/list",
             "tools/call",
@@ -1587,7 +2035,9 @@ mod tests {
             .mcp_apps
             .lease_live(&state.snapshot().unwrap(), &display));
         assert!(
-            state.mcp_apps.is_live(&display.artifact.descriptor),
+            state
+                .mcp_apps
+                .is_live(&display.content.artifact().unwrap().descriptor),
             "old source is still registered while its captured configuration is retired"
         );
         drop(lifetime);

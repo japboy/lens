@@ -24,7 +24,7 @@ const EXCLUDED = new Set([
   "plaintext",
 ]);
 const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
-const MAX_INPUT_BYTES = 512 * 1024;
+export const MAX_HTML_SOURCE_BYTES = 512 * 1024;
 export const MAX_RICH_HTML_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_MATH_BYTES = 2 * 1024 * 1024;
 const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
@@ -40,7 +40,18 @@ function escaped(text: string, at: number): boolean {
 /** Built-in presentation derivative only: source locations preserve executable
  * author bytes and natural parser semantics. Raw artifacts/results remain immutable. */
 export function prepareRichHtmlDocument(source: string, htmlMathInlineCss: string): string {
-  if (bytes(source) > MAX_INPUT_BYTES) throw new Error("HTML content exceeds 512 KiB");
+  if (bytes(source) > MAX_HTML_SOURCE_BYTES) throw new Error("HTML content exceeds 512 KiB");
+  return enhanceHtmlDocument(source, htmlMathInlineCss);
+}
+
+/** Serialized static derivatives use the document budget, after the source limit. */
+export function prepareSanitizedHtmlDocument(source: string, htmlMathInlineCss: string): string {
+  if (bytes(source) > MAX_RICH_HTML_DOCUMENT_BYTES)
+    throw new Error("Prepared HTML exceeds the App document budget");
+  return enhanceHtmlDocument(source, htmlMathInlineCss);
+}
+
+function enhanceHtmlDocument(source: string, htmlMathInlineCss: string): string {
   const document = parse(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
   const html = document.childNodes.find(
     (node): node is Element => element(node) && node.tagName === "html",

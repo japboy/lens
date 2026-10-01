@@ -1,8 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
-import { keyed } from "lit/directives/keyed.js";
-import { prepareHtmlPreview } from "../html-output";
 import {
   OUTPUT_MEDIA_DEMAND_EVENT,
   dispatchComponentEvent,
@@ -17,16 +15,6 @@ import type {
 import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import type { LensMcpApp } from "./lens-mcp-app";
 import "./lens-mcp-app";
-import type { HtmlOutputContent } from "../application/html-output-content";
-
-type PreparedHtml = {
-  id: string;
-  resourceId: string;
-  content: string;
-} & (
-  | { status: "ready"; preview: ReturnType<typeof prepareHtmlPreview> }
-  | { status: "failed"; message: string }
-);
 
 type MediaOverlay = "none" | "details";
 interface FullscreenSession {
@@ -54,19 +42,11 @@ interface LoadedImage {
 export class LensOutputMedia extends LitElement {
   @property({ attribute: false }) appPort: McpAppsPort | undefined;
   @property({ type: Boolean }) replayApps = false;
-  private preparedHtml = new Map<string, PreparedHtml>();
   private static nextId = 0;
   private readonly detailsId = `lens-output-media-details-${++LensOutputMedia.nextId}`;
 
   @property({ attribute: false })
   media: readonly PresentedOutputMedia[] = [];
-
-  @property({ attribute: false })
-  htmlContent: HtmlOutputContent | undefined;
-
-  /** Response-scoped media IDs prevent equal resource IDs from sharing bodies. */
-  @property({ attribute: false })
-  htmlContents: ReadonlyMap<string, HtmlOutputContent> | undefined;
 
   @property({ attribute: false })
   mediaErrors: ReadonlyMap<string, string> = new Map();
@@ -84,9 +64,6 @@ export class LensOutputMedia extends LitElement {
     | { promise: Promise<boolean>; resolve: (value: boolean) => void }
     | undefined;
   private requestedMediaIdentity: string | undefined;
-
-  @state()
-  private renderedHtml = new Map<string, { resourceId: string; content: string }>();
 
   @state()
   private selectedId: string | undefined;
@@ -139,22 +116,12 @@ export class LensOutputMedia extends LitElement {
         this.media.length !== previous.length ||
         this.media.some((item, index) => !this.sameMedia(item, previous[index]));
     }
-    this.prepareHtml();
   }
 
-  /** Bound body demand and HTML preparation to the selection and its neighbors. */
+  /** Bound media demand to the selection and its neighbors. Documents own their native body lease. */
   private get mountedMedia(): readonly PresentedOutputMedia[] {
     const selected = this.selectedIndex;
     return this.media.slice(Math.max(0, selected - 1), selected + 2);
-  }
-
-  private contentFor(item: PresentedOutputHtml): HtmlOutputContent | undefined {
-    const content = this.htmlContents
-      ? this.htmlContents.get(item.id)
-      : this.media.filter((media) => media.kind === "html").length === 1
-        ? this.htmlContent
-        : undefined;
-    return content?.resourceId === item.resourceId ? content : undefined;
   }
 
   protected updated(): void {
@@ -241,55 +208,13 @@ export class LensOutputMedia extends LitElement {
   }
 
   private htmlState(item: PresentedOutputHtml): "loading" | "ready" | "failed" {
-    const content = this.contentFor(item);
-    if (content?.resourceId !== item.resourceId) return "loading";
-    if (content.status !== "ready") return content.status;
-    if (this.preparedHtml.get(item.id)?.status === "failed") return "failed";
-    const rendered = this.renderedHtml.get(item.id);
-    return rendered?.resourceId === item.resourceId && rendered.content === content.content
-      ? "ready"
-      : "loading";
-  }
-
-  private prepareHtml(): void {
-    const mounted = this.mountedMedia;
-    const retained = new Set(mounted.map((item) => item.id));
-    for (const id of this.preparedHtml.keys()) if (!retained.has(id)) this.preparedHtml.delete(id);
-    for (const id of this.renderedHtml.keys()) {
-      if (id !== this.media[this.selectedIndex]?.id) this.renderedHtml.delete(id);
-    }
-    for (const item of mounted) {
-      if (item.kind !== "html") continue;
-      const content = this.contentFor(item);
-      if (content?.status !== "ready") {
-        this.preparedHtml.delete(item.id);
-        this.renderedHtml.delete(item.id);
-        continue;
-      }
-      if (this.preparedHtml.get(item.id)?.content === content.content) continue;
-      this.renderedHtml.delete(item.id);
-      const identity = { id: item.id, resourceId: item.resourceId, content: content.content };
-      try {
-        this.preparedHtml.set(item.id, {
-          ...identity,
-          status: "ready",
-          preview: prepareHtmlPreview(content.content),
-        });
-      } catch (error) {
-        this.preparedHtml.set(item.id, {
-          ...identity,
-          status: "failed",
-          message: error instanceof Error ? error.message : "HTML could not be displayed.",
-        });
-      }
-    }
+    return item.presentationSource ? this.appState(item.id) : "failed";
   }
 
   protected render() {
     const item = this.media[this.selectedIndex];
     if (!item) return nothing;
     const count = this.media.length;
-    const prepared = this.preparedHtml.get(item.id);
     const ordinal = this.selectedIndex + 1;
     const loaded = item.kind === "image" ? this.imageState(item) : undefined;
     const ready =
@@ -427,11 +352,6 @@ export class LensOutputMedia extends LitElement {
                   : nothing
               }
             </dl>
-            ${
-              item.kind === "html" && prepared?.status === "ready"
-                ? html`${prepared.preview.notices.map((notice) => html`<p>${notice}</p>`)}`
-                : nothing
-            }
           </section>
         </div>
         <div
@@ -501,7 +421,9 @@ export class LensOutputMedia extends LitElement {
 
   private appState(id: string): "loading" | "ready" | "failed" {
     const app = [...this.querySelectorAll<LensMcpApp>("lens-mcp-app")].find(
-      (app) => app.descriptor && `app:${app.descriptor.id}` === id,
+      (app) =>
+        app.descriptor &&
+        ("kind" in app.descriptor ? app.descriptor.id : `app:${app.descriptor.id}`) === id,
     );
     switch (app?.stage) {
       case "ready":
@@ -516,119 +438,66 @@ export class LensOutputMedia extends LitElement {
   }
 
   private renderAppSlide(item: PresentedOutputApp, index: number) {
-    const selected = index === this.selectedIndex;
-    return html`<section
-      class="output-media-slide output-media-html-slide"
-      aria-roledescription="slide"
-      aria-label=${`App ${index + 1} of ${this.media.length}`}
-      aria-hidden=${selected ? "false" : "true"}
-      ?inert=${!selected}
-    >
-      <div class="output-media-html-content">
-        <header class="output-html-expanded-header">
-          <span>${item.descriptor.title ?? "Interactive Interpretation"}</span
-          ><button
-            type="button"
-            class="output-media-tool output-html-expanded-close"
-            aria-label="Close Expanded App"
-            @click=${this.closeExpanded}
-          >
-            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-          </button>
-        </header>
-        <lens-mcp-app
-          style="display:flex;flex-direction:column;width:100%;height:100%"
-          .descriptor=${item.descriptor}
-          .port=${this.appPort}
-          .active=${selected}
-          .replay=${this.replayApps}
-          @lens-mcp-app-state=${() => {
-            this.completeNavigation();
-            this.requestUpdate();
-          }}
-        ></lens-mcp-app>
-      </div>
-    </section>`;
+    return this.renderDocumentSlide(item, index);
   }
 
   private renderHtmlSlide(item: PresentedOutputHtml, index: number) {
-    const content = this.contentFor(item);
-    const prepared = this.preparedHtml.get(item.id);
+    return this.renderDocumentSlide(item, index);
+  }
+
+  private renderDocumentSlide(item: PresentedOutputApp | PresentedOutputHtml, index: number) {
     const selected = index === this.selectedIndex;
-    const message =
-      content?.status === "failed"
-        ? content.message
-        : prepared?.status === "failed"
-          ? prepared.message
-          : "";
+    const descriptor =
+      item.kind === "app"
+        ? item.descriptor
+        : item.presentationSource
+          ? {
+              kind: "html" as const,
+              id: item.id,
+              source: item.presentationSource,
+              title: "HTML Interpretation",
+            }
+          : undefined;
     return html`<section
       class="output-media-slide output-media-html-slide"
       aria-roledescription="slide"
-      aria-label="HTML ${index + 1} of ${this.media.length}"
-      aria-hidden=${index !== this.selectedIndex ? "true" : "false"}
-      ?inert=${index !== this.selectedIndex}
-      aria-busy=${selected && this.htmlState(item) === "loading" ? "true" : "false"}
-      @keydown=${this.handleExpandedKeyDown}
+      aria-label=${`${item.kind === "app" ? "App" : "HTML"} ${index + 1} of ${this.media.length}`}
+      aria-hidden=${selected ? "false" : "true"}
+      aria-busy=${this.appState(item.id) === "loading" ? "true" : "false"}
+      ?inert=${!selected}
     >
       <div class="output-media-html-content">
+        ${selected && this.fullscreen.status !== "idle" && this.sameMedia(this.fullscreen.session.media, item) ? this.notificationContent : nothing}
         <header class="output-html-expanded-header">
-          <span>Media ${index + 1} of ${this.media.length}</span>
+          <span>${descriptor?.title ?? "Interpretation"}</span>
           <button
             type="button"
             class="output-media-tool output-html-expanded-close"
-            aria-label="Close Expanded HTML"
-            title="Close Expanded Media"
-            ?disabled=${this.fullscreen.status === "exiting"}
+            aria-label="Close Expanded Media"
             @click=${this.closeExpanded}
           >
             <i class="fa-solid fa-xmark" aria-hidden="true"></i>
           </button>
         </header>
-        ${selected && this.fullscreen.status !== "idle" && this.fullscreen.session.media.kind === "html" ? this.notificationContent : nothing}
-        ${this.fullscreenError && this.fullscreen.status !== "idle" ? html`<p class="output-media-error" role="alert">${this.fullscreenError}</p>` : nothing}
         ${
-          // WebKit can retain stale iframe hit-testing after an inert ancestor is
-          // re-enabled. Only create an iframe under the selected, interactive slide.
-          selected && prepared?.status === "ready"
-            ? keyed(
-                prepared,
-                html`<iframe
-                  class="output-html-frame"
-                  title="HTML content"
-                  sandbox="allow-popups"
-                  referrerpolicy="no-referrer"
-                  .srcdoc=${prepared.preview.document}
-                  @load=${(event: Event) => this.handleHtmlLoad(prepared, event)}
-                ></iframe>`,
-              )
-            : nothing
+          !descriptor
+            ? html`<p class="output-media-state" role="alert">
+                HTML presentation source is unavailable.
+              </p>`
+            : html`<lens-mcp-app
+                style="display:flex;flex-direction:column;width:100%;height:100%"
+                .descriptor=${descriptor}
+                .port=${this.appPort}
+                .active=${selected}
+                .replay=${item.kind === "app" ? this.replayApps : item.presentationSource?.kind === "history"}
+                @lens-mcp-app-state=${() => {
+                  this.completeNavigation();
+                  this.requestUpdate();
+                }}
+              ></lens-mcp-app>`
         }
-        ${selected && message ? html`<p class="output-media-state" role="alert">${message}</p>` : nothing}
       </div>
     </section>`;
-  }
-
-  private handleHtmlLoad(prepared: PreparedHtml, event: Event): void {
-    const frame = event.currentTarget as HTMLIFrameElement;
-    const item = this.media.find(
-      (media): media is PresentedOutputHtml => media.kind === "html" && media.id === prepared.id,
-    );
-    const content = item ? this.contentFor(item) : undefined;
-    if (
-      prepared !== this.preparedHtml.get(prepared.id) ||
-      prepared.status !== "ready" ||
-      !frame.isConnected ||
-      !this.contains(frame) ||
-      frame.srcdoc !== prepared.preview.document ||
-      content?.resourceId !== prepared.resourceId ||
-      content.status !== "ready" ||
-      content.content !== prepared.content
-    )
-      return;
-    this.renderedHtml = new Map(this.renderedHtml).set(prepared.id, {
-      resourceId: content.resourceId,
-      content: content.content,
-    });
   }
 
   private handleImageLoad(item: PresentedOutputImage, event: Event): void {
@@ -793,7 +662,7 @@ export class LensOutputMedia extends LitElement {
     if (
       event
         .composedPath()
-        .some((node) => node instanceof HTMLElement && node.localName === "lens-html-output")
+        .some((node) => node instanceof HTMLElement && node.localName === "lens-mcp-app")
     )
       return;
     if (event.key === "Escape" && this.overlay === "details") {

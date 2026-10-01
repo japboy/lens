@@ -1,4 +1,4 @@
-// Presentation helper only. Native opening still requires the trusted Lens control.
+// Trusted click routing only. The native Host validates display ownership and opens HTTP(S).
 (() => {
   let sequence = 0;
   document.addEventListener("click", (event) => {
@@ -7,7 +7,16 @@
     if (!anchor || anchor.hasAttribute("download")) return;
     let url;
     try {
-      url = new URL(anchor.getAttribute("href"));
+      const href = anchor.getAttribute("href");
+      if (href.trim().startsWith("#")) return;
+      url = new URL(href, document.baseURI);
+      const current = new URL(document.URL);
+      if (
+        url.origin === current.origin &&
+        url.pathname === current.pathname &&
+        url.search === current.search
+      )
+        return;
     } catch {
       return;
     }

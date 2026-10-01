@@ -304,7 +304,6 @@ export class LensAgentOutput extends LitElement {
                 .media=${media}
                 .appPort=${this.appPort}
                 .replayApps=${this.sessionKind === "history"}
-                .htmlContents=${history.htmlContents}
                 .mediaErrors=${history.mediaErrors}
                 @lens-output-media-demand=${(
                   event: CustomEvent<{ mediaIds: readonly string[] }>,

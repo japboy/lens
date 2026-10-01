@@ -4,12 +4,16 @@ import { McpAppController, type McpAppDescriptor, type McpAppState } from "adapt
 import {
   createDesktopMcpAppController,
   type DesktopMcpAppsPort as McpAppsPort,
+  type HtmlPresentationSource,
 } from "../mcp-apps/composition";
 
 /** Presentation only: native authority arrives through the page-owned narrow port. */
 @customElement("lens-mcp-app")
 export class LensMcpApp extends LitElement {
-  @property({ attribute: false }) descriptor: McpAppDescriptor | undefined;
+  @property({ attribute: false }) descriptor:
+    | McpAppDescriptor
+    | { kind: "html"; id: string; title?: string; source: HtmlPresentationSource }
+    | undefined;
   @property({ attribute: false }) port: McpAppsPort | undefined;
   @property({ type: Boolean }) active = false;
   @property({ type: Boolean }) replay = false;
@@ -29,7 +33,7 @@ export class LensMcpApp extends LitElement {
   protected updated(changed: PropertyValues): void {
     if (
       changed.has("descriptor") &&
-      (changed.get("descriptor") as McpAppDescriptor | undefined)?.id !== this.descriptor?.id
+      (changed.get("descriptor") as typeof this.descriptor)?.id !== this.descriptor?.id
     )
       this.stopped = false;
     if (changed.has("port")) {
@@ -54,9 +58,14 @@ export class LensMcpApp extends LitElement {
       this.isConnected && this.active && !this.stopped ? this.descriptor?.id : undefined;
     if (identity === this.openingIdentity) return;
     this.openingIdentity = identity;
-    if (identity && this.descriptor && this.controller && this.container)
-      void this.controller.show(this.descriptor, this.container);
-    else void this.controller?.close();
+    if (identity && this.descriptor && this.controller && this.container) {
+      const descriptor = this.descriptor;
+      if ("kind" in descriptor)
+        void this.controller.showDocument(descriptor, this.container, (origin) =>
+          this.port!.openHtmlPresentation(descriptor.source, origin),
+        );
+      else void this.controller.show(descriptor, this.container);
+    } else void this.controller?.close();
   }
   disconnectedCallback(): void {
     super.disconnectedCallback();
@@ -74,14 +83,16 @@ export class LensMcpApp extends LitElement {
   protected render() {
     const state = this.controller?.state;
     const draft = this.controller?.draft;
-    const link = this.controller?.link;
-    const readOnly = this.replay || (state?.stage === "ready" && !state.live);
+    const readOnly =
+      !this.descriptor || "kind" in this.descriptor
+        ? this.replay
+        : this.replay || (state?.stage === "ready" && !state.live);
     return html`<div
         class="mcp-app-document"
         style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden"
       ></div>
       <div class="mcp-app-controls">
-        ${readOnly ? html`<p role="status">This saved App is read-only. Its agent connection is closed.</p>` : nothing}
+        ${readOnly ? html`<p role="status">This App’s agent connection is closed.</p>` : nothing}
         ${state?.stage === "opening" || state?.stage === "initializing" ? html`<p role="status">Loading interactive Interpretation…</p>` : nothing}
         ${state?.stage === "failed" ? html`<p class="output-media-error" role="alert">${state.message}</p>` : nothing}
         ${this.controller?.submissionError ? html`<p class="output-media-error" role="alert">${this.controller.submissionError}</p>` : nothing}
@@ -101,30 +112,6 @@ export class LensMcpApp extends LitElement {
                   data-lens-button-role="normal"
                   ?disabled=${this.controller?.submitting}
                   @click=${() => this.controller?.discardDraft()}
-                >
-                  Discard
-                </button>
-              </section>`
-            : nothing
-        }
-        ${this.controller?.linkError ? html`<p class="output-media-error" role="alert">${this.controller.linkError}</p>` : nothing}
-        ${
-          link
-            ? html`<section aria-label="Open external link">
-                <p>${link.url}</p>
-                <button
-                  type="button"
-                  data-lens-button-role="primary"
-                  ?disabled=${this.controller?.openingLink}
-                  @click=${() => void this.controller?.submitLink()}
-                >
-                  Open in Browser
-                </button>
-                <button
-                  type="button"
-                  data-lens-button-role="normal"
-                  ?disabled=${this.controller?.openingLink}
-                  @click=${() => this.controller?.discardLink()}
                 >
                   Discard
                 </button>

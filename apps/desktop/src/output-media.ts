@@ -18,6 +18,7 @@ export interface PresentedOutputHtml {
   readonly mimeType: "text/html";
   readonly uri: string;
   readonly byteLength: number;
+  readonly presentationSource?: import("./mcp-apps/composition").HtmlPresentationSource;
 }
 
 export interface PresentedOutputApp {
@@ -78,6 +79,16 @@ export function composeOutputMedia(
           mimeType: block.mime_type,
           uri: block.uri,
           byteLength: block.byte_length,
+          presentationSource: output.published
+            ? {
+                kind: "live",
+                output_ref: {
+                  operation_id: output.published.operationId,
+                  representation_id: output.published.representationId,
+                },
+                block_index: index,
+              }
+            : undefined,
         });
       }
     } else {

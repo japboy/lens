@@ -12,7 +12,7 @@ export interface McpAppHostOptions {
     lease: McpAppLease,
     owner: Window,
   ) => NonNullable<ConstructorParameters<typeof AppBridge>[3]>["hostContext"];
-  prepareDocument?: (lease: McpAppLease, descriptor: McpAppDescriptor) => Promise<void> | undefined;
+  prepareDocument?: (lease: McpAppLease) => Promise<void> | undefined;
 }
 
 /** Immutable identity; resource bodies are fetched only when a selected App opens. */
@@ -34,7 +34,7 @@ export interface McpAppsServer {
 
 export interface McpAppLease {
   id: string;
-  artifact_id: string;
+  artifact_id: string | null;
   proxy_url: string;
   proxy_origin: string;
   resource: { html: string; meta?: { ui?: McpUiResourceMeta } };
@@ -43,6 +43,7 @@ export interface McpAppLease {
   host_capabilities: McpUiHostCapabilities;
   live: boolean;
   document_url?: string;
+  document_mode: "static" | "interactive" | null;
 }
 
 export interface McpAppsPort {
@@ -50,15 +51,9 @@ export interface McpAppsPort {
   mcpAppRequest(
     leaseId: string,
     request: { method: string; params?: unknown },
-  ): Promise<{ result: unknown; draft?: McpAppMessageDraft; link?: McpAppLinkDraft }>;
+  ): Promise<{ result: unknown; draft?: McpAppMessageDraft }>;
   closeMcpApp(leaseId: string): Promise<void>;
   submitMcpAppMessage(leaseId: string, draftId: string): Promise<void>;
-  submitMcpAppLink(leaseId: string, linkId: string): Promise<void>;
-}
-
-export interface McpAppLinkDraft {
-  id: string;
-  url: string;
 }
 
 export interface McpAppMessageDraft {

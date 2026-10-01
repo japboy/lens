@@ -30,6 +30,19 @@ pub enum MessageRole {
     Assistant,
 }
 
+/// Native rendering permission derived only from validated publication evidence.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HtmlMode {
+    #[default]
+    Static,
+    Interactive,
+}
+impl HtmlMode {
+    fn is_static(&self) -> bool {
+        *self == Self::Static
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DocumentEntry {
@@ -46,6 +59,8 @@ pub enum DocumentEntry {
         status: ToolCallStatus,
         blocks: Vec<DocumentBlock>,
         accepted_html: Option<String>,
+        #[serde(default, skip_serializing_if = "HtmlMode::is_static")]
+        accepted_html_mode: HtmlMode,
     },
 }
 
@@ -393,6 +408,7 @@ impl SessionDocument {
                     status: ToolCallStatus::Pending,
                     blocks: vec![],
                     accepted_html: None,
+                    accepted_html_mode: HtmlMode::Static,
                 });
                 self.entries.len() - 1
             });
@@ -411,6 +427,7 @@ impl SessionDocument {
             status,
             blocks,
             accepted_html,
+            accepted_html_mode,
             ..
         } = &mut self.entries[index]
         {
@@ -452,12 +469,17 @@ impl SessionDocument {
             } else {
                 None
             };
+            *accepted_html_mode = if accepted_html.is_some() && rich_publication_source(evidence) {
+                HtmlMode::Interactive
+            } else {
+                HtmlMode::Static
+            };
         }
     }
 }
 
-/// Saved App output is presentation evidence only: it reuses the inert history
-/// renderer and never recreates an MCP source, lease, session, or script authority.
+/// Saved App output is presentation evidence only; replay never recreates an
+/// MCP source, live Agent session or tool/message/context authority.
 fn rich_publication_source(evidence: &ToolEvidence) -> bool {
     evidence.tool_name.as_deref().is_some_and(|name| {
         matches!(
@@ -1276,6 +1298,39 @@ mod tests {
         );
         let serialized = serde_json::to_value(&document).unwrap();
         assert!(serialized.to_string().contains("accepted_html"));
+        assert_eq!(
+            serialized["entries"][1]["accepted_html_mode"],
+            "interactive"
+        );
+        let restored: SessionDocument = serde_json::from_value(serialized.clone()).unwrap();
+        assert!(matches!(
+            &restored.entries[1],
+            DocumentEntry::Tool {
+                accepted_html_mode: HtmlMode::Interactive,
+                ..
+            }
+        ));
+        let mut old_history = serialized.clone();
+        old_history["entries"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("accepted_html_mode");
+        let old_restored: SessionDocument = serde_json::from_value(old_history).unwrap();
+        assert!(matches!(
+            &old_restored.entries[1],
+            DocumentEntry::Tool {
+                accepted_html: Some(_),
+                accepted_html_mode: HtmlMode::Static,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &document.entries[0],
+            DocumentEntry::Tool {
+                accepted_html_mode: HtmlMode::Static,
+                ..
+            }
+        ));
         assert!(!serialized.to_string().contains("host_capabilities"));
         assert!(!serialized.to_string().contains("session_id"));
     }

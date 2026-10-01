@@ -13,9 +13,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each([false, true])(
-  "composes the real Host SDK with desktop metadata and builtin=%s preparation",
-  async (builtin) => {
+it.each(["external", "builtin", "static", "interactive-replay"] as const)(
+  "composes the real Host SDK with desktop metadata and %s presentation",
+  async (kind) => {
+    const prepares = kind !== "external";
+    const mode = kind === "static" ? "static" : prepares ? "interactive" : null;
+    const isDocument = kind === "static" || kind === "interactive-replay";
     vi.stubGlobal(
       "matchMedia",
       vi.fn<Window["matchMedia"]>(() => ({ matches: true }) as MediaQueryList),
@@ -26,13 +29,14 @@ it.each([false, true])(
       id: "artifact",
       operation_id: "operation",
       session_id: "session",
-      server_id: builtin ? "lens_rich_content" : "external",
+      server_id: kind === "builtin" ? "lens_rich_content" : "external",
       tool_name: "render",
       resource_uri: "ui://fixture",
     };
     const lease: McpAppLease = {
       id: "lease",
-      artifact_id: "artifact",
+      artifact_id: isDocument ? null : "artifact",
+      document_mode: mode,
       proxy_url: "http://127.0.0.1:43162/proxy",
       proxy_origin: "http://127.0.0.1:43162",
       resource: { html: "<!doctype html><p>App shell</p>" },
@@ -40,27 +44,38 @@ it.each([false, true])(
       result: { content: [], structuredContent: { html: raw } },
       host_capabilities: {},
       live: false,
-      ...(builtin ? { document_url: "http://127.0.0.1:43162/document/lease" } : {}),
+      ...(prepares ? { document_url: "http://127.0.0.1:43162/document/lease" } : {}),
     };
     const port: DesktopMcpAppsPort = {
       openMcpApp: vi.fn<DesktopMcpAppsPort["openMcpApp"]>(async () => lease),
       closeMcpApp: vi.fn<DesktopMcpAppsPort["closeMcpApp"]>(async () => {}),
+      openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(async () => lease),
       prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(async () => {}),
       mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
       submitMcpAppMessage: vi.fn<DesktopMcpAppsPort["submitMcpAppMessage"]>(async () => {}),
-      submitMcpAppLink: vi.fn<DesktopMcpAppsPort["submitMcpAppLink"]>(async () => {}),
     };
     const container = document.createElement("div");
     document.body.append(container);
     const controller = createDesktopMcpAppController(port, vi.fn<() => void>());
-    await controller.show(descriptor, container);
+    const source = {
+      kind: "history" as const,
+      generation: "saved-generation",
+      entry_id: "html-entry",
+      revision: 7,
+      block_index: 2,
+    };
+    if (isDocument)
+      await controller.showDocument({ id: "saved-html" }, container, (origin) =>
+        port.openHtmlPresentation(source, origin),
+      );
+    else await controller.show(descriptor, container);
     const preparations = vi.mocked(port.prepareMcpAppDocument).mock.calls;
-    expect(preparations).toHaveLength(builtin ? 1 : 0);
-    expect(preparations[0]?.[0]).toBe(builtin ? "lease" : undefined);
+    expect(preparations).toHaveLength(prepares ? 1 : 0);
+    expect(preparations[0]?.[0]).toBe(prepares ? "lease" : undefined);
     const derivative = preparations[0]?.[1] ?? "";
-    expect(derivative.includes('class="katex"')).toBe(builtin);
-    expect(derivative.includes("data:font/woff2;base64,")).toBe(builtin);
-    expect(derivative.includes("<script>window.author = 73</script>")).toBe(builtin);
+    expect(derivative.includes('class="katex"')).toBe(prepares);
+    expect(derivative.includes("data:font/woff2;base64,")).toBe(prepares);
+    expect(derivative.includes("<script>window.author = 73</script>")).toBe(mode === "interactive");
     expect(lease.input.html).toBe(raw);
     expect(lease.result.structuredContent).toEqual({ html: raw });
     const target = container.querySelector("iframe")!.contentWindow!;
@@ -105,7 +120,7 @@ it.each([false, true])(
         platform: "desktop",
         displayMode: "inline",
         availableDisplayModes: ["inline"],
-        ...(builtin ? { lensDocumentUrl: lease.document_url } : {}),
+        ...(prepares ? { lensDocumentUrl: lease.document_url, lensDocumentMode: mode } : {}),
       },
     });
     emit({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });

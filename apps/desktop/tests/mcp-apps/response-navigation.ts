@@ -75,6 +75,7 @@ async function mount() {
     openMcpApp: vi.fn<DesktopMcpAppsPort["openMcpApp"]>(async () => ({
       id: "lease",
       artifact_id: app.id,
+      document_mode: null,
       proxy_url: "http://127.0.0.1:43162/proxy",
       proxy_origin: "http://127.0.0.1:43162",
       resource: { html: "<p>External App</p>" },
@@ -85,9 +86,9 @@ async function mount() {
     })),
     closeMcpApp: vi.fn<DesktopMcpAppsPort["closeMcpApp"]>(async () => {}),
     mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
+    openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(),
     prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(async () => {}),
     submitMcpAppMessage: vi.fn<DesktopMcpAppsPort["submitMcpAppMessage"]>(async () => {}),
-    submitMcpAppLink: vi.fn<DesktopMcpAppsPort["submitMcpAppLink"]>(async () => {}),
   };
   const view = document.createElement("lens-overlay-view") as LensOverlayView;
   const history = new ResponseHistoryController(view, {

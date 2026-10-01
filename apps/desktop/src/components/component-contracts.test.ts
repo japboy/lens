@@ -124,7 +124,6 @@ describe("component property and event contracts", () => {
       scopeId: "operation",
       responses: [committedResponse],
       media: presentResponseMedia("operation", committedResponse),
-      htmlContents: new Map(),
       mediaErrors: new Map(),
       capacityReached: false,
     };
@@ -665,7 +664,6 @@ describe("component property and event contracts", () => {
       })),
       capacityReached: false,
       media: [],
-      htmlContents: new Map(),
       mediaErrors: new Map(),
     };
     element.loadResponseBlock = async () => ({

@@ -234,14 +234,19 @@ export function sourceInclusionViolations(
         "packages/adapter-mcp-apps-view/src/assets/rich-html-app.html",
       ],
       "apps/desktop/src-tauri/src/mcp_apps.rs": [
+        "packages/adapter-mcp-apps-view/src/assets/rich-html-app.html",
+        "packages/adapter-mcp-apps-view/src/assets/rich-html-links.js",
         "packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.html",
         "packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js",
       ],
     };
     const isApplicationAsset =
       owner === "apps/desktop" &&
-      token.text === "include_str" &&
-      applicationAssets[path]?.some((asset) => target === resolve(root, asset));
+      applicationAssets[path]?.some((asset) => target === resolve(root, asset)) &&
+      (token.text === "include_str" ||
+        (token.text === "include_bytes" &&
+          target ===
+            resolve(root, "packages/adapter-mcp-apps-view/src/assets/rich-html-links.js")));
     if (
       !target.startsWith(`${resolve(root, owner)}/`) &&
       !isApplicationLicense &&

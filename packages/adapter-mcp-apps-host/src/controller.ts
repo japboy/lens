@@ -4,7 +4,6 @@ import type {
   McpAppDescriptor,
   McpAppLease,
   McpAppMessageDraft,
-  McpAppLinkDraft,
   McpAppsPort,
   McpAppState,
   McpAppHostOptions,
@@ -78,9 +77,6 @@ async function bounded<T>(promise: Promise<T>, milliseconds: number): Promise<T 
 export class McpAppController {
   state: McpAppState = { stage: "idle" };
   draft: McpAppMessageDraft | undefined;
-  link: McpAppLinkDraft | undefined;
-  openingLink = false;
-  linkError = "";
   submitting = false;
   submissionError = "";
   private epoch = 0;
@@ -101,6 +97,26 @@ export class McpAppController {
   }
 
   show(descriptor: McpAppDescriptor, container: HTMLElement): Promise<void> {
+    return this.mount(descriptor, container, descriptor.id, (origin) =>
+      this.port.openMcpApp(descriptor.id, origin),
+    );
+  }
+
+  /** Presentation-only documents have a caller-owned display identity, never an MCP artifact. */
+  showDocument(
+    identity: { id: string; title?: string },
+    container: HTMLElement,
+    open: (hostOrigin: string) => Promise<McpAppLease>,
+  ): Promise<void> {
+    return this.mount(identity, container, null, open);
+  }
+
+  private mount(
+    descriptor: { id: string; title?: string },
+    container: HTMLElement,
+    artifactId: string | null,
+    open: (hostOrigin: string) => Promise<McpAppLease>,
+  ): Promise<void> {
     const epoch = ++this.epoch;
     this.revokeCurrent();
     this.operation = this.operation
@@ -113,12 +129,12 @@ export class McpAppController {
         try {
           const owner = container.ownerDocument.defaultView;
           if (!owner) throw new Error("App document is unavailable");
-          lease = await this.port.openMcpApp(descriptor.id, owner.location.origin);
+          lease = await open(owner.location.origin);
           if (epoch !== this.epoch || !container.isConnected) {
             await bounded(this.port.closeMcpApp(lease.id), BACKEND_CLOSE_TIMEOUT_MS);
             return;
           }
-          const preparation = this.options.prepareDocument?.(lease, descriptor);
+          const preparation = this.options.prepareDocument?.(lease);
           if (preparation) {
             const prepared = await bounded(
               preparation.then(() => true),
@@ -132,7 +148,7 @@ export class McpAppController {
           }
           const proxy = new URL(lease.proxy_url);
           if (
-            lease.artifact_id !== descriptor.id ||
+            lease.artifact_id !== artifactId ||
             proxy.origin !== lease.proxy_origin ||
             proxy.origin === owner.location.origin ||
             proxy.protocol !== "http:" ||
@@ -273,11 +289,6 @@ export class McpAppController {
       this.submissionError = "";
       this.changed();
     }
-    if (response.link) {
-      this.link = response.link;
-      this.linkError = "";
-      this.changed();
-    }
     return response.result;
   }
   discardDraft(): void {
@@ -304,38 +315,12 @@ export class McpAppController {
       this.changed();
     }
   }
-  discardLink(): void {
-    this.link = undefined;
-    this.linkError = "";
-    this.changed();
-  }
-  async submitLink(): Promise<void> {
-    const mounted = this.mounted;
-    const link = this.link;
-    if (!mounted || !link || this.openingLink) return;
-    this.assertCurrent(mounted);
-    this.openingLink = true;
-    this.linkError = "";
-    this.changed();
-    try {
-      await this.port.submitMcpAppLink(mounted.lease.id, link.id);
-      this.assertCurrent(mounted);
-      if (this.link === link) this.link = undefined;
-    } catch (error) {
-      if (this.mounted === mounted && !mounted.revoked) this.linkError = String(error);
-    } finally {
-      this.openingLink = false;
-      this.changed();
-    }
-  }
   private revokeCurrent(): void {
     const mounted = this.mounted;
     if (!mounted || mounted.revoked) return;
     mounted.revoked = true;
     this.draft = undefined;
     this.submissionError = "";
-    this.link = undefined;
-    this.linkError = "";
     clearTimeout(mounted.initializationTimer);
     // Start native revocation immediately; do not wait for a cooperative App.
     void this.port.closeMcpApp(mounted.lease.id).catch(() => {});

@@ -2,6 +2,8 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { html } from "lit";
+import { AppBridge, type McpAppLease } from "adapter-mcp-apps-host";
+import type { DesktopMcpAppsPort, HtmlPresentationSource } from "../mcp-apps/composition";
 import type { PresentedOutputImage, PresentedOutputMedia } from "../output-media";
 import type { LensState } from "../types";
 import type { LensOutputMedia } from "./lens-output-media";
@@ -63,7 +65,48 @@ function setFullscreen(element: Element | null): void {
   document.dispatchEvent(new Event("fullscreenchange"));
 }
 
+interface PendingDocument {
+  source: HtmlPresentationSource;
+  id: string;
+  resolve: (lease: McpAppLease) => void;
+  reject: (error: Error) => void;
+  settled: boolean;
+}
+let documentNumber = 0;
+let pendingDocuments: PendingDocument[] = [];
+const nativePort = {
+  openMcpApp: vi.fn<DesktopMcpAppsPort["openMcpApp"]>(),
+  closeMcpApp: vi.fn<DesktopMcpAppsPort["closeMcpApp"]>(async () => {}),
+  mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({ result: {} })),
+  submitMcpAppMessage: vi.fn<DesktopMcpAppsPort["submitMcpAppMessage"]>(async () => {}),
+  prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(async () => {}),
+  openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(
+    (source) =>
+      new Promise((resolve, reject) => {
+        pendingDocuments.push({
+          source,
+          id: `document-${++documentNumber}`,
+          resolve,
+          reject,
+          settled: false,
+        });
+      }),
+  ),
+};
+async function flush(): Promise<void> {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
 beforeEach(() => {
+  pendingDocuments = [];
+  documentNumber = 0;
+  vi.clearAllMocks();
+  vi.spyOn(AppBridge.prototype, "connect").mockResolvedValue();
+  vi.spyOn(AppBridge.prototype, "sendSandboxResourceReady").mockResolvedValue();
+  vi.spyOn(AppBridge.prototype, "sendToolInput").mockResolvedValue();
+  vi.spyOn(AppBridge.prototype, "sendToolResult").mockResolvedValue();
+  vi.spyOn(AppBridge.prototype, "teardownResource").mockResolvedValue({});
+  vi.spyOn(AppBridge.prototype, "close").mockResolvedValue();
   fullscreenElement = null;
   requestFullscreen.mockClear();
   exitFullscreen.mockClear();
@@ -80,15 +123,17 @@ beforeEach(() => {
   vi.spyOn(document, "exitFullscreen").mockImplementation(exitFullscreen);
 });
 
-afterEach(() => {
+afterEach(async () => {
   fullscreenElement = null;
   document.body.replaceChildren();
+  await flush();
   vi.restoreAllMocks();
 });
 
 async function mount(media: readonly PresentedOutputMedia[] = images): Promise<LensOutputMedia> {
   const element = document.createElement("lens-output-media") as LensOutputMedia;
   element.media = media;
+  element.appPort = nativePort;
   document.body.append(element);
   await element.updateComplete;
   return element;
@@ -117,19 +162,71 @@ describe("Interpretation media interactions", () => {
     mimeType: "text/html",
     uri: "urn:lens:test:html",
     byteLength: 100,
+    presentationSource: {
+      kind: "live",
+      output_ref: { operation_id: "operation-1", representation_id: "representation-1" },
+      block_index: 0,
+    },
   };
 
+  async function pendingDocument(element: LensOutputMedia): Promise<PendingDocument> {
+    let request!: PendingDocument;
+    await vi.waitFor(() => {
+      // Only the selected HTML view may acquire a native document body.
+      const active = element.querySelector<
+        { descriptor?: { source?: HtmlPresentationSource } } & HTMLElement
+      >('.output-media-slide[aria-hidden="false"] lens-mcp-app');
+      request = [...pendingDocuments]
+        .reverse()
+        .find((item) => !item.settled && item.source === active?.descriptor?.source)!;
+      expect(request).toBeDefined();
+    });
+    return request;
+  }
+
+  async function openHtml(
+    element: LensOutputMedia,
+  ): Promise<{ frame: HTMLIFrameElement; bridge: AppBridge; request: PendingDocument }> {
+    const request = await pendingDocument(element);
+    request.settled = true;
+    request.resolve({
+      id: request.id,
+      artifact_id: null,
+      document_mode: "static",
+      proxy_url: `http://127.0.0.1:43162/proxy/${request.id}`,
+      proxy_origin: "http://127.0.0.1:43162",
+      resource: { html: "<p>Trusted document shell</p>" },
+      input: {
+        html: '<h1>Readable result</h1><p><a href="https://example.com/">Reference</a></p>',
+      },
+      result: { content: [] },
+      document_url: `http://127.0.0.1:43162/document/${request.id}`,
+      host_capabilities: { openLinks: {} },
+      live: false,
+    });
+    let frame!: HTMLIFrameElement;
+    await vi.waitFor(() => {
+      frame = element.querySelector<HTMLIFrameElement>(
+        '.output-media-slide[aria-hidden="false"] iframe',
+      )!;
+      expect(frame).not.toBeNull();
+    });
+    await flush();
+    const bridge = vi.mocked(AppBridge.prototype.connect).mock.contexts.at(-1)! as AppBridge;
+    return { frame, bridge, request };
+  }
+
+  async function initializeHtml(element: LensOutputMedia, bridge: AppBridge): Promise<void> {
+    await bridge.onsandboxready?.({});
+    await bridge.oninitialized?.({});
+    await flush();
+    await element.updateComplete;
+  }
+
   async function loadHtml(element: LensOutputMedia): Promise<HTMLIFrameElement> {
-    element.htmlContent = {
-      resourceId: "resource-1",
-      status: "ready",
-      content: '<h1>Readable result</h1><p><a href="https://example.com/">Reference</a></p>',
-    };
-    await element.updateComplete;
-    const renderer = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
-    renderer.dispatchEvent(new Event("load"));
-    await element.updateComplete;
-    return renderer;
+    const { frame, bridge } = await openHtml(element);
+    await initializeHtml(element, bridge);
+    return frame;
   }
 
   it("keeps the ordinary media slot while image or HTML bodies load without status text", async () => {
@@ -404,7 +501,7 @@ describe("Interpretation media interactions", () => {
     await element.updateComplete;
     expect(element.querySelector(".shared-notification")).toBeNull();
     element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
-    const content = frame.parentElement!;
+    const content = frame.closest(".output-media-html-content")!;
     setFullscreen(content);
     resolveRequest();
     await element.updateComplete;
@@ -466,10 +563,19 @@ describe("Interpretation media interactions", () => {
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
     const renderer = await loadHtml(element);
-    expect(renderer.srcdoc).toContain("Readable result");
-    expect(renderer.getAttribute("sandbox")).toBe("allow-popups");
+    expect(renderer.srcdoc).toBe("");
+    expect(renderer.src).toBe("http://127.0.0.1:43162/proxy/document-1");
+    expect(nativePort.openHtmlPresentation).toHaveBeenCalledWith(
+      htmlMedia.presentationSource,
+      window.location.origin,
+    );
+    expect(nativePort.prepareMcpAppDocument).toHaveBeenCalledWith(
+      "document-1",
+      expect.stringContaining("Readable result"),
+    );
+    expect(renderer.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
     expect(renderer.getAttribute("referrerpolicy")).toBe("no-referrer");
-    expect(renderer.title).toBe("HTML content");
+    expect(renderer.title).toBe("HTML Interpretation");
     expect(renderer.closest(".output-media-slide")?.hasAttribute("inert")).toBe(false);
     expect(element.querySelector(".output-media-ambient")).toBeNull();
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
@@ -482,35 +588,34 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-overlay .fa-expand")).not.toBeNull();
   });
 
-  it("remounts returning HTML under an interactive slide and keeps native-handled links", async () => {
+  it("remounts returning HTML with a new lease and waits for the App handshake", async () => {
     const element = await mount([images[0]!, htmlMedia]);
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
     const renderer = await loadHtml(element);
     expect(renderer.closest(".output-media-slide")?.getAttribute("aria-hidden")).toBe("false");
-    const preview = new DOMParser().parseFromString(renderer.srcdoc, "text/html");
-    const anchor = preview.querySelector("a")!;
-    expect(anchor.getAttribute("href")).toBe("https://example.com/");
-    expect(anchor.getAttribute("target")).toBe("_blank");
-    expect(anchor.getAttribute("rel")?.split(/\s+/)).toEqual(
-      expect.arrayContaining(["noopener", "noreferrer"]),
-    );
-    expect(element.querySelector(".output-media-details button")).toBeNull();
     element.querySelector<HTMLButtonElement>(".output-media-previous")!.click();
     await element.updateComplete;
+    await vi.waitFor(() => expect(nativePort.closeMcpApp).toHaveBeenCalledWith("document-1"));
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
-    const replacement = element.querySelector(".output-html-frame");
+    const { frame: replacement, bridge } = await openHtml(element);
     expect(replacement).not.toBe(renderer);
     expect(renderer.isConnected).toBe(false);
-    expect(replacement?.closest("[inert]")).toBeNull();
+    expect(replacement.closest("[inert]")).toBeNull();
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
     renderer.dispatchEvent(new Event("load"));
+    replacement.dispatchEvent(new Event("load"));
     await element.updateComplete;
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
-    replacement!.dispatchEvent(new Event("load"));
-    await element.updateComplete;
+    await initializeHtml(element, bridge);
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
+    await bridge.onopenlink?.({ url: "https://example.com/" }, {} as never);
+    expect(nativePort.mcpAppRequest).toHaveBeenCalledWith("document-2", {
+      method: "ui/open-link",
+      params: { url: "https://example.com/" },
+    });
+    expect(nativePort.submitMcpAppMessage).not.toHaveBeenCalled();
   });
 
   it("fullscreens the existing HTML content inside its stable slide and does not trap Tab on the close control", async () => {
@@ -532,13 +637,13 @@ describe("Interpretation media interactions", () => {
     });
     element.querySelector<HTMLButtonElement>(".output-html-expanded-close")!.dispatchEvent(tab);
     expect(tab.defaultPrevented).toBe(false);
-    expect(element.querySelector(".output-html-frame")).toBe(renderer);
-    expect(element.querySelectorAll(".output-html-frame")).toHaveLength(1);
+    expect(element.querySelector("iframe")).toBe(renderer);
+    expect(element.querySelectorAll("iframe")).toHaveLength(1);
     element.querySelector<HTMLButtonElement>(".output-html-expanded-close")!.click();
     await Promise.resolve();
     await element.updateComplete;
     expect(exitFullscreen).toHaveBeenCalledOnce();
-    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+    expect(element.querySelector("iframe")).toBe(renderer);
   });
 
   it("keeps the final HTML flex slot and iframe when its inner content enters fullscreen", async () => {
@@ -588,7 +693,7 @@ describe("Interpretation media interactions", () => {
     expect(element.querySelector(".output-media-html-slide")?.getAttribute("aria-hidden")).toBe(
       "false",
     );
-    expect(element.querySelector(".output-html-frame")).toBe(renderer);
+    expect(element.querySelector("iframe")).toBe(renderer);
     // Real rail scrolling remains functional after exiting.
     rail.scrollLeft = 800;
     rail.dispatchEvent(new Event("scroll"));
@@ -615,49 +720,66 @@ describe("Interpretation media interactions", () => {
     await element.updateComplete;
     expect(element.querySelector(".output-media-details-backdrop")).toBeNull();
     expect(element.querySelector<HTMLElement>(".output-media-details")!.hidden).toBe(true);
-    expect(element.querySelector(".output-html-frame")).toBe(frame);
+    expect(element.querySelector("iframe")).toBe(frame);
   });
 
-  it("keeps HTML failures local and disables expansion until safe content is ready", async () => {
+  it("keeps native HTML failures local and disables expansion until a document is ready", async () => {
     const element = await mount([htmlMedia]);
-    element.htmlContent = {
-      resourceId: "resource-1",
-      status: "failed",
-      message: "Resource expired",
-    };
-    await element.updateComplete;
-    expect(element.querySelector(".output-media-state")!.textContent).toContain("Resource expired");
+    const request = await pendingDocument(element);
+    request.settled = true;
+    request.reject(new Error("Resource expired"));
+    await vi.waitFor(() =>
+      expect(element.querySelector(".output-media-error")?.textContent).toContain(
+        "Resource expired",
+      ),
+    );
     expect(element.querySelector("iframe")).toBeNull();
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
+    expect(nativePort.prepareMcpAppDocument).not.toHaveBeenCalled();
   });
 
-  it("ignores old iframe loads and retains the current document across equivalent snapshots", async () => {
+  it("ignores old iframe loads and retains the current lease across equivalent snapshots", async () => {
     const element = await mount([htmlMedia]);
     const oldFrame = await loadHtml(element);
-    element.htmlContent = {
-      resourceId: "resource-1",
-      status: "ready",
-      content: "<p>New content</p>",
+    const next = {
+      ...htmlMedia,
+      id: "response:2:html",
+      presentationSource: {
+        kind: "live" as const,
+        output_ref: { operation_id: "operation-2", representation_id: "representation-2" },
+        block_index: 0,
+      },
     };
+    element.media = [next];
     await element.updateComplete;
-    const frame = element.querySelector<HTMLIFrameElement>(".output-html-frame")!;
+    const { frame, bridge } = await openHtml(element);
     expect(frame).not.toBe(oldFrame);
     oldFrame.dispatchEvent(new Event("load"));
     await element.updateComplete;
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
-    frame.dispatchEvent(new Event("load"));
-    await element.updateComplete;
+    await initializeHtml(element, bridge);
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(false);
-    element.media = [{ ...htmlMedia }];
+    element.media = [{ ...next, presentationSource: { ...next.presentationSource } }];
     await element.updateComplete;
-    expect(element.querySelector(".output-html-frame")).toBe(frame);
+    await flush();
+    expect(element.querySelector("iframe")).toBe(frame);
+    expect(nativePort.openHtmlPresentation).toHaveBeenCalledTimes(2);
+    expect(nativePort.closeMcpApp).toHaveBeenCalledWith("document-1");
   });
 
-  it("prepares neighbors but mounts only selected HTML, retaining slide geometry and append DOM", async () => {
+  it("opens only selected HTML through native leases, retaining slide geometry and append DOM", async () => {
     const media = Array.from({ length: 30 }, (_, index) => ({
       ...htmlMedia,
       id: `response:${index}:html`,
       resourceId: "reused-resource",
+      presentationSource: {
+        kind: "live" as const,
+        output_ref: {
+          operation_id: `operation-${index}`,
+          representation_id: `representation-${index}`,
+        },
+        block_index: 0,
+      },
     }));
     const element = document.createElement("lens-output-media") as LensOutputMedia;
     const requested: string[][] = [];
@@ -665,39 +787,37 @@ describe("Interpretation media interactions", () => {
       requested.push([...event.detail.mediaIds]),
     );
     element.media = media;
-    element.htmlContents = new Map(
-      media.map((item, index) => [
-        item.id,
-        {
-          resourceId: item.resourceId,
-          status: "ready" as const,
-          content: `<h1>Response ${index}</h1>`,
-        },
-      ]),
-    );
+    element.appPort = nativePort;
     document.body.append(element);
     await element.updateComplete;
+    const first = await loadHtml(element);
     expect(requested).toEqual([[media[0]!.id, media[1]!.id]]);
+    expect(nativePort.openHtmlPresentation).toHaveBeenCalledTimes(1);
+    expect(nativePort.openHtmlPresentation).toHaveBeenLastCalledWith(
+      media[0]!.presentationSource,
+      window.location.origin,
+    );
     expect(element.querySelectorAll(".output-media-slide")).toHaveLength(30);
     const slides = [...element.querySelectorAll(".output-media-slide")];
     expect(element.querySelectorAll("iframe")).toHaveLength(1);
-    const first = element.querySelector("iframe");
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
-    const selected = element.querySelector<HTMLIFrameElement>(
-      '.output-media-slide[aria-hidden="false"] iframe',
-    )!;
-    expect(selected.srcdoc).toContain("Response 1");
+    const selected = await loadHtml(element);
+    expect(nativePort.openHtmlPresentation).toHaveBeenCalledTimes(2);
+    expect(nativePort.openHtmlPresentation).toHaveBeenLastCalledWith(
+      media[1]!.presentationSource,
+      window.location.origin,
+    );
     expect(element.querySelectorAll("iframe")).toHaveLength(1);
-    expect(first?.isConnected).toBe(false);
+    expect(first.isConnected).toBe(false);
     element.media = [...media, { ...htmlMedia, id: "appended" }];
     await element.updateComplete;
     expect(element.querySelector('.output-media-slide[aria-hidden="false"] iframe')).toBe(selected);
     const next = element.querySelector<HTMLButtonElement>(".output-media-next")!;
     next.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     await element.updateComplete;
-    expect(first?.isConnected).toBe(false);
-    expect(element.querySelectorAll("iframe")).toHaveLength(0);
+    await vi.waitFor(() => expect(nativePort.closeMcpApp).toHaveBeenCalledWith("document-2"));
+    await vi.waitFor(() => expect(element.querySelectorAll("iframe")).toHaveLength(0));
     expect([...element.querySelectorAll(".output-media-slide")].slice(0, 30)).toEqual(slides);
     expect(element.querySelector("[inert] .output-media-state")).toBeNull();
     expect(requested.at(-1)).toEqual([media[29]!.id, "appended"]);
@@ -707,15 +827,16 @@ describe("Interpretation media interactions", () => {
     const media = Array.from({ length: 7 }, (_, index) => ({
       ...htmlMedia,
       id: `fractional:${index}`,
+      presentationSource: {
+        kind: "live" as const,
+        output_ref: {
+          operation_id: `operation-${index}`,
+          representation_id: `representation-${index}`,
+        },
+        block_index: 0,
+      },
     }));
     const element = await mount(media);
-    element.htmlContents = new Map(
-      media.map((item) => [
-        item.id,
-        { resourceId: item.resourceId, status: "ready" as const, content: item.id },
-      ]),
-    );
-    await element.updateComplete;
     const rail = element.querySelector<HTMLElement>(".output-media-rail")!;
     const slides = [...rail.children] as HTMLElement[];
     const width = 400.4;
@@ -741,6 +862,7 @@ describe("Interpretation media interactions", () => {
       await element.updateComplete;
       expect(slides[index]!.getAttribute("aria-hidden")).toBe("false");
       expect(slides[index]!.hasAttribute("inert")).toBe(false);
+      await loadHtml(element);
       expect(slides[index]!.querySelector("iframe")).not.toBeNull();
       expect(element.querySelectorAll("iframe")).toHaveLength(1);
     }
@@ -752,27 +874,48 @@ describe("Interpretation media interactions", () => {
     expect([...rail.children]).toEqual(slides);
   });
 
-  it("never borrows an equal resource ID from another response or the legacy HTML slot", async () => {
+  it("never borrows HTML authority from an equal resource ID when a source is missing or stale", async () => {
     const first = { ...htmlMedia, id: "response:1", resourceId: "shared" };
-    const second = { ...htmlMedia, id: "response:2", resourceId: "shared" };
-    const element = await mount([first, second]);
-    element.htmlContent = { resourceId: "shared", status: "ready", content: "Legacy" };
-    element.htmlContents = new Map([
-      [first.id, { resourceId: "shared", status: "ready", content: "First" }],
-    ]);
-    await element.updateComplete;
-    expect(element.querySelectorAll("iframe")).toHaveLength(1);
-    const oldFrame = element.querySelector("iframe")!;
+    const second = {
+      ...htmlMedia,
+      id: "response:2",
+      resourceId: "shared",
+      presentationSource: undefined,
+    };
+    const element = await mount([first]);
+    const oldFrame = await loadHtml(element);
     element.media = [second];
     await element.updateComplete;
+    await flush();
     oldFrame.dispatchEvent(new Event("load"));
     expect(element.querySelector("iframe")).toBeNull();
+    expect(element.querySelector(".output-media-state")?.textContent).toContain(
+      "HTML presentation source is unavailable",
+    );
     expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
-    element.htmlContents = new Map([
-      [second.id, { resourceId: "wrong", status: "ready", content: "Wrong" }],
-    ]);
+    expect(nativePort.closeMcpApp).toHaveBeenCalledWith("document-1");
+    expect(nativePort.openHtmlPresentation).toHaveBeenCalledTimes(1);
+    const stale = {
+      kind: "live" as const,
+      output_ref: {
+        operation_id: "expired-operation",
+        representation_id: "expired-representation",
+      },
+      block_index: 0,
+    };
+    element.media = [{ ...second, presentationSource: stale }];
     await element.updateComplete;
+    const request = await pendingDocument(element);
+    expect(request.source).toBe(stale);
+    request.settled = true;
+    request.reject(new Error("HTML source is no longer available"));
+    await vi.waitFor(() =>
+      expect(element.querySelector(".output-media-error")?.textContent).toContain(
+        "HTML source is no longer available",
+      ),
+    );
     expect(element.querySelector("iframe")).toBeNull();
+    expect(element.querySelector<HTMLButtonElement>(".output-media-expand")!.disabled).toBe(true);
   });
 
   it("keeps a deferred image selected through body arrival and eviction and requests it again on reconnect", async () => {
@@ -810,29 +953,26 @@ describe("Interpretation media interactions", () => {
   });
 
   it("fullscreens the selected HTML response when earlier HTML slides coexist", async () => {
-    const media = [0, 1].map((index) => ({ ...htmlMedia, id: `response:${index}` }));
-    const element = await mount(media);
-    element.htmlContents = new Map(
-      media.map((item, index) => [
-        item.id,
-        {
-          resourceId: item.resourceId,
-          status: "ready" as const,
-          content: `<h1>${index}</h1>`,
+    const media = [0, 1].map((index) => ({
+      ...htmlMedia,
+      id: `response:${index}`,
+      presentationSource: {
+        kind: "live" as const,
+        output_ref: {
+          operation_id: `operation-${index}`,
+          representation_id: `representation-${index}`,
         },
-      ]),
-    );
-    await element.updateComplete;
+        block_index: 0,
+      },
+    }));
+    const element = await mount(media);
     element.querySelector<HTMLButtonElement>(".output-media-next")!.click();
     await element.updateComplete;
-    const selected = element.querySelector<HTMLIFrameElement>(
-      '.output-media-slide[aria-hidden="false"] iframe',
-    )!;
-    selected.dispatchEvent(new Event("load"));
-    await element.updateComplete;
+    const selected = await loadHtml(element);
     element.querySelector<HTMLButtonElement>(".output-media-expand")!.click();
-    expect(requestFullscreen.mock.contexts[0]).toBe(selected.parentElement);
-    setFullscreen(selected.parentElement);
+    const content = selected.closest(".output-media-html-content");
+    expect(requestFullscreen.mock.contexts[0]).toBe(content);
+    setFullscreen(content);
     resolveRequest();
     await element.updateComplete;
     expect(element.querySelector('.output-media-slide[aria-hidden="false"] iframe')).toBe(selected);
