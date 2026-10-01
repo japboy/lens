@@ -1,5 +1,5 @@
 //! Session-local HTTP MCP registration and explicit per-turn publication authority.
-use adapter_output_mcp::apps::AppBroker;
+use adapter_mcp_apps_server::apps::AppBroker;
 use agent_client_protocol::schema::v1::{
     ContentBlock, HttpHeader, McpCapabilities, McpServer, McpServerHttp, NewSessionRequest,
     TextContent,

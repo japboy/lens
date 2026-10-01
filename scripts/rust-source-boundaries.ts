@@ -231,11 +231,11 @@ export function sourceInclusionViolations(
       ["LICENSE", "NOTICE"].some((document) => target === resolve(root, document));
     const applicationAssets: Record<string, readonly string[]> = {
       "apps/desktop/src-tauri/src/agent.rs": [
-        "packages/adapter-rich-content-web/src/assets/rich-html-app.html",
+        "packages/adapter-mcp-apps-view-html/src/assets/rich-html-app.html",
       ],
       "apps/desktop/src-tauri/src/mcp_apps.rs": [
-        "packages/adapter-mcp-apps-web/src/assets/sandbox-proxy.html",
-        "packages/adapter-mcp-apps-web/src/assets/sandbox-proxy.js",
+        "packages/adapter-mcp-apps-host-web/src/assets/sandbox-proxy.html",
+        "packages/adapter-mcp-apps-host-web/src/assets/sandbox-proxy.js",
       ],
     };
     const isApplicationAsset =

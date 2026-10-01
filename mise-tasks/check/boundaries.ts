@@ -358,7 +358,7 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
   validateInventory(root, cargo, pnpm, manifests, paths);
   for (const path of paths.filter(
     (entry) =>
-      /^packages\/(?:adapter-mcp-apps-web|adapter-rich-content-web)\/src\/.*\.(?:ts|js)$/u.test(
+      /^packages\/(?:adapter-mcp-apps-host-web|adapter-mcp-apps-view-html|adapter-rich-content-web)\/src\/.*\.(?:ts|js)$/u.test(
         entry,
       ) && !entry.endsWith(".test.ts"),
   )) {

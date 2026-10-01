@@ -46,7 +46,7 @@ export type AboutIntent =
   | { type: "retry-update-check" };
 
 export type SettingsIntent =
-  | { type: "set-mcp-apps-servers"; servers: import("adapter-mcp-apps-web").McpAppsServer[] }
+  | { type: "set-mcp-apps-servers"; servers: import("adapter-mcp-apps-host-web").McpAppsServer[] }
   | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }
   | { type: "save-external-agent"; profile: ExternalAgentDraft }
   | { type: "delete-external-agent"; id: string }

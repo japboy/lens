@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { webSourceViolations } from "./web-source-boundaries.ts";
-const owner = "packages/adapter-mcp-apps-web";
+const owner = "packages/adapter-mcp-apps-host-web";
 const path = `${owner}/src/controller.ts`;
 describe("framework-free web package boundaries", () => {
   it.each([
@@ -8,6 +8,7 @@ describe("framework-free web package boundaries", () => {
     'export * from "../../../apps/desktop/src/types"',
     'type Port = import("desktop/types").Port',
     'await import("adapter-rich-content-web")',
+    'await import("adapter-mcp-apps-view-html")',
     'require("node:fs")',
     "await import(dynamicPath)",
     'export * from "./node/assets"',

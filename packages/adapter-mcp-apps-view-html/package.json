@@ -1,5 +1,5 @@
 {
-  "name": "adapter-mcp-apps-web",
+  "name": "adapter-mcp-apps-view-html",
   "version": "0.8.2",
   "private": true,
   "type": "module",
@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "2.0.3"
+    "adapter-rich-content-web": "workspace:*",
+    "parse5": "8.0.1"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

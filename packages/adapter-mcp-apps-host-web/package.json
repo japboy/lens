@@ -1,28 +1,25 @@
 {
-  "name": "adapter-rich-content-web",
+  "name": "adapter-mcp-apps-host-web",
   "version": "0.8.2",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./node": "./src/node/index.ts",
-    "./manifest": "./src/node/html-math-manifest.ts"
+    "./assets/*": "./src/assets/*"
   },
   "scripts": {
     "check:types": "tsc --build",
     "test": "vitest run"
   },
   "dependencies": {
-    "katex": "0.18.7",
-    "marked": "18.0.10",
-    "parse5": "8.0.1",
-    "vite": "8.3.1"
+    "@modelcontextprotocol/ext-apps": "2.0.3"
   },
   "devDependencies": {
     "@types/node": "24.13.6",
     "jsdom": "30.1.1",
     "typescript": "7.0.2",
     "typescript-config": "workspace:*",
+    "vite": "8.3.1",
     "vitest": "5.0.1"
   },
   "engines": {

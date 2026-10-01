@@ -10,7 +10,8 @@ ARCHITECTURE.md
 *.log
 /.DS_Store
 /.build/
-/packages/adapter-mcp-apps-web/.build/
+/packages/adapter-mcp-apps-host-web/.build/
+/packages/adapter-mcp-apps-view-html/.build/
 /packages/adapter-rich-content-web/.build/
 
 # Tauri project ignores

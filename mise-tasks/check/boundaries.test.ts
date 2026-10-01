@@ -51,7 +51,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
   it("checks actual Cargo and pnpm discovery without conflating desktop identities", () => {
     expect(() => fixture().check()).not.toThrow();
     expect(baseline.cargo.packages).toHaveLength(6);
-    expect(pnpm).toHaveLength(5);
+    expect(pnpm).toHaveLength(6);
     expect(
       MEMBERS.filter((entry) => entry.name === "desktop").map((entry) => entry.ecosystem),
     ).toEqual(["pnpm", "cargo"]);
@@ -127,12 +127,37 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     expect(f.check).toThrow("pnpm private must be true");
   });
 
-  it("requires both consumers to declare the shared configuration dependency", () => {
-    for (const directory of [".", "apps/desktop"]) {
+  it("requires all consumers to declare the shared configuration dependency", () => {
+    for (const directory of [
+      ".",
+      "apps/desktop",
+      "packages/adapter-mcp-apps-host-web",
+      "packages/adapter-mcp-apps-view-html",
+      "packages/adapter-rich-content-web",
+    ]) {
       const f = fixture();
       delete f.jsManifests.get(directory)!.devDependencies!["typescript-config"];
       expect(f.check).toThrow("missing declared pnpm dependency");
     }
+  });
+
+  it.each([
+    ["packages/adapter-mcp-apps-host-web", "adapter-rich-content-web"],
+    ["packages/adapter-mcp-apps-host-web", "adapter-mcp-apps-view-html"],
+    ["packages/adapter-mcp-apps-view-html", "adapter-mcp-apps-host-web"],
+    ["packages/adapter-rich-content-web", "desktop"],
+  ])("rejects a reverse or composition-only edge %s -> %s", (directory, dependency) => {
+    const f = fixture();
+    const manifest = f.jsManifests.get(directory)!;
+    manifest.dependencies = { ...manifest.dependencies, [dependency]: "workspace:*" };
+    expect(f.check).toThrow("unclassified pnpm local dependency or alias");
+  });
+  it("requires the explicit View-to-rich-content runtime edge", () => {
+    const f = fixture();
+    delete f.jsManifests.get("packages/adapter-mcp-apps-view-html")!.dependencies![
+      "adapter-rich-content-web"
+    ];
+    expect(f.check).toThrow("missing declared pnpm dependency");
   });
 
   it.each(["*", "file:../typescript-config", "npm:typescript-config@0.1.0"])(

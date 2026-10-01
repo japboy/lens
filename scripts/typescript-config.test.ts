@@ -21,7 +21,8 @@ describe("shared TypeScript configuration", () => {
     expect((parse(workspace) as { packages: string[] }).packages).toEqual([
       "apps/desktop",
       "packages/typescript-config",
-      "packages/adapter-mcp-apps-web",
+      "packages/adapter-mcp-apps-host-web",
+      "packages/adapter-mcp-apps-view-html",
       "packages/adapter-rich-content-web",
     ]);
   });

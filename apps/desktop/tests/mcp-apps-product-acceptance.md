@@ -38,7 +38,7 @@ Do not combine this hook with the other `LENS_VALIDATE_*` initializers. Each lau
 - `apps/desktop/src-tauri/src/agent.rs`: `transform_current`, `current_transform_input`, `run_persistent_session_actor`.
 - `apps/desktop/src-tauri/src/agent_runtime.rs`: `resolve_for_session` leases an already published managed installation; installation belongs to explicit user actions.
 - `apps/desktop/src-tauri/src/mcp_apps.rs`: retained source artifacts, display leases, App requests, trusted draft submission and lease revocation.
-- `packages/adapter-output-mcp/src/apps.rs`: actual source catalog/resource/result capture and the bundled `render_html` tool.
+- `packages/adapter-mcp-apps-server/src/apps.rs`: actual source catalog/resource/result capture and the bundled `render_html` tool.
 - `apps/desktop/src/components/lens-mcp-app.ts`: product Host display, SDK bridge and user controls.
 
 Record any actual failure at its concrete layer (source transport, Agent tool execution, resource capture, native display, App operation, trusted submission or lifecycle). Do not promote previous standalone browser/prototype results into native product evidence.
@@ -137,11 +137,11 @@ associates arrival with the active run. The user requested structural improvemen
 first and consideration of this concern afterward. No successful fresh parity or
 turn-admission claim is made from that interrupted run.
 
-The approved extraction now puts the generic browser Host/transport/proxy in
-`adapter-mcp-apps-web`, HTML/math and browser/Node resource generation in
+At the initial extraction checkpoint, the generic browser Host/transport/proxy
+was placed in `adapter-mcp-apps-web`, HTML/math and browser/Node resource generation in
 `adapter-rich-content-web`, and pure App input/authority rules plus the session
-document reducer in `usecase`. Desktop composes those packages and retains native
-locks, IPC, physical sessions, storage and effect dispatch. Tool schemas and
+document reducer in `usecase`. Desktop retained native locks, IPC, physical
+sessions, storage and effect dispatch. Tool schemas and
 admission semantics are unchanged during this structural step.
 
 Fresh automated frontend and repository gates passed: shared packages 39 tests,
@@ -156,3 +156,24 @@ passed with 19 existing opt-in tests ignored, plus workspace Clippy, dependency
 audit, documentation tests and development/release compilation. Exact package-owned
 resources are consumed by native composition. Actual replacement parity acceptance
 remains pending the separate turn-admission decision.
+
+## Server/Host/View naming qualification — 2026-10-01
+
+Role names now match package and directory names: `adapter-mcp-apps-server`,
+`adapter-mcp-apps-host-web` and `adapter-mcp-apps-view-html`. Shared Markdown/static
+HTML math and Node resource generation remain in `adapter-rich-content-web`.
+Desktop composes Host, View and shared math; View consumes the public math API.
+Host has no View/rendering dependency. Server includes the inbound MCP facade,
+upstream client sessions and display transport, with no Tauri dependency.
+
+Fresh naming gates passed: repository 590 tests, Host 17, View 15, shared math 7
+and Desktop 664 tests. Six Cargo and six pnpm members and 554 source paths passed
+explicit boundary checks. Type checking, formatting, lint and sealed generation
+passed. The complete macOS gate passed 607 Rust tests with 19 existing opt-in
+ignores, Clippy, dependency audit, documentation tests and dev/release compilation.
+The generation is `350ac78f0d27a8f41bdf2c5f27dbe1392b9cbe0d3a3769cdf2fbd4fa8ad8878e`.
+
+Server implementation and four canonical runtime assets match the preceding
+commit exactly; View preparation changed only the math import. Tool schemas and
+turn admission are unchanged. These automated results do not establish fresh
+actual Codex replacement parity, which still awaits the separate turn decision.

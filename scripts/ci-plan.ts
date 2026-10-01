@@ -100,7 +100,11 @@ export function classifyChange(change: Change): ChangeRequirement {
     /^apps\/desktop\/src-tauri\/tauri\.(?:conf|macos\.conf|release\.conf)\.json$/u.test(path)
   )
     return require("control-plane", "Build, dependency or verification policy requires complete verification", dmg);
-  if (/^packages\/(?:adapter-mcp-apps-web|adapter-rich-content-web)\//u.test(path))
+  if (
+    /^packages\/(?:adapter-mcp-apps-host-web|adapter-mcp-apps-view-html|adapter-rich-content-web)\//u.test(
+      path,
+    )
+  )
     return require("shared-web-adapter", "Shared browser and build adapter changes require packaged native consumers", app);
   if (NATIVE_CODE_INPUTS.has(path))
     return require("native-input", "Rust includes or build scripts consume this input", code);
@@ -108,7 +112,7 @@ export function classifyChange(change: Change): ChangeRequirement {
     return require("frontend-native-contract", "Frontend contract is shared with the native implementation", code);
   if (
     path.startsWith("packages/adapter-platform-macos/") ||
-    path.startsWith("packages/adapter-output-mcp/") ||
+    path.startsWith("packages/adapter-mcp-apps-server/") ||
     path.startsWith("apps/desktop/src-tauri/src/native/") ||
     path === "apps/desktop/src-tauri/src/lib.rs" ||
     path === "apps/desktop/src-tauri/src/main.rs"

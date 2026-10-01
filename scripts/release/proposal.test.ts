@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,13 @@ for (const path of [...VERSION_FILES, "release-please-config.json"]) {
   const destination = join(root, path);
   mkdirSync(dirname(destination), { recursive: true });
   writeFileSync(destination, readFileSync(join(sourceRoot, path)));
+}
+// Cargo discovers package targets from source entrypoints. A renamed workspace
+// member must have its current source directory in the same fixed test snapshot.
+for (const path of VERSION_FILES.filter((path) => path.endsWith("/Cargo.toml"))) {
+  cpSync(join(sourceRoot, dirname(path), "src"), join(root, dirname(path), "src"), {
+    recursive: true,
+  });
 }
 const git = (...args: string[]) =>
   execFileSync("git", args, {

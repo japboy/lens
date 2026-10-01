@@ -5,7 +5,7 @@ members = [
   "packages/usecase",
   "packages/port-platform",
   "packages/adapter-platform-macos",
-  "packages/adapter-output-mcp",
+  "packages/adapter-mcp-apps-server",
 ]
 resolver = "2"
 
@@ -20,7 +20,7 @@ agent-client-protocol-schema = { version = "=1.9.1", features = ["tracing"] }
 domain = { path = "packages/domain" }
 usecase = { path = "packages/usecase" }
 port-platform = { path = "packages/port-platform" }
-adapter-output-mcp = { path = "packages/adapter-output-mcp" }
+adapter-mcp-apps-server = { path = "packages/adapter-mcp-apps-server" }
 adapter-platform-macos = { path = "packages/adapter-platform-macos" }
 base64 = "=0.22.1"
 reqwest = { version = "=0.13.5", default-features = false, features = ["json"] }

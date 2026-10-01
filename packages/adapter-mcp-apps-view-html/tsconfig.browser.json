@@ -1,0 +1,11 @@
+{
+  "extends": "typescript-config/base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["vite/client"],
+    "tsBuildInfoFile": "./.build/cache/typescript/browser.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}

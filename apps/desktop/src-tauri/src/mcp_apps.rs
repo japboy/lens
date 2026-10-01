@@ -3,7 +3,7 @@ use crate::{
     app_state::{emit_app_snapshot, AppState},
     model::{AppSnapshot, LensStage},
 };
-use adapter_output_mcp::apps::{AppArtifact, AppBroker, AppResource, DisplayServer};
+use adapter_mcp_apps_server::apps::{AppArtifact, AppBroker, AppResource, DisplayServer};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -100,7 +100,7 @@ pub struct OpenedApp {
 }
 impl OpenedApp {
     fn set_live(&mut self, live: bool) -> Result<(), String> {
-        let sandbox = adapter_output_mcp::apps::resource_sandbox(&self.resource)?;
+        let sandbox = adapter_mcp_apps_server::apps::resource_sandbox(&self.resource)?;
         self.live = live;
         self.host_capabilities = if live {
             json!({"serverTools":{},"message":{"text":{}},"updateModelContext":{"text":{},"structuredContent":{}}})
@@ -466,7 +466,7 @@ fn load<R: tauri::Runtime>(app: &AppHandle<R>, id: Uuid) -> Result<RetainedArtif
     Ok(artifact)
 }
 fn validate_resource(artifact: &AppArtifact) -> Result<(), String> {
-    adapter_output_mcp::apps::resource_csp(&artifact.resource)?;
+    adapter_mcp_apps_server::apps::resource_csp(&artifact.resource)?;
     if artifact.resource.html.is_empty() {
         return Err(
             "App resource could not be retained; the original tool result is preserved".into(),
@@ -552,7 +552,8 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
             .is_none_or(|l| l.lifecycle == crate::model::LensMonitoringLifecycle::Watching);
     let generation = Uuid::new_v4();
     let id = Uuid::new_v4();
-    let document = if artifact.artifact.server_id == adapter_output_mcp::apps::FALLBACK_SERVER {
+    let document = if artifact.artifact.server_id == adapter_mcp_apps_server::apps::FALLBACK_SERVER
+    {
         artifact
             .artifact
             .result
@@ -566,9 +567,11 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
         artifact.artifact.resource.clone(),
         document,
         host_origin,
-        include_str!("../../../../packages/adapter-mcp-apps-web/src/assets/sandbox-proxy.html")
-            .into(),
-        include_str!("../../../../packages/adapter-mcp-apps-web/src/assets/sandbox-proxy.js")
+        include_str!(
+            "../../../../packages/adapter-mcp-apps-host-web/src/assets/sandbox-proxy.html"
+        )
+        .into(),
+        include_str!("../../../../packages/adapter-mcp-apps-host-web/src/assets/sandbox-proxy.js")
             .into(),
     )
     .await
@@ -683,7 +686,7 @@ pub fn prepare_mcp_app_document<R: tauri::Runtime>(
         .map_err(|_| "MCP leases unavailable")?;
     let lease = leases.get(&lease_id).ok_or("App lease expired")?;
     ensure_display(&state.mcp_apps, &state.snapshot()?, lease)?;
-    if lease.artifact.artifact.server_id != adapter_output_mcp::apps::FALLBACK_SERVER {
+    if lease.artifact.artifact.server_id != adapter_mcp_apps_server::apps::FALLBACK_SERVER {
         return Err("Only bundled HTML documents can be prepared".into());
     }
     lease._document.prepare_document(document)
@@ -1019,7 +1022,7 @@ mod tests {
             "connectDomains":["wss://api.example", "https://api.example:8443"]
         },"permissions":{}}})
         );
-        let policy = adapter_output_mcp::apps::resource_csp(&opened.resource).unwrap();
+        let policy = adapter_mcp_apps_server::apps::resource_csp(&opened.resource).unwrap();
         for domain in [
             "https://cdn.example",
             "https://*.assets.example",
@@ -1300,7 +1303,7 @@ mod tests {
             Some(lifetime.generation),
         )
         .await;
-        display.artifact.artifact.server_id = adapter_output_mcp::apps::FALLBACK_SERVER.into();
+        display.artifact.artifact.server_id = adapter_mcp_apps_server::apps::FALLBACK_SERVER.into();
         let endpoint = display._document.proxy_url.clone();
         let cancel = display.cancellation.clone();
         let id = Uuid::new_v4();

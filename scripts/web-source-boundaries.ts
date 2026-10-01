@@ -13,8 +13,12 @@ export function webSourceViolations(path: string, source: string, owner: string)
       specifier.startsWith("apps/desktop")
     )
       errors.push(`Desktop/native import forbidden: ${specifier}`);
-    if (owner.endsWith("adapter-mcp-apps-web") && specifier.startsWith("adapter-rich-content-web"))
-      errors.push("Generic MCP Host cannot depend on rich content rendering");
+    if (
+      owner.endsWith("adapter-mcp-apps-host-web") &&
+      (specifier.startsWith("adapter-rich-content-web") ||
+        specifier.startsWith("adapter-mcp-apps-view-html"))
+    )
+      errors.push("Generic MCP Host cannot depend on a renderer/View");
     if (specifier.startsWith(".")) {
       const local = relative(resolve(owner), resolve(dirname(path), specifier)).replaceAll(
         "\\",

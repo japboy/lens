@@ -30,7 +30,11 @@ export const MEMBERS: readonly Member[] = [
     capability: "desktop",
     implementation: "webview",
     dependencies: {
-      normal: ["adapter-mcp-apps-web", "adapter-rich-content-web"],
+      normal: [
+        "adapter-mcp-apps-host-web",
+        "adapter-mcp-apps-view-html",
+        "adapter-rich-content-web",
+      ],
       dev: ["typescript-config"],
     },
   },
@@ -45,12 +49,21 @@ export const MEMBERS: readonly Member[] = [
   },
   {
     ecosystem: "pnpm",
-    name: "adapter-mcp-apps-web",
-    directory: "packages/adapter-mcp-apps-web",
+    name: "adapter-mcp-apps-host-web",
+    directory: "packages/adapter-mcp-apps-host-web",
     role: "adapter",
     capability: "desktop",
     implementation: "webview",
     dependencies: { dev: ["typescript-config"] },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "adapter-mcp-apps-view-html",
+    directory: "packages/adapter-mcp-apps-view-html",
+    role: "adapter",
+    capability: "desktop",
+    implementation: "webview",
+    dependencies: { normal: ["adapter-rich-content-web"], dev: ["typescript-config"] },
   },
   {
     ecosystem: "pnpm",
@@ -74,7 +87,7 @@ export const MEMBERS: readonly Member[] = [
       normal: [
         "usecase",
         "port-platform",
-        "adapter-output-mcp",
+        "adapter-mcp-apps-server",
         "agent-client-protocol",
         "base64",
         "chrono",
@@ -162,8 +175,8 @@ export const MEMBERS: readonly Member[] = [
   },
   {
     ecosystem: "cargo",
-    name: "adapter-output-mcp",
-    directory: "packages/adapter-output-mcp",
+    name: "adapter-mcp-apps-server",
+    directory: "packages/adapter-mcp-apps-server",
     role: "adapter",
     capability: "desktop",
     implementation: "transport",
@@ -217,8 +230,8 @@ export type BuildVariant = {
   targets: "lib" | "lib-and-bins";
 };
 
-const common = ["domain", "port-platform", "usecase", "desktop", "adapter-output-mcp"];
-const portable = ["domain", "port-platform", "usecase", "adapter-output-mcp"];
+const common = ["domain", "port-platform", "usecase", "desktop", "adapter-mcp-apps-server"];
+const portable = ["domain", "port-platform", "usecase", "adapter-mcp-apps-server"];
 const native = [...common, "adapter-platform-macos"];
 
 export const BUILD_VARIANTS: readonly BuildVariant[] = [
