@@ -2,6 +2,7 @@
   "name": "adapter-mcp-apps-host",
   "version": "0.8.2",
   "private": true,
+  "description": "Browser MCP Apps Host lifecycle, protocol transport and sandbox proxy",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

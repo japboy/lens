@@ -2,6 +2,7 @@
   "name": "desktop",
   "version": "0.8.3",
   "private": true,
+  "description": "Lens desktop UI, native integration and WebView build tooling",
   "type": "module",
   "scripts": {
     "dev": "node tooling/prerender/dev.ts",

@@ -2,6 +2,7 @@
   "name": "adapter-math-renderer",
   "version": "0.8.2",
   "private": true,
+  "description": "Shared TeX rendering for Markdown and HTML, with pinned CSS/font resources",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

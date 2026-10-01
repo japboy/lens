@@ -2,6 +2,7 @@
   "name": "typescript-config",
   "version": "0.8.3",
   "private": true,
+  "description": "Shared strict TypeScript compiler configurations",
   "files": [
     "base.json",
     "node.json"

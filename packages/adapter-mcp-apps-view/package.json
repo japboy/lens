@@ -2,6 +2,7 @@
   "name": "adapter-mcp-apps-view",
   "version": "0.8.2",
   "private": true,
+  "description": "Built-in HTML MCP Apps View, shell and source-preserving preparation",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
