@@ -101,9 +101,7 @@ export function classifyChange(change: Change): ChangeRequirement {
   )
     return require("control-plane", "Build, dependency or verification policy requires complete verification", dmg);
   if (
-    /^packages\/(?:adapter-mcp-apps-host|adapter-mcp-apps-view|adapter-rich-content-web)\//u.test(
-      path,
-    )
+    /^packages\/(?:adapter-mcp-apps-host|adapter-mcp-apps-view|adapter-math-renderer)\//u.test(path)
   )
     return require("shared-web-adapter", "Shared browser and build adapter changes require packaged native consumers", app);
   if (NATIVE_CODE_INPUTS.has(path))

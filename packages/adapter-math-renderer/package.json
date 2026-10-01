@@ -1,5 +1,5 @@
 {
-  "name": "adapter-rich-content-web",
+  "name": "adapter-math-renderer",
   "version": "0.8.2",
   "private": true,
   "type": "module",

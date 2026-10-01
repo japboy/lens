@@ -15,7 +15,7 @@ export function webSourceViolations(path: string, source: string, owner: string)
       errors.push(`Desktop/native import forbidden: ${specifier}`);
     if (
       owner.endsWith("adapter-mcp-apps-host") &&
-      (specifier.startsWith("adapter-rich-content-web") ||
+      (specifier.startsWith("adapter-math-renderer") ||
         specifier.startsWith("adapter-mcp-apps-view"))
     )
       errors.push("Generic MCP Host cannot depend on a renderer/View");
@@ -33,8 +33,8 @@ export function webSourceViolations(path: string, source: string, owner: string)
       (specifier.startsWith("node:") ||
         builtinModules.includes(specifier) ||
         specifier === "vite" ||
-        specifier === "adapter-rich-content-web/node" ||
-        specifier === "adapter-rich-content-web/manifest") &&
+        specifier === "adapter-math-renderer/node" ||
+        specifier === "adapter-math-renderer/manifest") &&
       !path.includes("/src/node/")
     )
       errors.push(`Node/build dependency in browser runtime: ${specifier}`);

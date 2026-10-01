@@ -8,7 +8,7 @@
       "path": "./packages/adapter-mcp-apps-view"
     },
     {
-      "path": "./packages/adapter-rich-content-web"
+      "path": "./packages/adapter-math-renderer"
     },
     {
       "path": "./tsconfig.node.json"

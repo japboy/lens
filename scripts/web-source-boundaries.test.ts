@@ -7,7 +7,7 @@ describe("framework-free web package boundaries", () => {
     'import {invoke} from "@tauri-apps/api/core"',
     'export * from "../../../apps/desktop/src/types"',
     'type Port = import("desktop/types").Port',
-    'await import("adapter-rich-content-web")',
+    'await import("adapter-math-renderer")',
     'await import("adapter-mcp-apps-view")',
     'require("node:fs")',
     "await import(dynamicPath)",
@@ -24,14 +24,14 @@ describe("framework-free web package boundaries", () => {
       ),
     ).toEqual([]);
   });
-  it.each(["adapter-rich-content-web/node", "adapter-rich-content-web/manifest", "fs", "path"])(
+  it.each(["adapter-math-renderer/node", "adapter-math-renderer/manifest", "fs", "path"])(
     "rejects Node export aliases and bare built-ins from renderer browser: %s",
     (specifier) => {
       expect(
         webSourceViolations(
-          "packages/adapter-rich-content-web/src/index.ts",
+          "packages/adapter-math-renderer/src/index.ts",
           `export * from "${specifier}"`,
-          "packages/adapter-rich-content-web",
+          "packages/adapter-math-renderer",
         ),
       ).not.toEqual([]);
     },
@@ -39,9 +39,9 @@ describe("framework-free web package boundaries", () => {
   it("keeps Node dependencies in the explicit node facet", () => {
     expect(
       webSourceViolations(
-        "packages/adapter-rich-content-web/src/node/assets.ts",
+        "packages/adapter-math-renderer/src/node/assets.ts",
         'import fs from "node:fs"; import {build} from "vite"',
-        "packages/adapter-rich-content-web",
+        "packages/adapter-math-renderer",
       ),
     ).toEqual([]);
   });

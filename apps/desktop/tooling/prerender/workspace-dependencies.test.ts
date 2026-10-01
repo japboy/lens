@@ -133,11 +133,11 @@ describe("sealed workspace dependency resolution", () => {
     const before = sourceInputs(original);
     expect(before.has("packages/adapter-mcp-apps-host/source.json")).toBe(true);
     await write(
-      join(original, "packages/adapter-rich-content-web/math.ts"),
+      join(original, "packages/adapter-math-renderer/math.ts"),
       "export const value = 73;",
     );
     const after = sourceInputs(original);
-    expect(after.has("packages/adapter-rich-content-web/math.ts")).toBe(true);
+    expect(after.has("packages/adapter-math-renderer/math.ts")).toBe(true);
     expect(sourceDigest(after)).not.toBe(sourceDigest(before));
   });
 });

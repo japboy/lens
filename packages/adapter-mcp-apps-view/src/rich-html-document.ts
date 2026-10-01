@@ -1,5 +1,5 @@
 import { parse, parseFragment, type DefaultTreeAdapterMap } from "parse5";
-import { MATH_LIMITS, readMathSpan, renderMathMarkup } from "adapter-rich-content-web";
+import { MATH_LIMITS, readMathSpan, renderMathMarkup } from "adapter-math-renderer";
 import linkScript from "./assets/rich-html-links.js?raw";
 
 type Node = DefaultTreeAdapterMap["node"];

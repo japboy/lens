@@ -20,7 +20,7 @@ export const MEMBERS: readonly Member[] = [
     role: "repository",
     capability: "repository",
     implementation: "tooling",
-    dependencies: { dev: ["typescript-config", "adapter-rich-content-web"] },
+    dependencies: { dev: ["typescript-config", "adapter-math-renderer"] },
   },
   {
     ecosystem: "pnpm",
@@ -30,7 +30,7 @@ export const MEMBERS: readonly Member[] = [
     capability: "desktop",
     implementation: "webview",
     dependencies: {
-      normal: ["adapter-mcp-apps-host", "adapter-mcp-apps-view", "adapter-rich-content-web"],
+      normal: ["adapter-mcp-apps-host", "adapter-mcp-apps-view", "adapter-math-renderer"],
       dev: ["typescript-config"],
     },
   },
@@ -59,12 +59,12 @@ export const MEMBERS: readonly Member[] = [
     role: "adapter",
     capability: "desktop",
     implementation: "webview",
-    dependencies: { normal: ["adapter-rich-content-web"], dev: ["typescript-config"] },
+    dependencies: { normal: ["adapter-math-renderer"], dev: ["typescript-config"] },
   },
   {
     ecosystem: "pnpm",
-    name: "adapter-rich-content-web",
-    directory: "packages/adapter-rich-content-web",
+    name: "adapter-math-renderer",
+    directory: "packages/adapter-math-renderer",
     role: "adapter",
     capability: "desktop",
     implementation: "webview",

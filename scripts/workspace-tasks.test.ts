@@ -93,7 +93,7 @@ describe("repository task ownership", () => {
         resolve(root, "apps/desktop"),
         resolve(root, "packages/adapter-mcp-apps-host"),
         resolve(root, "packages/adapter-mcp-apps-view"),
-        resolve(root, "packages/adapter-rich-content-web"),
+        resolve(root, "packages/adapter-math-renderer"),
       ]).toContain(task.dir);
       expect(task.sources).toEqual([]);
       expect(task.outputs).toEqual([]);
@@ -218,7 +218,7 @@ describe("repository task ownership", () => {
       "test:frontend",
       "test:mcp-apps-host",
       "test:mcp-apps-view",
-      "test:rich-content-web",
+      "test:math-renderer",
     ]) {
       expect(result.completed.indexOf(leaf)).toBeGreaterThanOrEqual(0);
       expect(result.completed.indexOf(leaf)).toBeLessThan(rust);
@@ -240,7 +240,7 @@ describe("repository task ownership", () => {
         "test:frontend",
         "test:mcp-apps-host",
         "test:mcp-apps-view",
-        "test:rich-content-web",
+        "test:math-renderer",
       ].toSorted(),
     );
     expect(repository.completed.filter((name) => frontend.completed.includes(name))).toEqual([]);
@@ -251,7 +251,7 @@ describe("repository task ownership", () => {
       "pnpm exec tsc --build tsconfig.node.json",
     ]);
     expect(tasks.find((task) => task.name === "check:types:frontend")!.run).toEqual([
-      "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-rich-content-web apps/desktop",
+      "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer apps/desktop",
     ]);
   });
 

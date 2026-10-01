@@ -41,7 +41,7 @@ describe("finite verification requirements with per-input reasons", () => {
     ["packages/typescript-config/base.json", dmg, "control-plane"],
     ["packages/adapter-mcp-apps-host/src/controller.ts", app, "shared-web-adapter"],
     ["packages/adapter-mcp-apps-view/src/index.ts", app, "shared-web-adapter"],
-    ["packages/adapter-rich-content-web/src/node/html-math-assets.ts", app, "shared-web-adapter"],
+    ["packages/adapter-math-renderer/src/node/html-math-assets.ts", app, "shared-web-adapter"],
     ["Cargo.lock", dmg, "control-plane"],
     ["mise.toml", dmg, "unreviewed-input"],
     ["mise.lock", dmg, "unreviewed-input"],

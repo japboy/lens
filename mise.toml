@@ -39,7 +39,7 @@ run = "pnpm exec tsc --build tsconfig.node.json"
 [tasks."check:types:frontend"]
 description = "Check desktop and shared web adapter TypeScript"
 dir = "{{config_root}}"
-run = "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-rich-content-web apps/desktop"
+run = "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer apps/desktop"
 
 [tasks."frontend:dev"]
 description = "Run the desktop frontend development server"
@@ -60,7 +60,7 @@ run = "pnpm exec vitest run"
 [tasks."test:frontend"]
 description = "Run desktop frontend tests after shared web adapter tests"
 dir = "{{config_root}}/apps/desktop"
-depends = ["test:mcp-apps-host", "test:mcp-apps-view", "test:rich-content-web"]
+depends = ["test:mcp-apps-host", "test:mcp-apps-view", "test:math-renderer"]
 run = "pnpm test"
 
 [tasks."test:mcp-apps-host"]
@@ -73,9 +73,9 @@ description = "Run built-in HTML MCP Apps View tests"
 dir = "{{config_root}}/packages/adapter-mcp-apps-view"
 run = "pnpm test"
 
-[tasks."test:rich-content-web"]
-description = "Run rich content browser and Node asset tests"
-dir = "{{config_root}}/packages/adapter-rich-content-web"
+[tasks."test:math-renderer"]
+description = "Run shared math renderer and Node asset tests"
+dir = "{{config_root}}/packages/adapter-math-renderer"
 run = "pnpm test"
 
 [tasks."test"]

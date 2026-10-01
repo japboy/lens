@@ -200,3 +200,27 @@ above remains evidence of the preceding checkpoint and was not rerun here.
 All 32 moved package files match the preceding commit except role-name references
 and the Server package description. Public tools, schema and turn admission remain
 unchanged. This step provides no new actual Codex/native interaction evidence.
+
+## Shared math renderer naming qualification — 2026-10-01
+
+The shared package/directory is now `adapter-math-renderer`. Its public Browser,
+Node and install-independent manifest entrypoints remain unchanged. TeX/KaTeX,
+Markdown math helpers, sanitized static-HTML math enhancement and closed math
+resources retain their existing behavior and ownership. All 14 moved tracked
+files match the preceding commit after substituting the package name; dependency
+versions and resource bytes are unchanged. No Rust source or Cargo manifest changed.
+
+Fresh verification passed: frontend 703 tests (Host 17, View 15, math 7 and
+Desktop 664), repository 590 tests, and explicit boundaries covering six Cargo
+members, six pnpm members and 554 source paths. Type checking, lint, formatting,
+frontend build and sealed generation passed. The generation is
+`5da89cab9ab2f71447101eff1f87c663bf97f5a6231d62722d12330495551a58`.
+The official `check:rust:release` task, run with `--skip-deps` to bound this
+namespace-only verification, passed macOS production release compilation in
+6.40 seconds. Its workspace graph digest is
+`8dd3fa9b9af17d8465812ef130c2e5ae284c2acd8a284abc54a4e8a6d8b32351`.
+An initial dependency-expanded native run passed dev checking and Clippy but was
+interrupted before Rust tests completed; it is not a completed native gate.
+The earlier full 607-test native gate was not rerun for this change. Independent
+source review found no blocker. This step supplies no new GUI or actual Codex
+interaction evidence, and tool schemas and turn admission remain unchanged.

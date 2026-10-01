@@ -23,7 +23,7 @@
         },
         {
           "type": "json",
-          "path": "packages/adapter-rich-content-web/package.json",
+          "path": "packages/adapter-math-renderer/package.json",
           "jsonpath": "$.version"
         },
         {

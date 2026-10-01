@@ -175,9 +175,9 @@ importers:
       '@types/node':
         specifier: 24.19.0
         version: 24.19.0
-      adapter-rich-content-web:
+      adapter-math-renderer:
         specifier: workspace:*
-        version: link:packages/adapter-rich-content-web
+        version: link:packages/adapter-math-renderer
       oxfmt:
         specifier: 0.71.0
         version: 0.71.0
@@ -259,9 +259,9 @@ importers:
       adapter-mcp-apps-view:
         specifier: workspace:*
         version: link:../../packages/adapter-mcp-apps-view
-      adapter-rich-content-web:
+      adapter-math-renderer:
         specifier: workspace:*
-        version: link:../../packages/adapter-rich-content-web
+        version: link:../../packages/adapter-math-renderer
       dompurify:
         specifier: 3.4.16
         version: 3.4.16
@@ -333,9 +333,9 @@ importers:
 
   packages/adapter-mcp-apps-view:
     dependencies:
-      adapter-rich-content-web:
+      adapter-math-renderer:
         specifier: workspace:*
-        version: link:../adapter-rich-content-web
+        version: link:../adapter-math-renderer
       parse5:
         specifier: 8.0.1
         version: 8.0.1
@@ -359,7 +359,7 @@ importers:
         specifier: 5.0.1
         version: 5.0.1(@types/node@24.13.6)(jsdom@30.1.1)(vite@8.3.1(@types/node@24.13.6)(yaml@2.9.1))
 
-  packages/adapter-rich-content-web:
+  packages/adapter-math-renderer:
     dependencies:
       katex:
         specifier: 0.18.7

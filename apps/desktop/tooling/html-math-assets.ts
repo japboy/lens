@@ -1,5 +1,5 @@
 import type { Plugin } from "vite";
-import { createHtmlMathAssets, inlineHtmlMathCss } from "adapter-rich-content-web/node";
+import { createHtmlMathAssets, inlineHtmlMathCss } from "adapter-math-renderer/node";
 import { HTML_MATH_MANIFEST } from "./html-math-manifest.ts";
 
 /** Desktop owns virtual-module naming and Vite publication, not resource generation. */

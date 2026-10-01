@@ -23,7 +23,7 @@ describe("shared TypeScript configuration", () => {
       "packages/typescript-config",
       "packages/adapter-mcp-apps-host",
       "packages/adapter-mcp-apps-view",
-      "packages/adapter-rich-content-web",
+      "packages/adapter-math-renderer",
     ]);
   });
 

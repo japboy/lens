@@ -2,8 +2,8 @@
 // @vitest-environment-options {"jsdom":{"runScripts":"dangerously"}}
 import { beforeAll, describe, expect, it } from "vitest";
 import { prepareRichHtmlDocument as prepareDocument } from "../src/rich-html-document";
-import { MATH_LIMITS } from "adapter-rich-content-web";
-import { createHtmlMathAssets, inlineHtmlMathCss } from "adapter-rich-content-web/node";
+import { MATH_LIMITS } from "adapter-math-renderer";
+import { createHtmlMathAssets, inlineHtmlMathCss } from "adapter-math-renderer/node";
 let css = "";
 beforeAll(async () => {
   const { manifest, sources } = await createHtmlMathAssets(process.cwd());

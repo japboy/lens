@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "adapter-rich-content-web": "workspace:*",
+    "adapter-math-renderer": "workspace:*",
     "parse5": "8.0.1"
   },
   "devDependencies": {
