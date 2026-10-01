@@ -195,11 +195,16 @@ impl SessionViewStore {
         entry_id: &str,
         revision: u64,
         block_index: usize,
-        action: impl FnOnce(String, usecase::session_document::HtmlMode) -> Result<T, String>,
+        action: impl FnOnce(
+            String,
+            usecase::session_document::HtmlMode,
+            serde_json::Value,
+        ) -> Result<T, String>,
     ) -> Result<T, String> {
         let view = self.inner.lock().map_err(lock_error)?;
-        let (html, mode) = wire::html_document(&view, generation, entry_id, revision, block_index)?;
-        action(html, mode)
+        let (html, mode, csp) =
+            wire::html_document(&view, generation, entry_id, revision, block_index)?;
+        action(html, mode, csp)
     }
 
     pub fn ensure_not_loading(&self) -> Result<(), String> {

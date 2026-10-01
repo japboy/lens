@@ -377,7 +377,7 @@ impl McpAppsStore {
                     &entry_id,
                     revision,
                     block_index,
-                    |_, mode| {
+                    |_, mode, _| {
                         if mode != expected_mode {
                             return Err("History HTML permission changed".into());
                         }
@@ -689,7 +689,7 @@ fn known_host_url(url: &reqwest::Url, dev_url: Option<&reqwest::Url>) -> bool {
 fn html_source(
     state: &AppState,
     source: &HtmlPresentationSource,
-) -> Result<(String, usecase::session_document::HtmlMode), String> {
+) -> Result<(String, usecase::session_document::HtmlMode, Value), String> {
     match source {
         HtmlPresentationSource::Live {
             output_ref,
@@ -707,7 +707,7 @@ fn html_source(
             )?;
             match block {
                 crate::model::LensOutputBlock::Html { text, .. } => {
-                    Ok((text, usecase::session_document::HtmlMode::Static))
+                    Ok((text, usecase::session_document::HtmlMode::Static, json!({})))
                 }
                 _ => Err("Selected response block is not HTML".into()),
             }
@@ -722,16 +722,17 @@ fn html_source(
             entry_id,
             *revision,
             *block_index,
-            |html, mode| Ok((html, mode)),
+            |html, mode, csp| Ok((html, mode, csp)),
         ),
     }
 }
 fn document_policy(
     mode: usecase::session_document::HtmlMode,
+    csp: Value,
 ) -> adapter_mcp_server::apps::DocumentPolicy {
     match mode {
         usecase::session_document::HtmlMode::Interactive => {
-            adapter_mcp_server::apps::DocumentPolicy::Interactive
+            adapter_mcp_server::apps::DocumentPolicy::Interactive { csp }
         }
         usecase::session_document::HtmlMode::Static => {
             use base64::Engine;
@@ -766,7 +767,7 @@ pub async fn open_html_presentation<R: tauri::Runtime>(
         .open_epoch
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
         + 1;
-    let (html, mode) = html_source(&state, &source)?;
+    let (html, mode, csp) = html_source(&state, &source)?;
     if html.len() > adapter_mcp_server::MAX_HTML_BYTES {
         return Err("HTML document exceeds size limit".into());
     }
@@ -775,7 +776,7 @@ pub async fn open_html_presentation<R: tauri::Runtime>(
             "../../../../packages/adapter-mcp-apps-view/src/assets/rich-html-app.html"
         )
         .into(),
-        meta: json!({}),
+        meta: json!({"ui":{"csp":csp}}),
     };
     let display = DisplayServer::start(
         resource.clone(),
@@ -785,7 +786,7 @@ pub async fn open_html_presentation<R: tauri::Runtime>(
             .into(),
         include_str!("../../../../packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js")
             .into(),
-        document_policy(mode),
+        document_policy(mode, csp),
     )
     .await
     .map_err(|_| "Unable to start HTML sandbox")?;
@@ -887,7 +888,15 @@ pub async fn open_mcp_app<R: tauri::Runtime>(
             .into(),
         include_str!("../../../../packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js")
             .into(),
-        adapter_mcp_server::apps::DocumentPolicy::Interactive,
+        adapter_mcp_server::apps::DocumentPolicy::Interactive {
+            csp: artifact
+                .artifact
+                .resource
+                .meta
+                .pointer("/ui/csp")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        },
     )
     .await
     .map_err(|_| "Unable to start App sandbox")?;
@@ -1460,7 +1469,7 @@ mod tests {
                 "tauri://localhost".into(),
                 "__SETTINGS_JSON__".into(),
                 String::new(),
-                adapter_mcp_server::apps::DocumentPolicy::Interactive,
+                adapter_mcp_server::apps::DocumentPolicy::Interactive { csp: json!({}) },
             )
             .await
             .unwrap(),
@@ -1472,7 +1481,7 @@ mod tests {
     fn static_document_policy_hashes_exact_trusted_link_helper_bytes() {
         use base64::Engine;
         use sha2::Digest;
-        let policy = document_policy(usecase::session_document::HtmlMode::Static);
+        let policy = document_policy(usecase::session_document::HtmlMode::Static, json!({}));
         let adapter_mcp_server::apps::DocumentPolicy::Static {
             trusted_script_sha256,
         } = policy
@@ -1486,8 +1495,8 @@ mod tests {
             )))
         );
         assert!(matches!(
-            document_policy(usecase::session_document::HtmlMode::Interactive),
-            adapter_mcp_server::apps::DocumentPolicy::Interactive
+            document_policy(usecase::session_document::HtmlMode::Interactive, json!({})),
+            adapter_mcp_server::apps::DocumentPolicy::Interactive { .. }
         ));
     }
 
@@ -1505,6 +1514,7 @@ mod tests {
             blocks: vec![],
             accepted_html: Some(html.into()),
             accepted_html_mode: HtmlMode::Interactive,
+            accepted_html_csp: Some(json!({"resourceDomains":["https://cdn.example"],"connectDomains":["https://api.example"]})),
         });
         state
             .session_view
@@ -1540,14 +1550,24 @@ mod tests {
         assert!(serialized["host_capabilities"].get("message").is_none());
         assert!(serialized["host_capabilities"].get("serverTools").is_none());
         assert_eq!(
-            reqwest::get(opened.document_url.unwrap())
-                .await
-                .unwrap()
-                .text()
-                .await
-                .unwrap(),
-            html
+            serialized["resource"]["meta"]["ui"]["csp"],
+            json!({"resourceDomains":["https://cdn.example"],"connectDomains":["https://api.example"]})
         );
+        assert_eq!(
+            serialized["host_capabilities"]["sandbox"]["csp"],
+            serialized["resource"]["meta"]["ui"]["csp"]
+        );
+        let document_response = reqwest::get(opened.document_url.unwrap()).await.unwrap();
+        let csp_header = document_response
+            .headers()
+            .get(reqwest::header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp_header.contains("script-src 'unsafe-inline' https://cdn.example"));
+        assert!(csp_header.contains("connect-src https://api.example"));
+        assert!(csp_header.contains("frame-src 'none'"));
+        assert_eq!(document_response.text().await.unwrap(), html);
         prepare_mcp_app_document(
             app.handle().clone(),
             overlay,
@@ -1578,6 +1598,9 @@ mod tests {
             blocks: vec![],
             accepted_html: Some("<button>Details</button><script>localTabs()</script>".into()),
             accepted_html_mode: HtmlMode::Interactive,
+            accepted_html_csp: Some(
+                json!({"resourceDomains":["https://cdn.example"],"connectDomains":[]}),
+            ),
         });
         state
             .session_view
@@ -1594,6 +1617,10 @@ mod tests {
             html_source(&state, &source).unwrap().1,
             HtmlMode::Interactive
         );
+        assert_eq!(
+            html_source(&state, &source).unwrap().2,
+            json!({"resourceDomains":["https://cdn.example"],"connectDomains":[]})
+        );
         let mut stale_revision = source.clone();
         if let HtmlPresentationSource::History { revision, .. } = &mut stale_revision {
             *revision += 1;
@@ -1608,7 +1635,7 @@ mod tests {
             "tauri://localhost".into(),
             "__SETTINGS_JSON__".into(),
             String::new(),
-            document_policy(HtmlMode::Interactive),
+            document_policy(HtmlMode::Interactive, json!({})),
         )
         .await
         .unwrap();

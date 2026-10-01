@@ -25,6 +25,7 @@ export type SessionEntry =
       title: string;
       status: "pending" | "in_progress" | "completed" | "failed";
       accepted_html?: string | null;
+      accepted_html_csp?: { resourceDomains?: string[]; connectDomains?: string[] } | null;
       blocks: DocumentBlock[];
     };
 export interface SessionDocument {

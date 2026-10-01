@@ -332,7 +332,14 @@ pub(crate) fn html_document(
     entry_id_value: &str,
     revision: u64,
     block_index: usize,
-) -> Result<(String, usecase::session_document::HtmlMode), String> {
+) -> Result<
+    (
+        String,
+        usecase::session_document::HtmlMode,
+        serde_json::Value,
+    ),
+    String,
+> {
     if view.phase != ViewPhase::Ready {
         return Err("History HTML is not ready".into());
     }
@@ -359,15 +366,28 @@ pub(crate) fn html_document(
                 .find(|entry| entry_id(entry) == entry_id_value)
         })
         .ok_or("Session entry unavailable")?;
-    let mode = match entry {
+    let (mode, csp) = match entry {
         DocumentEntry::Tool {
             blocks,
             accepted_html_mode,
+            accepted_html_csp,
             ..
-        } if block_index == blocks.len() => *accepted_html_mode,
-        _ => usecase::session_document::HtmlMode::Static,
+        } if block_index == blocks.len() => (
+            *accepted_html_mode,
+            if *accepted_html_mode == usecase::session_document::HtmlMode::Interactive {
+                accepted_html_csp
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            },
+        ),
+        _ => (
+            usecase::session_document::HtmlMode::Static,
+            serde_json::json!({}),
+        ),
     };
-    Ok((text, mode))
+    Ok((text, mode, csp))
 }
 
 fn read_block(view: &SessionView, request: BlockRequest) -> Result<BlockResponse, String> {
@@ -459,6 +479,7 @@ mod tests {
                     },
                 ],
                 accepted_html_mode: usecase::session_document::HtmlMode::Static,
+                accepted_html_csp: None,
                 accepted_html: Some("<style>body{color:red}</style>private HTML".into()),
             },
         ];
@@ -503,6 +524,7 @@ mod tests {
             status,
             blocks: vec![],
             accepted_html_mode: usecase::session_document::HtmlMode::Static,
+            accepted_html_csp: None,
             accepted_html: html.map(str::to_owned),
         }
     }
@@ -681,6 +703,7 @@ mod tests {
                         data: "c3ludGhldGlj".into(),
                     }],
                     accepted_html_mode: usecase::session_document::HtmlMode::Static,
+                    accepted_html_csp: None,
                     accepted_html: Some("must not be admitted".into()),
                 },
                 DocumentEntry::Message {
@@ -831,6 +854,20 @@ mod tests {
         let mut view = fixture();
         assert!(html_document(&view, view.generation, "tool:1", 7, 2).is_err());
         view.phase = ViewPhase::Ready;
+        if let DocumentEntry::Tool {
+            accepted_html_csp, ..
+        } = &mut view.document.as_mut().unwrap().entries[1]
+        {
+            *accepted_html_csp = Some(
+                serde_json::json!({"resourceDomains":["https://cdn.example"],"connectDomains":[]}),
+            );
+        }
+        assert_eq!(
+            html_document(&view, view.generation, "tool:1", 7, 2)
+                .unwrap()
+                .2,
+            serde_json::json!({})
+        );
         assert_eq!(
             html_document(&view, view.generation, "tool:1", 7, 2)
                 .unwrap()
@@ -848,6 +885,12 @@ mod tests {
                 .unwrap()
                 .1,
             HtmlMode::Interactive
+        );
+        assert_eq!(
+            html_document(&view, view.generation, "tool:1", 7, 2)
+                .unwrap()
+                .2,
+            serde_json::json!({"resourceDomains":["https://cdn.example"],"connectDomains":[]})
         );
         let entry = &view.document.as_ref().unwrap().entries[1];
         assert_eq!(

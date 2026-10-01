@@ -145,7 +145,7 @@ impl AppBroker {
                 }),
             );
         }
-        let tool = json!({"name":"render_html","title":"Render interactive HTML","description":"Render self-contained HTML/CSS/JavaScript as an interactive Lens interpretation. Provide complete HTML, not a path, URL or Markdown. For interactive input, send standard MCP Apps JSON-RPC to window.parent.postMessage(message, '*'). Initial HTML body LaTeX using \\(...\\) and \\[...\\] is rendered by Lens. Normal HTTP(S) anchors open the default browser through the Host's validated ui/open-link operation; never open links automatically. Supported methods: ui/open-link with {url}, ui/message with {role:'user',content:[{type:'text',text:'message'}]}, ui/update-model-context with {content,structuredContent}, and tools/call with {name,arguments}. Include jsonrpc:'2.0' and a unique id. Responses arrive as window message events. User ui/message requests are admitted directly into the same live Agent session using the latest App context; busy, expired and read-only displays reject them. A successful response acknowledges admission, not the Agent's eventual answer. External network and native access are unavailable. Prefer an appropriate external renderer if one is available.","inputSchema":{"type":"object","properties":{"html":{"type":"string","maxLength":524288}},"required":["html"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"_meta":{"ui":{"resourceUri":FALLBACK_URI,"visibility":["model"]}}});
+        let tool = json!({"name":"render_html","title":"Render interactive HTML","description":"Render complete HTML/CSS/JavaScript as an interactive Lens interpretation. Provide complete HTML, not a path, URL or Markdown. For interactive input, send standard MCP Apps JSON-RPC to window.parent.postMessage(message, '*'). Initial HTML body LaTeX using \\(...\\) and \\[...\\] is rendered by Lens. Normal HTTP(S) anchors open the default browser through the Host's validated ui/open-link operation; never open links automatically. Supported methods: ui/open-link with {url}, ui/message with {role:'user',content:[{type:'text',text:'message'}]}, ui/update-model-context with {content,structuredContent}, and tools/call with {name,arguments}. Include jsonrpc:'2.0' and a unique id. Responses arrive as window message events. User ui/message requests are admitted directly into the same live Agent session using the latest App context; busy, expired and read-only displays reject them. A successful response acknowledges admission, not the Agent's eventual answer. External resource dependencies require csp.resourceDomains; fetch/WebSocket require csp.connectDomains. Declare only the origins needed by this content. Undeclared network access, external frames, eval and native access are unavailable. Prefer an appropriate external renderer if one is available.","inputSchema":{"type":"object","properties":{"html":{"type":"string","maxLength":524288},"csp":{"type":"object","properties":{"resourceDomains":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":256}},"connectDomains":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":256}}},"additionalProperties":false}},"required":["html"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true},"_meta":{"ui":{"resourceUri":FALLBACK_URI,"visibility":["model"]}}});
         sources.insert(FALLBACK_SERVER.into(),Arc::new(Source {id:FALLBACK_SERVER.into(),name:FALLBACK_SERVER.into(),peer:json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":FALLBACK_SERVER,"version":env!("CARGO_PKG_VERSION")}}),tools:HashMap::from([("render_html".into(),tool)]),upstream:None,shell}));
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let origin = format!("http://{}", listener.local_addr()?);
@@ -651,6 +651,27 @@ async fn proxy_request(
             Ok(result)
         }
         // Model resource access uses the same source connection; unknown methods are explicit.
+        "resources/read" if source.id == FALLBACK_SERVER => {
+            let uri = params
+                .get("uri")
+                .and_then(Value::as_str)
+                .ok_or("Missing resource URI")?;
+            if uri == FALLBACK_URI {
+                return source.call(method, params).await;
+            }
+            let turn = state.turn.lock().map_err(|_| "MCP turn unavailable")?;
+            let artifact = turn
+                .as_ref()
+                .and_then(|turn| {
+                    turn.artifacts.iter().find(|artifact| {
+                        artifact.server_id == FALLBACK_SERVER && artifact.resource_uri == uri
+                    })
+                })
+                .ok_or("Unknown or expired publication resource")?;
+            Ok(
+                json!({"contents":[{"uri":uri,"mimeType":"text/html;profile=mcp-app","text":artifact.resource.html,"_meta":artifact.resource.meta}]}),
+            )
+        }
         "resources/read" => source.call(method, params).await,
         _ => Err("Unsupported MCP method".into()),
     }
@@ -666,9 +687,13 @@ fn publish_builtin(
         .get("arguments")
         .and_then(Value::as_object)
         .ok_or("Missing render arguments")?;
-    if args.len() != 1 {
-        return Err("Only html is accepted".into());
+    if args
+        .keys()
+        .any(|key| !matches!(key.as_str(), "html" | "csp"))
+    {
+        return Err("Only html and csp are accepted".into());
     }
+    let csp = domain::mcp_app_csp::normalize_csp(args.get("csp").unwrap_or(&json!({})))?;
     let html = args
         .get("html")
         .and_then(Value::as_str)
@@ -691,18 +716,29 @@ fn publish_builtin(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    let receipt = json!({"kind":"lens_rich_html_publication","schema_version":1,"accepted":true,"publication_id":id,"turn_id":run_id,"html_sha256":digest});
-    let result = json!({"content":[{"type":"text","text":receipt.to_string()}],"structuredContent":{"html":html,"publication":receipt}});
+    let resource_uri = format!("ui://lens/rich-html/{id}.html");
+    let mut receipt = json!({"kind":"lens_rich_html_publication","schema_version":1,"accepted":true,"publication_id":id,"turn_id":run_id,"html_sha256":digest});
+    if args.contains_key("csp") {
+        receipt["schema_version"] = json!(2);
+        receipt["csp_sha256"] = json!(Sha256::digest(serde_json::to_vec(&csp)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>());
+    }
+    let mut result = json!({"content":[{"type":"text","text":receipt.to_string()},{"type":"resource_link","uri":resource_uri,"name":"Published HTML App","mimeType":"text/html;profile=mcp-app"}],"structuredContent":{"html":html,"publication":receipt}});
+    if args.contains_key("csp") {
+        result["structuredContent"]["csp"] = csp.clone();
+    }
     let artifact = AppArtifact {
         id,
         run_id,
         server_id: FALLBACK_SERVER.into(),
         tool_name: "render_html".into(),
-        resource_uri: FALLBACK_URI.into(),
+        resource_uri,
         title: "Render interactive HTML".into(),
         resource: AppResource {
             html: source.shell.clone(),
-            meta: json!({}),
+            meta: json!({"ui":{"csp":csp}}),
         },
         input: json!(args),
         result: result.clone(),
@@ -718,15 +754,20 @@ fn publish_builtin(
 
 /// Validate server-declared CSP origins without interpolating arbitrary directive text.
 pub fn resource_csp(resource: &AppResource) -> Result<String, String> {
-    resource_policy(resource).map(|(header, _)| header)
+    resource_policy(resource, FramePolicy::SelfOrigin).map(|(header, _)| header)
 }
 
 /// The SDK advertisement and HTTP header derive from the same validated origins.
 pub fn resource_sandbox(resource: &AppResource) -> Result<Value, String> {
-    resource_policy(resource).map(|(_, sandbox)| sandbox)
+    resource_policy(resource, FramePolicy::SelfOrigin).map(|(_, sandbox)| sandbox)
 }
 
-fn resource_policy(resource: &AppResource) -> Result<(String, Value), String> {
+enum FramePolicy {
+    SelfOrigin,
+    None,
+}
+
+fn resource_policy(resource: &AppResource, frames: FramePolicy) -> Result<(String, Value), String> {
     let ui = resource.meta.get("ui").unwrap_or(&resource.meta);
     if !ui.is_object()
         || ui.get("domain").is_some()
@@ -740,68 +781,46 @@ fn resource_policy(resource: &AppResource) -> Result<(String, Value), String> {
     if csp.is_some_and(|c| !c.is_object()) {
         return Err("Invalid App CSP metadata".into());
     }
-    let sources = |field: &str, connect: bool| -> Result<Vec<String>, String> {
-        let Some(value) = csp.and_then(|c| c.get(field)) else {
-            return Ok(Vec::new());
-        };
-        let values = value
-            .as_array()
-            .filter(|v| v.len() <= 32)
-            .ok_or("Invalid or oversized App CSP source list")?;
+    let normalized = domain::mcp_app_csp::normalize_csp(csp.unwrap_or(&json!({})))?;
+    let resource_domains = &normalized["resourceDomains"];
+    let connect_domains = &normalized["connectDomains"];
+    let joined = |values: &Value| {
         values
+            .as_array()
+            .unwrap()
             .iter()
-            .map(|v| {
-                let value = v
-                    .as_str()
-                    .filter(|v| v.len() <= 256)
-                    .ok_or("Invalid CSP origin")?;
-                let url = reqwest::Url::parse(value)
-                    .map_err(|_| "CSP sources must be explicit HTTP(S) origins")?;
-                if !(matches!(url.scheme(), "http" | "https")
-                    || connect && matches!(url.scheme(), "ws" | "wss"))
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                    || url.query().is_some()
-                    || url.fragment().is_some()
-                    || url.path() != "/"
-                {
-                    return Err("Unsupported CSP source syntax".into());
-                }
-                let host = url.host_str().ok_or("CSP source has no host")?;
-                let host = host.strip_prefix("*.").unwrap_or(host);
-                if host.is_empty()
-                    || !host.bytes().all(|c| {
-                        c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b':' | b'[' | b']')
-                    })
-                {
-                    return Err("Invalid CSP source host".into());
-                }
-                Ok(url.as_str().trim_end_matches('/').to_owned())
-            })
-            .collect()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join(" ")
     };
-    let resource_domains = sources("resourceDomains", false)?;
-    let connect_domains = sources("connectDomains", true)?;
-    let resources = resource_domains.join(" ");
-    let connects = connect_domains.join(" ");
-    if ["frameDomains", "baseUriDomains"].iter().any(|field| {
-        csp.and_then(|c| c.get(field))
-            .is_some_and(|v| v.as_array().is_none_or(|v| !v.is_empty()))
-    }) {
-        return Err("External frames and base origins are unsupported".into());
-    }
-    Ok((format!("default-src 'none'; script-src 'unsafe-inline' {resources}; style-src 'unsafe-inline' {resources}; img-src data: blob: {resources}; font-src data: {resources}; media-src data: blob: {resources}; connect-src {}; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",if connects.is_empty(){"'none'"}else{&connects}), json!({"csp":{"resourceDomains":resource_domains,"connectDomains":connect_domains},"permissions":{}})))
+    let resources = joined(resource_domains);
+    let connects = joined(connect_domains);
+    let frames = match frames {
+        FramePolicy::SelfOrigin => "'self'",
+        FramePolicy::None => "'none'",
+    };
+    Ok((format!("default-src 'none'; script-src 'unsafe-inline' {resources}; style-src 'unsafe-inline' {resources}; img-src data: blob: {resources}; font-src data: {resources}; media-src data: blob: {resources}; connect-src {}; frame-src {frames}; object-src 'none'; base-uri 'none'; form-action 'none'",if connects.is_empty(){"'none'"}else{&connects}), json!({"csp":{"resourceDomains":resource_domains,"connectDomains":connect_domains},"permissions":{}})))
 }
 
 /// Chosen only by the trusted composition root, never by generated HTML.
 pub enum DocumentPolicy {
-    Interactive,
+    Interactive { csp: Value },
     Static { trusted_script_sha256: String },
 }
 impl DocumentPolicy {
     fn csp(&self) -> Result<String, ServerError> {
         let scripts = match self {
-            Self::Interactive => "'unsafe-inline'".to_owned(),
+            Self::Interactive { csp } => {
+                return resource_policy(
+                    &AppResource {
+                        html: String::new(),
+                        meta: json!({"ui":{"csp":csp}}),
+                    },
+                    FramePolicy::None,
+                )
+                .map(|(header, _)| header)
+                .map_err(Into::into);
+            }
             Self::Static {
                 trusted_script_sha256,
             } => {
@@ -991,7 +1010,7 @@ mod tests {
             "tauri://localhost".into(),
             "<script src='/sandbox-proxy.js'></script>__SETTINGS_JSON__".into(),
             "/* proxy */".into(),
-            DocumentPolicy::Interactive,
+            DocumentPolicy::Interactive { csp: json!({}) },
         )
         .await
         .unwrap();
@@ -1121,6 +1140,14 @@ mod tests {
         assert!(proxy_request(&broker.state,source,&json!({"method":"tools/call","params":{"name":"publish_html","arguments":{"html":"<p>A</p>"}}})).await.is_err());
         let artifacts = broker.finish_turn(run).unwrap();
         assert_eq!(artifacts.len(), 2);
+        assert_eq!(
+            artifacts[0].resource.meta["ui"]["csp"],
+            json!({"resourceDomains":[],"connectDomains":[]})
+        );
+        assert_ne!(artifacts[0].resource_uri, FALLBACK_URI);
+        assert!(resource_csp(&artifacts[0].resource)
+            .unwrap()
+            .contains("connect-src 'none'"));
         assert_eq!(json!(artifacts[0].id), receipt["publication_id"]);
         let next = Uuid::new_v4();
         broker.begin_turn(next).unwrap();
@@ -1133,6 +1160,121 @@ mod tests {
         );
         broker.close().await;
     }
+    #[tokio::test]
+    async fn builtin_csp_is_bound_to_each_publication_resource() {
+        let broker = AppBroker::start(vec![], "<p>shell</p>".into())
+            .await
+            .unwrap();
+        let source = &broker.state.sources[FALLBACK_SERVER];
+        let run = Uuid::new_v4();
+        broker.begin_turn(run).unwrap();
+        let publish = |csp: Value| json!({"method":"tools/call","params":{"name":"render_html","arguments":{"html":"<canvas></canvas>","csp":csp}}});
+        let a = publish(
+            json!({"resourceDomains":["https://cdn.example/"],"connectDomains":["wss://data.example:443"]}),
+        );
+        let first = proxy_request(&broker.state, source, &a).await.unwrap();
+        assert_eq!(
+            first,
+            proxy_request(&broker.state, source, &a).await.unwrap()
+        );
+        let second = proxy_request(
+            &broker.state,
+            source,
+            &publish(json!({"resourceDomains":["https://other.example"]})),
+        )
+        .await
+        .unwrap();
+        let first_uri = first["content"][1]["uri"].as_str().unwrap();
+        let second_uri = second["content"][1]["uri"].as_str().unwrap();
+        assert_ne!(first_uri, second_uri);
+        let read = |uri: &str| json!({"method":"resources/read","params":{"uri":uri}});
+        let resource = proxy_request(&broker.state, source, &read(first_uri))
+            .await
+            .unwrap();
+        let policy = &resource["contents"][0]["_meta"]["ui"]["csp"];
+        assert_eq!(
+            policy,
+            &json!({"resourceDomains":["https://cdn.example"],"connectDomains":["wss://data.example"]})
+        );
+        assert_eq!(
+            first["structuredContent"]["publication"]["schema_version"],
+            2
+        );
+        assert_eq!(
+            first["structuredContent"]["publication"]["csp_sha256"],
+            json!(Sha256::digest(serde_json::to_vec(policy).unwrap())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>())
+        );
+        let bootstrap = proxy_request(&broker.state, source, &read(FALLBACK_URI))
+            .await
+            .unwrap();
+        assert!(bootstrap["contents"][0].get("_meta").is_none());
+        assert!(proxy_request(
+            &broker.state,
+            source,
+            &publish(json!({"resourceDomains":["https://evil.example; script-src *"]}))
+        )
+        .await
+        .is_err());
+        assert!(proxy_request(
+            &broker.state,
+            source,
+            &publish(json!({"connectDomains":["https://user:password@data.example"]}))
+        )
+        .await
+        .is_err());
+        assert!(proxy_request(
+            &broker.state,
+            source,
+            &publish(json!({"resourceDomains": vec!["https://cdn.example"; 33]}))
+        )
+        .await
+        .is_err());
+        let artifacts = broker.finish_turn(run).unwrap();
+        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts[0].input, a["params"]["arguments"]);
+        assert_eq!(artifacts[0].resource.meta["ui"]["csp"], *policy);
+        let header = DocumentPolicy::Interactive {
+            csp: policy.clone(),
+        }
+        .csp()
+        .unwrap();
+        assert!(header.contains("script-src 'unsafe-inline' https://cdn.example"));
+        assert!(header.contains("connect-src wss://data.example"));
+        assert!(header.contains("frame-src 'none'"));
+        assert!(!header.contains("unsafe-eval"));
+        let display = DisplayServer::start(
+            artifacts[0].resource.clone(),
+            Some("<canvas></canvas>".into()),
+            "tauri://localhost".into(),
+            "__SETTINGS_JSON__".into(),
+            "/* proxy */".into(),
+            DocumentPolicy::Interactive {
+                csp: policy.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let response = reqwest::Client::new()
+            .get(display.document_url.as_ref().unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.headers()["content-security-policy"], header);
+        let shell_header = resource_csp(&artifacts[0].resource).unwrap();
+        assert_eq!(
+            shell_header,
+            header.replace("frame-src 'none'", "frame-src 'self'")
+        );
+        drop(display);
+        assert!(proxy_request(&broker.state, source, &read(first_uri))
+            .await
+            .is_err());
+        broker.close().await;
+    }
+
     #[tokio::test]
     async fn static_document_csp_allows_only_the_composition_root_script_hash() {
         use base64::Engine;
@@ -1175,7 +1317,9 @@ mod tests {
         }
         .csp()
         .is_err());
-        let interactive = DocumentPolicy::Interactive.csp().unwrap();
+        let interactive = DocumentPolicy::Interactive { csp: json!({}) }
+            .csp()
+            .unwrap();
         assert!(interactive.contains("script-src 'unsafe-inline'"));
         assert!(!interactive.contains("sha256-"));
         display
@@ -1205,7 +1349,7 @@ mod tests {
             "tauri://localhost".into(),
             "__SETTINGS_JSON__".into(),
             "".into(),
-            DocumentPolicy::Interactive,
+            DocumentPolicy::Interactive { csp: json!({}) },
         )
         .await
         .unwrap();
@@ -1257,7 +1401,7 @@ mod tests {
             "tauri://localhost".into(),
             "".into(),
             "".into(),
-            DocumentPolicy::Interactive,
+            DocumentPolicy::Interactive { csp: json!({}) },
         )
         .await
         .unwrap();

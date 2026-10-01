@@ -129,6 +129,7 @@ export const MEMBERS: readonly Member[] = [
         "sha2",
         "thiserror",
         "uuid",
+        "url",
       ],
       dev: ["pretty_assertions"],
     },
@@ -179,6 +180,7 @@ export const MEMBERS: readonly Member[] = [
     dependencies: {
       normal: [
         "base64",
+        "domain",
         "reqwest",
         "axum",
         "hyper",

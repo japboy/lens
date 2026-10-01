@@ -61,6 +61,8 @@ pub enum DocumentEntry {
         accepted_html: Option<String>,
         #[serde(default, skip_serializing_if = "HtmlMode::is_static")]
         accepted_html_mode: HtmlMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accepted_html_csp: Option<Value>,
     },
 }
 
@@ -409,6 +411,7 @@ impl SessionDocument {
                     blocks: vec![],
                     accepted_html: None,
                     accepted_html_mode: HtmlMode::Static,
+                    accepted_html_csp: None,
                 });
                 self.entries.len() - 1
             });
@@ -428,6 +431,7 @@ impl SessionDocument {
             blocks,
             accepted_html,
             accepted_html_mode,
+            accepted_html_csp,
             ..
         } = &mut self.entries[index]
         {
@@ -469,6 +473,13 @@ impl SessionDocument {
             } else {
                 None
             };
+            *accepted_html_csp = if accepted_html.is_some() && rich_publication_source(evidence) {
+                rich_arguments(evidence)
+                    .and_then(|args| args.get("csp"))
+                    .and_then(|csp| domain::mcp_app_csp::normalize_csp(csp).ok())
+            } else {
+                None
+            };
             *accepted_html_mode = if accepted_html.is_some() && rich_publication_source(evidence) {
                 HtmlMode::Interactive
             } else {
@@ -494,18 +505,31 @@ fn rich_publication_source(evidence: &ToolEvidence) -> bool {
         output.get("server_name").and_then(Value::as_str) == Some("lens_rich_content")
     })
 }
-fn rich_result_body_matches(value: &Value, digest: &str) -> bool {
-    value.pointer("/structuredContent/html").is_none_or(|html| {
-        html.as_str().is_some_and(|html| {
-            let actual: String = Sha256::digest(html.as_bytes())
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
-            actual == digest
+fn rich_result_body_matches(value: &Value, digest: &str, csp_digest: Option<&str>) -> bool {
+    let policy_matches = value
+        .pointer("/structuredContent/csp")
+        .is_none_or(|policy| {
+            domain::mcp_app_csp::normalize_csp(policy).is_ok_and(|normalized| {
+                let digest: String =
+                    Sha256::digest(serde_json::to_vec(&normalized).expect("JSON CSP serializes"))
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                csp_digest == Some(digest.as_str())
+            })
+        });
+    policy_matches
+        && value.pointer("/structuredContent/html").is_none_or(|html| {
+            html.as_str().is_some_and(|html| {
+                let actual: String = Sha256::digest(html.as_bytes())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                actual == digest
+            })
         })
-    })
 }
-fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Option<String> {
+fn rich_arguments(evidence: &ToolEvidence) -> Option<&serde_json::Map<String, Value>> {
     let input = evidence.input.as_ref()?;
     let output = evidence.output.as_ref();
     if let Some(typed) =
@@ -549,7 +573,28 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
         }
         input.get("arguments").unwrap_or(input)
     };
-    let arguments = arguments.as_object().filter(|args| args.len() == 1)?;
+    arguments.as_object().filter(|args| {
+        args.contains_key("html")
+            && args
+                .keys()
+                .all(|key| matches!(key.as_str(), "html" | "csp"))
+    })
+}
+
+fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) -> Option<String> {
+    let arguments = rich_arguments(evidence)?;
+    let csp = arguments
+        .get("csp")
+        .map(domain::mcp_app_csp::normalize_csp)
+        .transpose()
+        .ok()?;
+    let csp_digest = csp.as_ref().map(|csp| {
+        Sha256::digest(serde_json::to_vec(csp).expect("JSON CSP serializes"))
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    });
+    let output = evidence.output.as_ref();
     let html = arguments.get("html")?.as_str()?;
     if html.trim().is_empty() || html.len() > MAX_HTML {
         return None;
@@ -563,14 +608,18 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
         .map(|byte| format!("{byte:02x}"))
         .collect();
     if output.is_some_and(|output| {
-        !rich_result_body_matches(output.get("result").unwrap_or(output), &digest)
+        !rich_result_body_matches(
+            output.get("result").unwrap_or(output),
+            &digest,
+            csp_digest.as_deref(),
+        )
     }) {
         return None;
     }
-    let valid = |value: &Value| rich_receipt(value, &digest);
+    let valid = |value: &Value| rich_receipt(value, &digest, csp_digest.as_deref());
     let accepted = result.as_ref().is_some_and(|result| match result {
         SuccessfulToolResult::Structured(value) => {
-            rich_result_body_matches(value, &digest)
+            rich_result_body_matches(value, &digest, csp_digest.as_deref())
                 && (valid(value)
                     || value
                         .pointer("/structuredContent/publication")
@@ -584,7 +633,7 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
                                     && item
                                         .get("text")
                                         .and_then(Value::as_str)
-                                        .is_some_and(|text| rich_text_receipt(text, &digest))
+                                        .is_some_and(|text| rich_text_receipt(text, &digest, csp_digest.as_deref()))
                             })
                         }))
         }
@@ -593,17 +642,26 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
                 && item
                     .get("text")
                     .and_then(Value::as_str)
-                    .is_some_and(|text| rich_text_receipt(text, &digest))
+                    .is_some_and(|text| rich_text_receipt(text, &digest, csp_digest.as_deref()))
         }),
-        SuccessfulToolResult::Text(text) => rich_text_receipt(text, &digest),
+        SuccessfulToolResult::Text(text) => rich_text_receipt(text, &digest, csp_digest.as_deref()),
     }) || blocks.iter().any(
-        |block| matches!(block,DocumentBlock::Markdown{text} if rich_text_receipt(text,&digest)),
+        |block| matches!(block,DocumentBlock::Markdown{text} if rich_text_receipt(text,&digest,csp_digest.as_deref())),
     );
     accepted.then(|| html.to_owned())
 }
-fn rich_receipt(value: &Value, digest: &str) -> bool {
+fn rich_receipt(value: &Value, digest: &str, csp_digest: Option<&str>) -> bool {
     value.get("kind").and_then(Value::as_str) == Some("lens_rich_html_publication")
-        && value.get("schema_version") == Some(&Value::from(1))
+        && match csp_digest {
+            Some(policy) => {
+                value.get("schema_version") == Some(&Value::from(2))
+                    && value.get("csp_sha256").and_then(Value::as_str) == Some(policy)
+            }
+            None => {
+                value.get("schema_version") == Some(&Value::from(1))
+                    && value.get("csp_sha256").is_none()
+            }
+        }
         && receipt(value)
         && value
             .get("turn_id")
@@ -611,14 +669,14 @@ fn rich_receipt(value: &Value, digest: &str) -> bool {
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()))
         && value.get("html_sha256").and_then(Value::as_str) == Some(digest)
 }
-fn rich_text_receipt(text: &str, digest: &str) -> bool {
+fn rich_text_receipt(text: &str, digest: &str, csp_digest: Option<&str>) -> bool {
     serde_json::from_str::<Value>(text).is_ok_and(|value| {
         !failed_tool_result(&value)
-            && rich_result_body_matches(&value, digest)
-            && (rich_receipt(&value, digest)
+            && rich_result_body_matches(&value, digest, csp_digest)
+            && (rich_receipt(&value, digest, csp_digest)
                 || value
                     .pointer("/structuredContent/publication")
-                    .is_some_and(|receipt| rich_receipt(receipt, digest))
+                    .is_some_and(|receipt| rich_receipt(receipt, digest, csp_digest))
                 || value
                     .get("content")
                     .and_then(Value::as_array)
@@ -629,8 +687,9 @@ fn rich_text_receipt(text: &str, digest: &str) -> bool {
                                     .get("text")
                                     .and_then(Value::as_str)
                                     .is_some_and(|text| {
-                                        serde_json::from_str::<Value>(text)
-                                            .is_ok_and(|receipt| rich_receipt(&receipt, digest))
+                                        serde_json::from_str::<Value>(text).is_ok_and(|receipt| {
+                                            rich_receipt(&receipt, digest, csp_digest)
+                                        })
                                     })
                         })
                     }))
@@ -1160,6 +1219,74 @@ mod tests {
         }
     }
     #[test]
+    fn rich_policy_receipt_binds_normalized_origins_and_saved_replay() {
+        let mut evidence = rich_evidence("<script src='https://cdn.example/lib.js'></script>");
+        let input_csp = serde_json::json!({"resourceDomains":["https://CDN.example/"],"connectDomains":["wss://data.example/"]});
+        let normalized = domain::mcp_app_csp::normalize_csp(&input_csp).unwrap();
+        evidence.input.as_mut().unwrap()["arguments"]["csp"] = input_csp;
+        let result = &mut evidence.output.as_mut().unwrap()["result"];
+        let mut receipt = result["structuredContent"]["publication"].clone();
+        receipt["schema_version"] = serde_json::json!(2);
+        receipt["csp_sha256"] =
+            serde_json::json!(Sha256::digest(serde_json::to_vec(&normalized).unwrap())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>());
+        result["structuredContent"]["publication"] = receipt.clone();
+        result["structuredContent"]["csp"] = normalized.clone();
+        result["content"][0]["text"] = serde_json::json!(receipt.to_string());
+        assert!(accepted_rich_publication(&evidence, &[]).is_some());
+        for field in ["resourceDomains", "connectDomains"] {
+            let mut changed = evidence.clone();
+            changed.input.as_mut().unwrap()["arguments"]["csp"][field] =
+                serde_json::json!(["https://different.example"]);
+            assert!(accepted_rich_publication(&changed, &[]).is_none());
+        }
+        for bad in [
+            serde_json::json!(null),
+            serde_json::json!({"unknownDomains":[]}),
+            serde_json::json!({"resourceDomains":["https://cdn.example/path"]}),
+        ] {
+            let mut changed = evidence.clone();
+            changed.input.as_mut().unwrap()["arguments"]["csp"] = bad;
+            assert!(accepted_rich_publication(&changed, &[]).is_none());
+        }
+        let mut conflict = evidence.clone();
+        conflict.output.as_mut().unwrap()["result"]["structuredContent"]["csp"]
+            ["resourceDomains"] = serde_json::json!(["https://different.example"]);
+        assert!(accepted_rich_publication(&conflict, &[]).is_none());
+        let mut document = SessionDocument::default();
+        document.tool_unchecked(
+            "policy".into(),
+            ToolCallUpdateFields::new()
+                .title("mcp__lens_rich_content__render_html")
+                .status(ToolCallStatus::Completed)
+                .raw_input(evidence.input.unwrap())
+                .raw_output(evidence.output.unwrap()),
+        );
+        assert!(
+            matches!(&document.entries[0], DocumentEntry::Tool { accepted_html:Some(_), accepted_html_mode:HtmlMode::Interactive, accepted_html_csp:Some(csp), .. } if csp == &normalized)
+        );
+        let replay: SessionDocument =
+            serde_json::from_value(serde_json::to_value(&document).unwrap()).unwrap();
+        assert_eq!(replay.entries, document.entries);
+        document.tool_unchecked(
+            "policy".into(),
+            ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
+        );
+        assert!(matches!(
+            &document.entries[0],
+            DocumentEntry::Tool {
+                accepted_html: None,
+                accepted_html_csp: None,
+                ..
+            }
+        ));
+        let mut legacy = rich_evidence("<p>Old closed policy</p>");
+        legacy.input.as_mut().unwrap()["arguments"]["csp"] = normalized;
+        assert!(accepted_rich_publication(&legacy, &[]).is_none());
+    }
+    #[test]
     fn rich_html_receipt_checks_source_success_hash_and_capacity() {
         let original = rich_evidence("<p>Saved</p><script>never replay authority</script>");
         let html = original.input.as_ref().unwrap()["arguments"]["html"]
@@ -1250,7 +1377,8 @@ mod tests {
             assert!(
                 !rich_text_receipt(
                     &invalid.to_string(),
-                    receipt["html_sha256"].as_str().unwrap()
+                    receipt["html_sha256"].as_str().unwrap(),
+                    None
                 ),
                 "{field}"
             );
