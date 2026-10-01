@@ -2429,6 +2429,20 @@ fn candidate_projection_advances_publication_frontier(
     })
 }
 
+// Called under the run's publication lock. Only history admission commits App candidates.
+fn admit_mcp_app_response(
+    lens: &mut LensState,
+    descriptors: &[crate::model::McpAppDescriptor],
+    finish: impl FnOnce(&mut LensState) -> bool,
+) -> bool {
+    let previous = std::mem::replace(&mut lens.mcp_apps, descriptors.to_vec());
+    let admitted = finish(lens);
+    if !admitted {
+        lens.mcp_apps = previous;
+    }
+    admitted
+}
+
 fn finish_prompt_response(
     lens: &mut LensState,
     key: AgentRunKey,
@@ -2437,13 +2451,13 @@ fn finish_prompt_response(
     stop_reason: String,
     cancelled: bool,
     delivery: LensDelivery,
-) {
+) -> bool {
     let AgentTurnSource {
         projection: target_projection,
         context_revision: target_context_revision,
     } = source;
     if lens.response_history.contains_run(key.run_id) {
-        return;
+        return false;
     }
     if let Some(agent) = lens.agent.as_mut() {
         agent.received_updates = candidate.received_updates;
@@ -2468,7 +2482,7 @@ fn finish_prompt_response(
         };
         lens.error = None;
         finish_retained_representation(lens, None, None);
-        return;
+        return false;
     }
 
     if lens
@@ -2483,7 +2497,7 @@ fn finish_prompt_response(
         };
         lens.error = None;
         finish_retained_representation(lens, None, None);
-        return;
+        return false;
     }
 
     if !candidate.has_output() && lens.mcp_apps.is_empty() {
@@ -2491,7 +2505,7 @@ fn finish_prompt_response(
         lens.stage = LensStage::Failed;
         lens.error = Some(error.clone());
         finish_retained_representation(lens, Some(LensRefreshOutcome::Failed), Some(error));
-        return;
+        return false;
     }
 
     if !candidate_projection_advances_publication_frontier(lens, &target_projection) {
@@ -2502,14 +2516,14 @@ fn finish_prompt_response(
         };
         lens.error = None;
         finish_retained_representation(lens, None, None);
-        return;
+        return false;
     }
     let Some(context) = lens.context.as_ref() else {
         let error = "Agent output has no authoritative Lens context.".to_string();
         lens.stage = LensStage::Failed;
         lens.error = Some(error.clone());
         finish_retained_representation(lens, Some(LensRefreshOutcome::Failed), Some(error));
-        return;
+        return false;
     };
     let context_id = context.context_id;
     let context_revision = if lens.projection.as_ref() == Some(&target_projection) {
@@ -2540,7 +2554,7 @@ fn finish_prompt_response(
         lens.error = Some(error.into());
         lens.output_blocks = Default::default();
         finish_retained_representation(lens, Some(LensRefreshOutcome::Failed), Some(error.into()));
-        return;
+        return false;
     }
     lens.representation = Some(representation);
     lens.output_blocks = Default::default();
@@ -2554,6 +2568,7 @@ fn finish_prompt_response(
             live.error = None;
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -2702,6 +2717,7 @@ async fn run_session_turn<R: tauri::Runtime>(
                 let app_descriptors = if cancelled { Vec::new() } else { app.state::<AppState>().mcp_apps.retain(app,identity.operation_id,&session_id.to_string(),app_artifacts).map_err(state_error)? };
                 // Terminal commit owns the candidate even if subsequent event delivery fails.
                 progress.take_pending();
+                let mut response_admitted = false;
                 let applied = update_lens_state_for_run(
                     app,
                     key,
@@ -2713,22 +2729,23 @@ async fn run_session_turn<R: tauri::Runtime>(
                             agent.received_updates = candidate.received_updates;
                             agent.progress_text = candidate.progress_text();
                         }
-                        if !cancelled { lens.mcp_apps = app_descriptors.clone(); }
-                        finish_prompt_response(
-                            lens,
-                            key,
-                            source,
-                            std::mem::take(&mut candidate),
-                            stop_reason_text,
-                            cancelled,
-                            delivery,
-                        );
+                        response_admitted = admit_mcp_app_response(lens, &app_descriptors, |lens| {
+                            finish_prompt_response(
+                                lens,
+                                key,
+                                source,
+                                std::mem::take(&mut candidate),
+                                stop_reason_text,
+                                cancelled,
+                                delivery,
+                            )
+                        });
                     },
-                )
-                .map_err(state_error)?;
-                if !applied {
+                );
+                if !response_admitted {
                     app.state::<AppState>().mcp_apps.discard(identity.operation_id, &app_descriptors);
                 }
+                applied.map_err(state_error)?;
                 return Ok(!cancelled);
             }
             _ = mailbox.notified() => {
@@ -4942,6 +4959,258 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Response history is full"));
+    }
+
+    fn sample_app_artifact(run_id: Uuid, html: String) -> adapter_mcp_server::apps::AppArtifact {
+        adapter_mcp_server::apps::AppArtifact {
+            id: Uuid::new_v4(),
+            run_id,
+            server_id: "external".into(),
+            tool_name: "display".into(),
+            resource_uri: "ui://external/app.html".into(),
+            title: "External App".into(),
+            resource: adapter_mcp_server::apps::AppResource {
+                html,
+                meta: serde_json::json!({}),
+            },
+            input: serde_json::json!({"exact": 1}),
+            result: serde_json::json!({"content": [{"type": "text", "text": "successful effect"}]}),
+        }
+    }
+
+    fn app_response_test_app(
+        projection: &ProjectionRef,
+        run_id: Uuid,
+    ) -> tauri::App<tauri::test::MockRuntime> {
+        let state = crate::test_support::state();
+        let mut agent = sample_run_state(run_id, projection.clone());
+        agent.session_id = Some("session".into());
+        state.runtime.write().unwrap().lens = LensState {
+            operation_id: Some(Uuid::nil()),
+            context: Some(sample_context(2).into()),
+            projection: Some(projection.clone()),
+            agent: Some(agent),
+            ..LensState::default()
+        };
+        tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap()
+    }
+
+    #[test]
+    fn unavailable_app_resource_cannot_complete_an_app_only_response() {
+        let projection = projection_ref("Source", 2);
+        let run_id = Uuid::new_v4();
+        let app = app_response_test_app(&projection, run_id);
+        let state = app.state::<AppState>();
+        let mut artifact = sample_app_artifact(run_id, String::new());
+        artifact.resource.meta = serde_json::json!({"lens/resourceUnavailable": true});
+        let artifact_id = artifact.id;
+        let descriptors = state
+            .mcp_apps
+            .retain(app.handle(), Uuid::nil(), "session", vec![artifact])
+            .unwrap();
+        assert!(descriptors.is_empty());
+
+        assert!(!state
+            .mcp_apps
+            .artifact_path_for_test(artifact_id)
+            .unwrap()
+            .exists());
+        for with_text in [false, true] {
+            let candidate = if with_text {
+                AgentOutputCandidate::from_blocks(
+                    vec![LensOutputBlock::Markdown {
+                        message_id: None,
+                        text: "The original tool effect succeeded.".into(),
+                    }],
+                    1,
+                )
+            } else {
+                AgentOutputCandidate::default()
+            };
+            let mut runtime = state.runtime.write().unwrap();
+            let admitted = admit_mcp_app_response(&mut runtime.lens, &descriptors, |lens| {
+                finish_prompt_response(
+                    lens,
+                    AgentRunKey {
+                        operation_id: Uuid::nil(),
+                        run_id,
+                    },
+                    AgentTurnSource {
+                        projection: projection.clone(),
+                        context_revision: 2,
+                    },
+                    candidate,
+                    "end_turn".into(),
+                    false,
+                    complete_delivery(&projection),
+                )
+            });
+            assert_eq!(admitted, with_text);
+            assert_eq!(
+                runtime.lens.stage,
+                if with_text {
+                    LensStage::Completed
+                } else {
+                    LensStage::Failed
+                }
+            );
+            assert!(runtime.lens.mcp_apps.is_empty());
+            if with_text {
+                assert_eq!(runtime.lens.response_history.responses.len(), 1);
+            } else {
+                assert!(runtime
+                    .lens
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("without a displayable representation"));
+                assert!(runtime.lens.response_history.responses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn app_response_capacity_rejection_preserves_committed_apps_and_discards_candidate_files() {
+        use usecase::response_history::{MAX_RESPONSE_HISTORY_BYTES, MAX_RESPONSE_HISTORY_ENTRIES};
+        for byte_limit in [false, true] {
+            let projection = projection_ref("Source", 2);
+            let run_id = Uuid::new_v4();
+            let app = app_response_test_app(&projection, run_id);
+            let state = app.state::<AppState>();
+            let committed = state
+                .mcp_apps
+                .retain(
+                    app.handle(),
+                    Uuid::nil(),
+                    "session",
+                    vec![sample_app_artifact(run_id, "<p>committed</p>".into())],
+                )
+                .unwrap();
+            let committed_path = state
+                .mcp_apps
+                .artifact_path_for_test(committed[0].id)
+                .unwrap();
+            {
+                let mut runtime = state.runtime.write().unwrap();
+                let candidate = if byte_limit {
+                    AgentOutputCandidate::from_blocks(
+                        vec![LensOutputBlock::Markdown {
+                            message_id: None,
+                            text: "x".repeat(MAX_RESPONSE_HISTORY_BYTES - 8192),
+                        }],
+                        1,
+                    )
+                } else {
+                    AgentOutputCandidate::default()
+                };
+                assert!(admit_mcp_app_response(
+                    &mut runtime.lens,
+                    &committed,
+                    |lens| {
+                        finish_prompt_response(
+                            lens,
+                            AgentRunKey {
+                                operation_id: Uuid::nil(),
+                                run_id,
+                            },
+                            AgentTurnSource {
+                                projection: projection.clone(),
+                                context_revision: 2,
+                            },
+                            candidate,
+                            "end_turn".into(),
+                            false,
+                            complete_delivery(&projection),
+                        )
+                    }
+                ));
+                if !byte_limit {
+                    let mut previous = runtime.lens.representation.as_ref().unwrap().clone();
+                    for _ in 1..MAX_RESPONSE_HISTORY_ENTRIES {
+                        previous.run_id = Uuid::new_v4();
+                        previous.representation_id = Uuid::new_v4();
+                        assert!(runtime
+                            .lens
+                            .response_history
+                            .append(previous.clone(), Some("session".into()))
+                            .unwrap());
+                    }
+                    runtime.lens.representation = Some(previous);
+                }
+                let agent = runtime.lens.agent.as_mut().unwrap();
+                agent.run_id = Uuid::new_v4();
+            }
+            let run_id = state
+                .runtime
+                .read()
+                .unwrap()
+                .lens
+                .agent
+                .as_ref()
+                .unwrap()
+                .run_id;
+            let candidates = state
+                .mcp_apps
+                .retain(
+                    app.handle(),
+                    Uuid::nil(),
+                    "session",
+                    vec![sample_app_artifact(run_id, "x".repeat(16 * 1024))],
+                )
+                .unwrap();
+            let candidate_path = state
+                .mcp_apps
+                .artifact_path_for_test(candidates[0].id)
+                .unwrap();
+            assert!(candidate_path.exists());
+            let admitted = {
+                let mut runtime = state.runtime.write().unwrap();
+                let previous = runtime.lens.representation.clone();
+                let history = runtime.lens.response_history.clone();
+                let admitted = admit_mcp_app_response(&mut runtime.lens, &candidates, |lens| {
+                    finish_prompt_response(
+                        lens,
+                        AgentRunKey {
+                            operation_id: Uuid::nil(),
+                            run_id,
+                        },
+                        AgentTurnSource {
+                            projection: projection.clone(),
+                            context_revision: 2,
+                        },
+                        AgentOutputCandidate::default(),
+                        "end_turn".into(),
+                        false,
+                        complete_delivery(&projection),
+                    )
+                });
+                assert!(!admitted);
+                assert_eq!(runtime.lens.stage, LensStage::Failed);
+                assert!(runtime
+                    .lens
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("Response history is full"));
+                assert_eq!(runtime.lens.mcp_apps, committed);
+                assert_eq!(runtime.lens.representation, previous);
+                assert_eq!(runtime.lens.response_history.responses, history.responses);
+                assert_eq!(
+                    runtime.lens.response_history.retained_bytes,
+                    history.retained_bytes
+                );
+                assert!(runtime.lens.response_history.capacity_reached);
+                admitted
+            };
+            if !admitted {
+                state.mcp_apps.discard(Uuid::nil(), &candidates);
+            }
+            assert!(!candidate_path.exists());
+            assert!(committed_path.exists());
+        }
     }
 
     #[test]

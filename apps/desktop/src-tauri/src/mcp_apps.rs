@@ -296,6 +296,11 @@ impl McpAppsStore {
             .path()
             .join(format!("{id}.json")))
     }
+
+    #[cfg(test)]
+    pub(crate) fn artifact_path_for_test(&self, id: Uuid) -> Result<std::path::PathBuf, String> {
+        self.artifact_path(id)
+    }
     pub(crate) fn discard(&self, operation: Uuid, descriptors: &[McpAppDescriptor]) {
         if let Ok(storage) = self.storage.lock() {
             if storage.operation_id == Some(operation) {
@@ -375,6 +380,11 @@ impl McpAppsStore {
         let mut descriptors = Vec::new();
         let mut pending_files = PendingArtifacts::default();
         for artifact in artifacts {
+            // A successful tool effect may have no loadable App resource. Preserve
+            // the upstream result without publishing an unusable descriptor.
+            if validate_resource(&artifact).is_err() {
+                continue;
+            }
             let descriptor = McpAppDescriptor {
                 id: artifact.id,
                 operation_id,
