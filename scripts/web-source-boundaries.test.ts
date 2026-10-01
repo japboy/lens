@@ -26,7 +26,7 @@ describe("framework-free web package boundaries", () => {
       ),
     ).toEqual([]);
   });
-  it.each(["adapter-math-renderer/node", "adapter-math-renderer/manifest", "fs", "path"])(
+  it.each(["adapter-math-renderer/node", "fs", "path"])(
     "rejects Node export aliases and bare built-ins from renderer browser: %s",
     (specifier) => {
       expect(

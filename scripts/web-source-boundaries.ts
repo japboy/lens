@@ -36,8 +36,7 @@ export function webSourceViolations(path: string, source: string, owner: string)
       (specifier.startsWith("node:") ||
         builtinModules.includes(specifier) ||
         specifier === "vite" ||
-        specifier === "adapter-math-renderer/node" ||
-        specifier === "adapter-math-renderer/manifest") &&
+        specifier === "adapter-math-renderer/node") &&
       !path.includes("/src/node/")
     )
       errors.push(`Node/build dependency in browser runtime: ${specifier}`);

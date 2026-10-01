@@ -20,15 +20,6 @@ export function isTypescriptTestSupport(path: string): boolean {
   );
 }
 
-export function isExecutableIntegrationTest(path: string): boolean {
-  return (
-    TEST_OWNERS.test(path) &&
-    path.endsWith(".ts") &&
-    !/(?:^|\/)(?:helpers|fixtures)\//u.test(path) &&
-    !/\.(?:test-helper|fixture)\.ts$/u.test(path)
-  );
-}
-
 /** Conservative literal-reference admission, not a full JavaScript parser. */
 export function testSupportImportViolations(
   path: string,

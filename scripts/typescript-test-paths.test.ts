@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isExecutableIntegrationTest,
-  isTypescriptTestSupport,
-  testSupportImportViolations,
-} from "./typescript-test-paths.ts";
+import { isTypescriptTestSupport, testSupportImportViolations } from "./typescript-test-paths.ts";
 
 describe("recursive TypeScript test ownership", () => {
   it.each([
@@ -12,8 +8,7 @@ describe("recursive TypeScript test ownership", () => {
     "packages/adapter-mcp-apps-host/tests/protocol/handshake.ts",
     "packages/adapter-mcp-apps-view/tests/rendering/document-assets.ts",
     "packages/adapter-math-renderer/tests/assets/public-math.ts",
-  ])("recognizes executable collaboration owner %s", (path) => {
-    expect(isExecutableIntegrationTest(path)).toBe(true);
+  ])("classifies collaboration cases as test-only: %s", (path) => {
     expect(isTypescriptTestSupport(path)).toBe(true);
   });
   it.each([
@@ -21,17 +16,13 @@ describe("recursive TypeScript test ownership", () => {
     "tests/build/fixtures/document.ts",
     "tests/build/seal.test-helper.ts",
     "tests/build/document.fixture.ts",
-  ])("keeps support source non-executable and outside production: %s", (path) => {
-    expect(isExecutableIntegrationTest(path)).toBe(false);
+  ])("classifies helpers and fixtures as test-only: %s", (path) => {
     expect(isTypescriptTestSupport(path)).toBe(true);
   });
   it("distinguishes adjacent unit tests from runtime modules", () => {
     expect(isTypescriptTestSupport("packages/adapter-mcp-apps-host/src/controller.test.ts")).toBe(
       true,
     );
-    expect(
-      isExecutableIntegrationTest("packages/adapter-mcp-apps-host/src/controller.test.ts"),
-    ).toBe(false);
     expect(isTypescriptTestSupport("packages/adapter-mcp-apps-host/src/controller.ts")).toBe(false);
   });
   it("allows only the explicit qualification entry to import its fixture", () => {
