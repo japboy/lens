@@ -18,7 +18,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "packages/adapter-mcp-apps-host-web/package.json",
+          "path": "packages/adapter-mcp-apps-host/package.json",
           "jsonpath": "$.version"
         },
         {
@@ -48,7 +48,7 @@
         },
         {
           "type": "json",
-          "path": "packages/adapter-mcp-apps-view-html/package.json",
+          "path": "packages/adapter-mcp-apps-view/package.json",
           "jsonpath": "$.version"
         }
       ]

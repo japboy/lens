@@ -1,8 +1,8 @@
 packages:
   - "apps/desktop"
   - "packages/typescript-config"
-  - "packages/adapter-mcp-apps-host-web"
-  - "packages/adapter-mcp-apps-view-html"
+  - "packages/adapter-mcp-apps-host"
+  - "packages/adapter-mcp-apps-view"
   - "packages/adapter-rich-content-web"
 
 # Mermaid's declared range accepts this trusted-publisher release; newer

@@ -13,7 +13,7 @@ describe("explicit native shared web resource ownership", () => {
         sourceInclusionViolations(
           root,
           host,
-          include(`adapter-mcp-apps-host-web/src/assets/${asset}`),
+          include(`adapter-mcp-apps-host/src/assets/${asset}`),
           "apps/desktop",
         ),
       ).toEqual([]);
@@ -24,18 +24,18 @@ describe("explicit native shared web resource ownership", () => {
       sourceInclusionViolations(
         root,
         "apps/desktop/src-tauri/src/agent.rs",
-        include("adapter-mcp-apps-view-html/src/assets/rich-html-app.html"),
+        include("adapter-mcp-apps-view/src/assets/rich-html-app.html"),
         "apps/desktop",
       ),
     ).toEqual([]);
   });
   it.each([
-    [host, "adapter-mcp-apps-host-web/src/controller.ts", "include_str"],
-    [host, "adapter-mcp-apps-view-html/src/assets/rich-html-app.html", "include_str"],
-    [host, "adapter-mcp-apps-host-web/src/assets/sandbox-proxy.js", "include_bytes"],
+    [host, "adapter-mcp-apps-host/src/controller.ts", "include_str"],
+    [host, "adapter-mcp-apps-view/src/assets/rich-html-app.html", "include_str"],
+    [host, "adapter-mcp-apps-host/src/assets/sandbox-proxy.js", "include_bytes"],
     [
       "apps/desktop/src-tauri/src/other.rs",
-      "adapter-mcp-apps-host-web/src/assets/sandbox-proxy.js",
+      "adapter-mcp-apps-host/src/assets/sandbox-proxy.js",
       "include_str",
     ],
   ])("rejects undeclared source/asset ownership %s %s %s", (path, asset, macro) => {

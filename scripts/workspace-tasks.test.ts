@@ -91,8 +91,8 @@ describe("repository task ownership", () => {
       expect([
         resolve(root),
         resolve(root, "apps/desktop"),
-        resolve(root, "packages/adapter-mcp-apps-host-web"),
-        resolve(root, "packages/adapter-mcp-apps-view-html"),
+        resolve(root, "packages/adapter-mcp-apps-host"),
+        resolve(root, "packages/adapter-mcp-apps-view"),
         resolve(root, "packages/adapter-rich-content-web"),
       ]).toContain(task.dir);
       expect(task.sources).toEqual([]);
@@ -132,7 +132,7 @@ describe("repository task ownership", () => {
       expect(commands.some((command) => command.includes("--test http"))).toBe(false);
       const declaration = BUILD_VARIANTS.find((entry) => entry.id === variant)!;
       expect(declaration.operation).toBe("test");
-      expect(declaration.packages).toContain("adapter-mcp-apps-server");
+      expect(declaration.packages).toContain("adapter-mcp-server");
       expect(variantArguments(declaration)).toContain("--lib");
     }
   });
@@ -216,8 +216,8 @@ describe("repository task ownership", () => {
       "frontend:build",
       "test:repository",
       "test:frontend",
-      "test:mcp-apps-host-web",
-      "test:mcp-apps-view-html",
+      "test:mcp-apps-host",
+      "test:mcp-apps-view",
       "test:rich-content-web",
     ]) {
       expect(result.completed.indexOf(leaf)).toBeGreaterThanOrEqual(0);
@@ -238,8 +238,8 @@ describe("repository task ownership", () => {
         "check:types:frontend",
         "frontend:build",
         "test:frontend",
-        "test:mcp-apps-host-web",
-        "test:mcp-apps-view-html",
+        "test:mcp-apps-host",
+        "test:mcp-apps-view",
         "test:rich-content-web",
       ].toSorted(),
     );
@@ -251,7 +251,7 @@ describe("repository task ownership", () => {
       "pnpm exec tsc --build tsconfig.node.json",
     ]);
     expect(tasks.find((task) => task.name === "check:types:frontend")!.run).toEqual([
-      "pnpm exec tsc --build packages/adapter-mcp-apps-host-web packages/adapter-mcp-apps-view-html packages/adapter-rich-content-web apps/desktop",
+      "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-rich-content-web apps/desktop",
     ]);
   });
 

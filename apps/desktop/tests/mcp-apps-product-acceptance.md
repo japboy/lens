@@ -38,7 +38,7 @@ Do not combine this hook with the other `LENS_VALIDATE_*` initializers. Each lau
 - `apps/desktop/src-tauri/src/agent.rs`: `transform_current`, `current_transform_input`, `run_persistent_session_actor`.
 - `apps/desktop/src-tauri/src/agent_runtime.rs`: `resolve_for_session` leases an already published managed installation; installation belongs to explicit user actions.
 - `apps/desktop/src-tauri/src/mcp_apps.rs`: retained source artifacts, display leases, App requests, trusted draft submission and lease revocation.
-- `packages/adapter-mcp-apps-server/src/apps.rs`: actual source catalog/resource/result capture and the bundled `render_html` tool.
+- `packages/adapter-mcp-server/src/apps.rs`: actual source catalog/resource/result capture and the bundled `render_html` tool.
 - `apps/desktop/src/components/lens-mcp-app.ts`: product Host display, SDK bridge and user controls.
 
 Record any actual failure at its concrete layer (source transport, Agent tool execution, resource capture, native display, App operation, trusted submission or lifecycle). Do not promote previous standalone browser/prototype results into native product evidence.
@@ -159,7 +159,7 @@ remains pending the separate turn-admission decision.
 
 ## Server/Host/View naming qualification — 2026-10-01
 
-Role names now match package and directory names: `adapter-mcp-apps-server`,
+At the initial role-name alignment checkpoint, the packages were named: `adapter-mcp-apps-server`,
 `adapter-mcp-apps-host-web` and `adapter-mcp-apps-view-html`. Shared Markdown/static
 HTML math and Node resource generation remain in `adapter-rich-content-web`.
 Desktop composes Host, View and shared math; View consumes the public math API.
@@ -177,3 +177,26 @@ Server implementation and four canonical runtime assets match the preceding
 commit exactly; View preparation changed only the math import. Tool schemas and
 turn admission are unchanged. These automated results do not establish fresh
 actual Codex replacement parity, which still awaits the separate turn decision.
+
+## MCP baseline and Apps suffix qualification — 2026-10-01
+
+The final package/directory names are `adapter-mcp-server`,
+`adapter-mcp-apps-host` and `adapter-mcp-apps-view`. Server is a standard MCP
+Server with Apps support; Host and View names describe the Apps boundary.
+The View remains the built-in HTML implementation. Shared rich-content rendering
+retains its own package. Responsibilities, dependencies and protocols are unchanged.
+
+The final suffix correction passed fresh verification: repository 590 tests,
+shared web packages 39 tests and Desktop 664 tests; six Cargo and six pnpm
+members and 554 source paths passed boundary checks. Two initial fixture timeouts
+were resolved by rerunning the unchanged repository gate after the concurrent
+frontend build ended. Type checking, lint and sealed generation passed.
+The generation is
+54ef8c509d7045aa378e68b7151163cdcbe470008330f15cf45e3643ef2a4e4b.
+Native verification was scoped to the pure namespace change: renamed Server
+9 tests, Server/Desktop Clippy including library/tests, and the official macOS
+production release compilation check all passed. The 607-test full native gate
+above remains evidence of the preceding checkpoint and was not rerun here.
+All 32 moved package files match the preceding commit except role-name references
+and the Server package description. Public tools, schema and turn admission remain
+unchanged. This step provides no new actual Codex/native interaction evidence.

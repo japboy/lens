@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import type { McpAppDescriptor, McpAppLease } from "adapter-mcp-apps-host-web";
+import type { McpAppDescriptor, McpAppLease } from "adapter-mcp-apps-host";
 import { version } from "../../package.json";
 import { createDesktopMcpAppController, type DesktopMcpAppsPort } from "./composition";
 

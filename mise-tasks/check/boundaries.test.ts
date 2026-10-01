@@ -131,8 +131,8 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     for (const directory of [
       ".",
       "apps/desktop",
-      "packages/adapter-mcp-apps-host-web",
-      "packages/adapter-mcp-apps-view-html",
+      "packages/adapter-mcp-apps-host",
+      "packages/adapter-mcp-apps-view",
       "packages/adapter-rich-content-web",
     ]) {
       const f = fixture();
@@ -142,9 +142,9 @@ describe("workspace identities and all-kind dependency boundaries", () => {
   });
 
   it.each([
-    ["packages/adapter-mcp-apps-host-web", "adapter-rich-content-web"],
-    ["packages/adapter-mcp-apps-host-web", "adapter-mcp-apps-view-html"],
-    ["packages/adapter-mcp-apps-view-html", "adapter-mcp-apps-host-web"],
+    ["packages/adapter-mcp-apps-host", "adapter-rich-content-web"],
+    ["packages/adapter-mcp-apps-host", "adapter-mcp-apps-view"],
+    ["packages/adapter-mcp-apps-view", "adapter-mcp-apps-host"],
     ["packages/adapter-rich-content-web", "desktop"],
   ])("rejects a reverse or composition-only edge %s -> %s", (directory, dependency) => {
     const f = fixture();
@@ -154,7 +154,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
   });
   it("requires the explicit View-to-rich-content runtime edge", () => {
     const f = fixture();
-    delete f.jsManifests.get("packages/adapter-mcp-apps-view-html")!.dependencies![
+    delete f.jsManifests.get("packages/adapter-mcp-apps-view")!.dependencies![
       "adapter-rich-content-web"
     ];
     expect(f.check).toThrow("missing declared pnpm dependency");

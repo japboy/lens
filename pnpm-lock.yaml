@@ -253,12 +253,12 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: 2.5.5
         version: 2.5.5
-      adapter-mcp-apps-host-web:
+      adapter-mcp-apps-host:
         specifier: workspace:*
-        version: link:../../packages/adapter-mcp-apps-host-web
-      adapter-mcp-apps-view-html:
+        version: link:../../packages/adapter-mcp-apps-host
+      adapter-mcp-apps-view:
         specifier: workspace:*
-        version: link:../../packages/adapter-mcp-apps-view-html
+        version: link:../../packages/adapter-mcp-apps-view
       adapter-rich-content-web:
         specifier: workspace:*
         version: link:../../packages/adapter-rich-content-web
@@ -306,7 +306,7 @@ importers:
         specifier: 5.0.2
         version: 5.0.2(@types/node@24.19.0)(jsdom@30.1.1)(vite@8.3.1(@types/node@24.19.0)(yaml@2.9.1))
 
-  packages/adapter-mcp-apps-host-web:
+  packages/adapter-mcp-apps-host:
     dependencies:
       '@modelcontextprotocol/ext-apps':
         specifier: 2.0.3
@@ -331,7 +331,7 @@ importers:
         specifier: 5.0.1
         version: 5.0.1(@types/node@24.13.6)(jsdom@30.1.1)(vite@8.3.1(@types/node@24.13.6)(yaml@2.9.1))
 
-  packages/adapter-mcp-apps-view-html:
+  packages/adapter-mcp-apps-view:
     dependencies:
       adapter-rich-content-web:
         specifier: workspace:*

@@ -1,5 +1,5 @@
-import { McpAppController, type McpAppsPort } from "adapter-mcp-apps-host-web";
-import { prepareRichHtmlDocument } from "adapter-mcp-apps-view-html";
+import { McpAppController, type McpAppsPort } from "adapter-mcp-apps-host";
+import { prepareRichHtmlDocument } from "adapter-mcp-apps-view";
 import { htmlMathInlineCss } from "virtual:lens-html-math-assets";
 import { version } from "../../package.json";
 

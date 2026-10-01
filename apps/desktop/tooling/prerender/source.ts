@@ -5,8 +5,8 @@ import { join } from "node:path";
 
 export const WORKSPACE_PACKAGE_PATHS = [
   "packages/typescript-config",
-  "packages/adapter-mcp-apps-host-web",
-  "packages/adapter-mcp-apps-view-html",
+  "packages/adapter-mcp-apps-host",
+  "packages/adapter-mcp-apps-view",
   "packages/adapter-rich-content-web",
 ] as const;
 

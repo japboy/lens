@@ -1,5 +1,5 @@
 {
-  "name": "adapter-mcp-apps-view-html",
+  "name": "adapter-mcp-apps-view",
   "version": "0.8.2",
   "private": true,
   "type": "module",

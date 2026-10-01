@@ -1,6 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { McpAppController, type McpAppDescriptor } from "adapter-mcp-apps-host-web";
+import { McpAppController, type McpAppDescriptor } from "adapter-mcp-apps-host";
 import {
   createDesktopMcpAppController,
   type DesktopMcpAppsPort as McpAppsPort,

@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "adapter-mcp-apps-server"
+name = "adapter-mcp-server"
 version = "0.8.3"
 dependencies = [
  "axum",
@@ -964,7 +964,7 @@ dependencies = [
 name = "desktop"
 version = "0.8.3"
 dependencies = [
- "adapter-mcp-apps-server",
+ "adapter-mcp-server",
  "adapter-platform-macos",
  "agent-client-protocol",
  "base64 0.22.1",

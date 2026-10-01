@@ -20,7 +20,7 @@ use crate::{
     },
     prompt_template::{AgentPromptMode, AgentPromptTemplate},
 };
-use adapter_mcp_apps_server::apps::AppBroker;
+use adapter_mcp_server::apps::AppBroker;
 use agent_client_protocol::{
     schema::{
         v1::{
@@ -144,7 +144,7 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     shutdown: &'a mut watch::Receiver<bool>,
     session: &'a mut ActiveSession<'static, Agent>,
     prompt_capabilities: &'a PromptCapabilities,
-    apps: &'a adapter_mcp_apps_server::apps::AppBroker,
+    apps: &'a adapter_mcp_server::apps::AppBroker,
     app_prompt: Option<Vec<ContentBlock>>,
 }
 
@@ -992,10 +992,8 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
     let cwd = crate::store::effective_working_directory(&config);
     let apps = AppBroker::start(
         Vec::new(),
-        include_str!(
-            "../../../../packages/adapter-mcp-apps-view-html/src/assets/rich-html-app.html"
-        )
-        .into(),
+        include_str!("../../../../packages/adapter-mcp-apps-view/src/assets/rich-html-app.html")
+            .into(),
     )
     .await
     .map_err(|error| ManagedVerificationError::Retryable(error.to_string()))?;
@@ -1652,19 +1650,19 @@ async fn run_persistent_session<R: tauri::Runtime>(
     }
     crate::mcp_apps::validate_servers(&identity.config.mcp_apps_servers).map_err(state_error)?;
     let apps = Arc::new(
-        adapter_mcp_apps_server::apps::AppBroker::start(
+        adapter_mcp_server::apps::AppBroker::start(
             identity
                 .config
                 .mcp_apps_servers
                 .iter()
-                .map(|s| adapter_mcp_apps_server::apps::SourceConfig {
+                .map(|s| adapter_mcp_server::apps::SourceConfig {
                     id: s.id.to_string(),
                     name: s.name.clone(),
                     url: s.url.clone(),
                 })
                 .collect(),
             include_str!(
-                "../../../../packages/adapter-mcp-apps-view-html/src/assets/rich-html-app.html"
+                "../../../../packages/adapter-mcp-apps-view/src/assets/rich-html-app.html"
             )
             .into(),
         )
@@ -3250,7 +3248,7 @@ mod tests {
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
-        use adapter_mcp_apps_server::apps::AppBroker;
+        use adapter_mcp_server::apps::AppBroker;
         use agent_client_protocol::{
             schema::v1::{NewSessionRequest, NewSessionResponse},
             Client, Responder,

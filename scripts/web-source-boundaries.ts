@@ -14,9 +14,9 @@ export function webSourceViolations(path: string, source: string, owner: string)
     )
       errors.push(`Desktop/native import forbidden: ${specifier}`);
     if (
-      owner.endsWith("adapter-mcp-apps-host-web") &&
+      owner.endsWith("adapter-mcp-apps-host") &&
       (specifier.startsWith("adapter-rich-content-web") ||
-        specifier.startsWith("adapter-mcp-apps-view-html"))
+        specifier.startsWith("adapter-mcp-apps-view"))
     )
       errors.push("Generic MCP Host cannot depend on a renderer/View");
     if (specifier.startsWith(".")) {

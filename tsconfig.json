@@ -2,10 +2,10 @@
   "files": [],
   "references": [
     {
-      "path": "./packages/adapter-mcp-apps-host-web"
+      "path": "./packages/adapter-mcp-apps-host"
     },
     {
-      "path": "./packages/adapter-mcp-apps-view-html"
+      "path": "./packages/adapter-mcp-apps-view"
     },
     {
       "path": "./packages/adapter-rich-content-web"

@@ -1,5 +1,5 @@
 {
-  "name": "adapter-mcp-apps-host-web",
+  "name": "adapter-mcp-apps-host",
   "version": "0.8.2",
   "private": true,
   "type": "module",

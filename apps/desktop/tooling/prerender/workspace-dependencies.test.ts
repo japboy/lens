@@ -26,7 +26,7 @@ async function fixture() {
       "apps/desktop",
       {
         name: "desktop",
-        dependencies: { "adapter-mcp-apps-host-web": "workspace:*", third: "1.0.0" },
+        dependencies: { "adapter-mcp-apps-host": "workspace:*", third: "1.0.0" },
       },
     ],
     ...WORKSPACE_PACKAGE_PATHS.map((path): [string, object] => [
@@ -38,14 +38,8 @@ async function fixture() {
     await write(join(original, path, "package.json"), JSON.stringify(manifest));
     await write(join(staging, path, "package.json"), JSON.stringify(manifest));
   }
-  await write(
-    join(original, "packages/adapter-mcp-apps-host-web/source.json"),
-    '{"value":"original"}',
-  );
-  await write(
-    join(staging, "packages/adapter-mcp-apps-host-web/source.json"),
-    '{"value":"sealed"}',
-  );
+  await write(join(original, "packages/adapter-mcp-apps-host/source.json"), '{"value":"original"}');
+  await write(join(staging, "packages/adapter-mcp-apps-host/source.json"), '{"value":"sealed"}');
   await write(
     join(original, "node_modules/.pnpm/third@1.0.0/node_modules/third/package.json"),
     '{"name":"third","main":"value.json"}',
@@ -67,13 +61,13 @@ describe("sealed workspace dependency resolution", () => {
     const { original, staging } = await fixture();
     await linkGenerationDependencies(original, staging);
     await write(
-      join(original, "packages/adapter-mcp-apps-host-web/source.json"),
+      join(original, "packages/adapter-mcp-apps-host/source.json"),
       '{"value":"mutated"}',
     );
     const require = createRequire(join(staging, "apps/desktop/package.json"));
-    const resolved = require.resolve("adapter-mcp-apps-host-web/source.json");
+    const resolved = require.resolve("adapter-mcp-apps-host/source.json");
     expect(await realpath(resolved)).toBe(
-      await realpath(join(staging, "packages/adapter-mcp-apps-host-web/source.json")),
+      await realpath(join(staging, "packages/adapter-mcp-apps-host/source.json")),
     );
     expect(JSON.parse(await readFile(resolved, "utf8"))).toEqual({ value: "sealed" });
     expect(require("third")).toEqual({ value: "third-party" });
@@ -85,7 +79,7 @@ describe("sealed workspace dependency resolution", () => {
       JSON.stringify({
         name: "desktop",
         dependencies: {
-          "adapter-mcp-apps-host-web": "file:../../packages/adapter-mcp-apps-host-web",
+          "adapter-mcp-apps-host": "file:../../packages/adapter-mcp-apps-host",
         },
       }),
     );
@@ -108,7 +102,7 @@ describe("sealed workspace dependency resolution", () => {
     const { original } = await fixture();
     execFileSync("git", ["init", "--quiet"], { cwd: original });
     execFileSync("git", ["add", "packages"], { cwd: original });
-    const source = "packages/adapter-mcp-apps-host-web/source.json";
+    const source = "packages/adapter-mcp-apps-host/source.json";
     const before = sourceDigest(sourceInputs(original));
     await rm(join(original, source));
     const inputs = sourceInputs(original);
@@ -137,7 +131,7 @@ describe("sealed workspace dependency resolution", () => {
     const { original } = await fixture();
     execFileSync("git", ["init", "--quiet"], { cwd: original });
     const before = sourceInputs(original);
-    expect(before.has("packages/adapter-mcp-apps-host-web/source.json")).toBe(true);
+    expect(before.has("packages/adapter-mcp-apps-host/source.json")).toBe(true);
     await write(
       join(original, "packages/adapter-rich-content-web/math.ts"),
       "export const value = 73;",
