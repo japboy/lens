@@ -1,4 +1,4 @@
-import katex from "katex";
+import katex, { type KatexOptions } from "katex";
 import { Tokenizer, TokenizerMode } from "parse5";
 import { Lexer, type Marked, type Token, type TokensList } from "marked";
 
@@ -9,6 +9,24 @@ export interface MathSpan {
 }
 
 export const MATH_LIMITS = { count: 128, characters: 8192, totalCharacters: 65536 } as const;
+
+/** Each expression receives fresh macros; author TeX cannot mutate later renders. */
+function mathRenderOptions(math: MathSpan): KatexOptions {
+  return {
+    displayMode: math.displayMode,
+    output: "htmlAndMathml",
+    trust: false,
+    strict: "error",
+    throwOnError: true,
+    maxExpand: 1000,
+    maxSize: 20,
+    macros: {},
+  };
+}
+
+export function renderMathMarkup(math: MathSpan): string {
+  return katex.renderToString(math.tex, mathRenderOptions(math));
+}
 
 function escaped(source: string, index: number): boolean {
   let slashes = 0;
@@ -182,16 +200,7 @@ export function mathElement(math: MathSpan, permitted: boolean): HTMLElement {
   element.className = math.displayMode ? "lens-math lens-math-display" : "lens-math";
   if (permitted) {
     try {
-      katex.render(math.tex, element, {
-        displayMode: math.displayMode,
-        output: "htmlAndMathml",
-        trust: false,
-        throwOnError: true,
-        strict: "error",
-        maxExpand: 1000,
-        maxSize: 20,
-        macros: {},
-      });
+      katex.render(math.tex, element, mathRenderOptions(math));
       return element;
     } catch {
       // Malformed, unsupported, or over-budget expressions remain readable text.

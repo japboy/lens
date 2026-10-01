@@ -81,7 +81,7 @@ export type PromptPresetChange =
   | { type: "reset_all"; expected_catalog_revision: number };
 
 export interface AppConfig {
-  mcp_apps_servers?: import("./mcp-apps/types").McpAppsServer[];
+  mcp_apps_servers?: import("adapter-mcp-apps-web").McpAppsServer[];
   agent_preferences?: Partial<Record<ManagedAgentKind, AgentDefaults>> & {
     external?: Record<string, AgentDefaults>;
   };
@@ -476,7 +476,7 @@ export type LensResponseBlockDescriptor =
   | { type: "unsupported"; block_index: number; content_type: string };
 
 export interface LensResponseManifest {
-  mcp_apps?: import("./mcp-apps/types").McpAppDescriptor[];
+  mcp_apps?: import("adapter-mcp-apps-web").McpAppDescriptor[];
   sequence: number;
   representation_id: string;
   run_id: string;
@@ -511,7 +511,7 @@ export interface LensLiveState {
 }
 
 export interface LensState {
-  mcp_apps?: import("./mcp-apps/types").McpAppDescriptor[];
+  mcp_apps?: import("adapter-mcp-apps-web").McpAppDescriptor[];
   prompt_execution_revision: number;
   session_controls?: AgentSessionControlState;
   operation_id?: string;

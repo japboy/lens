@@ -2,8 +2,8 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { html } from "lit";
-import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import type { McpAppsPort } from "../mcp-apps/types";
+import { AppBridge } from "adapter-mcp-apps-web";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import type { PresentedOutputImage, PresentedOutputMedia } from "../output-media";
 import type { LensState } from "../types";
 import type { LensOutputMedia } from "./lens-output-media";

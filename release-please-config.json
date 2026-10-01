@@ -18,6 +18,16 @@
       "extra-files": [
         {
           "type": "json",
+          "path": "packages/adapter-mcp-apps-web/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/adapter-rich-content-web/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
           "path": "packages/typescript-config/package.json",
           "jsonpath": "$.version"
         },

@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   readHtmlMathManifest,
   htmlMathResponseHeaders,
   HTML_MATH_MANIFEST,
   HTML_MATH_RESOURCE_LIMIT,
-} from "./html-math-manifest.ts";
-import { createHtmlMathAssets, inlineHtmlMathCss } from "./html-math-assets.ts";
+} from "../src/node/html-math-manifest.ts";
+import { createHtmlMathAssets, inlineHtmlMathCss } from "../src/node/html-math-assets.ts";
 
 const desktop = resolve(".");
 const temporary: string[] = [];
@@ -39,7 +40,13 @@ describe("public HTML math asset generation", () => {
     );
     for (const path of manifest.fontPaths)
       expect(sources.get(path)).toEqual(
-        readFileSync(join(desktop, "node_modules/katex/dist/fonts", basename(path))),
+        readFileSync(
+          join(
+            dirname(fileURLToPath(import.meta.resolve("katex/dist/katex.css"))),
+            "fonts",
+            basename(path),
+          ),
+        ),
       );
     const css = sources.get(manifest.stylesheetPath)!.toString();
     const urls = [...css.matchAll(/url\(["']?([^"')]+)["']?\)/gu)].map((match) => match[1]!);

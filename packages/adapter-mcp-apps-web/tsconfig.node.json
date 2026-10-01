@@ -1,0 +1,8 @@
+{
+  "extends": "typescript-config/node.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "tsBuildInfoFile": "./.build/cache/typescript/node.tsbuildinfo"
+  },
+  "include": ["vitest.config.ts", "src/node/**/*.ts"]
+}

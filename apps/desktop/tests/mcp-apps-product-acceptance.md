@@ -121,3 +121,38 @@ After that tab-cycle remount, CUA operated Ask Agent without setting new context
 For normal Quit, the root operator first confirmed that the live App listener on port 53103 accepted a connection and the owned temporary artifact file and directory existed. The operator then clicked the native Lens menu's Quit Lens action. The owned process (PTY 76345) exited with code zero without Ctrl-C or another forced stop. Its accessibility surface disappeared, the listener on port 53103 refused connections, and both the owned `lens-mcp-apps-Ic4kiS` directory and its `4f55848c-34fd-4af1-b8ec-0eb922971b5f.json` artifact file no longer existed. Two stale menu-target guards during navigation were resolved by obtaining fresh complete accessibility state before the successful Quit action; they were not treated as successful clicks.
 
 Together with the external App run above, these observations complete the scoped Codex/macOS native acceptance: original external App interaction, generated fallback, trusted same-session follow-up, latest-context replacement, context reset, responsive close/reopen/tab remount and normal Quit cleanup. They do not establish survival under non-yielding JavaScript, immediate renderer-process exit, exhaustive native-command denial or behavior on other providers/platforms. Earlier interrupted or locked attempts remain historical records, not successful observations. No App HTML, native key value, credential or raw provider session identifier is included.
+
+## Replacement and package extraction qualification — 2026-10-01
+
+The completed native observations above precede the confirmed removal of the old
+static publisher and the subsequent package extraction. They do not establish
+parity acceptance for these later changes.
+
+A replacement debug bundle connected the actual managed Codex Agent, received a
+generated built-in App and displayed it in the native Overlay. The run was stopped
+before math, anchor opening, App input or trusted follow-up acceptance when final
+authority review identified delayed first-arrival ambiguity across Agent runs. The
+bundled renderer currently accepts HTML without a caller-supplied run identity and
+associates arrival with the active run. The user requested structural improvement
+first and consideration of this concern afterward. No successful fresh parity or
+turn-admission claim is made from that interrupted run.
+
+The approved extraction now puts the generic browser Host/transport/proxy in
+`adapter-mcp-apps-web`, HTML/math and browser/Node resource generation in
+`adapter-rich-content-web`, and pure App input/authority rules plus the session
+document reducer in `usecase`. Desktop composes those packages and retains native
+locks, IPC, physical sessions, storage and effect dispatch. Tool schemas and
+admission semantics are unchanged during this structural step.
+
+Fresh automated frontend and repository gates passed: shared packages 39 tests,
+Desktop 664 tests and repository 582 tests. Types, formatting, lint, explicit
+workspace boundaries and generated WebView admission passed. Package sources are
+sealed into the generation hash, and local workspace dependency resolution remains
+inside the copied generation. The release fixture uses an isolated fixed commit of
+current workspace declarations without weakening production release admission.
+
+The complete macOS gate passed against the final sealed generation: 607 Rust tests
+passed with 19 existing opt-in tests ignored, plus workspace Clippy, dependency
+audit, documentation tests and development/release compilation. Exact package-owned
+resources are consumed by native composition. Actual replacement parity acceptance
+remains pending the separate turn-admission decision.

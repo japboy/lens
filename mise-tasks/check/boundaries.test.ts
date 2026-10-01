@@ -51,7 +51,7 @@ describe("workspace identities and all-kind dependency boundaries", () => {
   it("checks actual Cargo and pnpm discovery without conflating desktop identities", () => {
     expect(() => fixture().check()).not.toThrow();
     expect(baseline.cargo.packages).toHaveLength(6);
-    expect(pnpm).toHaveLength(3);
+    expect(pnpm).toHaveLength(5);
     expect(
       MEMBERS.filter((entry) => entry.name === "desktop").map((entry) => entry.ecosystem),
     ).toEqual(["pnpm", "cargo"]);

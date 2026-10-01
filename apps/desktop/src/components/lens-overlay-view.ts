@@ -1792,7 +1792,9 @@ export class LensOverlayView extends LitElement {
     | ((block: DeferredDocumentBlock) => Promise<DocumentBlock>)
     | undefined;
   @property({ type: Boolean }) active = initialOverlayState().active;
-  @property({ attribute: false }) appPort: import("../mcp-apps/types").McpAppsPort | undefined;
+  @property({ attribute: false }) appPort:
+    | import("../mcp-apps/composition").DesktopMcpAppsPort
+    | undefined;
   @property({ attribute: false }) responseHistory: ResponseHistoryPresentation | undefined;
   @property({ attribute: false }) loadResponseBlock: LoadResponseBlock | undefined;
   @property({ attribute: false }) retryResponseMedia: ((id: string) => Promise<void>) | undefined;

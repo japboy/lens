@@ -1,4 +1,4 @@
-// Trusted document on a dedicated origin, never a Lens-native IPC surface.
+// Trusted document on a dedicated origin, never a host-native IPC surface.
 const settings = JSON.parse(document.getElementById("proxy-settings").textContent);
 const RESOURCE_READY = "ui/notifications/sandbox-resource-ready";
 let phase = "waiting";

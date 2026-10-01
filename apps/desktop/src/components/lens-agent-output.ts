@@ -10,7 +10,7 @@ import type { LensOutputMedia } from "./lens-output-media";
 import { responseBlockIdentity } from "../application/response-history-controller";
 import "./lens-response-block";
 import { composeOutputMedia, presentMcpApps } from "../output-media";
-import type { McpAppsPort } from "../mcp-apps/types";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import "./lens-output-media";
 import { customElement, property } from "lit/decorators.js";
 import { externalMarkdownUrl } from "../markdown";

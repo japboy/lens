@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { McpAppController } from "./controller";
-import { version } from "../../package.json";
-import type { McpAppsPort } from "./types";
+import { McpAppController } from "../src/controller";
+import type { McpAppsPort } from "../src/types";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -52,11 +51,16 @@ it.each([true, false])(
       mcpAppRequest: vi.fn<McpAppsPort["mcpAppRequest"]>(async () => ({ result: { tools: [] } })),
       submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
       submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
-      prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
     };
     const container = document.createElement("div");
     document.body.append(container);
-    const controller = new McpAppController(port, vi.fn<() => void>());
+    const controller = new McpAppController(port, vi.fn<() => void>(), {
+      hostInfo: { name: "Injected Host", version: "1.2.3" },
+      frameTitle: "Injected App",
+      getHostContext: (_, owner) => ({
+        theme: owner.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+      }),
+    });
     await controller.show(
       {
         id: "artifact",
@@ -109,7 +113,7 @@ it.each([true, false])(
         };
       };
     };
-    expect(initializeResult.hostInfo).toEqual({ name: "Lens", version });
+    expect(initializeResult.hostInfo).toEqual({ name: "Injected Host", version: "1.2.3" });
     expect(initializeResult.hostContext.theme).toBe(live ? "dark" : "light");
     expect(window.matchMedia).toHaveBeenCalledWith("(prefers-color-scheme: dark)");
     expect(initializeResult.hostCapabilities.updateModelContext).toEqual(
@@ -152,7 +156,6 @@ it.each([true, false])(
           ]
         : [],
     );
-    expect(port.prepareMcpAppDocument).not.toHaveBeenCalled();
     expect(initializeResult.hostCapabilities).toMatchObject({ openLinks: {} });
     vi.mocked(port.mcpAppRequest).mockResolvedValueOnce({
       result: { isError: false },

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { Marked, type Token } from "marked";
 import { renderMarkdownFragment } from "./markdown";
-import { excludeHtmlMath, MATH_LIMITS, readMathSpan } from "./markdown-math";
+import { excludeHtmlMath, MATH_LIMITS, readMathSpan } from "adapter-rich-content-web";
 
 function render(source: string): HTMLDivElement {
   const host = document.createElement("div");

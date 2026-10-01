@@ -27,7 +27,7 @@ run = [
 ]
 
 [tasks."check:types"]
-description = "Check repository and desktop TypeScript"
+description = "Check repository, desktop and shared web TypeScript"
 dir = "{{config_root}}"
 depends = ["check:types:repository", "check:types:frontend"]
 
@@ -37,9 +37,9 @@ dir = "{{config_root}}"
 run = "pnpm exec tsc --build tsconfig.node.json"
 
 [tasks."check:types:frontend"]
-description = "Check desktop TypeScript"
+description = "Check desktop and shared web adapter TypeScript"
 dir = "{{config_root}}"
-run = "pnpm exec tsc --build apps/desktop"
+run = "pnpm exec tsc --build packages/adapter-mcp-apps-web packages/adapter-rich-content-web apps/desktop"
 
 [tasks."frontend:dev"]
 description = "Run the desktop frontend development server"
@@ -58,8 +58,19 @@ dir = "{{config_root}}"
 run = "pnpm exec vitest run"
 
 [tasks."test:frontend"]
-description = "Run desktop frontend tests"
+description = "Run desktop frontend tests after shared web adapter tests"
 dir = "{{config_root}}/apps/desktop"
+depends = ["test:mcp-apps-web", "test:rich-content-web"]
+run = "pnpm test"
+
+[tasks."test:mcp-apps-web"]
+description = "Run framework-free MCP Apps Host tests"
+dir = "{{config_root}}/packages/adapter-mcp-apps-web"
+run = "pnpm test"
+
+[tasks."test:rich-content-web"]
+description = "Run rich content browser and Node asset tests"
+dir = "{{config_root}}/packages/adapter-rich-content-web"
 run = "pnpm test"
 
 [tasks."test"]

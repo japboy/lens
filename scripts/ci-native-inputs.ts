@@ -9,9 +9,9 @@ export const NATIVE_CODE_INPUTS = new Set([
   "apps/desktop/tests/fixtures/workspace-contracts.json",
   "apps/desktop/tests/fixtures/acp-generated-image.json",
   "apps/desktop/src/html-output.ts",
-  "apps/desktop/src/mcp-apps/sandbox-proxy.html",
-  "apps/desktop/src/mcp-apps/sandbox-proxy.js",
-  "apps/desktop/src/mcp-apps/rich-html-app.html",
+  "packages/adapter-mcp-apps-web/src/assets/sandbox-proxy.html",
+  "packages/adapter-mcp-apps-web/src/assets/sandbox-proxy.js",
+  "packages/adapter-rich-content-web/src/assets/rich-html-app.html",
 ]);
 
 // Build scripts can compute paths or delegate reads. Pin their reviewed token surface

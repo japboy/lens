@@ -1,6 +1,6 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { McpAppsServer } from "../mcp-apps/types";
+import type { McpAppsServer } from "adapter-mcp-apps-web";
 import { dispatchComponentEvent, SETTINGS_INTENT_EVENT } from "./events";
 import "./lens-select";
 import type { LensSelect } from "./lens-select";

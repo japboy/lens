@@ -24,11 +24,11 @@ export interface PresentedOutputApp {
   readonly kind: "app";
   readonly id: string;
   readonly mimeType: "text/html;profile=mcp-app";
-  readonly descriptor: import("./mcp-apps/types").McpAppDescriptor;
+  readonly descriptor: import("adapter-mcp-apps-web").McpAppDescriptor;
 }
 
 export function presentMcpApps(
-  apps: readonly import("./mcp-apps/types").McpAppDescriptor[] = [],
+  apps: readonly import("adapter-mcp-apps-web").McpAppDescriptor[] = [],
 ): PresentedOutputApp[] {
   return apps.map((descriptor) => ({
     kind: "app",

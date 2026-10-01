@@ -1,7 +1,5 @@
 import { AppBridge, type McpUiHostCapabilities } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { OriginBoundAppTransport } from "./transport";
-import { version } from "../../package.json";
-import { prepareRichHtmlDocument } from "./rich-html-document";
 import type {
   McpAppDescriptor,
   McpAppLease,
@@ -9,6 +7,7 @@ import type {
   McpAppLinkDraft,
   McpAppsPort,
   McpAppState,
+  McpAppHostOptions,
 } from "./types";
 
 export const APP_INITIALIZATION_TIMEOUT_MS = 10_000;
@@ -54,15 +53,10 @@ function defaultBridge(
   capabilities: McpUiHostCapabilities,
   lease: McpAppLease,
   owner: Window,
+  options: McpAppHostOptions,
 ): AppBridge {
-  return new AppBridge(null, { name: "Lens", version }, capabilities, {
-    hostContext: {
-      platform: "desktop",
-      theme: owner.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-      displayMode: "inline",
-      availableDisplayModes: ["inline"],
-      ...(lease.document_url ? { lensDocumentUrl: lease.document_url } : {}),
-    },
+  return new AppBridge(null, options.hostInfo, capabilities, {
+    hostContext: options.getHostContext(lease, owner),
   });
 }
 
@@ -96,7 +90,9 @@ export class McpAppController {
   constructor(
     private readonly port: McpAppsPort,
     private readonly changed: () => void,
-    private readonly createBridge: BridgeFactory = defaultBridge,
+    private readonly options: McpAppHostOptions,
+    private readonly createBridge: BridgeFactory = (capabilities, lease, owner) =>
+      defaultBridge(capabilities, lease, owner, options),
   ) {}
 
   private setState(state: McpAppState): void {
@@ -122,13 +118,10 @@ export class McpAppController {
             await bounded(this.port.closeMcpApp(lease.id), BACKEND_CLOSE_TIMEOUT_MS);
             return;
           }
-          if (lease.document_url) {
-            if (descriptor.server_id !== "lens_rich_html" || typeof lease.input.html !== "string")
-              throw new Error("Invalid built-in App document");
+          const preparation = this.options.prepareDocument?.(lease, descriptor);
+          if (preparation) {
             const prepared = await bounded(
-              this.port
-                .prepareMcpAppDocument(lease.id, prepareRichHtmlDocument(lease.input.html))
-                .then(() => true),
+              preparation.then(() => true),
               APP_INITIALIZATION_TIMEOUT_MS,
             );
             if (!prepared) throw new Error("App document preparation timed out");
@@ -147,7 +140,7 @@ export class McpAppController {
           )
             throw new Error("Invalid App sandbox origin");
           const frame = container.ownerDocument.createElement("iframe");
-          frame.title = descriptor.title ?? "Interactive Interpretation";
+          frame.title = descriptor.title ?? this.options.frameTitle;
           frame.className = "output-html-frame";
           frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
           frame.setAttribute("referrerpolicy", "no-referrer");

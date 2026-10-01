@@ -1,8 +1,6 @@
-import katex from "katex";
 import { parse, parseFragment, type DefaultTreeAdapterMap } from "parse5";
-import { htmlMathInlineCss } from "virtual:lens-html-math-assets";
-import { MATH_LIMITS, readMathSpan } from "../markdown-math";
-import linkScript from "./rich-html-links.js?raw";
+import { MATH_LIMITS, readMathSpan, renderMathMarkup } from "./math";
+import linkScript from "./assets/rich-html-links.js?raw";
 
 type Node = DefaultTreeAdapterMap["node"];
 type Element = DefaultTreeAdapterMap["element"];
@@ -41,7 +39,7 @@ function escaped(text: string, at: number): boolean {
 
 /** Built-in presentation derivative only: source locations preserve executable
  * author bytes and natural parser semantics. Raw artifacts/results remain immutable. */
-export function prepareRichHtmlDocument(source: string): string {
+export function prepareRichHtmlDocument(source: string, htmlMathInlineCss: string): string {
   if (bytes(source) > MAX_INPUT_BYTES) throw new Error("HTML content exceeds 512 KiB");
   const document = parse(source, { sourceCodeLocationInfo: true, scriptingEnabled: true });
   const html = document.childNodes.find(
@@ -107,16 +105,7 @@ export function prepareRichHtmlDocument(source: string): string {
         continue;
       let markup;
       try {
-        markup = katex.renderToString(math.tex, {
-          displayMode: math.displayMode,
-          output: "htmlAndMathml",
-          trust: false,
-          strict: "error",
-          throwOnError: true,
-          maxExpand: 1000,
-          maxSize: 20,
-          macros: {},
-        });
+        markup = renderMathMarkup(math);
       } catch {
         continue;
       }

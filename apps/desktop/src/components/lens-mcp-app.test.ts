@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
+import { AppBridge } from "adapter-mcp-apps-web";
 import { html, render } from "lit";
 import { cache } from "lit/directives/cache.js";
 import { LensMcpApp } from "./lens-mcp-app";
-import type { McpAppLease, McpAppsPort } from "../mcp-apps/types";
+import type { McpAppLease } from "adapter-mcp-apps-web";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 
 const lease: McpAppLease = {
   id: "lease",

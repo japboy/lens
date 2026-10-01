@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { APP_TEARDOWN_TIMEOUT_MS, McpAppController } from "./controller";
-import type { McpAppDescriptor, McpAppLease, McpAppsPort } from "./types";
+import { APP_TEARDOWN_TIMEOUT_MS, McpAppController } from "../src/controller";
+import type { McpAppDescriptor, McpAppLease, McpAppsPort, McpAppHostOptions } from "../src/types";
 
 const descriptor = (id: string): McpAppDescriptor => ({
   id,
@@ -38,7 +38,6 @@ function setup() {
     })),
     submitMcpAppMessage: vi.fn<McpAppsPort["submitMcpAppMessage"]>(async () => {}),
     submitMcpAppLink: vi.fn<McpAppsPort["submitMcpAppLink"]>(async () => {}),
-    prepareMcpAppDocument: vi.fn<McpAppsPort["prepareMcpAppDocument"]>(async () => {}),
   };
   const factory = () => {
     const bridge = {
@@ -60,12 +59,23 @@ function setup() {
   };
   const container = document.createElement("div");
   document.body.append(container);
-  const controller = new McpAppController(port, vi.fn<() => void>(), factory);
+  const prepareDocument = vi.fn<NonNullable<McpAppHostOptions["prepareDocument"]>>(async () => {});
+  const controller = new McpAppController(
+    port,
+    vi.fn<() => void>(),
+    {
+      hostInfo: { name: "Fixture Host", version: "1.0.0" },
+      frameTitle: "Fixture App",
+      getHostContext: () => ({}),
+      prepareDocument,
+    },
+    factory,
+  );
   const initialize = async () => {
     await bridges.at(-1)!.onsandboxready?.({});
     await bridges.at(-1)!.oninitialized?.({});
   };
-  return { controller, port, bridges, container, calls, initialize };
+  return { controller, port, bridges, container, calls, initialize, prepareDocument };
 }
 afterEach(() => {
   document.body.replaceChildren();
@@ -73,7 +83,7 @@ afterEach(() => {
 });
 
 describe("selected App lifecycle", () => {
-  it("prepares only the built-in derivative before mounting while retaining original result and input", async () => {
+  it("awaits the injected preparer before mounting while retaining original result and input", async () => {
     const test = setup();
     const original = {
       ...lease("a"),
@@ -82,22 +92,18 @@ describe("selected App lifecycle", () => {
     };
     vi.mocked(test.port.openMcpApp).mockResolvedValueOnce(original);
     let resolve!: () => void;
-    vi.mocked(test.port.prepareMcpAppDocument).mockImplementationOnce(
+    vi.mocked(test.prepareDocument).mockImplementationOnce(
       () =>
         new Promise<void>((done) => {
           resolve = done;
         }),
     );
-    const opening = test.controller.show(
-      { ...descriptor("a"), server_id: "lens_rich_html" },
-      test.container,
-    );
-    await vi.waitFor(() => expect(test.port.prepareMcpAppDocument).toHaveBeenCalledOnce());
+    const opening = test.controller.show(descriptor("a"), test.container);
+    await vi.waitFor(() => expect(test.prepareDocument).toHaveBeenCalledOnce());
     expect(test.container.querySelector("iframe")).toBeNull();
-    const prepared = vi.mocked(test.port.prepareMcpAppDocument).mock.calls[0]!;
-    expect(prepared[0]).toBe("lease-a");
-    expect(prepared[1]).toContain("lens-html-math");
-    expect(prepared[1]).toContain("<script>window.fixture=73</script>");
+    const prepared = vi.mocked(test.prepareDocument).mock.calls[0]!;
+    expect(prepared[0]).toBe(original);
+    expect(prepared[1]).toEqual(descriptor("a"));
     resolve();
     await opening;
     await test.initialize();
@@ -106,7 +112,7 @@ describe("selected App lifecycle", () => {
     await test.controller.close();
   });
   it.each(["late", "missing"])(
-    "revokes a built-in lease after Close with a %s preparation reply",
+    "revokes a lease after Close with a %s injected preparation reply",
     async (reply) => {
       vi.useFakeTimers();
       const test = setup();
@@ -116,18 +122,15 @@ describe("selected App lifecycle", () => {
         document_url: "http://127.0.0.1:43162/document/lease-a",
       });
       let resolve!: () => void;
-      vi.mocked(test.port.prepareMcpAppDocument).mockImplementationOnce(
+      vi.mocked(test.prepareDocument).mockImplementationOnce(
         () =>
           new Promise<void>((done) => {
             resolve = done;
           }),
       );
-      const opening = test.controller.show(
-        { ...descriptor("a"), server_id: "lens_rich_html" },
-        test.container,
-      );
+      const opening = test.controller.show(descriptor("a"), test.container);
       await vi.advanceTimersByTimeAsync(10);
-      expect(test.port.prepareMcpAppDocument).toHaveBeenCalledOnce();
+      expect(test.prepareDocument).toHaveBeenCalledOnce();
       const close = test.controller.close();
       if (reply === "late") resolve();
       await vi.advanceTimersByTimeAsync(10_010);

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createHtmlMathAssets } from "../apps/desktop/tooling/html-math-assets.ts";
+import { createHtmlMathAssets } from "adapter-rich-content-web/node";
 import { HTML_MATH_MANIFEST } from "../apps/desktop/tooling/html-math-manifest.ts";
 import { frontendArtifact, frontendFiles } from "./frontend-artifact.ts";
 import { generationFiles } from "../apps/desktop/tooling/prerender/verify.ts";
@@ -91,13 +91,14 @@ describe("same-source frontend artifact integrity", () => {
         "apps/desktop/tooling/prerender/verify.ts",
         "apps/desktop/tooling/prerender/source.ts",
         "apps/desktop/tooling/html-math-manifest.ts",
+        "packages/adapter-rich-content-web/src/node/html-math-manifest.ts",
       ];
       for (const file of files) {
         const destination = join(root, file);
         mkdirSync(dirname(destination), { recursive: true });
         writeFileSync(destination, readFileSync(new URL(`../${file}`, import.meta.url)));
       }
-      execFileSync("git", ["add", "scripts", "apps"], { cwd: root });
+      execFileSync("git", ["add", "scripts", "apps", "packages"], { cwd: root });
       execFileSync(
         "git",
         [

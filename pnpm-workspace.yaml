@@ -1,6 +1,8 @@
 packages:
   - "apps/desktop"
   - "packages/typescript-config"
+  - "packages/adapter-mcp-apps-web"
+  - "packages/adapter-rich-content-web"
 
 # Mermaid's declared range accepts this trusted-publisher release; newer
 # Cytoscape releases are rejected by the workspace's no-downgrade policy.

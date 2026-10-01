@@ -992,7 +992,8 @@ pub(crate) async fn verify_managed_runtime<R: tauri::Runtime>(
     let cwd = crate::store::effective_working_directory(&config);
     let apps = AppBroker::start(
         Vec::new(),
-        include_str!("../../src/mcp-apps/rich-html-app.html").into(),
+        include_str!("../../../../packages/adapter-rich-content-web/src/assets/rich-html-app.html")
+            .into(),
     )
     .await
     .map_err(|error| ManagedVerificationError::Retryable(error.to_string()))?;
@@ -1660,7 +1661,10 @@ async fn run_persistent_session<R: tauri::Runtime>(
                     url: s.url.clone(),
                 })
                 .collect(),
-            include_str!("../../src/mcp-apps/rich-html-app.html").into(),
+            include_str!(
+                "../../../../packages/adapter-rich-content-web/src/assets/rich-html-app.html"
+            )
+            .into(),
         )
         .await
         .map_err(|_| state_error("Unable to initialize an authorized MCP App source".into()))?,

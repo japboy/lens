@@ -1,5 +1,6 @@
 import type { SessionView, DocumentBlock } from "./session-document";
-import type { McpAppsPort, McpAppsServer } from "../mcp-apps/types";
+import type { McpAppsServer } from "adapter-mcp-apps-web";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import { parseSettingsDestination, type SettingsDestination } from "../agent-prompt-template";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";

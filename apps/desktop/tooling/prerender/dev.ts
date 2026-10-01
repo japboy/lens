@@ -1,3 +1,4 @@
+import { WORKSPACE_PACKAGE_PATHS } from "./source.ts";
 import { createServer, type ServerResponse } from "node:http";
 import { watch } from "node:fs";
 import { readFile, mkdir, mkdtemp, rm, rename } from "node:fs/promises";
@@ -104,9 +105,18 @@ const watchers = [
     if (file && ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"].includes(file.toString()))
       void rebuild();
   }),
-  watch(resolve(repo, "packages/typescript-config"), { recursive: true }, () => {
-    void rebuild();
-  }),
+  ...WORKSPACE_PACKAGE_PATHS.map((directory) =>
+    watch(resolve(repo, directory), { recursive: true }, (_event, file) => {
+      if (
+        file &&
+        !file
+          .toString()
+          .split(/[\\/]/u)
+          .some((part) => part === "node_modules" || part === ".build")
+      )
+        void rebuild();
+    }),
+  ),
 ];
 await rebuild();
 

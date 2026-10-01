@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
 // @vitest-environment-options {"jsdom":{"runScripts":"dangerously"}}
-import { describe, expect, it } from "vitest";
-import { prepareRichHtmlDocument } from "./rich-html-document";
-import { MATH_LIMITS } from "../markdown-math";
+import { beforeAll, describe, expect, it } from "vitest";
+import { prepareRichHtmlDocument as prepareDocument } from "../src/rich-html-document";
+import { MATH_LIMITS } from "../src/math";
+import { createHtmlMathAssets, inlineHtmlMathCss } from "../src/node/html-math-assets.ts";
+let css = "";
+beforeAll(async () => {
+  const { manifest, sources } = await createHtmlMathAssets(process.cwd());
+  css = inlineHtmlMathCss(manifest, sources);
+});
+const prepareRichHtmlDocument = (source: string) => prepareDocument(source, css);
 
 function documentFixture(source: string, errors: string[] = []) {
   const frame = document.createElement("iframe");

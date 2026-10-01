@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.browser.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"],
+    "tsBuildInfoFile": "./.build/cache/typescript/test.tsbuildinfo"
+  },
+  "include": ["tests/**/*.ts", "src/**/*.d.ts"],
+  "exclude": []
+}

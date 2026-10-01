@@ -80,7 +80,7 @@ describe("repository task ownership", () => {
   it("owns commands only in mise and keeps verification free of freshness skips", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     expect(manifest.scripts).toBeUndefined();
-    expect(tasks).toHaveLength(46);
+    expect(tasks).toHaveLength(48);
     expect(new Set(tasks.map((task) => task.name)).size).toBe(tasks.length);
     for (const task of tasks) {
       expect(task.source).toBe(
@@ -88,7 +88,12 @@ describe("repository task ownership", () => {
           ? resolve(root, "mise-tasks", `${task.name.replaceAll(":", "/")}.ts`)
           : resolve(root, "mise.toml"),
       );
-      expect([resolve(root), resolve(root, "apps/desktop")]).toContain(task.dir);
+      expect([
+        resolve(root),
+        resolve(root, "apps/desktop"),
+        resolve(root, "packages/adapter-mcp-apps-web"),
+        resolve(root, "packages/adapter-rich-content-web"),
+      ]).toContain(task.dir);
       expect(task.sources).toEqual([]);
       expect(task.outputs).toEqual([]);
       expect(task.depends_post).toEqual([]);
@@ -210,6 +215,8 @@ describe("repository task ownership", () => {
       "frontend:build",
       "test:repository",
       "test:frontend",
+      "test:mcp-apps-web",
+      "test:rich-content-web",
     ]) {
       expect(result.completed.indexOf(leaf)).toBeGreaterThanOrEqual(0);
       expect(result.completed.indexOf(leaf)).toBeLessThan(rust);
@@ -225,7 +232,13 @@ describe("repository task ownership", () => {
     expect(repository.completed).toContain("check:types:repository");
     expect(repository.completed).toContain("test:repository");
     expect(frontend.completed.toSorted()).toEqual(
-      ["check:types:frontend", "frontend:build", "test:frontend"].toSorted(),
+      [
+        "check:types:frontend",
+        "frontend:build",
+        "test:frontend",
+        "test:mcp-apps-web",
+        "test:rich-content-web",
+      ].toSorted(),
     );
     expect(repository.completed.filter((name) => frontend.completed.includes(name))).toEqual([]);
     expect(portable.completed.toSorted()).toEqual(
@@ -235,7 +248,7 @@ describe("repository task ownership", () => {
       "pnpm exec tsc --build tsconfig.node.json",
     ]);
     expect(tasks.find((task) => task.name === "check:types:frontend")!.run).toEqual([
-      "pnpm exec tsc --build apps/desktop",
+      "pnpm exec tsc --build packages/adapter-mcp-apps-web packages/adapter-rich-content-web apps/desktop",
     ]);
   });
 

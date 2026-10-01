@@ -1,6 +1,6 @@
 import { markdownInline } from "@generative-dom/plugin-markdown-inline";
 import { markdownLink } from "@generative-dom/plugin-markdown-link";
-import { readMathSpan } from "./markdown-math";
+import { readMathSpan } from "adapter-rich-content-web";
 
 const inline = markdownInline();
 const links = markdownLink();

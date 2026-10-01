@@ -17,7 +17,7 @@ export type ResponseBlockDescriptor = LensResponseBlockDescriptor & {
   source?: DeferredDocumentBlock;
 };
 export interface ResponseManifest {
-  mcpApps?: readonly import("../mcp-apps/types").McpAppDescriptor[];
+  mcpApps?: readonly import("adapter-mcp-apps-web").McpAppDescriptor[];
   id: string;
   sequence: number;
   delivery?: LensDeliveryCoverage;

@@ -1,7 +1,10 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { McpAppController } from "../mcp-apps/controller";
-import type { McpAppDescriptor, McpAppsPort } from "../mcp-apps/types";
+import { McpAppController, type McpAppDescriptor } from "adapter-mcp-apps-web";
+import {
+  createDesktopMcpAppController,
+  type DesktopMcpAppsPort as McpAppsPort,
+} from "../mcp-apps/composition";
 
 /** Presentation only: native authority arrives through the page-owned narrow port. */
 @customElement("lens-mcp-app")
@@ -32,7 +35,7 @@ export class LensMcpApp extends LitElement {
     if (changed.has("port")) {
       void this.controller?.close();
       this.controller = this.port
-        ? new McpAppController(this.port, () => {
+        ? createDesktopMcpAppController(this.port, () => {
             this.requestUpdate();
             this.dispatchEvent(
               new CustomEvent("lens-mcp-app-state", { bubbles: true, composed: true }),

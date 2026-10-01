@@ -3,7 +3,14 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+export const WORKSPACE_PACKAGE_PATHS = [
+  "packages/typescript-config",
+  "packages/adapter-mcp-apps-web",
+  "packages/adapter-rich-content-web",
+] as const;
+
 export const SOURCE_PATHS = [
+  ".gitignore",
   "apps/desktop/src",
   "apps/desktop/tooling",
   "apps/desktop/src-tauri/icons",
@@ -17,7 +24,7 @@ export const SOURCE_PATHS = [
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "package.json",
-  "packages/typescript-config",
+  ...WORKSPACE_PACKAGE_PATHS,
 ];
 
 export function sourceInputs(repository: string): Map<string, Buffer> {
@@ -26,8 +33,17 @@ export function sourceInputs(repository: string): Map<string, Buffer> {
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...SOURCE_PATHS],
     { cwd: repository, encoding: "utf8" },
   );
+  const deleted = new Set(
+    execFileSync("git", ["ls-files", "-z", "--deleted", "--", ...SOURCE_PATHS], {
+      cwd: repository,
+      encoding: "utf8",
+    })
+      .split("\0")
+      .filter(Boolean),
+  );
   return new Map(
     [...new Set(stdout.split("\0").filter(Boolean))]
+      .filter((file) => !deleted.has(file))
       .sort()
       .map((file) => [file, readFileSync(join(repository, file))]),
   );

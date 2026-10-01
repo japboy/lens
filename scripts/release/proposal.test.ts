@@ -1,18 +1,54 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERSION } from "release-please";
 import { assertReleasePleaseVersion } from "./library-version.ts";
 import type { Scm } from "release-please/build/src/scm.js";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { withReleaseProposalManifest } from "./proposal.ts";
 import { snapshotReleaseSource, verifyReleaseDelta } from "./release-delta.ts";
 import { installationNotes, releaseNotes } from "./artifact.ts";
+import { VERSION_FILES } from "./version.ts";
 
-const root = fileURLToPath(new URL("../../", import.meta.url));
-const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+const sourceRoot = fileURLToPath(new URL("../../", import.meta.url));
+// The test library and release inventory use current workspace declarations.
+// Seal those reviewed manifests into an isolated commit; the product repository's
+// HEAD/index remain untouched and production still reads exact fixed Git blobs.
+const fixtureDirectory = mkdtempSync(join(tmpdir(), "lens-proposal-source-"));
+const root = join(fixtureDirectory, "repository");
+const head = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: sourceRoot,
+  encoding: "utf8",
+}).trim();
+snapshotReleaseSource(sourceRoot, head, root);
+for (const path of [...VERSION_FILES, "release-please-config.json"]) {
+  const destination = join(root, path);
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, readFileSync(join(sourceRoot, path)));
+}
+const git = (...args: string[]) =>
+  execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+git("init", "-q");
+git("add", ".");
+git(
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "user.name=Fixture",
+  "-c",
+  "user.email=test@example.invalid",
+  "commit",
+  "-qm",
+  "current release declaration fixture",
+);
+const baseSha = git("rev-parse", "HEAD");
+afterAll(() => rmSync(fixtureDirectory, { recursive: true, force: true }));
 const previous = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"))
   .version as string;
 const oldSha = "a".repeat(40);
@@ -92,10 +128,7 @@ describe("pinned Release Please Cargo proposal", () => {
     expect(new Set(updates.map((update) => update.path)).size).toBe(updates.length);
     expect(updates.map((update) => update.path)).toEqual(
       expect.arrayContaining([
-        "Cargo.lock",
-        "Cargo.toml",
-        "package.json",
-        ".release-please-manifest.json",
+        ...VERSION_FILES.filter((path) => !path.endsWith("/Cargo.toml")),
         "CHANGELOG.md",
       ]),
     );

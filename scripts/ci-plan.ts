@@ -100,6 +100,8 @@ export function classifyChange(change: Change): ChangeRequirement {
     /^apps\/desktop\/src-tauri\/tauri\.(?:conf|macos\.conf|release\.conf)\.json$/u.test(path)
   )
     return require("control-plane", "Build, dependency or verification policy requires complete verification", dmg);
+  if (/^packages\/(?:adapter-mcp-apps-web|adapter-rich-content-web)\//u.test(path))
+    return require("shared-web-adapter", "Shared browser and build adapter changes require packaged native consumers", app);
   if (NATIVE_CODE_INPUTS.has(path))
     return require("native-input", "Rust includes or build scripts consume this input", code);
   if (FRONTEND_CONTRACTS.has(path))

@@ -14,7 +14,7 @@ import type {
   PresentedOutputHtml,
   PresentedOutputMedia,
 } from "../output-media";
-import type { McpAppsPort } from "../mcp-apps/types";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import type { LensMcpApp } from "./lens-mcp-app";
 import "./lens-mcp-app";
 import type { HtmlOutputContent } from "../application/html-output-content";

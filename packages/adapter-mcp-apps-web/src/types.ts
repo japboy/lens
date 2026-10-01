@@ -4,6 +4,17 @@ import type {
   McpUiResourceMeta,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 
+/** Product metadata and optional presentation preparation are composition-owned. */
+export interface McpAppHostOptions {
+  hostInfo: ConstructorParameters<typeof AppBridge>[1];
+  frameTitle: string;
+  getHostContext: (
+    lease: McpAppLease,
+    owner: Window,
+  ) => NonNullable<ConstructorParameters<typeof AppBridge>[3]>["hostContext"];
+  prepareDocument?: (lease: McpAppLease, descriptor: McpAppDescriptor) => Promise<void> | undefined;
+}
+
 /** Immutable identity; resource bodies are fetched only when a selected App opens. */
 export interface McpAppDescriptor {
   id: string;
@@ -37,7 +48,6 @@ export interface McpAppLease {
 
 export interface McpAppsPort {
   openMcpApp(artifactId: string, hostOrigin: string): Promise<McpAppLease>;
-  prepareMcpAppDocument(leaseId: string, document: string): Promise<void>;
   mcpAppRequest(
     leaseId: string,
     request: { method: string; params?: unknown },

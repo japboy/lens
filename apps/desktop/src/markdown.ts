@@ -6,7 +6,7 @@ import {
   mathElement,
   MATH_LIMITS,
   type MathSpan,
-} from "./markdown-math";
+} from "adapter-rich-content-web";
 
 const SANITIZE_OPTIONS: Config = {
   USE_PROFILES: { html: true },
