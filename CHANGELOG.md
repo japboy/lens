@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.3](https://github.com/japboy/lens/compare/v0.8.2...v0.8.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deps:** resolve tooling updates with pnpm 12.8.1 ([#187](https://github.com/japboy/lens/issues/187)) ([3c95da2](https://github.com/japboy/lens/commit/3c95da2274da7b8dc953c7e8827c3e4abd6b5514))
+* **deps:** update dependency dompurify to v3.4.16 [security] ([#177](https://github.com/japboy/lens/issues/177)) ([81b1d80](https://github.com/japboy/lens/commit/81b1d8073d1a91a3e2e46a63c390673aebab4563))
+* **renovate:** create PRs before running CI ([#179](https://github.com/japboy/lens/issues/179)) ([6290e8d](https://github.com/japboy/lens/commit/6290e8d0ac6225e3693e1f6059813ac5ef17940c))
+
 ## [0.8.2](https://github.com/japboy/lens/compare/v0.8.1...v0.8.2) (2026-09-30)
 
 
