@@ -89,6 +89,18 @@ fn field(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
+/// ACP titles are display metadata, not bounded identifiers or transcript content.
+/// Keep the storage projection UTF-8 safe and bounded without changing the source.
+pub(crate) fn normalize_title(title: &str) -> String {
+    let mut normalized = String::with_capacity(title.len().min(MAX_FIELD_BYTES));
+    for character in title.chars().filter(|character| *character != '\0') {
+        if normalized.len() + character.len_utf8() > MAX_FIELD_BYTES {
+            break;
+        }
+        normalized.push(character);
+    }
+    normalized
+}
 fn scope(source: &HistorySource, cwd: &str) -> Result<(), String> {
     field(&source.invocation)?;
     field(cwd)?;
@@ -266,7 +278,6 @@ impl HistoryStore {
         let mut seen = HashSet::new();
         for entry in entries {
             session_id(&entry.session_id)?;
-            optional(&entry.title)?;
             optional(&entry.provider_updated_at)?;
             if !seen.insert(entry.session_id.as_str()) {
                 return Err(error("duplicate session ID in listing"));
@@ -289,6 +300,7 @@ impl HistoryStore {
             ).map_err(error)?;
         }
         for entry in entries {
+            let title = entry.title.as_deref().map(normalize_title);
             tx.execute(
                 "INSERT INTO history_entries (agent, invocation, cwd, session_id, title, provider_updated_at, state, can_load, revision)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)
@@ -297,7 +309,7 @@ impl HistoryStore {
                  provider_updated_at=coalesce(excluded.provider_updated_at, history_entries.provider_updated_at),
                  state=0, can_load=coalesce(excluded.can_load, history_entries.can_load), revision=excluded.revision
                  WHERE history_entries.revision <= ?9",
-                params![agent, token.source.invocation, token.cwd, entry.session_id, entry.title, entry.provider_updated_at, can_load, next_revision, token.revision]
+                params![agent, token.source.invocation, token.cwd, entry.session_id, title, entry.provider_updated_at, can_load, next_revision, token.revision]
             ).map_err(error)?;
         }
         if complete {
@@ -315,7 +327,7 @@ impl HistoryStore {
     pub fn record_local(&self, source: &HistorySource, entry: &StoredEntry) -> Result<(), String> {
         scope(source, &entry.cwd)?;
         session_id(&entry.session_id)?;
-        optional(&entry.title)?;
+        let title = entry.title.as_deref().map(normalize_title);
         optional(&entry.provider_updated_at)?;
         optional(&entry.local_activity_at)?;
         let mut connection = self.connection.lock().map_err(error)?;
@@ -329,7 +341,7 @@ impl HistoryStore {
             can_load=coalesce(excluded.can_load,history_entries.can_load),
             state=CASE WHEN history_entries.state=2 THEN 1 ELSE history_entries.state END,
             revision=excluded.revision",
-            params![agent_key(source)?, source.invocation, entry.cwd, entry.session_id, entry.title, entry.provider_updated_at, entry.local_activity_at, entry.can_load, revision]).map_err(error)?;
+            params![agent_key(source)?, source.invocation, entry.cwd, entry.session_id, title, entry.provider_updated_at, entry.local_activity_at, entry.can_load, revision]).map_err(error)?;
         capacity(&tx, source, &entry.cwd)?;
         tx.commit().map_err(error)
     }
@@ -345,7 +357,11 @@ impl HistoryStore {
     ) -> Result<bool, String> {
         scope(source, cwd)?;
         session_id(id)?;
-        let (title_present, title) = patch_value(patch.title)?;
+        let title_patch = match patch.title {
+            Patch::Value(title) => Patch::Value(normalize_title(&title)),
+            patch => patch,
+        };
+        let (title_present, title) = patch_value(title_patch)?;
         let (time_present, time) = patch_value(patch.provider_updated_at)?;
         if !title_present && !time_present {
             return Ok(false);
@@ -514,6 +530,112 @@ mod tests {
             provider_updated_at: Some("2026-09-21T00:00:00Z".into()),
         }
     }
+    #[test]
+    fn title_projection_is_utf8_safe_bounded_and_removes_nul() {
+        let title = format!("{}\0\u{732b}🦀", "a".repeat(MAX_FIELD_BYTES - 2));
+        let normalized = normalize_title(&title);
+        assert_eq!(normalized, "a".repeat(MAX_FIELD_BYTES - 2));
+        assert_eq!(
+            normalize_title(&"\u{732b}".repeat(MAX_FIELD_BYTES)),
+            "\u{732b}".repeat(MAX_FIELD_BYTES / 3)
+        );
+        assert_eq!(normalize_title("A\0B\0\u{732b}"), "AB\u{732b}");
+        assert_eq!(normalize_title("\0"), "");
+        assert_eq!(normalize_title("Exact title"), "Exact title");
+        assert!(title.contains('\0'));
+    }
+
+    #[test]
+    fn unrelated_oversized_provider_title_does_not_block_valid_session_listing() {
+        let store = HistoryStore::memory().unwrap();
+        store.record_local(&source(), &local("target")).unwrap();
+        let token = store.begin_scan(&source(), "/work").unwrap();
+        let title = "x".repeat(324_561);
+        let entries = [
+            listed("target"),
+            ListedEntry {
+                session_id: "unrelated".into(),
+                title: Some(title.clone()),
+                provider_updated_at: None,
+            },
+        ];
+        assert!(store
+            .apply_listing(&token, &entries, true, Some(true))
+            .unwrap());
+        let rows = store.entries(&source(), "/work").unwrap();
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.session_id == "target")
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Remote title")
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.session_id == "unrelated")
+                .unwrap()
+                .title
+                .as_deref(),
+            Some(&title[..MAX_FIELD_BYTES])
+        );
+        assert_eq!(entries[1].title.as_ref().unwrap().len(), 324_561);
+    }
+
+    #[test]
+    fn all_title_ingress_normalizes_without_changing_patch_or_identity_semantics() {
+        let store = HistoryStore::memory().unwrap();
+        let mut entry = local("one");
+        entry.title = Some(format!("\0{}", "\u{732b}".repeat(MAX_FIELD_BYTES)));
+        store.record_local(&source(), &entry).unwrap();
+        let bounded = store.entries(&source(), "/work").unwrap()[0].title.clone();
+        assert_eq!(bounded.as_ref().unwrap().len(), (MAX_FIELD_BYTES / 3) * 3);
+        assert!(!store
+            .apply_info_patch(&source(), "one", "/work", InfoPatch::default())
+            .unwrap());
+        assert_eq!(store.entries(&source(), "/work").unwrap()[0].title, bounded);
+        store
+            .apply_info_patch(
+                &source(),
+                "one",
+                "/work",
+                InfoPatch {
+                    title: Patch::Value(format!("Updated\0{}", "a".repeat(MAX_FIELD_BYTES))),
+                    provider_updated_at: Patch::Missing,
+                },
+            )
+            .unwrap();
+        let rows = store.entries(&source(), "/work").unwrap();
+        assert_eq!(rows[0].title.as_ref().unwrap().len(), MAX_FIELD_BYTES);
+        assert!(rows[0].title.as_ref().unwrap().starts_with("Updated"));
+        store
+            .apply_info_patch(
+                &source(),
+                "one",
+                "/work",
+                InfoPatch {
+                    title: Patch::Null,
+                    provider_updated_at: Patch::Missing,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.entries(&source(), "/work").unwrap()[0].title, None);
+        assert!(store
+            .apply_info_patch(
+                &source(),
+                "one",
+                "/work",
+                InfoPatch {
+                    title: Patch::Missing,
+                    provider_updated_at: Patch::Value("bad\0time".into())
+                }
+            )
+            .is_err());
+        assert!(store
+            .record_local(&source(), &local(&"x".repeat(MAX_FIELD_BYTES + 1)))
+            .is_err());
+    }
+
     #[test]
     fn reopen_retains_metadata_and_rejects_unknown_schema() {
         let directory = tempfile::tempdir().unwrap();
