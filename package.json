@@ -6,6 +6,7 @@
   "devDependencies": {
     "@iarna/toml": "3.0.0",
     "@types/node": "24.19.0",
+    "adapter-math-renderer": "workspace:*",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
     "release-please": "17.11.2",

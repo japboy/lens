@@ -97,7 +97,7 @@ fn answer_publication(
                     .as_object_mut()
                     .and_then(|value| value.remove("arguments"));
                 let exact = previous_approvals + accepted == 0
-                    && title == "lens_output_publish_html"
+                    && title == "lens_rich_content_render_html"
                     && effect == "other"
                     && flat == expected
                     && nested.is_none_or(|nested| nested == expected);
@@ -247,7 +247,7 @@ async fn managed_agent_turn(kind: AgentKind, observation: String, publish_html: 
         );
         snapshot.config.agent_prompt_template = AgentPromptTemplate {
             common: if publish_html {
-                format!("This is a synthetic integration test. {{turn_instruction}} Use only the Lens HTML publication tool, exactly once, with the current turn_id supplied in the publication metadata. Publish this exact HTML string without changes: {HTML} . Do not use filesystem, shell, network retrieval, or other tools. Do not inspect files or settings. After publication, reply Done and end the turn.")
+                format!("This is a synthetic integration test. {{turn_instruction}} Use only the Lens lens_rich_content.render_html MCP Apps tool, exactly once. Render this exact HTML string without changes: {HTML} . Do not use filesystem, shell, network retrieval, or other tools. Do not inspect files or settings. After publication, reply Done and end the turn.")
             } else {
                 "This is a synthetic integration test. {turn_instruction} Reply with exactly LENS_MANAGED_TEXT_OK. Do not publish HTML or use any tools.".into()
             },
@@ -378,7 +378,8 @@ async fn managed_agent_turn(kind: AgentKind, observation: String, publish_html: 
             _ => None,
         })
         .collect();
-    assert_eq!(html, if publish_html { vec![HTML] } else { vec![] });
+    assert!(html.is_empty());
+    assert_eq!(lens.mcp_apps.len(), usize::from(publish_html));
     if !publish_html {
         let text = representation
             .output_blocks

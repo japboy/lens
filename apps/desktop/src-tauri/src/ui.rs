@@ -1256,9 +1256,8 @@ pub(crate) fn show_history_window<R: tauri::Runtime>(app: &AppHandle<R>) -> taur
 fn overlay_window_builder<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> WebviewWindowBuilder<'_, R, AppHandle<R>> {
-    let link_app = app.clone();
     WebviewWindowBuilder::new(app, LENS_WINDOW_LABEL, webview_url(WebviewView::Overlay))
-        .on_new_window(move |url, _| crate::html_preview::open_link(&link_app, &url))
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .title("Lens")
         .min_inner_size(360.0, 320.0)
         .decorations(false)
@@ -2134,6 +2133,7 @@ mod tests {
     #[test]
     fn tray_presentation_separates_chosen_agent_from_execution_readiness() {
         let config = AppConfig {
+            mcp_apps_servers: Vec::new(),
             agent: AgentKind::Codex,
             external_agents: Vec::new(),
             working_directory: PathBuf::from("/Users/example/Work"),

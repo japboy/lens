@@ -17,7 +17,6 @@ function history(count: number, scopeId = "live-operation-a"): ResponseHistoryPr
       blocks: [{ type: "markdown", block_index: 0, byte_length: 10 }],
     })),
     media: [],
-    htmlContents: new Map(),
     mediaErrors: new Map(),
     capacityReached: false,
   };
@@ -95,12 +94,6 @@ describe("response update acknowledgement", () => {
     const pending = withTwoUpdates();
     const hydrated: ResponseHistoryPresentation = {
       ...history(3),
-      htmlContents: new Map([
-        [
-          "loaded-artifact",
-          { resourceId: "loaded-artifact", status: "ready", content: "<p>Loaded</p>" },
-        ],
-      ]),
       mediaErrors: new Map([["other-artifact", "Could not load image"]]),
     };
     for (const presentation of [

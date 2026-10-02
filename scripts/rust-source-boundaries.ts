@@ -229,7 +229,29 @@ export function sourceInclusionViolations(
       owner === "apps/desktop" &&
       token.text === "include_str" &&
       ["LICENSE", "NOTICE"].some((document) => target === resolve(root, document));
-    if (!target.startsWith(`${resolve(root, owner)}/`) && !isApplicationLicense)
+    const applicationAssets: Record<string, readonly string[]> = {
+      "apps/desktop/src-tauri/src/agent.rs": [
+        "packages/adapter-mcp-apps-view/src/assets/rich-html-app.html",
+      ],
+      "apps/desktop/src-tauri/src/mcp_apps.rs": [
+        "packages/adapter-mcp-apps-view/src/assets/rich-html-app.html",
+        "packages/adapter-mcp-apps-view/src/assets/rich-html-links.js",
+        "packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.html",
+        "packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js",
+      ],
+    };
+    const isApplicationAsset =
+      owner === "apps/desktop" &&
+      applicationAssets[path]?.some((asset) => target === resolve(root, asset)) &&
+      (token.text === "include_str" ||
+        (token.text === "include_bytes" &&
+          target ===
+            resolve(root, "packages/adapter-mcp-apps-view/src/assets/rich-html-links.js")));
+    if (
+      !target.startsWith(`${resolve(root, owner)}/`) &&
+      !isApplicationLicense &&
+      !isApplicationAsset
+    )
       violations.push(`Resource escapes owner ${owner}`);
   }
   return violations;

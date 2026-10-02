@@ -163,6 +163,7 @@ fn project(snapshot: &AppSnapshot, label: &str, output_ref: Option<String>) -> W
             projection: snapshot.lens.projection.clone(),
             delivery: snapshot.lens.delivery.clone(),
             output_blocks: Default::default(),
+            mcp_apps: snapshot.lens.mcp_apps.clone(),
             representation: snapshot.lens.representation.as_ref().map(|r| {
                 let mut r = r.clone();
                 r.output_blocks = Default::default();
@@ -404,6 +405,7 @@ mod tests {
         }))
         .unwrap();
         let representation = crate::model::LensRepresentation {
+            mcp_apps: Vec::new(),
             delivery: Some(delivery.clone()),
             prompt_execution_revision: 7,
             representation_id: Uuid::from_u128(2),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ReactiveControllerHost } from "lit";
 import { ResponseHistoryController } from "./response-history-controller";
-import { mediaCases, mediaFixture, artifact } from "../../tests/fixtures/media-parity";
+import { mediaCases, mediaFixture } from "../../tests/fixtures/media-parity";
 
 describe("live/replay media contract", () => {
   it.each(mediaCases)("preserves %s media, ordering, and narrative", async (choice) => {
@@ -48,13 +48,8 @@ describe("live/replay media contract", () => {
               .length,
         )
         .toBe(choice === "none" ? 0 : choice === "single" ? 1 : 3);
-      const expectedHtml =
-        choice === "mixed"
-          ? [{ resourceId: "fixture-html", status: "ready", content: artifact }]
-          : [];
-      await expect
-        .poll(() => [...controller.presentation!.htmlContents.values()])
-        .toEqual(expectedHtml);
+      for (const media of presentation.media.filter((media) => media.kind === "html"))
+        expect(media.presentationSource?.kind).toBe(controller === live ? "live" : "history");
     }
   });
 });

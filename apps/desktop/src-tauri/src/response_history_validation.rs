@@ -46,6 +46,7 @@ fn append(state: &mut model::LensState, ordinal: u64) -> Result<(), String> {
         context_revision: ordinal,
         projection: projection.clone(),
         run_id: Uuid::new_v4(),
+        mcp_apps: Vec::new(),
         output_blocks: blocks.into(),
     };
     state
@@ -142,6 +143,8 @@ pub(crate) fn run_replay<R: tauri::Runtime>(
                 title: "Completed HTML publication".into(),
                 status: ToolCallStatus::Completed,
                 blocks: vec![],
+                accepted_html_mode: usecase::session_document::HtmlMode::Static,
+                accepted_html_csp: None,
                 accepted_html: Some(format!(
                     "<!doctype html><html><body><h1>Replay visual {ordinal}</h1>{}</body></html>",
                     "<p>A long retained HTML paragraph.</p>".repeat(40)
@@ -168,6 +171,8 @@ pub(crate) fn run_replay<R: tauri::Runtime>(
         blocks: vec![DocumentBlock::Html {
             text: "<h1>Failed content must stay out of Hero</h1>".into(),
         }],
+        accepted_html_mode: usecase::session_document::HtmlMode::Static,
+        accepted_html_csp: None,
         accepted_html: None,
     });
     let state = app.state::<app_state::AppState>();

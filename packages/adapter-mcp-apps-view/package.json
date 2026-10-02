@@ -1,0 +1,32 @@
+{
+  "name": "adapter-mcp-apps-view",
+  "version": "0.8.3",
+  "private": true,
+  "description": "HTML MCP Apps View and shared static/interactive document preparation",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./assets/*": "./src/assets/*"
+  },
+  "scripts": {
+    "check:types": "tsc --build",
+    "test": "vitest run --config ../../vitest.config.ts --project mcp-apps-view"
+  },
+  "dependencies": {
+    "adapter-math-renderer": "workspace:*",
+    "parse5": "8.0.1"
+  },
+  "devDependencies": {
+    "@types/jsdom": "30.0.0",
+    "@types/node": "24.19.0",
+    "jsdom": "30.1.1",
+    "typescript": "7.0.2",
+    "typescript-config": "workspace:*",
+    "vite": "8.3.1",
+    "vitest": "5.0.2"
+  },
+  "engines": {
+    "node": "24.21.0",
+    "pnpm": "12.8.1"
+  }
+}

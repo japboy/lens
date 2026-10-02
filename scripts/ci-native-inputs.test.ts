@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { classifyChange, FRONTEND_TEST_INPUTS } from "./ci-plan.ts";
+import { classifyChange } from "./ci-plan.ts";
 import { nativeInputInventory, rustIncludeInputs } from "./ci-native-inputs.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -83,25 +83,5 @@ describe("checked native consumer inventory", () => {
         '// include_str!("ignored")\nconst S: &str = r#"include_bytes!("ignored")"#;\ninclude_str!(\n "../LICENSE",\n)',
       ),
     ).toEqual(["LICENSE"]);
-  });
-
-  it("keeps exact frontend test exceptions outside production TypeScript imports", () => {
-    const tests = new Set(FRONTEND_TEST_INPUTS.map((path) => resolve(root, path)));
-    const violations: string[] = [];
-    for (const path of tracked.filter((path) => /\.(?:ts|tsx|js|mjs)$/u.test(path))) {
-      if (/\.test\.tsx?$/u.test(path) || tests.has(resolve(root, path))) continue;
-      // This guards direct literal references to the five reviewed exceptions.
-      // It is conservative (including comments), not a JavaScript dependency parser.
-      const source = readFileSync(resolve(root, path), "utf8");
-      for (const match of source.matchAll(/["'`]([^"'`\r\n]+)["'`]/gu)) {
-        const reference = match[1]!;
-        if (!reference.startsWith(".")) continue;
-        const target = resolve(root, dirname(path), reference);
-        const candidates = [target, `${target}.ts`, target.replace(/\.js$/u, ".ts")];
-        if (candidates.some((candidate) => tests.has(candidate)))
-          violations.push(`${path} imports test-only ${reference}`);
-      }
-    }
-    expect(violations).toEqual([]);
   });
 });

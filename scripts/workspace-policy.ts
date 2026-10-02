@@ -20,7 +20,7 @@ export const MEMBERS: readonly Member[] = [
     role: "repository",
     capability: "repository",
     implementation: "tooling",
-    dependencies: { dev: ["typescript-config"] },
+    dependencies: { dev: ["typescript-config", "adapter-math-renderer"] },
   },
   {
     ecosystem: "pnpm",
@@ -29,7 +29,10 @@ export const MEMBERS: readonly Member[] = [
     role: "application",
     capability: "desktop",
     implementation: "webview",
-    dependencies: { dev: ["typescript-config"] },
+    dependencies: {
+      normal: ["adapter-mcp-apps-host", "adapter-mcp-apps-view", "adapter-math-renderer"],
+      dev: ["typescript-config"],
+    },
   },
   {
     ecosystem: "pnpm",
@@ -39,6 +42,33 @@ export const MEMBERS: readonly Member[] = [
     capability: "repository",
     implementation: "tooling",
     dependencies: {},
+  },
+  {
+    ecosystem: "pnpm",
+    name: "adapter-mcp-apps-host",
+    directory: "packages/adapter-mcp-apps-host",
+    role: "adapter",
+    capability: "desktop",
+    implementation: "webview",
+    dependencies: { dev: ["typescript-config"] },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "adapter-mcp-apps-view",
+    directory: "packages/adapter-mcp-apps-view",
+    role: "adapter",
+    capability: "desktop",
+    implementation: "webview",
+    dependencies: { normal: ["adapter-math-renderer"], dev: ["typescript-config"] },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "adapter-math-renderer",
+    directory: "packages/adapter-math-renderer",
+    role: "adapter",
+    capability: "desktop",
+    implementation: "webview",
+    dependencies: { dev: ["typescript-config"] },
   },
   {
     ecosystem: "cargo",
@@ -53,7 +83,7 @@ export const MEMBERS: readonly Member[] = [
       normal: [
         "usecase",
         "port-platform",
-        "adapter-output-mcp",
+        "adapter-mcp-server",
         "agent-client-protocol",
         "base64",
         "chrono",
@@ -75,10 +105,11 @@ export const MEMBERS: readonly Member[] = [
         "tauri-plugin-opener",
         "thiserror",
         "tokio",
+        "tokio-util",
         "uuid",
         "zip",
       ],
-      dev: ["pretty_assertions", "tauri", "tokio", "toml"],
+      dev: ["pretty_assertions", "tauri", "tokio", "tokio-util", "toml"],
       build: ["tauri-build", "serde_json", "toml"],
     },
   },
@@ -98,6 +129,7 @@ export const MEMBERS: readonly Member[] = [
         "sha2",
         "thiserror",
         "uuid",
+        "url",
       ],
       dev: ["pretty_assertions"],
     },
@@ -120,6 +152,8 @@ export const MEMBERS: readonly Member[] = [
         "serde_json",
         "thiserror",
         "url",
+        "sha2",
+        "serde_json_canonicalizer",
       ],
       dev: ["tokio"],
     },
@@ -138,22 +172,24 @@ export const MEMBERS: readonly Member[] = [
   },
   {
     ecosystem: "cargo",
-    name: "adapter-output-mcp",
-    directory: "packages/adapter-output-mcp",
+    name: "adapter-mcp-server",
+    directory: "packages/adapter-mcp-server",
     role: "adapter",
     capability: "desktop",
     implementation: "transport",
     dependencies: {
       normal: [
-        "rmcp",
+        "base64",
+        "domain",
+        "reqwest",
         "axum",
         "hyper",
         "hyper-util",
         "serde",
         "serde_json",
+        "sha2",
         "uuid",
         "tokio",
-        "tokio-util",
       ],
       dev: ["reqwest", "tokio"],
     },
@@ -193,8 +229,8 @@ export type BuildVariant = {
   targets: "lib" | "lib-and-bins";
 };
 
-const common = ["domain", "port-platform", "usecase", "desktop", "adapter-output-mcp"];
-const portable = ["domain", "port-platform", "usecase", "adapter-output-mcp"];
+const common = ["domain", "port-platform", "usecase", "desktop", "adapter-mcp-server"];
+const portable = ["domain", "port-platform", "usecase", "adapter-mcp-server"];
 const native = [...common, "adapter-platform-macos"];
 
 export const BUILD_VARIANTS: readonly BuildVariant[] = [

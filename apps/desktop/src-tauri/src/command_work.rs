@@ -342,26 +342,6 @@ pub async fn get_response_block<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub async fn get_html_output<R: tauri::Runtime>(
-    app: AppHandle<R>,
-    webview: tauri::Webview<R>,
-    operation_id: Uuid,
-    representation_id: Uuid,
-    resource_id: String,
-) -> Result<String, String> {
-    content(app, move |app| {
-        commands::get_html_output(
-            webview,
-            app.state::<AppState>(),
-            operation_id,
-            representation_id,
-            resource_id,
-        )
-    })
-    .await
-}
-
-#[tauri::command]
 pub async fn get_session_block<R: tauri::Runtime>(
     app: AppHandle<R>,
     webview: tauri::Webview<R>,

@@ -16,6 +16,7 @@ import {
   viewHostStyles,
 } from "../styles/component-styles";
 import { renderSettingsFeedback } from "./settings-feedback";
+import { sharedIconStyles } from "../styles/icon-styles";
 import {
   dispatchComponentEvent,
   SETTINGS_INTENT_EVENT,
@@ -29,6 +30,7 @@ export class LensSettingsView extends LitElement {
   static styles = [
     viewHostStyles,
     controlStyles,
+    ...sharedIconStyles,
     css`
       lens-agent-settings {
         display: block;
@@ -311,7 +313,7 @@ export class LensSettingsView extends LitElement {
         align-items: center;
         min-width: 0;
       }
-      .executable-row > .agent-help:first-child {
+      .executable-row > input {
         flex: 1;
         min-width: 0;
       }
@@ -333,18 +335,38 @@ export class LensSettingsView extends LitElement {
       .agent-status-row output {
         overflow-wrap: anywhere;
       }
-      .agent-help {
-        position: relative;
-        display: inline-block;
+      .settings-control-help {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
         max-width: 100%;
       }
-      .agent-help [role="tooltip"] {
+      lens-settings-help {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        flex: 0 0 auto;
+        max-width: 100%;
+      }
+      .settings-info {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 24px;
+        min-height: 24px;
+        padding: 2px;
+        border: 0;
+        background: transparent;
+        color: GrayText;
+      }
+      lens-settings-help [role="tooltip"] {
         position: absolute;
         z-index: 10;
         right: 0;
         top: 100%;
         width: max-content;
-        max-width: min(300px, 100vw - 280px);
+        max-width: min(300px, 100vw - 48px);
         padding: 6px 8px;
         color: CanvasText;
         background: Canvas;
@@ -354,18 +376,66 @@ export class LensSettingsView extends LitElement {
         font-size: 12px;
         line-height: 1.4;
       }
-      .agent-help [role="tooltip"][hidden] {
+      lens-settings-help [role="tooltip"][hidden] {
         display: none;
+      }
+      .settings-heading-row,
+      .settings-label-help {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .settings-heading-row {
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+      .settings-heading-row > h2 {
+        margin: 0;
+      }
+      .settings-label-help lens-settings-help [role="tooltip"] {
+        left: 0;
+        right: auto;
+      }
+      .mcp-preset-actions,
+      .mcp-preset-editor-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .mcp-preset-summary {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 24px;
+        margin: 20px 0 0;
+        padding-top: 20px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .mcp-preset-summary dt {
+        color: GrayText;
+      }
+      .mcp-preset-summary dd {
+        margin: 7px 0 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .mcp-preset-reset-actions {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid var(--settings-group-border);
+      }
+      @media (max-width: 640px) {
+        .mcp-preset-summary {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
+        }
       }
       .agent-reset-actions {
         margin-top: 16px;
         padding-top: 12px;
         border-top: 1px solid var(--settings-group-border);
-      }
-
-      .agent-reset-actions .agent-help [role="tooltip"] {
-        left: 0;
-        right: auto;
       }
 
       .external-executable-field {
@@ -569,6 +639,12 @@ export class LensSettingsView extends LitElement {
         gap: 6px;
         color: GrayText;
         font-size: 12px;
+      }
+      .prompt-variable-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        max-width: 100%;
       }
 
       .prompt-variable-token {
@@ -826,6 +902,8 @@ export class LensSettingsView extends LitElement {
 
   @property({ attribute: false })
   model: SettingsViewModel | undefined = initialSettingsState().model;
+  @property({ attribute: false })
+  mcpToolCatalogs: readonly import("../types").McpServerToolCatalog[] = [];
   @property({ attribute: false }) snapshotStatus = initialSettingsState().snapshotStatus;
 
   @state()
@@ -936,6 +1014,11 @@ export class LensSettingsView extends LitElement {
                 .profiles=${model?.config?.external_agents ?? []}
                 .disabled=${!this.active || !model || pending("connection")}
               ></lens-agent-settings>
+              <lens-mcp-app-settings
+                .servers=${model?.config?.mcp_apps_servers ?? []}
+                .catalogs=${this.mcpToolCatalogs}
+                .disabled=${!this.active || !model || pending("connection")}
+              ></lens-mcp-app-settings>
               <section class="settings-group" aria-labelledby="cwd-heading">
                 <h2 id="cwd-heading">Working Directory</h2>
                 <div class="directory-row">

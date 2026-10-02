@@ -1,0 +1,161 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Rich Interpretation</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <p id="status">Loading Interpretation…</p>
+    <script>
+      // Fixed MCP App resource. The Host prepares a separate opaque presentation document.
+      let phase = "initializing",
+        frame,
+        host;
+      let sequence = 0;
+      const pending = new Map();
+      const allowed = new Set([
+        "ui/message",
+        "ui/open-link",
+        "ui/update-model-context",
+        "tools/call",
+        "tools/list",
+        "resources/read",
+        "resources/list",
+      ]);
+      function send(value) {
+        parent.postMessage(value, "*");
+      }
+      function valid(value) {
+        try {
+          return (
+            value?.jsonrpc === "2.0" &&
+            (typeof value.method === "string" ||
+              (value.method === undefined && value.id !== undefined)) &&
+            new TextEncoder().encode(JSON.stringify(value)).byteLength <= 4 * 1024 * 1024
+          );
+        } catch {
+          return false;
+        }
+      }
+      function reply(id, result) {
+        send({ jsonrpc: "2.0", id, result });
+      }
+      function childReply(id, result, error) {
+        frame?.contentWindow?.postMessage(
+          { jsonrpc: "2.0", id, ...(error ? { error } : { result }) },
+          "*",
+        );
+      }
+      window.addEventListener("message", (event) => {
+        const fromHost = event.source === parent;
+        const fromDocument =
+          frame && event.source === frame.contentWindow && event.origin === "null";
+        if ((!fromHost && !fromDocument) || !valid(event.data)) return;
+        const message = event.data;
+        if (fromHost) {
+          if (message.id === "lens-initialize" && phase === "initializing") {
+            if (!message.result) {
+              phase = "failed";
+              document.getElementById("status").textContent = "App initialization failed.";
+              return;
+            }
+            host = message.result;
+            phase = "ready";
+            send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+            return;
+          }
+          if (message.method === "ui/resource-teardown") {
+            phase = "closed";
+            // The document is responsive in the supported cleanup path; destruction
+            // cancels its timers, handlers and callbacks even without a child teardown handler.
+            frame?.remove();
+            frame = undefined;
+            pending.clear();
+            host = undefined;
+            reply(message.id, {});
+            return;
+          }
+          if (phase !== "ready") return;
+          if (message.method === "ui/notifications/tool-result") {
+            const url = host.hostContext?.lensDocumentUrl;
+            if (typeof url !== "string") {
+              document.getElementById("status").textContent =
+                "Interpretation document is unavailable.";
+              return;
+            }
+            const parsed = new URL(url);
+            if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") return;
+            frame?.remove();
+            pending.clear();
+            frame = document.createElement("iframe");
+            frame.title = "Generated Interpretation";
+            frame.setAttribute("sandbox", "allow-scripts allow-forms");
+            frame.setAttribute("referrerpolicy", "no-referrer");
+            document.getElementById("status").remove();
+            document.body.append(frame);
+            frame.src = url;
+            return;
+          }
+          if (message.method === undefined && pending.has(message.id)) {
+            const id = pending.get(message.id);
+            pending.delete(message.id);
+            childReply(id, message.result, message.error);
+          }
+          return;
+        }
+        if (phase !== "ready" || message.id === undefined) return;
+        if (message.method === "ui/initialize") {
+          childReply(message.id, host);
+          return;
+        }
+        if (!allowed.has(message.method) || pending.size >= 32) {
+          childReply(message.id, undefined, { code: -32601, message: "App operation unavailable" });
+          return;
+        }
+        const capability =
+          message.method === "ui/open-link"
+            ? host.hostCapabilities?.openLinks
+            : message.method === "ui/message"
+              ? host.hostCapabilities?.message
+              : message.method === "ui/update-model-context"
+                ? host.hostCapabilities?.updateModelContext
+                : message.method.startsWith("tools/")
+                  ? host.hostCapabilities?.serverTools
+                  : host.hostCapabilities?.serverResources;
+        if (!capability) {
+          childReply(message.id, undefined, { code: -32601, message: "App operation unavailable" });
+          return;
+        }
+        const id = `lens-document-${++sequence}`;
+        pending.set(id, message.id);
+        send({ ...message, id });
+      });
+      send({
+        jsonrpc: "2.0",
+        id: "lens-initialize",
+        method: "ui/initialize",
+        params: {
+          appInfo: { name: "Lens Rich HTML", version: "1.0.0" },
+          appCapabilities: {},
+          protocolVersion: "2026-01-26",
+        },
+      });
+    </script>
+  </body>
+</html>

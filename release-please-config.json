@@ -18,6 +18,16 @@
       "extra-files": [
         {
           "type": "json",
+          "path": "packages/adapter-mcp-apps-host/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/adapter-math-renderer/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
           "path": "packages/typescript-config/package.json",
           "jsonpath": "$.version"
         },
@@ -35,6 +45,11 @@
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/adapter-mcp-apps-view/package.json",
+          "jsonpath": "$.version"
         }
       ]
     }

@@ -80,7 +80,13 @@ export type PromptPresetChange =
   | { type: "select"; id: string }
   | { type: "reset_all"; expected_catalog_revision: number };
 
+export interface McpServerToolCatalog {
+  server: import("adapter-mcp-apps-host").McpAppsServer;
+  tools: readonly string[];
+}
+
 export interface AppConfig {
+  mcp_apps_servers?: import("adapter-mcp-apps-host").McpAppsServer[];
   agent_preferences?: Partial<Record<ManagedAgentKind, AgentDefaults>> & {
     external?: Record<string, AgentDefaults>;
   };
@@ -475,6 +481,7 @@ export type LensResponseBlockDescriptor =
   | { type: "unsupported"; block_index: number; content_type: string };
 
 export interface LensResponseManifest {
+  mcp_apps?: import("adapter-mcp-apps-host").McpAppDescriptor[];
   sequence: number;
   representation_id: string;
   run_id: string;
@@ -509,6 +516,7 @@ export interface LensLiveState {
 }
 
 export interface LensState {
+  mcp_apps?: import("adapter-mcp-apps-host").McpAppDescriptor[];
   prompt_execution_revision: number;
   session_controls?: AgentSessionControlState;
   operation_id?: string;

@@ -71,45 +71,6 @@ const MAX_SELECTION_PREVIEW_LONG_EDGE: u32 = 480;
 const MAX_SELECTION_PREVIEW_PIXELS: u32 = 230_400;
 const MAX_SELECTION_PREVIEW_BYTES: u32 = 1024 * 1024;
 
-pub fn get_html_output<R: tauri::Runtime>(
-    webview: tauri::Webview<R>,
-    state: State<'_, AppState>,
-    operation_id: Uuid,
-    representation_id: Uuid,
-    resource_id: String,
-) -> Result<String, String> {
-    if webview.label() != "lens-overlay" {
-        return Err("HTML output is only available to the Lens overlay".into());
-    }
-    html_output(
-        &state.lens()?,
-        operation_id,
-        representation_id,
-        &resource_id,
-    )
-}
-
-fn html_output(
-    lens: &LensState,
-    operation_id: Uuid,
-    representation_id: Uuid,
-    resource_id: &str,
-) -> Result<String, String> {
-    let representation = response_representation(lens, operation_id, representation_id)?;
-    representation
-        .output_blocks
-        .iter()
-        .find_map(|block| match block {
-            crate::model::LensOutputBlock::Html {
-                resource_id: id,
-                text,
-                ..
-            } if id == resource_id => Some(text.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| "HTML output resource is no longer available".into())
-}
-
 fn response_representation(
     lens: &LensState,
     operation_id: Uuid,
@@ -141,7 +102,7 @@ pub fn get_response_block<R: tauri::Runtime>(
     response_block(&state.lens()?, operation_id, representation_id, block_index)
 }
 
-fn response_block(
+pub(crate) fn response_block(
     lens: &LensState,
     operation_id: Uuid,
     representation_id: Uuid,
@@ -774,6 +735,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         projection: projection_ref,
         delivery: None,
         output_blocks: Vec::new().into(),
+        mcp_apps: Vec::new(),
         representation: None,
         response_history: Default::default(),
         pending_representation: None,

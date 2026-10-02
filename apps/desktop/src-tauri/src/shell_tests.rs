@@ -47,13 +47,14 @@ pub(crate) fn invoke(
 }
 
 #[test]
-fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
+fn html_presentation_ipc_requires_overlay_and_exact_retained_identity() {
     let state = test_support::state();
     let operation = Uuid::from_u128(501);
     let representation = Uuid::from_u128(502);
     state.runtime.write().unwrap().lens = LensState {
         operation_id: Some(operation),
         representation: Some(LensRepresentation {
+            mcp_apps: Vec::new(),
             delivery: None,
             prompt_execution_revision: 1,
             representation_id: representation,
@@ -81,26 +82,34 @@ fn html_output_ipc_requires_overlay_and_exact_retained_identity() {
     let overlay = tauri::WebviewWindowBuilder::new(&app, "lens-overlay", Default::default())
         .build()
         .unwrap();
-    let args = json!({"operationId": operation, "representationId": representation, "resourceId": "html-fixture"});
-    assert!(invoke(&settings, "get_html_output", args.clone()).is_err());
-    assert_eq!(
-        invoke(&overlay, "get_html_output", args.clone()).unwrap(),
-        json!("<p>private</p>")
-    );
+    let args = json!({
+        "source": {"kind":"live", "output_ref":{"operation_id":operation,"representation_id":representation}, "block_index":0},
+        "hostOrigin": overlay.url().unwrap().origin().ascii_serialization()
+    });
+    assert!(invoke(&settings, "open_html_presentation", args.clone()).is_err());
+    let opened = invoke(&overlay, "open_html_presentation", args.clone()).unwrap();
+    assert_eq!(opened["input"]["html"], "<p>private</p>");
+    assert_eq!(opened["document_mode"], "static");
+    assert_eq!(opened["live"], false);
+    assert!(opened["artifact_id"].is_null());
+    invoke(&overlay, "close_mcp_app", json!({"leaseId":opened["id"]})).unwrap();
     let snapshot = invoke(&overlay, "get_window_snapshot", json!({})).unwrap();
     assert!(!snapshot.to_string().contains("<p>private</p>"));
-    for field in ["operationId", "representationId", "resourceId"] {
+    for field in ["operation_id", "representation_id"] {
         let mut stale = args.clone();
-        stale[field] = json!(Uuid::new_v4());
-        assert!(invoke(&overlay, "get_html_output", stale).is_err());
+        stale["source"]["output_ref"][field] = json!(Uuid::new_v4());
+        assert!(invoke(&overlay, "open_html_presentation", stale).is_err());
     }
+    let mut stale = args.clone();
+    stale["source"]["block_index"] = json!(1);
+    assert!(invoke(&overlay, "open_html_presentation", stale).is_err());
     app.state::<AppState>()
         .runtime
         .write()
         .unwrap()
         .lens
         .representation = None;
-    assert!(invoke(&overlay, "get_html_output", args).is_err());
+    assert!(invoke(&overlay, "open_html_presentation", args).is_err());
 }
 
 #[test]
@@ -128,6 +137,7 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
     let state = test_support::state();
     let operation = Uuid::from_u128(701);
     let old = LensRepresentation {
+        mcp_apps: Vec::new(),
         delivery: None,
         prompt_execution_revision: 1,
         representation_id: Uuid::from_u128(702),
@@ -194,11 +204,6 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
     let html_descriptor = invoke(&overlay, "get_response_block", html_block_args).unwrap();
     assert_eq!(html_descriptor["type"], "html");
     assert!(html_descriptor.get("text").is_none());
-    let html_args = json!({"operationId":operation,"representationId":old.representation_id,"resourceId":"old-html"});
-    assert_eq!(
-        invoke(&overlay, "get_html_output", html_args.clone()).unwrap(),
-        json!("<p>old private</p>")
-    );
     let snapshot = invoke(&overlay, "get_window_snapshot", json!({})).unwrap();
     assert_eq!(
         snapshot["lens"]["response_history"]["responses"]
@@ -219,7 +224,6 @@ fn response_history_ipc_fetches_old_blocks_without_emitting_old_bodies() {
     }
     app.state::<AppState>().runtime.write().unwrap().lens = LensState::default();
     assert!(invoke(&overlay, "get_response_block", block_args).is_err());
-    assert!(invoke(&overlay, "get_html_output", html_args).is_err());
 }
 
 #[test]
@@ -1044,6 +1048,7 @@ fn saving_external_agent_marks_retained_response_stale_at_commit() {
     let delivery = test_support::delivery();
     let projection = delivery.source_projection.clone();
     let representation = LensRepresentation {
+        mcp_apps: Vec::new(),
         prompt_execution_revision: 1,
         representation_id: Uuid::from_u128(812),
         context_id: Uuid::nil(),

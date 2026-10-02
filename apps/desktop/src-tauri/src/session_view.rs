@@ -189,6 +189,24 @@ impl SessionViewStore {
             .map(|catalog| catalog.clone())
             .map_err(lock_error)
     }
+    pub(crate) fn with_html_document<T>(
+        &self,
+        generation: Uuid,
+        entry_id: &str,
+        revision: u64,
+        block_index: usize,
+        action: impl FnOnce(
+            String,
+            usecase::session_document::HtmlMode,
+            serde_json::Value,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let view = self.inner.lock().map_err(lock_error)?;
+        let (html, mode, csp) =
+            wire::html_document(&view, generation, entry_id, revision, block_index)?;
+        action(html, mode, csp)
+    }
+
     pub fn ensure_not_loading(&self) -> Result<(), String> {
         if self.phase()? == ViewPhase::Loading {
             return Err("Wait for the session history to finish loading or close it".into());

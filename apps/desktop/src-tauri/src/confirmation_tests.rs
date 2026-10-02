@@ -430,9 +430,21 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
         let new_session = self.0.clone();
         let configure = self.0.clone();
         let prompt = self.0.clone();
+        let cancellation = self.0.clone();
         DynConnectTo::new(
             Agent
                 .builder()
+                .on_receive_notification(
+                    async move |_: CancelNotification, _: ConnectionTo<Client>| {
+                        // Standard cancellation completes the original held prompt. The
+                        // Stop fixture keeps its explicit barrier to test cleanup ordering.
+                        if cancellation.scenario != Scenario::StopDuringPrompt {
+                            cancellation.finish_prompt.notify_one();
+                        }
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
                 .on_receive_request(
                     async move |request: InitializeRequest,
                                 responder: Responder<InitializeResponse>,
@@ -486,7 +498,7 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
                         if new_session.scenario == Scenario::GoosePublisherFailure {
                             response = response.meta(
                                 json!({"extensionResults":[{
-                                    "name":"lens_output", "success":false, "error":"SECRET"
+                                    "name":"lens_rich_content", "success":false, "error":"SECRET"
                                 }]})
                                 .as_object()
                                 .unwrap()
@@ -644,7 +656,7 @@ async fn publish_fixture_html(fixture: &Fixture, prompt: &Value) {
                 .as_str()
                 .or_else(|| block["resource"]["text"].as_str())?;
             let value: Value = serde_json::from_str(text).ok()?;
-            (value["kind"] == "lens_output_publication").then_some(value)
+            (value["kind"] == "lens_mcp_apps_publication").then_some(value)
         })
         .expect("explicit publication context");
     let client = reqwest::Client::builder()
@@ -685,9 +697,14 @@ async fn publish_fixture_html(fixture: &Fixture, prompt: &Value) {
     .unwrap()
     .status()
     .is_success());
-    let response = post(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
-        "name":"publish_html","arguments":{"turn_id":context["turn_id"],"html":"<h1>Fixture HTML</h1>"}
-    }}), session.as_deref()).await.unwrap();
+    let response = post(
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+            "name":"render_html","arguments":{"html":"<h1>Fixture HTML</h1>"}
+        }}),
+        session.as_deref(),
+    )
+    .await
+    .unwrap();
     assert!(response.status().is_success());
     let raw = response.text().await.unwrap();
     let result: Value = serde_json::from_str(&raw).unwrap_or_else(|_| {
@@ -698,6 +715,10 @@ async fn publish_fixture_html(fixture: &Fixture, prompt: &Value) {
     });
     assert!(result.get("error").is_none());
     assert_ne!(result["result"]["isError"], true);
+    assert_eq!(
+        result["result"]["structuredContent"]["publication"]["turn_id"],
+        context["turn_id"]
+    );
 }
 
 struct Harness {
@@ -1045,20 +1066,28 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
             .to_string_lossy()
             .as_ref()
     );
-    assert_eq!(request["mcpServers"].as_array().unwrap().len(), 1);
-    let server = &request["mcpServers"][0];
-    assert_eq!(server["name"], "lens_output");
-    assert_eq!(server["type"], "http");
-    let endpoint = reqwest::Url::parse(server["url"].as_str().unwrap()).unwrap();
-    assert_eq!(endpoint.scheme(), "http");
-    assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
-    assert!(endpoint.port().is_some());
-    assert_eq!(server["headers"][0]["name"], "Authorization");
-    assert!(server["headers"][0]["value"]
-        .as_str()
-        .unwrap()
-        .starts_with("Bearer "));
-    assert!(server.get("command").is_none());
+    let servers = request["mcpServers"].as_array().unwrap();
+    assert_eq!(
+        servers
+            .iter()
+            .map(|server| server["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["lens_rich_content"]
+    );
+    for server in servers {
+        assert_eq!(server["type"], "http");
+        let endpoint = reqwest::Url::parse(server["url"].as_str().unwrap()).unwrap();
+        assert_eq!(endpoint.scheme(), "http");
+        assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+        assert!(endpoint.port().is_some());
+        assert_eq!(server["headers"][0]["name"], "Authorization");
+        assert!(server["headers"][0]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("Bearer "));
+        assert!(server.get("command").is_none());
+    }
+
     let prompt = effects
         .iter()
         .find_map(|e| {
@@ -1102,7 +1131,7 @@ fn confirmation_ipc_runs_real_context_publication_observer_and_acp_session() {
 }
 
 #[test]
-fn http_publication_commits_exact_private_html_for_all_non_cancelled_stops() {
+fn html_app_capture_commits_descriptors_for_all_non_cancelled_stops() {
     for stop_reason in [
         StopReason::EndTurn,
         StopReason::MaxTokens,
@@ -1113,27 +1142,23 @@ fn http_publication_commits_exact_private_html_for_all_non_cancelled_stops() {
         let first = invoke(&harness.window, "confirm_lens_targets");
         assert_eq!(first.stage, LensStage::Completed, "{stop_reason:?}");
         let retained = harness.app.state::<AppState>().lens().unwrap();
-        let html: Vec<_> = retained
-            .representation
-            .as_ref()
-            .unwrap()
-            .output_blocks
-            .iter()
-            .filter_map(|block| match block {
-                LensOutputBlock::Html { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(html, vec!["<h1>Fixture HTML</h1>"], "{stop_reason:?}");
+        assert_eq!(retained.mcp_apps.len(), 1, "{stop_reason:?}");
+        assert_eq!(retained.mcp_apps[0].server_id, "lens_rich_content");
+        assert_eq!(retained.mcp_apps[0].tool_name, "render_html");
+        assert_eq!(
+            retained.response_history.responses[0].mcp_apps,
+            retained.mcp_apps
+        );
     }
 }
 
 #[test]
-fn cancelled_agent_response_discards_published_html() {
+fn cancelled_agent_response_discards_html_app_artifacts() {
     let harness = setup(Scenario::HtmlPublication(StopReason::Cancelled));
     invoke(&harness.window, "confirm_lens_targets");
     let retained = harness.app.state::<AppState>().lens().unwrap();
     assert!(retained.representation.is_none());
+    assert!(retained.mcp_apps.is_empty());
     assert!(!retained
         .output_blocks
         .iter()
@@ -2026,7 +2051,7 @@ fn verify_preset_switch(scenario: PresetSwitch) {
 }
 
 #[test]
-fn text_only_agent_uses_exact_delivery_through_real_actor_publisher_and_history() {
+fn text_only_agent_uses_exact_delivery_through_real_actor_apps_and_history() {
     let harness = setup(Scenario::TextOnlyHtml);
     let first = invoke(&harness.window, "confirm_lens_targets");
     assert_eq!(first.stage, LensStage::Completed);
@@ -2050,7 +2075,8 @@ fn text_only_agent_uses_exact_delivery_through_real_actor_publisher_and_history(
         lens.response_history.responses[0].delivery.as_ref(),
         Some(delivery)
     );
-    assert!(representation.output_blocks.iter().any(|block| matches!(block, LensOutputBlock::Html { text, .. } if text == "<h1>Fixture HTML</h1>")));
+    assert_eq!(lens.mcp_apps.len(), 1);
+    assert_eq!(lens.response_history.responses[0].mcp_apps, lens.mcp_apps);
     let effects = harness.fixture.effects.lock().unwrap();
     let prompt = effects
         .iter()

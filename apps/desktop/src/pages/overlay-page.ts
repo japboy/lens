@@ -92,6 +92,7 @@ export class OverlayPage extends ReactiveElement {
     const view = this.view;
     const snapshot = this.snapshots.snapshot;
     view.sessionView = this.sessionView.view;
+    view.appPort = this.port;
     view.loadSessionBlock = this.sessionView.loadBlock;
     if (isHistoryView(this.sessionView.view))
       this.responseHistory.synchronizeHistory(this.sessionView.view);
@@ -138,11 +139,26 @@ export class OverlayPage extends ReactiveElement {
     const identity: CommandIdentity = { scope: "overlay", type: intent.type };
     const lens = this.snapshots.snapshot?.lens;
     if (intent.type === "close") {
+      const appCleanup = Promise.allSettled(
+        [
+          ...(this.view.shadowRoot?.querySelectorAll<HTMLElement & { dispose(): Promise<void> }>(
+            "lens-mcp-app",
+          ) ?? []),
+        ].map((app) => {
+          try {
+            // Stop admission must survive an unregistered or broken presentation leaf.
+            return typeof app.dispose === "function" ? app.dispose() : Promise.resolve();
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        }),
+      );
       const session = this.sessionView.view;
       const authoritativeHistory = Boolean(session?.generation) && isHistoryView(session);
       if (authoritativeHistory || !lens?.operation_id) {
         await this.commands.run(identity, async () => {
           await this.port.closeSessionView();
+          await appCleanup;
           await this.port.closeCurrentWindow();
         });
         return;
@@ -150,6 +166,7 @@ export class OverlayPage extends ReactiveElement {
       const operationId = lens?.operation_id;
       await this.commands.run(identity, async () => {
         if (operationId) await this.port.stopLens(operationId);
+        await appCleanup;
         await this.port.closeCurrentWindow();
       });
       return;

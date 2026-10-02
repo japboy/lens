@@ -39,6 +39,7 @@ pub(crate) struct AgentSessionTurn {
     pub context_revision: u64,
     pub projection_ref: ProjectionRef,
     pub projection: LensAgentProjection,
+    pub app_prompt: Option<Vec<agent_client_protocol::schema::v1::ContentBlock>>,
     completion: Option<oneshot::Sender<Result<AgentSessionTurnCompletion, String>>>,
     work: Option<AgentWorkLease>,
 }
@@ -58,6 +59,7 @@ impl AgentSessionTurn {
                 context_revision,
                 projection_ref,
                 projection,
+                app_prompt: None,
                 completion: Some(completion),
                 work: None,
             },
@@ -106,6 +108,11 @@ impl AgentSessionMailbox {
                 .pending
                 .lock()
                 .map_err(|_| "Agent session mailbox lock is poisoned".to_string())?;
+            if pending.as_ref().is_some_and(|t| t.app_prompt.is_some()) {
+                return Err(
+                    "A user App message is already admitted; refresh will retry later".into(),
+                );
+            }
             coalesce_agent_turn(&mut pending, turn, self.closed.load(Ordering::Acquire))
         }
         .map_err(|_| "Agent session mailbox is closed".to_string())?;
@@ -129,6 +136,26 @@ impl AgentSessionMailbox {
 
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    pub fn has_app_message(&self) -> bool {
+        self.pending
+            .lock()
+            .ok()
+            .is_some_and(|p| p.as_ref().is_some_and(|t| t.app_prompt.is_some()))
+    }
+
+    fn admit_app(&self, turn: AgentSessionTurn) -> Result<(), String> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| "Agent mailbox unavailable")?;
+        if self.is_closed() || pending.is_some() {
+            return Err("Agent is busy; retry after the current turn".into());
+        }
+        *pending = Some(turn);
+        self.notify.notify_one();
+        Ok(())
     }
 
     pub fn close(&self, reason: &str) -> Result<(), String> {
@@ -312,6 +339,73 @@ impl AgentControl {
             app, generation, identity, mailbox, shutdown,
         ));
         Ok(receiver)
+    }
+
+    /// An App follow-up can only reuse the exact live actor and never cancels a turn.
+    pub(crate) fn submit_app_message<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        descriptor: &usecase::model::McpAppDescriptor,
+        prompt: Vec<agent_client_protocol::schema::v1::ContentBlock>,
+    ) -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let material = state.lens_prompt_material(descriptor.operation_id)?;
+        let projection =
+            LensAgentProjection::from_input(&material.input, &material.target_set, &material.media)
+                .map_err(|_| "Unable to construct App follow-up source")?;
+        let snapshot = state.runtime.read().map_err(|_| "Lens state unavailable")?;
+        if snapshot.lens.operation_id != Some(descriptor.operation_id)
+            || snapshot.lens.stage != crate::model::LensStage::Completed
+            || !(snapshot.lens.mcp_apps.iter().any(|a| a.id == descriptor.id)
+                || snapshot
+                    .lens
+                    .response_history
+                    .responses
+                    .iter()
+                    .any(|r| r.mcp_apps.iter().any(|a| a.id == descriptor.id)))
+            || snapshot.config != material.config
+            || snapshot.lens.projection.as_ref() != Some(&material.projection)
+            || snapshot.lens.response_history.capacity_reached
+            || snapshot
+                .lens
+                .live
+                .as_ref()
+                .is_some_and(|l| l.lifecycle != crate::model::LensMonitoringLifecycle::Watching)
+        {
+            return Err("App is stale, paused, or the Agent is busy".into());
+        }
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "Agent control unavailable")?;
+        if active.is_some() || self.unfinished_turns.load(Ordering::Acquire) != 0 {
+            return Err("Agent is busy; retry after the current turn".into());
+        }
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| "Agent session unavailable")?;
+        let session = session
+            .as_ref()
+            .filter(|s| {
+                s.identity.operation_id == descriptor.operation_id
+                    && s.identity
+                        .config
+                        .same_active_session_config(&snapshot.config)
+                    && !s.mailbox.is_closed()
+            })
+            .ok_or("App live session is no longer available")?;
+        let mut turn = AgentSessionTurn {
+            context_revision: material.input.context_revision,
+            projection_ref: material.projection,
+            projection,
+            app_prompt: Some(prompt),
+            completion: None,
+            work: None,
+        };
+        turn.track_work(Arc::clone(&self.unfinished_turns));
+        session.mailbox.admit_app(turn)?;
+        Ok(())
     }
 
     pub fn shutdown_session(
@@ -558,6 +652,7 @@ impl LensMediaStore {
 
 pub struct AppState {
     pub(crate) publication: crate::publication::PublicationStore,
+    pub(crate) mcp_apps: Arc<crate::mcp_apps::McpAppsStore>,
     pub(crate) history_store: std::sync::OnceLock<Arc<crate::session_history_store::HistoryStore>>,
     pub(crate) history_storage_error: std::sync::OnceLock<String>,
     pub(crate) history_writer: std::sync::OnceLock<crate::history_writer::HistoryWriter>,
@@ -591,6 +686,7 @@ impl AppState {
     ) -> Self {
         Self {
             publication: crate::publication::PublicationStore::default(),
+            mcp_apps: Arc::new(crate::mcp_apps::McpAppsStore::default()),
             session_view: crate::session_view::SessionViewStore::default(),
             history_store: std::sync::OnceLock::new(),
             history_storage_error: std::sync::OnceLock::new(),
@@ -725,6 +821,8 @@ pub(crate) fn emit_app_snapshot<R: tauri::Runtime>(
     snapshot: AppSnapshot,
     sync_tray: bool,
 ) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    state.mcp_apps.sync_operation(&state)?;
     if sync_tray {
         crate::ui::sync_tray_menu(app)?;
     }
@@ -1171,6 +1269,174 @@ mod tests {
         );
         drop(second_lifetime);
         assert!(!control.has_pending_work().unwrap());
+    }
+
+    #[tokio::test]
+    async fn app_message_rpc_acknowledges_queue_admission_with_latest_context_and_rejects_duplicates(
+    ) {
+        use adapter_mcp_server::apps::{AppArtifact, AppBroker, AppResource};
+        use serde_json::json;
+        let state = crate::test_support::state();
+        let (operation, targets, context, input) = crate::mcp_apps_validation::fixture().unwrap();
+        let projection = LensAgentProjection::from_input(&input, &targets, &[]).unwrap();
+        let projection_ref = projection.projection_ref(std::num::NonZeroU64::new(1).unwrap());
+        let context_id = input.context_id;
+        let run_id = Uuid::new_v4();
+        let config = state.config().unwrap();
+        state.lens_media.begin(operation).unwrap();
+        state
+            .lens_media
+            .replace_context(operation, input.context_revision, vec![])
+            .unwrap();
+        state.runtime.write().unwrap().lens = LensState {
+            operation_id: Some(operation), stage: LensStage::Completed,
+            target_set: Some(targets), context: Some(context.into()), input: Some(input.into()),
+            projection: Some(projection_ref),
+            agent: Some(serde_json::from_value(json!({"run_id":run_id,"kind":"codex","adapter_name":"fixture","adapter_version":"1","session_id":"direct-message-session","received_updates":0})).unwrap()),
+            ..Default::default()
+        };
+        let mailbox = Arc::new(AgentSessionMailbox::new());
+        let (shutdown, _shutdown_receiver) = watch::channel(false);
+        *state.agent_control.session.lock().unwrap() = Some(ActiveAgentSession {
+            generation: Uuid::new_v4(),
+            identity: AgentSessionIdentity {
+                operation_id: operation,
+                context_id,
+                effective_working_directory: config.working_directory.clone(),
+                config: config.clone(),
+            },
+            mailbox: mailbox.clone(),
+            shutdown,
+        });
+        let broker = Arc::new(
+            AppBroker::start(vec![], "<p>shell</p>".into())
+                .await
+                .unwrap(),
+        );
+        let source = state
+            .mcp_apps
+            .install(operation, "direct-message-session".into(), &broker, &config)
+            .unwrap();
+        let app = preset_app(state);
+        let handle = app.handle().clone();
+        let state = app.state::<AppState>();
+        let descriptors = state
+            .mcp_apps
+            .retain(
+                &handle,
+                operation,
+                "direct-message-session",
+                vec![AppArtifact {
+                    id: Uuid::new_v4(),
+                    run_id,
+                    server_id: "fixture-source".into(),
+                    tool_name: "fixture-tool".into(),
+                    resource_uri: "ui://fixture".into(),
+                    title: "App".into(),
+                    resource: AppResource {
+                        html: "<p>App</p>".into(),
+                        meta: json!({}),
+                    },
+                    input: json!({}),
+                    result: json!({"content":[]}),
+                }],
+            )
+            .unwrap();
+        state.runtime.write().unwrap().lens.mcp_apps = descriptors.clone();
+        let overlay = tauri::WebviewWindowBuilder::new(
+            &app,
+            crate::ui::LENS_WINDOW_LABEL,
+            Default::default(),
+        )
+        .build()
+        .unwrap();
+        let origin = overlay.url().unwrap().origin().ascii_serialization();
+        let opened =
+            crate::mcp_apps::open_mcp_app(handle.clone(), overlay, descriptors[0].id, origin)
+                .await
+                .unwrap();
+        assert!(opened.live);
+        for value in [10, 73] {
+            crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, json!({"method":"ui/update-model-context","params":{"structuredContent":{"selected_value":value}}})).await.unwrap();
+        }
+        let message = json!({"method":"ui/message","params":{"role":"user","content":[{"type":"text","text":"Explain selected value"}]}});
+        let ack = crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, message.clone())
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(ack).unwrap(), json!({"result":{}}));
+        // The turn has not executed: protocol success is queue admission, not its answer.
+        assert!(mailbox.has_app_message());
+        assert!(
+            crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, message.clone())
+                .await
+                .is_err()
+        );
+        let first = mailbox.take_pending().unwrap().unwrap();
+        assert!(first.completion.is_none());
+        let prompt = serde_json::to_value(&first.app_prompt).unwrap();
+        assert!(prompt[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Explain selected value"));
+        let context = prompt[1]["text"].as_str().unwrap();
+        assert!(context.contains("\"selected_value\":73"));
+        assert!(!context.contains("\"selected_value\":10"));
+        // Dequeue does not clear unfinished work before the actor starts the turn.
+        assert!(
+            crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, message.clone())
+                .await
+                .is_err()
+        );
+        first.complete(Ok(AgentSessionTurnCompletion::Finished));
+        crate::mcp_apps::mcp_app_request(
+            handle.clone(),
+            opened.id,
+            json!({"method":"ui/update-model-context","params":{}}),
+        )
+        .await
+        .unwrap();
+        crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, message.clone())
+            .await
+            .unwrap();
+        let second = mailbox.take_pending().unwrap().unwrap();
+        let cleared = serde_json::to_value(&second.app_prompt)
+            .unwrap()
+            .to_string();
+        assert!(!cleared.contains("selected_value"));
+        second.complete(Err("Agent execution failed later".into()));
+        assert!(!state.agent_control.has_pending_work().unwrap());
+        state
+            .runtime
+            .write()
+            .unwrap()
+            .lens
+            .response_history
+            .capacity_reached = true;
+        assert!(
+            crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, message.clone())
+                .await
+                .is_err()
+        );
+        assert!(!mailbox.has_app_message());
+        state
+            .runtime
+            .write()
+            .unwrap()
+            .lens
+            .response_history
+            .capacity_reached = false;
+        state
+            .agent_control
+            .shutdown_session(Some(operation), "session retired")
+            .unwrap();
+        assert!(
+            crate::mcp_apps::mcp_app_request(handle.clone(), opened.id, message)
+                .await
+                .is_err()
+        );
+        crate::mcp_apps::close_mcp_app(handle, opened.id).unwrap();
+        drop(source);
+        broker.close().await;
     }
 
     #[test]

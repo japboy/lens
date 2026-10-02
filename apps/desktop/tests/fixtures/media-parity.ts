@@ -24,7 +24,6 @@ export function mediaFixture(choice: MediaCase) {
   const loadSessionBlock = async (source: DeferredDocumentBlock): Promise<DocumentBlock> => content[source.block_index]!;
   const port = {
     getResponseBlock: async (_operation: string, _response: string, index: number): Promise<LensOutputBlock> => blocks[index]!,
-    getHtmlOutput: async () => artifact,
   };
   return {document,lens,interpretation,loadSessionBlock,port};
 }

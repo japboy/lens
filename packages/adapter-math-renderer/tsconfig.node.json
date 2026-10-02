@@ -1,0 +1,9 @@
+{
+  "extends": "typescript-config/node.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "tsBuildInfoFile": "./.build/cache/typescript/node.tsbuildinfo"
+  },
+  "include": ["src/node/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-helper.ts"]
+}

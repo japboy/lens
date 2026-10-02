@@ -1,16 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  readFile,
-  writeFile,
-  mkdir,
-  mkdtemp,
-  rm,
-  rename,
-  symlink,
-  readdir,
-} from "node:fs/promises";
+import { readFile, writeFile, mkdir, mkdtemp, rm, rename, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { BUILD_PATHS, assertGenerationOutput } from "../build-paths.ts";
 import { fileURLToPath } from "node:url";
@@ -19,6 +10,7 @@ import { PAGE_ENTRIES } from "../../src/page-entries.ts";
 import { sourceInputs, sourceDigest } from "./source.ts";
 import { verifyGeneration } from "./verify.ts";
 import { htmlMathAssetsPlugin } from "../html-math-assets.ts";
+import { linkGenerationDependencies } from "./workspace-dependencies.ts";
 
 const execute = promisify(execFile);
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -53,8 +45,7 @@ export async function generate(output: string, development = false): Promise<str
       await mkdir(dirname(destination), { recursive: true });
       await writeFile(destination, bytes);
     }
-    await symlink(join(desktop, "node_modules"), join(app, "node_modules"), "dir");
-    await symlink(join(repository, "node_modules"), join(staging, "node_modules"), "dir");
+    await linkGenerationDependencies(repository, staging);
     const ssrOutput = join(app, ".render");
     await build({
       configFile: false,

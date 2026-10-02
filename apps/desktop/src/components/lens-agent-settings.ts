@@ -1,6 +1,7 @@
 import { MANAGED_AGENTS } from "../types";
 import { agentIcon } from "../agent-icons";
 import "./lens-select";
+import "./lens-settings-help";
 import type { LensSelect } from "./lens-select";
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -48,7 +49,6 @@ export class LensAgentSettings extends LitElement {
   @state() private editingId: string | undefined;
   @state() private argumentDrafts: Record<string, string> = {};
   @state() private drafts: Record<string, ExternalAgentProfile> = {};
-  @state() private activeHelp: string | undefined;
   private draftRevision = 0;
   private browseSavedProfile = "";
 
@@ -176,7 +176,7 @@ export class LensAgentSettings extends LitElement {
               ...MANAGED_AGENTS.map((agent) => ({
                 value: agent,
                 sortName: agentLabel(agent),
-                label: agentLabel(agent),
+                label: `${agentLabel(agent)} · Built-in`,
                 icon: agentIcon(agentLabel(agent)),
               })),
               ...Object.values(this.drafts).map((profile) => ({
@@ -189,7 +189,6 @@ export class LensAgentSettings extends LitElement {
             @change=${(event: Event) => {
               const value = (event.target as LensSelect).value;
               this.draftRevision += 1;
-              this.activeHelp = undefined;
               const managed = MANAGED_AGENTS.find((agent) => agent === value);
               this.editingId = managed ? undefined : value;
               if (managed) this.managedSelection = managed;
@@ -201,34 +200,24 @@ export class LensAgentSettings extends LitElement {
         </div>
       </fieldset>
       <div class="agent-actions preset-add-actions">
-        ${this.help(
-          "agent-add-help",
-          "Create connection settings for another agent.",
-          html` <button
-            type="button"
-            data-lens-button-role="normal"
-            aria-describedby="agent-add-help"
-            ?disabled=${controlsDisabled || Object.keys(this.drafts).length >= 16}
-            @click=${() => this.addProfile()}
-          >
-            Add Preset
-          </button>`,
-        )}
+        <button
+          type="button"
+          data-lens-button-role="normal"
+          ?disabled=${controlsDisabled || Object.keys(this.drafts).length >= 16}
+          @click=${() => this.addProfile()}
+        >
+          Add Preset
+        </button>
         ${
           draft
-            ? this.help(
-                "agent-delete-help",
-                saved ? "Remove the selected preset." : "Remove this unsaved preset.",
-                html` <button
-                  type="button"
-                  data-lens-button-role=${saved ? "destructive" : "cancel"}
-                  aria-describedby="agent-delete-help"
-                  ?disabled=${controlsDisabled}
-                  @click=${() => (saved ? this.emit({ type: "delete-external-agent", id: draft.id }) : this.discardDraft(draft.id))}
-                >
-                  ${saved ? "Delete Preset" : "Discard Draft"}
-                </button>`,
-              )
+            ? html`<button
+                type="button"
+                data-lens-button-role=${saved ? "destructive" : "cancel"}
+                ?disabled=${controlsDisabled}
+                @click=${() => (saved ? this.emit({ type: "delete-external-agent", id: draft.id }) : this.discardDraft(draft.id))}
+              >
+                ${saved ? "Delete Preset" : "Discard Draft"}
+              </button>`
             : nothing
         }
       </div>
@@ -248,64 +237,66 @@ export class LensAgentSettings extends LitElement {
                   />
                 </label>
                 <div class="settings-field">
-                  <label for="agent-executable">Executable</label>
-                  <div class="executable-row">
-                    ${this.help(
-                      "agent-executable-help",
-                      "Enter a command name or an executable path. Paths do not need quotes.",
-                      html` <input
-                        data-lens-control="text-entry"
-                        id="agent-executable"
-                        class="external-executable-field"
-                        aria-label="Executable"
-                        aria-describedby="agent-executable-help"
-                        spellcheck="false"
-                        autocomplete="off"
-                        placeholder="copilot"
-                        .value=${draft.command}
-                        @input=${(event: Event) => this.editDraft({ command: (event.target as HTMLInputElement).value })}
-                      />`,
-                    )}
-                    ${this.help(
-                      "agent-choose-help",
-                      "Choose an executable file.",
-                      html` <button
-                        type="button"
-                        data-lens-button-role="normal"
-                        aria-describedby="agent-choose-help"
-                        @click=${() => {
-                          this.draftRevision += 1;
-                          this.browseSavedProfile = this.savedFingerprint();
-                          this.emit({
-                            type: "choose-external-executable",
-                            draftRevision: this.draftRevision,
-                            defaultPath: this.drafts[this.editingId!]?.command || undefined,
-                          });
-                        }}
-                      >
-                        Choose…
-                      </button>`,
-                    )}
+                  <div class="settings-label-help">
+                    <label for="agent-executable">Executable</label>
+                    <lens-settings-help
+                      helpId="agent-executable-help"
+                      label="About Executable"
+                      text="Enter a command name or an executable path. Paths do not need quotes."
+                    ></lens-settings-help>
                   </div>
-                </div>
-                <label class="settings-field"
-                  ><span>Arguments</span>
-                  ${this.help(
-                    "agent-arguments-help",
-                    "Separate arguments with spaces; quote values containing spaces. No shell expansion.",
-                    html` <input
+                  <div class="executable-row">
+                    <input
                       data-lens-control="text-entry"
+                      id="agent-executable"
                       class="external-executable-field"
-                      aria-label="Arguments"
-                      aria-describedby="agent-arguments-help"
+                      aria-label="Executable"
+                      aria-describedby="agent-executable-help"
                       spellcheck="false"
                       autocomplete="off"
-                      placeholder="--acp --stdio"
-                      .value=${this.argumentDrafts[draft.id] ?? ""}
-                      @input=${(event: Event) => this.editArguments((event.target as HTMLInputElement).value)}
-                    />`,
-                  )}
-                </label>
+                      placeholder="copilot"
+                      .value=${draft.command}
+                      @input=${(event: Event) => this.editDraft({ command: (event.target as HTMLInputElement).value })}
+                    />
+                    <button
+                      type="button"
+                      data-lens-button-role="normal"
+                      @click=${() => {
+                        this.draftRevision += 1;
+                        this.browseSavedProfile = this.savedFingerprint();
+                        this.emit({
+                          type: "choose-external-executable",
+                          draftRevision: this.draftRevision,
+                          defaultPath: this.drafts[this.editingId!]?.command || undefined,
+                        });
+                      }}
+                    >
+                      Choose…
+                    </button>
+                  </div>
+                </div>
+                <div class="settings-field">
+                  <div class="settings-label-help">
+                    <label for="agent-arguments">Arguments</label>
+                    <lens-settings-help
+                      helpId="agent-arguments-help"
+                      label="About Arguments"
+                      text="Separate arguments with spaces; quote values containing spaces. No shell expansion."
+                    ></lens-settings-help>
+                  </div>
+                  <input
+                    data-lens-control="text-entry"
+                    id="agent-arguments"
+                    class="external-executable-field"
+                    aria-label="Arguments"
+                    aria-describedby="agent-arguments-help"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="--acp --stdio"
+                    .value=${this.argumentDrafts[draft.id] ?? ""}
+                    @input=${(event: Event) => this.editArguments((event.target as HTMLInputElement).value)}
+                  />
+                </div>
                 <p class="help">Install and update this agent’s CLI separately.</p>
                 ${validationError ? html`<p role="alert">${validationError}</p>` : nothing}
                 ${dirty ? html`<p class="help" role="status">Unsaved connection changes have not been verified.</p>` : nothing}
@@ -458,19 +449,14 @@ export class LensAgentSettings extends LitElement {
           : nothing
       }
       <div class="agent-reset-actions">
-        ${this.help(
-          "agent-reset-help",
-          "Restore preset defaults after confirmation.",
-          html` <button
-            type="button"
-            data-lens-button-role="destructive"
-            aria-describedby="agent-reset-help"
-            ?disabled=${controlsDisabled}
-            @click=${() => this.emit({ type: "reset-agent-presets" })}
-          >
-            Reset Presets…
-          </button>`,
-        )}
+        <button
+          type="button"
+          data-lens-button-role="destructive"
+          ?disabled=${controlsDisabled}
+          @click=${() => this.emit({ type: "reset-agent-presets" })}
+        >
+          Reset Presets…
+        </button>
       </div>
     </section>`;
   }
@@ -530,27 +516,9 @@ export class LensAgentSettings extends LitElement {
   }
 
   private help(id: string, text: string, control: unknown) {
-    return html`<span
-      class="agent-help"
-      @pointerenter=${() => {
-        this.activeHelp = id;
-      }}
-      @pointerleave=${() => {
-        this.activeHelp = undefined;
-      }}
-      @focusin=${() => {
-        this.activeHelp = id;
-      }}
-      @focusout=${() => {
-        this.activeHelp = undefined;
-      }}
-      @keydown=${(event: KeyboardEvent) => {
-        if (event.key === "Escape") this.activeHelp = undefined;
-      }}
-      >${control}<span id=${id} role="tooltip" ?hidden=${this.activeHelp !== id}
-        >${text}</span
-      ></span
-    >`;
+    return html`<span class="settings-control-help"
+      >${control}<lens-settings-help .helpId=${id} .text=${text}></lens-settings-help
+    ></span>`;
   }
 
   private discardDraft(id: string): void {

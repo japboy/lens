@@ -261,6 +261,5 @@ mod tests {
         let csp = config["app"]["security"]["csp"].as_str().unwrap();
         assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
         assert!(!csp.contains("script-src 'unsafe-inline'"));
-        assert!(include_str!("../../src/html-output.ts").contains("script-src 'none'"));
     }
 }

@@ -96,6 +96,57 @@ async function attach() {
 }
 
 describe("overlay window dismissal", () => {
+  it.each(["missing", "throwing"] as const)(
+    "does not let a %s App disposer prevent Stop admission",
+    async (kind) => {
+      port.getAppSnapshot.mockResolvedValue({
+        ...snapshot,
+        lens: { ...snapshot.lens, operation_id: "live-operation" },
+      });
+      const { view, button } = await attach();
+      await vi.waitFor(() => expect(view.model?.lens.operation_id).toBe("live-operation"));
+      const app = document.createElement("lens-mcp-app");
+      Object.defineProperty(app, "dispose", {
+        value:
+          kind === "missing"
+            ? undefined
+            : () => {
+                throw new Error("Broken presentation");
+              },
+      });
+      view.shadowRoot!.append(app);
+      button.click();
+      expect(port.stopLens).toHaveBeenCalledExactlyOnceWith("live-operation");
+      await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
+    },
+  );
+  it("starts Stop immediately while App cleanup is pending and waits before window destruction", async () => {
+    port.getAppSnapshot.mockResolvedValue({
+      ...snapshot,
+      lens: { ...snapshot.lens, operation_id: "live-operation" },
+    });
+    const { view, button } = await attach();
+    await vi.waitFor(() => expect(view.model?.lens.operation_id).toBe("live-operation"));
+    let finishCleanup!: () => void;
+    const app = document.createElement("lens-mcp-app") as HTMLElement & {
+      dispose(): Promise<void>;
+    };
+    app.dispose = vi.fn<() => Promise<void>>(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCleanup = resolve;
+        }),
+    );
+    view.shadowRoot!.append(app);
+    button.click();
+    expect(app.dispose).toHaveBeenCalledOnce();
+    expect(port.stopLens).toHaveBeenCalledExactlyOnceWith("live-operation");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(port.closeCurrentWindow).not.toHaveBeenCalled();
+    finishCleanup();
+    await vi.waitFor(() => expect(port.closeCurrentWindow).toHaveBeenCalledOnce());
+  });
   it.each([
     "subscription-delayed",
     "snapshot-delayed",

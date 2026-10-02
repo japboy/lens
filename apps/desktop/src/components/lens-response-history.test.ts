@@ -85,7 +85,6 @@ function history(count: number, operationId = "op"): ResponseHistoryPresentation
     scopeId: operationId,
     responses: Array.from({ length: count }, (_, i) => manifest(i + 1)),
     media: [],
-    htmlContents: new Map(),
     mediaErrors: new Map(),
     capacityReached: false,
   };
@@ -732,7 +731,7 @@ describe("Overlay committed response presentation", () => {
           element.history = controller.presentation;
         },
       } as unknown as ReactiveControllerHost,
-      { getResponseBlock: request, getHtmlOutput: async () => "" },
+      { getResponseBlock: request },
     );
     element.lens = {
       operation_id: "op",
@@ -966,7 +965,7 @@ it("keeps per-response input coverage in Diagnostics across later responses and 
     view.shadowRoot!.querySelector('[aria-label="Response 2 input coverage"]')?.textContent,
   ).toContain("UNKNOWN");
   coverage.open = true;
-  view.responseHistory = { ...view.responseHistory!, htmlContents: new Map() };
+  view.responseHistory = { ...view.responseHistory! };
   await view.updateComplete;
   expect(
     view.shadowRoot!.querySelector<HTMLDetailsElement>('[aria-label="Response 1 input coverage"]')

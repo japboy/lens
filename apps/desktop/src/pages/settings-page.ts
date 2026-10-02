@@ -22,6 +22,9 @@ export class SettingsPage extends ReactiveElement {
   private readonly commands = new CommandController(this);
   private readonly platform = platformFromSearch(window.location.search);
   @state() private aboutOpenError = "";
+  @state() private mcpToolCatalogs: import("../types").McpServerToolCatalog[] = [];
+  private mcpCatalogKey = "";
+  private mcpCatalogGeneration = 0;
   private readonly accessibility = new AccessibilityPermissionController(this, this.port);
 
   private readonly attachment = new PageAttachment(
@@ -34,7 +37,11 @@ export class SettingsPage extends ReactiveElement {
       {
         name: "agent",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () => import("../components/lens-agent-settings"),
+        load: () =>
+          Promise.all([
+            import("../components/lens-agent-settings"),
+            import("../components/lens-mcp-app-settings"),
+          ]),
       },
       {
         name: "agent-defaults",
@@ -91,16 +98,44 @@ export class SettingsPage extends ReactiveElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.destinationGeneration += 1;
+    this.mcpCatalogGeneration += 1;
+    this.mcpCatalogKey = "";
     this.destinationUnlisten?.();
     this.destinationUnlisten = undefined;
 
     this.removeEventListener("lens-settings-intent", this.handleSettingsIntent);
   }
+  private refreshMcpCatalogs(snapshot: import("../types").AppSnapshot): void {
+    const key = JSON.stringify([
+      snapshot.config,
+      snapshot.agent_selection,
+      snapshot.lens.operation_id,
+      snapshot.lens.agent?.session_id,
+      snapshot.lens.stage,
+      snapshot.lens.live?.lifecycle,
+    ]);
+    if (key === this.mcpCatalogKey) return;
+    this.mcpCatalogKey = key;
+    this.mcpToolCatalogs = [];
+    const generation = ++this.mcpCatalogGeneration;
+    void this.port
+      .getMcpServerToolCatalogs()
+      .then((catalogs) => {
+        if (generation === this.mcpCatalogGeneration && this.isConnected)
+          this.mcpToolCatalogs = catalogs;
+      })
+      .catch(() => {
+        // Unavailable cached discovery remains "Not loaded"; never start a connection.
+      });
+  }
+
   protected update(changed: Map<PropertyKey, unknown>): void {
     super.update(changed);
     if (this.attachment.stage !== "active") return;
     const view = this.view;
     const snapshot = this.snapshots.snapshot;
+    if (snapshot) this.refreshMcpCatalogs(snapshot);
+    view.mcpToolCatalogs = this.mcpToolCatalogs;
     view.dataset.platform = this.platform;
     view.snapshotStatus = snapshotStatus(snapshot, this.snapshots.connection);
     view.model = snapshot
@@ -143,6 +178,25 @@ export class SettingsPage extends ReactiveElement {
         ? { scope: "settings", type: intent.type, agent: intent.agent }
         : { scope: "settings", type: intent.type };
     switch (intent.type) {
+      case "set-mcp-apps-servers":
+        await this.commands.run(identity, () => this.port.setMcpAppsServers(intent.servers));
+        return;
+      case "reset-mcp-presets": {
+        const approved = await this.port.confirmAction(
+          "Remove all external MCP presets, their saved settings and unsaved MCP drafts. lens_rich_content remains available. Agent Presets and Prompt Presets are unchanged. The current Agent connection will close.",
+          "Reset MCP Presets?",
+        );
+        if (!approved) return;
+        await this.commands.run(identity, async () => {
+          await this.port.setMcpAppsServers([]);
+          const editor =
+            this.view.shadowRoot?.querySelector<
+              import("../components/lens-mcp-app-settings").LensMcpAppSettings
+            >("lens-mcp-app-settings");
+          editor?.acceptResetPresets();
+        });
+        return;
+      }
       case "choose-external-executable": {
         const editor =
           this.view.shadowRoot?.querySelector<LensAgentSettings>("lens-agent-settings");

@@ -2,6 +2,15 @@
   "files": [],
   "references": [
     {
+      "path": "./packages/adapter-mcp-apps-host"
+    },
+    {
+      "path": "./packages/adapter-mcp-apps-view"
+    },
+    {
+      "path": "./packages/adapter-math-renderer"
+    },
+    {
       "path": "./tsconfig.node.json"
     },
     {

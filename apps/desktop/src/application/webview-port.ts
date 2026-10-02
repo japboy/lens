@@ -1,4 +1,6 @@
 import type { SessionView, DocumentBlock } from "./session-document";
+import type { McpAppsServer } from "adapter-mcp-apps-host";
+import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import { parseSettingsDestination, type SettingsDestination } from "../agent-prompt-template";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -47,7 +49,7 @@ export interface LensOutputResource {
   output_blocks: LensOutputBlock[];
 }
 
-export interface WebviewPort {
+export interface WebviewPort extends McpAppsPort {
   getLensSource(sourceRef: string): Promise<LensSourceResource>;
   getLensOutput(outputRef: string): Promise<LensOutputResource>;
   getLensImage(imageRef: string): Promise<{ image_ref: string; data: string }>;
@@ -70,7 +72,6 @@ export interface WebviewPort {
     representationId: string,
     blockIndex: number,
   ): Promise<LensOutputBlock>;
-  getHtmlOutput(operationId: string, representationId: string, resourceId: string): Promise<string>;
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
   getReleaseAvailability(): Promise<ReleaseAvailability>;
@@ -106,6 +107,8 @@ export interface WebviewPort {
     response: InteractionResponse,
   ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
+  setMcpAppsServers(servers: McpAppsServer[]): Promise<void>;
+  getMcpServerToolCatalogs(): Promise<import("../types").McpServerToolCatalog[]>;
   getAppSnapshot(): Promise<AppSnapshot>;
   openScreenRecordingSettings(): Promise<void>;
   getAccessibilityPermission(): Promise<boolean>;
@@ -138,6 +141,15 @@ export interface WebviewPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  setMcpAppsServers: (servers) => invoke("set_mcp_apps_servers", { servers }),
+  getMcpServerToolCatalogs: () => invoke("get_mcp_server_tool_catalogs"),
+  openMcpApp: (artifactId, hostOrigin) => invoke("open_mcp_app", { artifactId, hostOrigin }),
+  prepareMcpAppDocument: (leaseId, document) =>
+    invoke("prepare_mcp_app_document", { leaseId, document }),
+  openHtmlPresentation: (source, hostOrigin) =>
+    invoke("open_html_presentation", { source, hostOrigin }),
+  mcpAppRequest: (leaseId, request) => invoke("mcp_app_request", { leaseId, request }),
+  closeMcpApp: (leaseId) => invoke("close_mcp_app", { leaseId }),
   getLensSource: (sourceRef) => invoke("get_lens_source", { sourceRef }),
   getLensOutput: (outputRef) => invoke("get_lens_output", { outputRef }),
   getLensImage: (imageRef) => invoke("get_lens_image", { imageRef }),
@@ -156,8 +168,6 @@ export const tauriWebviewPort: WebviewPort = {
     }),
   getResponseBlock: (operationId, representationId, blockIndex) =>
     invoke<LensOutputBlock>("get_response_block", { operationId, representationId, blockIndex }),
-  getHtmlOutput: (operationId, representationId, resourceId) =>
-    invoke<string>("get_html_output", { operationId, representationId, resourceId }),
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
   getAboutDocuments: () => invoke<AboutDocuments>("get_about_documents"),
   getReleaseAvailability: () => invoke<ReleaseAvailability>("get_release_availability"),

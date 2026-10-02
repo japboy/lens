@@ -32,6 +32,7 @@ import type { InputCoverage } from "../rendering/input-coverage";
 import { composeOutputMedia } from "../output-media";
 import {
   accessibilityStyles,
+  emptyStateStyles,
   controlStyles,
   feedbackStyles,
   reducedMotionStyles,
@@ -117,6 +118,7 @@ export class LensOverlayView extends LitElement {
   static styles = [
     viewHostStyles,
     controlStyles,
+    emptyStateStyles,
     css`
       lens-agent-output,
       lens-media-gallery,
@@ -1498,21 +1500,6 @@ export class LensOverlayView extends LitElement {
         }
       }
 
-      .empty-state {
-        flex: 1 1 auto;
-        min-height: 0;
-        margin: 0;
-        padding: 28px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-      }
-
-      .empty-state {
-        color: GrayText;
-      }
-
       .overlay-main > .error,
       .overlay-main > .notice {
         margin: 8px 14px;
@@ -1792,6 +1779,9 @@ export class LensOverlayView extends LitElement {
     | ((block: DeferredDocumentBlock) => Promise<DocumentBlock>)
     | undefined;
   @property({ type: Boolean }) active = initialOverlayState().active;
+  @property({ attribute: false }) appPort:
+    | import("../mcp-apps/composition").DesktopMcpAppsPort
+    | undefined;
   @property({ attribute: false }) responseHistory: ResponseHistoryPresentation | undefined;
   @property({ attribute: false }) loadResponseBlock: LoadResponseBlock | undefined;
   @property({ attribute: false }) retryResponseMedia: ((id: string) => Promise<void>) | undefined;
@@ -1981,14 +1971,14 @@ export class LensOverlayView extends LitElement {
     );
     const persistentStatus = liveStatus;
     const outputMedia = displayLens
-      ? composeOutputMedia(lensOutputPresentation(displayLens))
+      ? composeOutputMedia(lensOutputPresentation(displayLens), displayLens.mcp_apps)
       : { media: [], narrative: [] };
     const historyBlocks = this.responseHistory?.responses.flatMap((response) => response.blocks);
     const hasMediaCue =
       this.activeTab === "interpretation" &&
-      (historyBlocks?.length
-        ? historyBlocks.some((block) => block.type === "image" || block.type === "html") &&
-          historyBlocks.some((block) => block.type !== "image" && block.type !== "html")
+      (this.responseHistory?.responses.length
+        ? this.responseHistory.media.length > 0 &&
+          historyBlocks?.some((block) => block.type === "markdown" || block.type === "unsupported")
         : outputMedia.media.length > 0 && outputMedia.narrative.length > 0);
 
     return html`
@@ -2382,6 +2372,7 @@ export class LensOverlayView extends LitElement {
                 : html`<lens-agent-output
                     .sessionKind=${"history"}
                     .history=${this.responseHistory}
+                    .appPort=${this.appPort}
                     .notificationContent=${this.notificationSurface()}
                     .loadResponseBlock=${this.loadResponseBlock}
                     .requestMedia=${this.requestResponseMedia}
@@ -2459,6 +2450,7 @@ export class LensOverlayView extends LitElement {
           <lens-agent-output
             .lens=${displayLens}
             .history=${this.responseHistory}
+            .appPort=${this.appPort}
             .notificationContent=${this.notificationSurface()}
             .loadResponseBlock=${this.loadResponseBlock}
             .requestMedia=${this.requestResponseMedia}
@@ -2487,9 +2479,9 @@ export class LensOverlayView extends LitElement {
                     ><code>${sourceJson}</code></pre>
                   </section>
                 </div>`
-              : html`<div class="lens-content">
-                  ${sourcePending || this.model?.sourceResource?.stage === "failed" ? nothing : html`<p class="empty-state">No normalized source data is available.</p>`}
-                </div>`
+              : sourcePending || this.model?.sourceResource?.stage === "failed"
+                ? nothing
+                : html`<p class="empty-state">No normalized source data is available.</p>`
           }
         </section>`;
       case "diagnostics":

@@ -4,6 +4,7 @@
 //! This package has no native-service, Tauri, transport or persistence dependency.
 
 pub mod lens;
+pub mod mcp_app_csp;
 pub mod model;
 pub mod projection;
 pub mod prompt_template;

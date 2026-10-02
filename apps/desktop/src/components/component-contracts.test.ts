@@ -2,6 +2,10 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SessionView } from "../application/session-document";
+import {
+  presentResponseMedia,
+  type ResponseManifest,
+} from "../application/response-history-controller";
 import type { LensOverlayView } from "./lens-overlay-view";
 import appIconUrl from "../../src-tauri/icons/icon-macos.svg?url";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../application/view-models";
@@ -108,20 +112,18 @@ describe("component property and event contracts", () => {
       cancelPending: false,
       message: "",
     };
+    const committedResponse: ResponseManifest = {
+      id: "response",
+      sequence: 1,
+      blocks: [
+        { type: "image", block_index: 0, mime_type: "image/png", byte_length: 4 },
+        { type: "markdown", block_index: 1, byte_length: 4 },
+      ],
+    };
     element.responseHistory = {
       scopeId: "operation",
-      responses: [
-        {
-          id: "response",
-          sequence: 1,
-          blocks: [
-            { type: "image", block_index: 0, mime_type: "image/png", byte_length: 4 },
-            { type: "markdown", block_index: 1, byte_length: 4 },
-          ],
-        },
-      ],
-      media: [],
-      htmlContents: new Map(),
+      responses: [committedResponse],
+      media: presentResponseMedia("operation", committedResponse),
       mediaErrors: new Map(),
       capacityReached: false,
     };
@@ -159,15 +161,15 @@ describe("component property and event contracts", () => {
     expect(
       element.shadowRoot?.querySelector(".overlay-shell")?.getAttribute("data-media-cue"),
     ).toBe("true");
+    const narrativeResponse: ResponseManifest = {
+      id: "response",
+      sequence: 1,
+      blocks: [{ type: "markdown", block_index: 0, byte_length: 4 }],
+    };
     element.responseHistory = {
       ...element.responseHistory,
-      responses: [
-        {
-          id: "response",
-          sequence: 1,
-          blocks: [{ type: "markdown", block_index: 0, byte_length: 4 }],
-        },
-      ],
+      responses: [narrativeResponse],
+      media: presentResponseMedia("operation", narrativeResponse),
     };
     await element.updateComplete;
     expect(
@@ -662,7 +664,6 @@ describe("component property and event contracts", () => {
       })),
       capacityReached: false,
       media: [],
-      htmlContents: new Map(),
       mediaErrors: new Map(),
     };
     element.loadResponseBlock = async () => ({

@@ -2452,7 +2452,7 @@ mod tests {
 
     #[test]
     fn permission_budget_accepts_large_inputs_for_every_kind_and_late_input() {
-        const { assert!(adapter_output_mcp::MAX_FRAME_BYTES <= MAX_PERMISSION_INPUT_BYTES) };
+        const { assert!(adapter_mcp_server::apps::MAX_RPC_BYTES <= MAX_PERMISSION_INPUT_BYTES) };
         for kind in [
             ToolKind::Read,
             ToolKind::Search,
@@ -2480,8 +2480,8 @@ mod tests {
             assert_eq!(retained, arguments);
         }
         for html in [
-            "x".repeat(adapter_output_mcp::MAX_HTML_BYTES),
-            "\u{0001}".repeat(adapter_output_mcp::MAX_HTML_BYTES),
+            "x".repeat(adapter_mcp_server::MAX_HTML_BYTES),
+            "\u{0001}".repeat(adapter_mcp_server::MAX_HTML_BYTES),
         ] {
             let (controls, _shutdown) = controls();
             controls.begin_turn(Uuid::new_v4()).unwrap();

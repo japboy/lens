@@ -6,9 +6,8 @@ import type {
   LensState,
 } from "../types";
 import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
-import type { PresentedOutputMedia } from "../output-media";
+import { presentMcpApps, type PresentedOutputMedia } from "../output-media";
 import { imageDataUrl } from "../view-model";
-import { MAX_HTML_OUTPUT_BYTES, type HtmlOutputContent } from "./html-output-content";
 import type { WebviewPort } from "./webview-port";
 
 export const RESPONSE_BODY_CACHE_BYTES = 16 * 1024 * 1024;
@@ -17,10 +16,46 @@ export type ResponseBlockDescriptor = LensResponseBlockDescriptor & {
   source?: DeferredDocumentBlock;
 };
 export interface ResponseManifest {
+  mcpApps?: readonly import("adapter-mcp-apps-host").McpAppDescriptor[];
   id: string;
   sequence: number;
   delivery?: LensDeliveryCoverage;
   blocks: readonly ResponseBlockDescriptor[];
+}
+
+/** One response-scoped projection owns media identity for display and navigation. */
+export function presentResponseMedia(
+  scopeId: string,
+  response: ResponseManifest,
+): PresentedOutputMedia[] {
+  const media: PresentedOutputMedia[] = [];
+  for (const block of response.blocks) {
+    const id = responseBlockIdentity(scopeId, response.id, block.block_index);
+    if (block.type === "image") media.push({ kind: "image", id, mimeType: block.mime_type });
+    else if (block.type === "html")
+      media.push({
+        kind: "html",
+        id,
+        resourceId: block.resource_id,
+        mimeType: "text/html",
+        uri: block.uri,
+        byteLength: block.byte_length,
+        presentationSource: block.source
+          ? {
+              kind: "history",
+              generation: scopeId.slice("history:".length),
+              entry_id: block.source.entry_id,
+              revision: block.source.revision,
+              block_index: block.source.block_index,
+            }
+          : {
+              kind: "live",
+              output_ref: { operation_id: scopeId, representation_id: response.id },
+              block_index: block.block_index,
+            },
+      });
+  }
+  return [...media, ...presentMcpApps(response.mcpApps)];
 }
 interface ResponseManifestSet {
   responses: readonly ResponseManifest[];
@@ -30,7 +65,6 @@ export interface ResponseHistoryPresentation {
   scopeId: string;
   responses: readonly ResponseManifest[];
   media: readonly PresentedOutputMedia[];
-  htmlContents: ReadonlyMap<string, HtmlOutputContent>;
   mediaErrors: ReadonlyMap<string, string>;
   capacityReached: boolean;
   /** Previously displayed initial output; never authoritative committed bodies. */
@@ -49,7 +83,7 @@ export type LoadResponseBlock = (
 export const responseBlockIdentity = (operation: string, response: string, index: number): string =>
   JSON.stringify([operation, response, index]);
 interface CacheEntry {
-  value: LensOutputBlock | string;
+  value: LensOutputBlock;
   bytes: number;
 }
 interface PendingRequest {
@@ -66,12 +100,11 @@ export class ResponseHistoryController implements ReactiveController {
   private generation = 0;
   private cache = new Map<string, CacheEntry>();
   private cacheBytes = 0;
-  private inflight = new Map<string, Promise<LensOutputBlock | string>>();
+  private inflight = new Map<string, Promise<LensOutputBlock>>();
   private queue: PendingRequest[] = [];
   private active = 0;
   private mediaDemand = new Set<string>();
   private mediaBodies = new Map<string, LensOutputBlock>();
-  private htmlContents = new Map<string, HtmlOutputContent>();
   private mediaErrors = new Map<string, string>();
   private initialProjection:
     | {
@@ -86,7 +119,7 @@ export class ResponseHistoryController implements ReactiveController {
 
   constructor(
     private readonly host: ReactiveControllerHost,
-    private readonly port: Pick<WebviewPort, "getResponseBlock" | "getHtmlOutput">,
+    private readonly port: Pick<WebviewPort, "getResponseBlock">,
     private readonly loadHistoryBlock?: (
       reference: DeferredDocumentBlock,
     ) => Promise<DocumentBlock>,
@@ -108,7 +141,6 @@ export class ResponseHistoryController implements ReactiveController {
     this.queue = [];
     this.mediaDemand.clear();
     this.mediaBodies.clear();
-    this.htmlContents.clear();
     this.mediaErrors.clear();
     this.initialProjection = undefined;
     this.provisionalBlocks.clear();
@@ -123,6 +155,7 @@ export class ResponseHistoryController implements ReactiveController {
         ? {
             responses: history.responses.map((response) => ({
               id: response.representation_id,
+              mcpApps: response.mcp_apps,
               sequence: response.sequence,
               delivery: response.delivery,
               blocks: response.blocks,
@@ -248,7 +281,9 @@ export class ResponseHistoryController implements ReactiveController {
   readonly loadBlock: LoadResponseBlock = async (operation, response, index) => {
     const descriptor = this.descriptor(operation, response, index);
     const key = responseBlockIdentity(operation, response, index);
-    return (await this.obtain(key, async () => {
+    if (descriptor.type === "html")
+      throw new Error("HTML display requires a native presentation lease.");
+    return this.obtain(key, async () => {
       const block = descriptor.source
         ? await this.loadReplayBlock(descriptor)
         : await this.port.getResponseBlock(operation, response, index);
@@ -267,7 +302,7 @@ export class ResponseHistoryController implements ReactiveController {
       )
         throw new Error("Response image does not match its descriptor.");
       return block;
-    })) as LensOutputBlock;
+    });
   };
   readonly requestMedia = (ids: readonly string[]): void => {
     const demand = new Set(ids);
@@ -276,7 +311,6 @@ export class ResponseHistoryController implements ReactiveController {
     if (!changed) return;
     this.mediaDemand = demand;
     for (const id of this.mediaBodies.keys()) if (!demand.has(id)) this.mediaBodies.delete(id);
-    for (const id of this.htmlContents.keys()) if (!demand.has(id)) this.htmlContents.delete(id);
     for (const id of this.mediaErrors.keys()) if (!demand.has(id)) this.mediaErrors.delete(id);
     for (const [id, entry] of this.provisionalBlocks)
       if (entry.body.type === "image" && !demand.has(id)) this.releaseProvisional(id, entry, false);
@@ -286,11 +320,8 @@ export class ResponseHistoryController implements ReactiveController {
     for (const response of this.manifest?.responses ?? [])
       for (const descriptor of response.blocks) {
         const id = responseBlockIdentity(operation, response.id, descriptor.block_index);
-        if (!demand.has(id) || (descriptor.type !== "image" && descriptor.type !== "html"))
-          continue;
-        if (this.mediaBodies.has(id) || this.htmlContents.has(id)) continue;
-        if (descriptor.type === "html")
-          this.htmlContents.set(id, { resourceId: descriptor.resource_id, status: "loading" });
+        if (!demand.has(id) || descriptor.type !== "image") continue;
+        if (this.mediaBodies.has(id)) continue;
         void this.materializeMedia(operation, response.id, descriptor, id, generation);
       }
     this.publish();
@@ -303,10 +334,8 @@ export class ResponseHistoryController implements ReactiveController {
       const descriptor = response.blocks.find(
         (block) => responseBlockIdentity(operation, response.id, block.block_index) === id,
       );
-      if (!descriptor || (descriptor.type !== "image" && descriptor.type !== "html")) continue;
+      if (!descriptor || descriptor.type !== "image") continue;
       this.mediaErrors.delete(id);
-      if (descriptor.type === "html")
-        this.htmlContents.set(id, { resourceId: descriptor.resource_id, status: "loading" });
       this.publish();
       await this.materializeMedia(operation, response.id, descriptor, id, this.generation);
       return;
@@ -320,57 +349,18 @@ export class ResponseHistoryController implements ReactiveController {
     generation: number,
   ): Promise<void> {
     try {
-      const value = await this.loadMedia(operation, response, descriptor, id);
+      const value = await this.loadBlock(operation, response, descriptor.block_index);
       if (generation !== this.generation || !this.mediaDemand.has(id)) return;
       this.mediaErrors.delete(id);
-      if (typeof value === "string" && descriptor.type === "html")
-        this.htmlContents.set(id, {
-          resourceId: descriptor.resource_id,
-          status: "ready",
-          content: value,
-        });
-      else if (typeof value !== "string") this.mediaBodies.set(id, value);
+      this.mediaBodies.set(id, value);
       const provisional = this.provisionalBlocks.get(id);
       if (provisional) this.releaseProvisional(id, provisional, false);
     } catch {
       if (generation !== this.generation || !this.mediaDemand.has(id)) return;
       const message = "This response media could not be loaded.";
       this.mediaErrors.set(id, message);
-      if (descriptor.type === "html")
-        this.htmlContents.set(id, {
-          resourceId: descriptor.resource_id,
-          status: "failed",
-          message,
-        });
     }
     this.publish();
-  }
-  private async loadMedia(
-    operation: string,
-    response: string,
-    descriptor: ResponseBlockDescriptor,
-    id: string,
-  ): Promise<string | LensOutputBlock> {
-    if (descriptor.type !== "html")
-      return this.loadBlock(operation, response, descriptor.block_index);
-    if (
-      !Number.isSafeInteger(descriptor.byte_length) ||
-      descriptor.byte_length < 0 ||
-      descriptor.byte_length > MAX_HTML_OUTPUT_BYTES
-    )
-      throw new Error("HTML content exceeds the supported size.");
-    return this.obtain(`${id}:html`, async () => {
-      let content: string;
-      if (descriptor.source) {
-        if (!this.loadHistoryBlock) throw new Error("Session block loader unavailable.");
-        const block = await this.loadHistoryBlock(descriptor.source);
-        if (block.type !== "html") throw new Error("Session HTML does not match its descriptor.");
-        content = block.text;
-      } else content = await this.port.getHtmlOutput(operation, response, descriptor.resource_id);
-      if (new TextEncoder().encode(content).byteLength !== descriptor.byte_length)
-        throw new Error("HTML content does not match its descriptor.");
-      return content;
-    });
   }
   private async loadReplayBlock(descriptor: ResponseBlockDescriptor): Promise<LensOutputBlock> {
     if (!descriptor.source || !this.loadHistoryBlock)
@@ -382,23 +372,12 @@ export class ResponseHistoryController implements ReactiveController {
       case "unsupported":
         return block;
       case "html":
-        if (descriptor.type !== "html")
-          throw new Error("Session HTML does not match its descriptor.");
-        return {
-          type: "html",
-          resource_id: descriptor.resource_id,
-          uri: descriptor.uri,
-          mime_type: descriptor.mime_type,
-          byte_length: descriptor.byte_length,
-        };
+        throw new Error("Session content does not match its descriptor.");
       case "deferred":
         throw new Error("Session content was not materialized.");
     }
   }
-  private obtain(
-    key: string,
-    load: () => Promise<LensOutputBlock | string>,
-  ): Promise<LensOutputBlock | string> {
+  private obtain(key: string, load: () => Promise<LensOutputBlock>): Promise<LensOutputBlock> {
     const cached = this.cache.get(key);
     if (cached) {
       this.cache.delete(key);
@@ -408,7 +387,7 @@ export class ResponseHistoryController implements ReactiveController {
     const pending = this.inflight.get(key);
     if (pending) return pending;
     const generation = this.generation;
-    const promise = new Promise<LensOutputBlock | string>((resolve, reject) => {
+    const promise = new Promise<LensOutputBlock>((resolve, reject) => {
       this.queue.push({
         generation,
         reject,
@@ -417,9 +396,7 @@ export class ResponseHistoryController implements ReactiveController {
           void load()
             .then((value) => {
               if (generation !== this.generation) throw new Error("Response is no longer active.");
-              const bytes = new TextEncoder().encode(
-                typeof value === "string" ? value : JSON.stringify(value),
-              ).byteLength;
+              const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
               if (bytes > RESPONSE_BODY_CACHE_BYTES) {
                 resolve(value);
                 return;
@@ -478,34 +455,21 @@ export class ResponseHistoryController implements ReactiveController {
   private publish(): void {
     if (!this.operation || !this.manifest) return;
     const operation = this.operation;
-    const media: PresentedOutputMedia[] = [];
-    for (const response of this.manifest.responses)
-      for (const block of response.blocks) {
-        const id = responseBlockIdentity(operation, response.id, block.block_index);
-        if (block.type === "image") {
-          const body = this.mediaBodies.get(id) ?? this.provisionalBlocks.get(id)?.body;
-          media.push({
-            kind: "image",
-            id,
-            mimeType: block.mime_type,
-            source: body?.type === "image" ? imageDataUrl(body) : undefined,
-            provisional: !this.mediaBodies.has(id) && this.provisionalBlocks.has(id),
-          });
-        } else if (block.type === "html")
-          media.push({
-            kind: "html",
-            id,
-            resourceId: block.resource_id,
-            mimeType: "text/html",
-            uri: block.uri,
-            byteLength: block.byte_length,
-          });
-      }
+    const media = this.manifest.responses.flatMap((response) =>
+      presentResponseMedia(operation, response).map((item) => {
+        if (item.kind !== "image") return item;
+        const body = this.mediaBodies.get(item.id) ?? this.provisionalBlocks.get(item.id)?.body;
+        return {
+          ...item,
+          source: body?.type === "image" ? imageDataUrl(body) : undefined,
+          provisional: !this.mediaBodies.has(item.id) && this.provisionalBlocks.has(item.id),
+        };
+      }),
+    );
     this.presentation = {
       scopeId: operation,
       responses: this.manifest.responses,
       media,
-      htmlContents: new Map(this.htmlContents),
       mediaErrors: new Map(this.mediaErrors),
       capacityReached: this.manifest.capacityReached,
       provisionalBlocks: new Map(this.provisionalBlocks),

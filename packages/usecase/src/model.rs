@@ -289,6 +289,28 @@ pub struct AgentRunState {
     pub authentication_message: Option<String>,
 }
 
+/// An explicitly authorized HTTP MCP source. Credentials are not imported from Agents.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct McpAppServer {
+    pub id: Uuid,
+    pub name: String,
+    pub url: String,
+}
+
+/// Immutable output identity. Resource bodies are stored outside snapshot notifications.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpAppDescriptor {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub session_id: String,
+    pub server_id: String,
+    pub tool_name: String,
+    pub resource_uri: String,
+    pub title: String,
+    pub retained_bytes: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(try_from = "AppConfigWire")]
 pub struct AppConfig {
@@ -296,6 +318,7 @@ pub struct AppConfig {
     pub agent: AgentKind,
     pub working_directory: PathBuf,
     pub external_agents: Vec<ExternalAgentProfile>,
+    pub mcp_apps_servers: Vec<McpAppServer>,
     pub agent_prompt_template: AgentPromptTemplate,
     pub prompt_presets: PromptPresetCatalog,
 }
@@ -309,6 +332,7 @@ impl AppConfig {
             agent_preferences: Default::default(),
             working_directory: default_working_directory,
             external_agents: ExternalAgentProfile::bundled_presets(),
+            mcp_apps_servers: Vec::new(),
             agent_prompt_template: prompt_presets.selected().template.clone(),
             prompt_presets,
         }
@@ -376,6 +400,7 @@ impl AppConfig {
                 == other.agent_preferences.get(other.agent).tools
             && self.working_directory == other.working_directory
             && self.agent_prompt_template == other.agent_prompt_template
+            && self.mcp_apps_servers == other.mcp_apps_servers
     }
     pub fn same_execution_config(&self, other: &Self) -> bool {
         self.prompt_presets.execution_revision == other.prompt_presets.execution_revision
@@ -383,6 +408,7 @@ impl AppConfig {
             && self.same_agent_execution(other, self.agent)
             && self.working_directory == other.working_directory
             && self.agent_prompt_template == other.agent_prompt_template
+            && self.mcp_apps_servers == other.mcp_apps_servers
     }
 
     pub fn settings_require_prompt_migration(bytes: &[u8]) -> Result<bool, serde_json::Error> {
@@ -411,6 +437,7 @@ struct AppConfigWire {
     working_directory: Option<PathBuf>,
     #[serde(deserialize_with = "present_external_agents")]
     external_agents: Option<Vec<ExternalAgentProfile>>,
+    mcp_apps_servers: Vec<McpAppServer>,
     #[serde(deserialize_with = "present_prompt_presets")]
     prompt_presets: Option<PromptPresetCatalog>,
 }
@@ -485,6 +512,7 @@ impl Default for AppConfigWire {
             agent_preferences: Default::default(),
             working_directory: None,
             external_agents: None,
+            mcp_apps_servers: Vec::new(),
             prompt_presets: None,
         }
     }
@@ -522,6 +550,7 @@ impl AppConfigWire {
         Ok(AppConfig {
             agent: self.agent,
             external_agents,
+            mcp_apps_servers: self.mcp_apps_servers,
             agent_preferences: self.agent_preferences,
             working_directory: self.working_directory.unwrap_or(default_working_directory),
             agent_prompt_template: prompt_presets.selected().template.clone(),
@@ -619,6 +648,8 @@ pub struct LensRepresentation {
     pub delivery: Option<domain::projection::LensDelivery>,
     pub run_id: Uuid,
     pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
+    #[serde(default)]
+    pub mcp_apps: Vec<McpAppDescriptor>,
 }
 
 impl LensRepresentation {
@@ -710,6 +741,8 @@ pub struct LensState {
     #[serde(default)]
     pub output_blocks: std::sync::Arc<Vec<LensOutputBlock>>,
     #[serde(default)]
+    pub mcp_apps: Vec<McpAppDescriptor>,
+    #[serde(default)]
     pub representation: Option<LensRepresentation>,
     #[serde(default)]
     pub response_history: crate::response_history::LensResponseHistory,
@@ -741,6 +774,7 @@ impl Default for LensState {
             projection: None,
             delivery: None,
             output_blocks: Vec::new().into(),
+            mcp_apps: Vec::new(),
             representation: None,
             response_history: Default::default(),
             pending_representation: None,
@@ -813,6 +847,7 @@ mod tests {
             delivery: Some(previous.clone()),
             run_id: Uuid::from_u128(3),
             output_blocks: Default::default(),
+            mcp_apps: Vec::new(),
         };
         assert!(representation.is_current_for(&source, Some(&previous), 1));
         assert!(!representation.is_current_for(&source, Some(&previous), 2));

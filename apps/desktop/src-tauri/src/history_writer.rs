@@ -1,5 +1,7 @@
 //! Ordered, bounded metadata persistence outside the live ACP dispatch path.
-use crate::session_history_store::{HistorySource, HistoryStore, InfoPatch, Patch, StoredEntry};
+use crate::session_history_store::{
+    normalize_title, HistorySource, HistoryStore, InfoPatch, Patch, StoredEntry,
+};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 const QUEUE_CAPACITY: usize = 128;
@@ -62,7 +64,12 @@ impl HistoryWriter {
             last_error,
         })
     }
-    pub fn record_local(&self, source: HistorySource, entry: StoredEntry) -> Result<(), String> {
+    pub fn record_local(
+        &self,
+        source: HistorySource,
+        mut entry: StoredEntry,
+    ) -> Result<(), String> {
+        entry.title = entry.title.as_deref().map(normalize_title);
         check_lengths(&[
             source.invocation.len(),
             entry.session_id.len(),
@@ -78,8 +85,11 @@ impl HistoryWriter {
         source: HistorySource,
         id: String,
         cwd: String,
-        patch: InfoPatch,
+        mut patch: InfoPatch,
     ) -> Result<(), String> {
+        if let Patch::Value(title) = &mut patch.title {
+            *title = normalize_title(title);
+        }
         let value = |patch: &Patch<String>| match patch {
             Patch::Value(value) => Some(value.len()),
             _ => None,
@@ -179,6 +189,67 @@ mod tests {
         }
     }
     #[test]
+    fn live_writer_queues_the_shared_bounded_title_projection() {
+        let store = Arc::new(HistoryStore::memory().unwrap());
+        let writer = HistoryWriter::new(Arc::clone(&store)).unwrap();
+        let mut entry = local("one");
+        entry.title = Some(format!("Local\0{}", "\u{732b}".repeat(MAX_FIELD_BYTES)));
+        writer.record_local(source(), entry).unwrap();
+        writer.flush().unwrap();
+        let title = store.entries(&source(), "/work").unwrap()[0]
+            .title
+            .clone()
+            .unwrap();
+        assert!(title.starts_with("Local"));
+        assert!(title.len() <= MAX_FIELD_BYTES && !title.contains('\0'));
+        writer
+            .apply_info_patch(
+                source(),
+                "one".into(),
+                "/work".into(),
+                InfoPatch {
+                    title: Patch::Value(format!("Provider\0{}", "🦀".repeat(MAX_FIELD_BYTES))),
+                    provider_updated_at: Patch::Missing,
+                },
+            )
+            .unwrap();
+        writer.flush().unwrap();
+        let title = store.entries(&source(), "/work").unwrap()[0]
+            .title
+            .clone()
+            .unwrap();
+        assert!(title.starts_with("Provider"));
+        assert!(title.len() <= MAX_FIELD_BYTES && !title.contains('\0'));
+        assert!(writer.notice().is_none());
+        writer
+            .apply_info_patch(
+                source(),
+                "one".into(),
+                "/work".into(),
+                InfoPatch {
+                    title: Patch::Null,
+                    provider_updated_at: Patch::Missing,
+                },
+            )
+            .unwrap();
+        writer.flush().unwrap();
+        assert!(store.entries(&source(), "/work").unwrap()[0]
+            .title
+            .is_none());
+        assert!(writer
+            .apply_info_patch(
+                source(),
+                "one".into(),
+                "/work".into(),
+                InfoPatch {
+                    title: Patch::Missing,
+                    provider_updated_at: Patch::Value("x".repeat(MAX_FIELD_BYTES + 1))
+                }
+            )
+            .is_err());
+    }
+
+    #[test]
     fn writes_are_ordered_nonfatal_and_drained_on_shutdown() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("history.sqlite3");
@@ -254,7 +325,7 @@ mod tests {
             app.handle(),
             "live",
             SessionUpdate::SessionInfoUpdate(
-                SessionInfoUpdate::new().title("x".repeat(MAX_FIELD_BYTES + 1)),
+                SessionInfoUpdate::new().updated_at("x".repeat(MAX_FIELD_BYTES + 1)),
             ),
         )
         .unwrap();
