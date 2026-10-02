@@ -52,6 +52,7 @@ use uuid::Uuid;
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const CLAUDE_AUTH_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const CLAUDE_AUTH_STDOUT_MAX_BYTES: usize = 1024 * 1024;
+const AGENT_CANCEL_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const AGENT_LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -142,6 +143,8 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     identity: &'a AgentSessionIdentity,
     mailbox: &'a AgentSessionMailbox,
     shutdown: &'a mut watch::Receiver<bool>,
+    control_retirement: &'a mut watch::Receiver<Option<Error>>,
+    source_lifetime: &'a mut Option<crate::mcp_apps::SourceLifetime>,
     session: &'a mut ActiveSession<'static, Agent>,
     prompt_capabilities: &'a PromptCapabilities,
     apps: &'a adapter_mcp_server::apps::AppBroker,
@@ -1727,7 +1730,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             };
             crate::output_mcp::require_no_app_failure(initialize.agent_info.as_ref().map(|info| info.name.as_str()), session.meta(), &apps)?;
             let session_id = session.session_id().clone();
-            let _apps_lifetime = app.state::<AppState>().mcp_apps.install(identity.operation_id,session_id.to_string(),&apps,&identity.config).map_err(state_error)?;
+            let mut apps_lifetime = Some(app.state::<AppState>().mcp_apps.install(identity.operation_id,session_id.to_string(),&apps,&identity.config).map_err(state_error)?);
             crate::session_view::start_live(&app,identity.operation_id,identity.config.agent,session_id.to_string()).map_err(state_error)?;
             let agent_default = session_controls::advertised_mode(session.config_options(), session.modes())?;
             let defaults = identity.config.agent_preferences.get(identity.config.agent);
@@ -1775,6 +1778,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
             let mut applied_projection = None;
             let mut applied_source_projection = None;
             let mut cadence = AgentTurnCadence::default();
+            let (control_retire, mut control_retirement) = watch::channel(None);
             let actor = async {
             loop {
                 let turn = {
@@ -1789,6 +1793,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                 tokio::pin!(next_turn);
                 let turn = loop {
                     tokio::select! {
+                        changed = control_retirement.changed() => { let _ = changed; return Err(state_error("Agent controls retired the session".into())); }
                         turn = &mut next_turn => break turn?,
                         message = session.read_update() => {
                             if let SessionMessage::SessionMessage(dispatch) = message? {
@@ -1866,6 +1871,8 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         identity: &identity,
                         mailbox: &mailbox,
                         shutdown: &mut shutdown,
+                        control_retirement: &mut control_retirement,
+                        source_lifetime: &mut apps_lifetime,
                         session: &mut session,
                         prompt_capabilities: &initialize.agent_capabilities.prompt_capabilities,
                         apps: &apps,
@@ -1914,15 +1921,26 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         )
                         .map_err(state_error)?;
                         *active_turn_slot = None;
-                        turn.complete(Ok(AgentSessionTurnCompletion::Finished));
+                        let completion = if control_retirement.borrow().is_some() {
+                            Err(error.to_string())
+                        } else {
+                            Ok(AgentSessionTurnCompletion::Finished)
+                        };
+                        turn.complete(completion);
                         return Err(error);
                     }
                 }
             }
             };
+            tokio::pin!(actor);
             tokio::select! {
-                result = actor => result,
-                result = controls.serve(&app, &connection, control_requests) => result,
+                result = &mut actor => result,
+                result = controls.serve(&app, &connection, control_requests) => {
+                    // Retire authority first; an in-flight prompt still owns its transport
+                    // until the bounded cancellation response drain completes.
+                    let _ = control_retire.send(Some(result.as_ref().err().cloned().unwrap_or_else(|| state_error("Agent control service ended".into()))));
+                    actor.await.and(result)
+                },
             }
         })
         .await;
@@ -1936,6 +1954,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
         let error = result.as_ref().err().cloned().unwrap_or_else(|| {
             state_error("Agent session ended before its active turn completed".into())
         });
+        let error = classify_cancelled_connection_error(error, *cancellation.borrow());
         finish_agent_run_error(
             &finalizer_app,
             key,
@@ -2364,6 +2383,7 @@ fn finish_agent_run_error<R: tauri::Runtime>(
     error: &Error,
     cancelled_by_client: bool,
 ) -> Result<bool, String> {
+    let cancellation_unknown = cancellation_completion_failure(error).is_some();
     let stage = if cancelled_by_client {
         LensStage::Cancelled
     } else {
@@ -2390,11 +2410,18 @@ fn finish_agent_run_error<R: tauri::Runtime>(
         };
         lens.pending_representation = None;
         lens.error = match stage {
+            LensStage::Cancelled if cancellation_unknown => Some(error.to_string()),
             LensStage::AuthenticationRequired | LensStage::Cancelled => None,
             _ => Some(error.to_string()),
         };
         let outcome = (stage != LensStage::Cancelled).then_some(LensRefreshOutcome::Failed);
-        let live_error = (stage != LensStage::Cancelled).then(|| error.to_string());
+        let live_error =
+            (stage != LensStage::Cancelled || cancellation_unknown).then(|| error.to_string());
+        if cancellation_unknown {
+            if let Some(agent) = lens.agent.as_mut() {
+                agent.stop_reason = None;
+            }
+        }
         finish_retained_representation(lens, outcome, live_error);
         if stage == LensStage::AuthenticationRequired {
             if let Some(agent) = lens.agent.as_mut() {
@@ -2598,6 +2625,121 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CancellationCompletionFailure {
+    Timeout,
+    NotificationSend,
+    Transport,
+    PromptResponse,
+    Transcript,
+}
+
+fn cancellation_completion_error(reason: CancellationCompletionFailure) -> Error {
+    let mut error =
+        Error::internal_error().data(serde_json::json!({"lensCancellationCompletion":reason}));
+    error.message =
+        "Agent cancellation completion could not be confirmed; the session was retired".into();
+    error
+}
+
+fn cancellation_completion_failure(error: &Error) -> Option<CancellationCompletionFailure> {
+    serde_json::from_value(
+        error
+            .data
+            .as_ref()?
+            .get("lensCancellationCompletion")?
+            .clone(),
+    )
+    .ok()
+}
+
+fn classify_cancelled_connection_error(error: Error, cancelled: bool) -> Error {
+    if cancelled && cancellation_completion_failure(&error).is_none() {
+        cancellation_completion_error(CancellationCompletionFailure::Transport)
+    } else {
+        error
+    }
+}
+
+fn retire_prompt_publication(
+    mailbox: &AgentSessionMailbox,
+    apps: &AppBroker,
+    run_id: Uuid,
+) -> Result<(), Error> {
+    apps.abort_turn(run_id);
+    mailbox
+        .close("Agent session was cancelled")
+        .map_err(state_error)
+}
+
+async fn wait_for_turn_cancellation(
+    shutdown: &mut watch::Receiver<bool>,
+    control_retirement: &mut watch::Receiver<Option<Error>>,
+    cancellation: &mut watch::Receiver<bool>,
+) {
+    loop {
+        if *shutdown.borrow() || control_retirement.borrow().is_some() || *cancellation.borrow() {
+            return;
+        }
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            _ = control_retirement.changed() => return,
+            changed = cancellation.changed() => { if changed.is_err() || *cancellation.borrow() { return; } },
+        }
+    }
+}
+
+// ACP requires the original prompt's terminal response after session/cancel. Keep
+// its transport alive, but grant queued updates only transcript authority.
+async fn drain_cancelled_prompt<F>(
+    session: &mut ActiveSession<'_, Agent>,
+    connection: &ConnectionTo<Agent>,
+    response: std::pin::Pin<&mut F>,
+    mut record: impl FnMut(SessionNotification) -> Result<(), Error>,
+    timeout: Duration,
+) -> Result<agent_client_protocol::schema::v1::PromptResponse, Error>
+where
+    F: std::future::Future<
+        Output = Result<agent_client_protocol::schema::v1::PromptResponse, Error>,
+    >,
+{
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    connection
+        .send_notification(CancelNotification::new(session.session_id().clone()))
+        .map_err(|_| {
+            cancellation_completion_error(CancellationCompletionFailure::NotificationSend)
+        })?;
+    let mut response = response;
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut deadline => return Err(cancellation_completion_error(CancellationCompletionFailure::Timeout)),
+            update = session.read_update() => {
+                let update = update.map_err(|_| cancellation_completion_error(CancellationCompletionFailure::Transport))?;
+                if let SessionMessage::SessionMessage(dispatch) = update {
+                    MatchDispatch::new(dispatch)
+                        .if_notification(async |notification: SessionNotification| record(notification))
+                        .await
+                        .if_request(async |_: RequestPermissionRequest, responder| {
+                            use agent_client_protocol::schema::v1::{RequestPermissionOutcome, RequestPermissionResponse};
+                            responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
+                        }).await
+                        .if_request(async |_: agent_client_protocol::schema::v1::CreateElicitationRequest, responder| {
+                            use agent_client_protocol::schema::v1::{CreateElicitationResponse, ElicitationAction};
+                            responder.respond(CreateElicitationResponse::new(ElicitationAction::Cancel))
+                        }).await
+                        .otherwise_ignore()
+                        .map_err(|_| cancellation_completion_error(CancellationCompletionFailure::Transcript))?;
+                }
+            }
+            response = &mut response => return response.map_err(|_| cancellation_completion_error(CancellationCompletionFailure::PromptResponse)),
+        }
+    }
+}
+
 async fn run_session_turn<R: tauri::Runtime>(
     execution: AgentTurnExecution<'_, R>,
     key: AgentRunKey,
@@ -2613,6 +2755,8 @@ async fn run_session_turn<R: tauri::Runtime>(
         identity,
         mailbox,
         shutdown,
+        control_retirement,
+        source_lifetime,
         session,
         prompt_capabilities,
         apps,
@@ -2656,22 +2800,21 @@ async fn run_session_turn<R: tauri::Runtime>(
     progress.record(false);
 
     let result = async {
-    loop {
+    let mut locally_cancelled = false;
+    let response = loop {
         tokio::select! {
             biased;
-            changed = shutdown.changed() => {
-                let _ = changed;
-                session_connection
-                    .send_notification(CancelNotification::new(session_id.clone()))?;
-                return Err(Error::request_cancelled());
-            }
-            changed = cancellation.changed() => {
-                let _ = changed;
-                if *cancellation.borrow() {
-                    session_connection
-                        .send_notification(CancelNotification::new(session_id.clone()))?;
-                    return Err(Error::request_cancelled());
-                }
+            _ = wait_for_turn_cancellation(shutdown, control_retirement, cancellation) => {
+                locally_cancelled = true;
+                drop(source_lifetime.take());
+                controls.end_turn();
+                retire_prompt_publication(mailbox, apps, key.run_id)?;
+                progress.take_pending();
+                break drain_cancelled_prompt(session, &session_connection, prompt_response.as_mut(), |notification| {
+                    crate::session_view::record_live_with_cadence(app, &notification.session_id.to_string(), notification.update.clone(), crate::session_view::DisplayCadence::Actor).map_err(state_error)?;
+                    candidate.record_update(notification.update)?;
+                    Ok(())
+                }, AGENT_CANCEL_COMPLETION_TIMEOUT).await?;
             }
             output_dirty = progress.tick() => {
                 if let Some(output_dirty) = output_dirty {
@@ -2694,9 +2837,15 @@ async fn run_session_turn<R: tauri::Runtime>(
                         match record_control_update(app, controls, &session_connection, dispatch, Some(&mut candidate)).await {
                             Ok(changed) => changed,
                             Err(error) => {
-                                session_connection.send_notification(
-                                    CancelNotification::new(session_id.clone()),
-                                )?;
+                                drop(source_lifetime.take());
+                                controls.end_turn();
+                                retire_prompt_publication(mailbox, apps, key.run_id)?;
+                                progress.take_pending();
+                                // A malformed update fails this turn, but cancellation still
+                                // owns the original response until its bounded drain ends.
+                                drain_cancelled_prompt(session, &session_connection, prompt_response.as_mut(), |notification| {
+                                    crate::session_view::record_live_with_cadence(app, &notification.session_id.to_string(), notification.update, crate::session_view::DisplayCadence::Actor).map_err(state_error)
+                                }, AGENT_CANCEL_COMPLETION_TIMEOUT).await?;
                                 return Err(error);
                             }
                         };
@@ -2705,15 +2854,22 @@ async fn run_session_turn<R: tauri::Runtime>(
                     progress.record(output_changed);
                 }
             }
-            response = &mut prompt_response => {
-                let stop_reason = response?.stop_reason;
+            response = &mut prompt_response => break response?,
+            _ = mailbox.notified() => {
+                // The mailbox itself is a capacity-one latest slot. The active turn remains
+                // serial; the actor reads the newest pending projection after this response.
+            }
+        }
+    };
+                let stop_reason = response.stop_reason;
                 crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
                     .map_err(state_error)?;
                 let stop_reason_text = stop_reason_text(stop_reason);
                 let cancelled = stop_reason == StopReason::Cancelled
+                    || locally_cancelled
                     || *cancellation.borrow()
                     || *shutdown.borrow();
-                let app_artifacts = apps.finish_turn(key.run_id).map_err(state_error)?;
+                let app_artifacts = if locally_cancelled { Vec::new() } else { apps.finish_turn(key.run_id).map_err(state_error)? };
                 let app_descriptors = if cancelled { Vec::new() } else { app.state::<AppState>().mcp_apps.retain(app,identity.operation_id,&session_id.to_string(),app_artifacts).map_err(state_error)? };
                 // Terminal commit owns the candidate even if subsequent event delivery fails.
                 progress.take_pending();
@@ -2746,14 +2902,11 @@ async fn run_session_turn<R: tauri::Runtime>(
                     app.state::<AppState>().mcp_apps.discard(identity.operation_id, &app_descriptors);
                 }
                 applied.map_err(state_error)?;
-                return Ok(!cancelled);
-            }
-            _ = mailbox.notified() => {
-                // The mailbox itself is a capacity-one latest slot. The active turn remains
-                // serial; the actor reads the newest pending projection after this response.
-            }
-        }
-    }
+                if let Some(error) = control_retirement.borrow().clone() {
+                    return Err(error);
+                }
+                Ok(!cancelled)
+
     }.await;
     if let Err(error) =
         crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
@@ -3263,6 +3416,230 @@ mod tests {
         model::{Bounds, ExtractionQuality, SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
     use agent_client_protocol::schema::v1::{ContentChunk, SessionUpdate};
+
+    async fn exercise_cancelled_prompt(stop_reason: Option<StopReason>) {
+        use agent_client_protocol::schema::v1::{
+            NewSessionRequest, NewSessionResponse, PromptResponse, RequestPermissionOutcome,
+            ToolCallUpdate, ToolCallUpdateFields,
+        };
+        use agent_client_protocol::{Client, Responder};
+        let apps = AppBroker::start(vec![], "<p>fixture shell</p>".into())
+            .await
+            .unwrap();
+        let run_id = Uuid::new_v4();
+        apps.begin_turn(run_id).unwrap();
+        let (_, late_url, late_authorization) = apps
+            .registrations()
+            .into_iter()
+            .find(|(name, _, _)| name == adapter_mcp_server::apps::FALLBACK_SERVER)
+            .unwrap();
+        let cancel_seen = Arc::new(tokio::sync::Notify::new());
+        let cancel_notification = cancel_seen.clone();
+        let prompt_started = Arc::new(tokio::sync::Notify::new());
+        let started = prompt_started.clone();
+        let agent = Agent
+            .builder()
+            .on_receive_request(
+                async |_: NewSessionRequest,
+                       responder: Responder<NewSessionResponse>,
+                       _: ConnectionTo<Client>| {
+                    responder.respond(NewSessionResponse::new("cancel-fixture"))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_notification(
+                async move |_: CancelNotification, _: ConnectionTo<Client>| {
+                    cancel_notification.notify_one();
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .on_receive_request(
+                async move |request: PromptRequest,
+                            responder: Responder<PromptResponse>,
+                            connection: ConnectionTo<Client>| {
+                    let cancelled = cancel_seen.clone();
+                    let started = started.clone();
+                    let sender = connection.clone();
+                    let late_url = late_url.clone();
+                    let late_authorization = late_authorization.clone();
+                    connection.spawn(async move {
+                        started.notify_one();
+                        cancelled.notified().await;
+                        let late_result: serde_json::Value = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap().post(late_url).header("authorization", late_authorization).json(&serde_json::json!({"jsonrpc":"2.0","id":"late","method":"tools/call","params":{"name":"render_html","arguments":{"html":"<p>must not publish</p>"}}})).send().await.unwrap().json().await.unwrap();
+                        assert!(late_result.get("error").is_some());
+                        sender.send_notification(SessionNotification::new(
+                            request.session_id.clone(),
+                            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                "late-tool",
+                                ToolCallUpdateFields::default(),
+                            )),
+                        ))?;
+                        let permission = sender
+                            .send_request(RequestPermissionRequest::new(
+                                request.session_id.clone(),
+                                ToolCallUpdate::new("late-tool", ToolCallUpdateFields::default()),
+                                vec![],
+                            ))
+                            .block_task()
+                            .await?;
+                        assert_eq!(permission.outcome, RequestPermissionOutcome::Cancelled);
+                        sender.send_notification(SessionNotification::new(
+                            request.session_id,
+                            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                                ContentBlock::Text(TextContent::new("accepted final transcript")),
+                            )),
+                        ))?;
+                        if let Some(reason) = stop_reason {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            responder.respond(PromptResponse::new(reason))
+                        } else {
+                            std::future::pending::<Result<(), Error>>().await
+                        }
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+        Client.builder().connect_with(agent, async move |connection| {
+            let mut session = connection.build_session_from(NewSessionRequest::new(std::env::current_dir().unwrap())).block_task().start_session().await?;
+            let response = connection.send_request_to(Agent, PromptRequest::new(session.session_id().clone(), vec!["public fixture".into()])).block_task();
+            tokio::pin!(response);
+            // Start the real request before initiating cancellation.
+            tokio::select! { _ = prompt_started.notified() => {}, result = &mut response => panic!("prompt completed before cancellation: {result:?}") }
+            let mailbox = AgentSessionMailbox::new();
+            retire_prompt_publication(&mailbox, &apps, run_id)?;
+            assert!(mailbox.is_closed());
+            assert!(apps.finish_turn(run_id).is_err());
+            let (projection, projection_ref) = sample_projection(&sample_input("replacement"), &[]);
+            let (queued, _) = AgentSessionTurn::new(2, projection_ref, projection);
+            assert!(mailbox.replace(queued).is_err());
+            let mut notifications = vec![];
+            let result = drain_cancelled_prompt(&mut session, &connection, response.as_mut(), |notification| { notifications.push(notification.update); Ok(()) }, Duration::from_secs(2)).await;
+            assert_eq!(notifications.len(), 2);
+            assert!(matches!(notifications[0], SessionUpdate::ToolCallUpdate(_)));
+            assert!(matches!(notifications[1], SessionUpdate::AgentMessageChunk(_)));
+            match stop_reason {
+                Some(expected) => assert_eq!(result.unwrap().stop_reason, expected),
+                None => assert_eq!(cancellation_completion_failure(&result.unwrap_err()), Some(CancellationCompletionFailure::Timeout)),
+            }
+            Ok(())
+        }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_drains_real_acp_permissions_updates_and_delayed_terminal_response() {
+        exercise_cancelled_prompt(Some(StopReason::Cancelled)).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_accepts_raced_acp_completion_without_inventing_cancelled_reason() {
+        exercise_cancelled_prompt(Some(StopReason::EndTurn)).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_missing_acp_response_is_explicitly_unknown() {
+        exercise_cancelled_prompt(None).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_disconnected_acp_transport_is_not_a_terminal_acknowledgment() {
+        use agent_client_protocol::schema::v1::NewSessionRequest;
+        use agent_client_protocol::{ByteStreams, Client};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+        let (client_io, agent_io) = tokio::io::duplex(4096);
+        let (client_reader, client_writer) = tokio::io::split(client_io);
+        let (agent_reader, mut agent_writer) = tokio::io::split(agent_io);
+        let prompt_started = Arc::new(tokio::sync::Notify::new());
+        let started = prompt_started.clone();
+        let agent = tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(agent_reader).lines();
+            let mut cancel_seen = false;
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                match request["method"].as_str().unwrap() {
+                    "session/new" => {
+                        let response = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"sessionId":"disconnect-fixture"}});
+                        agent_writer
+                            .write_all(format!("{response}\n").as_bytes())
+                            .await
+                            .unwrap();
+                    }
+                    "session/prompt" => started.notify_one(),
+                    "session/cancel" => {
+                        cancel_seen = true;
+                        break;
+                    }
+                    method => panic!("unexpected fixture method: {method}"),
+                }
+            }
+            assert!(
+                cancel_seen,
+                "fixture must receive cancellation before disconnecting"
+            );
+            // Dropping both halves is a real peer transport disconnect, not an
+            // error response or a successful cancelled terminal response.
+        });
+        let callback_failure = Arc::new(std::sync::Mutex::new(None));
+        let observed = callback_failure.clone();
+        let client = Client.builder().connect_with(ByteStreams::new(client_writer.compat_write(), client_reader.compat()), async move |connection| {
+            let mut session = connection.build_session_from(NewSessionRequest::new(std::env::current_dir().unwrap())).block_task().start_session().await?;
+            let response = connection.send_request_to(Agent, PromptRequest::new(session.session_id().clone(), vec!["public fixture".into()])).block_task();
+            tokio::pin!(response);
+            tokio::select! { _ = prompt_started.notified() => {}, result = &mut response => panic!("unexpected response: {result:?}") }
+            let error = drain_cancelled_prompt(&mut session, &connection, response.as_mut(), |_| Ok(()), Duration::from_secs(5)).await.unwrap_err();
+            let failure = cancellation_completion_failure(&error);
+            assert!(matches!(failure, Some(CancellationCompletionFailure::Transport | CancellationCompletionFailure::PromptResponse)));
+            *observed.lock().unwrap() = failure;
+            Ok(())
+        });
+        // The connection runner may also observe EOF after the application callback.
+        let result = tokio::time::timeout(Duration::from_secs(1), client)
+            .await
+            .expect("peer EOF must finish without waiting for the cancellation deadline");
+        match result {
+            Ok(()) => assert!(
+                callback_failure.lock().unwrap().is_some(),
+                "successful callback must have observed explicit unknown completion"
+            ),
+            Err(error) => assert_eq!(
+                cancellation_completion_failure(&classify_cancelled_connection_error(error, true)),
+                Some(CancellationCompletionFailure::Transport)
+            ),
+        }
+        agent.await.unwrap();
+    }
+
+    #[test]
+    fn cancellation_unknown_diagnostic_preserves_local_stage_without_inventing_stop_reason() {
+        let projection = projection_ref("Source", 2);
+        let run_id = Uuid::new_v4();
+        let app = app_response_test_app(&projection, run_id);
+        let state = app.state::<AppState>();
+        let config = state.config().unwrap();
+        let error = cancellation_completion_error(CancellationCompletionFailure::Timeout);
+        assert!(finish_agent_run_error(
+            app.handle(),
+            AgentRunKey {
+                operation_id: Uuid::nil(),
+                run_id
+            },
+            &config,
+            config.agent,
+            &error,
+            true
+        )
+        .unwrap());
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.lens.stage, LensStage::Cancelled);
+        assert!(snapshot
+            .lens
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("could not be confirmed"));
+        assert_eq!(snapshot.lens.agent.unwrap().stop_reason, None);
+    }
 
     async fn assert_initial_session_config_preserved(expected_json: serde_json::Value) {
         use adapter_mcp_server::apps::AppBroker;

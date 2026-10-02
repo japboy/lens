@@ -109,7 +109,7 @@ export const MEMBERS: readonly Member[] = [
         "uuid",
         "zip",
       ],
-      dev: ["pretty_assertions", "tauri", "tokio", "toml"],
+      dev: ["pretty_assertions", "tauri", "tokio", "tokio-util", "toml"],
       build: ["tauri-build", "serde_json", "toml"],
     },
   },

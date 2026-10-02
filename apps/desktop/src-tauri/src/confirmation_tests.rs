@@ -430,9 +430,21 @@ impl agent::AgentHost<MockRuntime> for AgentFixture {
         let new_session = self.0.clone();
         let configure = self.0.clone();
         let prompt = self.0.clone();
+        let cancellation = self.0.clone();
         DynConnectTo::new(
             Agent
                 .builder()
+                .on_receive_notification(
+                    async move |_: CancelNotification, _: ConnectionTo<Client>| {
+                        // Standard cancellation completes the original held prompt. The
+                        // Stop fixture keeps its explicit barrier to test cleanup ordering.
+                        if cancellation.scenario != Scenario::StopDuringPrompt {
+                            cancellation.finish_prompt.notify_one();
+                        }
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
                 .on_receive_request(
                     async move |request: InitializeRequest,
                                 responder: Responder<InitializeResponse>,

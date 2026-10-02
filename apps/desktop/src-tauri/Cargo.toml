@@ -76,6 +76,7 @@ uuid.workspace = true
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
+tokio-util = { version = "=0.7.19", features = ["compat"] }
 tokio = { version = "=1.53.1", features = ["test-util"] }
 toml = "=1.1.6"
 pretty_assertions = "=1.4.1"

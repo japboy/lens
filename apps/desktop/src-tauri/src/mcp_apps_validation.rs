@@ -186,6 +186,7 @@ pub(crate) async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 .map(|id| sha256(id.as_bytes()));
             let event = serde_json::json!({
                 "stage":snapshot.lens.stage,"run_id":snapshot.lens.agent.as_ref().map(|run|run.run_id),
+                "stop_reason":snapshot.lens.agent.as_ref().and_then(|run|run.stop_reason.as_ref()),
                 "session_sha256":session_hash,"app_artifact_ids":snapshot.lens.mcp_apps.iter().map(|app|app.id).collect::<Vec<_>>(),
                 "output_sha256":sha256(&serde_json::to_vec(&snapshot.lens.output_blocks).unwrap_or_default()),
                 "response_count":snapshot.lens.response_history.responses.len(),
