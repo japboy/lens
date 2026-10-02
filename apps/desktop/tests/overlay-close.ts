@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSnapshot } from "../src/types";
 import type { WebviewPort } from "../src/application/webview-port";
-import type { LensOverlayView } from "../src/components/lens-overlay-view";
+import type { LensOverlayView } from "ui/components/views/lens-overlay-view";
 import { installGeneratedPage } from "../src/rendering/generated-page.test-helper";
 import { startPage } from "../src/entries/start-page";
 

@@ -1,14 +1,10 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { AppSnapshot } from "../types";
-import { shouldApplySnapshot } from "../view-model";
+import { shouldApplySnapshot } from "./snapshot-admission";
 import type { Unlisten, WebviewPort } from "./webview-port";
 import { SnapshotResources } from "./snapshot-resources";
 
-export type SnapshotConnectionState =
-  | { stage: "subscribing" }
-  | { stage: "loading" }
-  | { stage: "ready" }
-  | { stage: "failed"; message: string };
+import type { SnapshotConnectionState } from "ui/contracts/resource-state";
 
 export function snapshotConnectionMessage(connection: SnapshotConnectionState): string {
   switch (connection.stage) {

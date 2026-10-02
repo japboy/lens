@@ -28,6 +28,19 @@ export const FRONTEND_TEST_INPUTS = [
   "apps/desktop/tests/styles.ts",
   "apps/desktop/tests/overlay-close.ts",
 ] as const;
+export const RELOCATED_FRONTEND_CONTRACTS = [
+  ["apps/desktop/src/types.ts", "packages/ui/src/contracts/lens.ts"],
+  [
+    "apps/desktop/src/agent-prompt-template.ts",
+    "packages/ui/src/presentation/agent-prompt-template.ts",
+  ],
+  ["apps/desktop/src/output-media.ts", "packages/ui/src/presentation/output-media.ts"],
+  ["apps/desktop/src/presentation-context.ts", "packages/ui/src/contracts/context.ts"],
+  [
+    "apps/desktop/src/application/accessibility-permission-controller.ts",
+    "packages/ui/src/contracts/resource-state.ts",
+  ],
+] as const;
 const FRONTEND_CONTRACTS = new Set([
   "apps/desktop/src/types.ts",
   "apps/desktop/src/agent-prompt-template.ts",
@@ -35,6 +48,7 @@ const FRONTEND_CONTRACTS = new Set([
   "apps/desktop/src/presentation-context.ts",
   "apps/desktop/src/application/webview-port.ts",
   "apps/desktop/src/application/accessibility-permission-controller.ts",
+  ...RELOCATED_FRONTEND_CONTRACTS.map(([, destination]) => destination),
 ]);
 
 export function validateRequirements(value: unknown): VerificationRequirements {
@@ -110,6 +124,10 @@ export function classifyChange(change: Change): ChangeRequirement {
     return require("native-input", "Rust includes or build scripts consume this input", code);
   if (FRONTEND_CONTRACTS.has(path))
     return require("frontend-native-contract", "Frontend contract is shared with the native implementation", code);
+  if (path.startsWith("packages/ui/"))
+    return require("shared-ui", "Shared presentation changes require the packaged Desktop consumer", app);
+  if (path.startsWith("packages/adapter-lit-prerenderer/"))
+    return require("frontend-build-package", "Shared generation changes require packaged native assets", app);
   if (
     path.startsWith("packages/adapter-platform-macos/") ||
     path.startsWith("packages/adapter-mcp-server/") ||
@@ -139,11 +157,11 @@ export function classifyChange(change: Change): ChangeRequirement {
   }
   if (
     (FRONTEND_TEST_INPUTS as readonly string[]).includes(path) ||
-    (path.startsWith("apps/desktop/") && isTypescriptTestSupport(path))
+    (/^apps\/(?:desktop|ui-preview)\//u.test(path) && isTypescriptTestSupport(path))
   )
     return require("frontend-test", "Reviewed test-only frontend owner", frontend);
   if (
-    /^apps\/desktop\/src\/.+\.(?:html|ts|css|svg)$/u.test(path) ||
+    /^apps\/(?:desktop|ui-preview)\/src\/.+\.(?:html|ts|css|svg)$/u.test(path) ||
     /^apps\/desktop\/(?:public|tests\/fixtures)\/.+\.(?:html|css|ts|js|json|svg|png|jpg|webp)$/u.test(
       path,
     ) ||

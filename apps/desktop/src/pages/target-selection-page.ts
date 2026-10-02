@@ -1,4 +1,4 @@
-import { snapshotStatus } from "../rendering/snapshot-status";
+import { snapshotStatus } from "ui/presentation/snapshot-status";
 import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
 import { customElement } from "lit/decorators.js";
@@ -8,8 +8,8 @@ import type { CommandIdentity } from "../application/command-state";
 import { targetSelectionViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
 import { platformFromSearch } from "../presentation-context";
-import { LensTargetSelectionView } from "../components/lens-target-selection-view";
-import type { TargetSelectionIntent } from "../components/events";
+import { LensTargetSelectionView } from "ui/components/views/lens-target-selection-view";
+import type { TargetSelectionIntent } from "ui/contracts/events";
 
 @customElement("lens-target-selection-page")
 export class TargetSelectionPage extends ReactiveElement {
@@ -26,7 +26,7 @@ export class TargetSelectionPage extends ReactiveElement {
       {
         name: "preview",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () => import("../components/lens-target-card"),
+        load: () => import("ui/entries/target-selection"),
       },
     ],
   );

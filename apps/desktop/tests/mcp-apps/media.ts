@@ -1,12 +1,13 @@
+import { toUiMcpAppsPort } from "../../src/mcp-apps/composition";
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AppBridge } from "adapter-mcp-apps-host";
 import type { DesktopMcpAppsPort as McpAppsPort } from "../../src/mcp-apps/composition";
-import type { PresentedOutputMedia } from "../../src/output-media";
-import type { LensOutputMedia } from "../../src/components/lens-output-media";
+import type { PresentedOutputMedia } from "ui/presentation/output-media";
+import type { LensOutputMedia } from "ui/components/overlay/lens-output-media";
 beforeAll(async () => {
   window.matchMedia ??= () => ({ matches: false }) as MediaQueryList;
-  await import("../../src/components/lens-output-media");
+  await import("ui/components/overlay/lens-output-media");
 });
 afterEach(() => {
   document.body.replaceChildren();
@@ -52,7 +53,7 @@ describe("Interpretation media App composition", () => {
     const element = await mount([
       { kind: "app", id: "app:artifact", mimeType: "text/html;profile=mcp-app", descriptor },
     ]);
-    element.appPort = port;
+    element.appPort = toUiMcpAppsPort(port);
     await element.updateComplete;
     await vi.waitFor(() =>
       expect(port.openMcpApp).toHaveBeenCalledExactlyOnceWith("artifact", window.location.origin),

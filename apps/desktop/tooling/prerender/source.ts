@@ -1,16 +1,12 @@
-import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  sourceInputs as captureSource,
+  sourceDigest,
+  workspaceDirectories,
+  type SourceSnapshotContract,
+} from "adapter-lit-prerenderer/source-snapshot";
+import { MEMBERS } from "../../../../scripts/workspace-policy.ts";
 
-export const WORKSPACE_PACKAGE_PATHS = [
-  "packages/typescript-config",
-  "packages/adapter-mcp-apps-host",
-  "packages/adapter-mcp-apps-view",
-  "packages/adapter-math-renderer",
-] as const;
-
-export const SOURCE_PATHS = [
+const APPLICATION_SOURCE_PATHS = [
   ".gitignore",
   "apps/desktop/src",
   "apps/desktop/tooling",
@@ -25,33 +21,24 @@ export const SOURCE_PATHS = [
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "package.json",
-  ...WORKSPACE_PACKAGE_PATHS,
+  "scripts/workspace-policy.ts",
+  "scripts/no-install-workspace.ts",
 ];
 
-export function sourceInputs(repository: string): Map<string, Buffer> {
-  const stdout = execFileSync(
-    "git",
-    ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...SOURCE_PATHS],
-    { cwd: repository, encoding: "utf8" },
-  );
-  const deleted = new Set(
-    execFileSync("git", ["ls-files", "-z", "--deleted", "--", ...SOURCE_PATHS], {
-      cwd: repository,
-      encoding: "utf8",
-    })
-      .split("\0")
-      .filter(Boolean),
-  );
-  return new Map(
-    [...new Set(stdout.split("\0").filter(Boolean))]
-      .filter((file) => !deleted.has(file))
-      .sort()
-      .map((file) => [file, readFileSync(join(repository, file))]),
-  );
+export function sourceContract(repository: string): SourceSnapshotContract {
+  return {
+    repository,
+    applicationPath: "apps/desktop",
+    members: MEMBERS.filter((member) => member.ecosystem === "pnpm"),
+    inputs: APPLICATION_SOURCE_PATHS,
+  };
 }
-
-export function sourceDigest(files: Map<string, Buffer>): string {
-  const hash = createHash("sha256");
-  for (const [file, bytes] of files) hash.update(file).update("\0").update(bytes).update("\0");
-  return hash.digest("hex");
+export function sourceInputs(repository: string): Map<string, Buffer> {
+  return captureSource(sourceContract(repository));
+}
+export { sourceDigest };
+export function workspacePackagePaths(repository: string): string[] {
+  return workspaceDirectories(sourceContract(repository)).filter(
+    (directory) => directory !== "." && directory !== "apps/desktop",
+  );
 }

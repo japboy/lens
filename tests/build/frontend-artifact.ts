@@ -15,10 +15,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createHtmlMathAssets } from "adapter-math-renderer/node";
-import { HTML_MATH_MANIFEST } from "../../apps/desktop/tooling/html-math-manifest.ts";
+import { HTML_MATH_MANIFEST } from "adapter-math-renderer/html-math-manifest";
 import { frontendArtifact, frontendFiles } from "../../scripts/frontend-artifact.ts";
 import { generationFiles } from "../../apps/desktop/tooling/prerender/verify.ts";
 import { sourceDigest, sourceInputs } from "../../apps/desktop/tooling/prerender/source.ts";
+import { MEMBERS } from "../../scripts/workspace-policy.ts";
 
 let mathAssets: Awaited<ReturnType<typeof createHtmlMathAssets>>;
 beforeAll(async () => {
@@ -60,7 +61,17 @@ function fixture(work: (root: string, assets: string) => void) {
   try {
     git(["init", "-q"]);
     writeFileSync(join(root, ".gitignore"), "/target/\n/apps/desktop/.build/\n");
-    git(["add", ".gitignore"]);
+    for (const file of [
+      "scripts/workspace-policy.ts",
+      ...MEMBERS.filter((member) => member.ecosystem === "pnpm").map((member) =>
+        join(member.directory, "package.json"),
+      ),
+    ]) {
+      const destination = join(root, file);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, readFileSync(new URL(`../../${file}`, import.meta.url)));
+    }
+    git(["add", "."]);
     git(["commit", "-qm", "fixture"]);
     const assets = join(root, "apps/desktop", BUILD_PATHS.webview);
     mkdirSync(assets, { recursive: true });
@@ -86,12 +97,14 @@ describe("same-source frontend artifact integrity", () => {
     fixture((root, assets) => {
       const files = [
         "scripts/frontend-artifact.ts",
+        "scripts/no-install-workspace.ts",
         "apps/desktop/tooling/build-paths.ts",
         "apps/desktop/src/page-entries.ts",
         "apps/desktop/tooling/prerender/verify.ts",
         "apps/desktop/tooling/prerender/source.ts",
-        "apps/desktop/tooling/html-math-manifest.ts",
         "packages/adapter-math-renderer/src/node/html-math-manifest.ts",
+        "packages/adapter-lit-prerenderer/src/verify.ts",
+        "packages/adapter-lit-prerenderer/src/source-snapshot.ts",
       ];
       for (const file of files) {
         const destination = join(root, file);
@@ -141,7 +154,7 @@ describe("same-source frontend artifact integrity", () => {
         "body{}",
       );
       seal(root, assets);
-      expect(() => frontendArtifact("write", root)).toThrow("Unexpected public math asset");
+      expect(() => frontendArtifact("write", root)).toThrow("Unexpected public asset");
     }));
   it("rejects incomplete DSD even if the generation manifest was resealed", () =>
     fixture((root, assets) => {

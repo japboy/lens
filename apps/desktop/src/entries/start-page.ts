@@ -1,10 +1,7 @@
 import { installControlPalette } from "../control-palette";
 import { installFloatingWindowGeometry } from "../floating-window-geometry";
-import {
-  applyPresentationContext,
-  presentationContextForPage,
-  type AppView,
-} from "../presentation-context";
+import { applyPresentationContext, presentationContextForPage } from "../presentation-context";
+import { type AppView } from "../page-entries";
 
 /** The only critical module dependency is the finite document/native context contract. */
 export async function startPage(view: AppView, load: () => Promise<unknown>): Promise<void> {

@@ -1,23 +1,25 @@
+import { toUiMcpAppsPort } from "../mcp-apps/composition";
 import { SessionViewController } from "../application/session-view-controller";
-import { isHistoryView } from "../application/session-document";
-import { snapshotStatus } from "../rendering/snapshot-status";
+import { isHistoryView } from "ui/contracts/session-document";
+import { snapshotStatus } from "ui/presentation/snapshot-status";
 import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
-import { ResponseHistoryController } from "../application/response-history-controller";
+import { ResponseHistoryController } from "ui/resources/response-history-controller";
 import type { CommandIdentity } from "../application/command-state";
 import { overlayViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
 import { platformFromSearch } from "../presentation-context";
-import { LensOverlayView } from "../components/lens-overlay-view";
-import type { OverlayIntent } from "../components/events";
-import type { InteractionSubmission } from "../application/view-models";
+import { LensOverlayView } from "ui/components/views/lens-overlay-view";
+import type { OverlayIntent } from "ui/contracts/events";
+import type { InteractionSubmission } from "ui/contracts/view-models";
 
 @customElement("lens-overlay-page")
 export class OverlayPage extends ReactiveElement {
   private readonly port = tauriWebviewPort;
+  private readonly appPort = toUiMcpAppsPort(this.port);
   private readonly sessionView = new SessionViewController(this, this.port);
   private readonly snapshots = new AppSnapshotController(this, this.port);
   private readonly commands = new CommandController(this);
@@ -39,26 +41,22 @@ export class OverlayPage extends ReactiveElement {
       {
         name: "conversation",
         ready: () => Boolean(this.sessionView.view),
-        load: () => import("../components/lens-session-document"),
+        load: () => import("ui/entries/overlay-conversation"),
       },
       {
         name: "output",
         ready: () => Boolean(this.snapshots.snapshot || this.sessionView.view),
-        load: () => import("../components/lens-agent-output"),
+        load: () => import("ui/entries/overlay-output"),
       },
       {
         name: "session",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () => import("../components/lens-session-controls"),
+        load: () => import("ui/entries/overlay-session"),
       },
       {
         name: "source",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () =>
-          Promise.all([
-            import("../components/lens-extraction-diagnostics"),
-            import("../components/lens-media-gallery"),
-          ]),
+        load: () => import("ui/entries/overlay-source"),
       },
     ],
   );
@@ -92,7 +90,7 @@ export class OverlayPage extends ReactiveElement {
     const view = this.view;
     const snapshot = this.snapshots.snapshot;
     view.sessionView = this.sessionView.view;
-    view.appPort = this.port;
+    view.appPort = this.appPort;
     view.loadSessionBlock = this.sessionView.loadBlock;
     if (isHistoryView(this.sessionView.view))
       this.responseHistory.synchronizeHistory(this.sessionView.view);

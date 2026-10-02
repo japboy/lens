@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   VERIFICATION_REQUIREMENTS,
   FRONTEND_TEST_INPUTS,
+  RELOCATED_FRONTEND_CONTRACTS,
   classifyChange,
   parseChangedPaths,
   planChanges,
@@ -20,6 +21,14 @@ const [frontend, shared, code, app, dmg] = VERIFICATION_REQUIREMENTS;
 describe("finite verification requirements with per-input reasons", () => {
   it.each([
     ["apps/desktop/src/pages/about-page.ts", frontend, "frontend-source"],
+    ["apps/ui-preview/src/main.ts", frontend, "frontend-source"],
+    ["apps/ui-preview/tests/scenarios/interaction.ts", frontend, "frontend-test"],
+    ["packages/ui/src/components/overlay/lens-overlay-view.ts", app, "shared-ui"],
+    ["packages/ui/src/rendering/markdown.ts", app, "shared-ui"],
+    ["packages/adapter-lit-prerenderer/src/generate.ts", app, "frontend-build-package"],
+    ["packages/ui/package.json", dmg, "control-plane"],
+    ["packages/adapter-lit-prerenderer/package.json", dmg, "control-plane"],
+    ["apps/ui-preview/package.json", dmg, "control-plane"],
     ["apps/desktop/tests/fixtures/README.html", frontend, "frontend-source"],
     ...FRONTEND_TEST_INPUTS.map((path) => [path, frontend, "frontend-test"] as const),
     ["LICENSE", code, "native-input"],
@@ -27,6 +36,8 @@ describe("finite verification requirements with per-input reasons", () => {
     ["apps/desktop/tests/fixtures/workspace-contracts.json", code, "native-input"],
     ["apps/desktop/tests/fixtures/acp-generated-image.json", code, "native-input"],
     ["apps/desktop/src/html-output.ts", code, "native-input"],
+    ["packages/ui/src/assets/agent-icons.json", code, "native-input"],
+    ["packages/ui/tests/fixtures/agent-icons.json", code, "native-input"],
     ["apps/desktop/src/application/webview-port.ts", code, "frontend-native-contract"],
     ["apps/desktop/src/types.ts", code, "frontend-native-contract"],
     ["packages/port-platform/src/lib.rs", code, "native-code"],
@@ -67,6 +78,20 @@ describe("finite verification requirements with per-input reasons", () => {
         .requirements,
     ).toEqual(shared);
   });
+  it.each(RELOCATED_FRONTEND_CONTRACTS)(
+    "preserves native obligations when %s moves to %s",
+    (source, destination) => {
+      for (const path of [source, destination])
+        expect(classifyChange(pathChange(path))).toMatchObject({
+          requirements: code,
+          ruleId: "frontend-native-contract",
+        });
+      expect(classifyChange(pathChange("packages/ui/src/rendering/markdown.ts"))).toMatchObject({
+        requirements: app,
+        ruleId: "shared-ui",
+      });
+    },
+  );
 
   it("requires native consumers for declarations, constants, additions and deletions", () => {
     for (const change of [

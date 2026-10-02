@@ -1,0 +1,62 @@
+{
+  "name": "ui",
+  "version": "0.8.3",
+  "private": true,
+  "description": "Lens UI contracts, Lit views and browser rendering resources",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ssr": "./src/ssr.ts",
+    "./contracts": "./src/contracts/index.ts",
+    "./styles/document.css": "./src/styles/document.css",
+    "./test-fixtures/media-parity": "./tests/fixtures/media-parity.ts",
+    "./contracts/*": "./src/contracts/*.ts",
+    "./components/*": "./src/components/*.ts",
+    "./presentation/*": "./src/presentation/*.ts",
+    "./resources/*": "./src/resources/*.ts",
+    "./entries/*": "./src/entries/*.ts",
+    "./rendering/*": "./src/rendering/*.ts",
+    "./styles/*": "./src/styles/*.ts",
+    "./styles/icon-fonts.css": "./src/styles/icon-fonts.css",
+    "./styles/math-fonts.css": "./src/styles/math-fonts.css"
+  },
+  "scripts": {
+    "check:types": "tsc --build",
+    "test": "vitest run --config ../../vitest.config.ts --project ui"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "7.3.1",
+    "@generative-dom/core": "0.4.0",
+    "@generative-dom/plugin-cursor": "0.4.0",
+    "@generative-dom/plugin-markdown-base": "0.4.0",
+    "@generative-dom/plugin-markdown-code": "0.4.0",
+    "@generative-dom/plugin-markdown-heading": "0.4.0",
+    "@generative-dom/plugin-markdown-inline": "0.4.0",
+    "@generative-dom/plugin-markdown-link": "0.4.0",
+    "@generative-dom/plugin-markdown-list": "0.4.0",
+    "@generative-dom/plugin-markdown-quote": "0.4.0",
+    "@generative-dom/plugin-markdown-table": "0.4.0",
+    "@lit-labs/virtualizer": "2.1.1",
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "adapter-math-renderer": "workspace:*",
+    "adapter-mcp-apps-host": "workspace:*",
+    "dompurify": "3.4.16",
+    "katex": "0.18.7",
+    "lit": "3.3.3",
+    "marked": "18.0.10",
+    "mermaid": "12.0.0",
+    "parse5": "8.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "jsdom": "30.1.1",
+    "typescript": "7.0.2",
+    "typescript-config": "workspace:*",
+    "vite": "8.3.1",
+    "vitest": "5.0.2"
+  },
+  "engines": {
+    "node": "24.21.0",
+    "pnpm": "12.8.1"
+  }
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ReactiveControllerHost } from "lit";
-import { ResponseHistoryController } from "./response-history-controller";
-import { mediaCases, mediaFixture } from "../../tests/fixtures/media-parity";
+import { ResponseHistoryController } from "ui/resources/response-history-controller";
+import { mediaCases, mediaFixture } from "ui/test-fixtures/media-parity";
 
 describe("live/replay media contract", () => {
   it.each(mediaCases)("preserves %s media, ordering, and narrative", async (choice) => {

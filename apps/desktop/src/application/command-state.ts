@@ -1,5 +1,5 @@
-import type { OverlayIntent, SettingsIntent, TargetSelectionIntent } from "../components/events";
-import type { ManagedAgentKind } from "../types";
+import type { OverlayIntent, SettingsIntent, TargetSelectionIntent } from "ui/contracts/events";
+import type { ManagedAgentKind } from "ui/contracts/lens";
 
 export type CommandIdentity =
   | {

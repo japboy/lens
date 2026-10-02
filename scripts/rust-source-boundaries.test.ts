@@ -116,6 +116,23 @@ describe("explicit native shared web resource ownership", () => {
       ),
     ).toEqual([]);
   });
+  it("admits the single shared UI catalog only to the native Agent icon consumer", () => {
+    const path = "apps/desktop/src-tauri/src/agent_icons.rs";
+    const source = include("ui/src/assets/agent-icons.json");
+    expect(sourceInclusionViolations(root, path, source, "apps/desktop")).toEqual([]);
+    expect(sourceInclusionViolations(root, host, source, "apps/desktop")).not.toEqual([]);
+    expect(
+      sourceInclusionViolations(
+        root,
+        path,
+        include("ui/src/assets/agent-icons.json", "include_bytes"),
+        "apps/desktop",
+      ),
+    ).not.toEqual([]);
+    expect(
+      sourceInclusionViolations(root, path, include("ui/src/contracts/lens.ts"), "apps/desktop"),
+    ).not.toEqual([]);
+  });
   it.each([
     ["rich-html-app.html", "include_str"],
     ["rich-html-links.js", "include_str"],

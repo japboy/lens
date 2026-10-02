@@ -1,5 +1,9 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
-import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
+import type {
+  DeferredDocumentBlock,
+  DocumentBlock,
+  SessionView,
+} from "ui/contracts/session-document";
 import type { Unlisten, WebviewPort } from "./webview-port";
 
 const TEXT_CACHE_BYTES = 8 * 1024 * 1024;

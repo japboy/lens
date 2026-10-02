@@ -1,9 +1,10 @@
+import { toUiMcpAppsPort } from "../../src/mcp-apps/composition";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppBridge } from "adapter-mcp-apps-host";
 import { html, render } from "lit";
 import { cache } from "lit/directives/cache.js";
-import { LensMcpApp } from "../../src/components/lens-mcp-app";
+import { LensMcpApp } from "ui/components/overlay/lens-mcp-app";
 import type { McpAppLease } from "adapter-mcp-apps-host";
 import type { DesktopMcpAppsPort as McpAppsPort } from "../../src/mcp-apps/composition";
 
@@ -35,7 +36,7 @@ function mount(port: McpAppsPort) {
     tool_name: "tool",
     resource_uri: "ui://test/app",
   };
-  element.port = port;
+  element.port = toUiMcpAppsPort(port);
   element.active = true;
   document.body.append(element);
   return element;

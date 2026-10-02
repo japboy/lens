@@ -80,7 +80,7 @@ describe("repository task ownership", () => {
   it("owns commands only in mise and keeps verification free of freshness skips", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     expect(manifest.scripts).toBeUndefined();
-    expect(tasks).toHaveLength(49);
+    expect(tasks).toHaveLength(51);
     expect(new Set(tasks.map((task) => task.name)).size).toBe(tasks.length);
     for (const task of tasks) {
       expect(task.source).toBe(
@@ -91,6 +91,7 @@ describe("repository task ownership", () => {
       expect([
         resolve(root),
         resolve(root, "apps/desktop"),
+        resolve(root, "apps/ui-preview"),
         resolve(root, "packages/adapter-mcp-apps-host"),
         resolve(root, "packages/adapter-mcp-apps-view"),
         resolve(root, "packages/adapter-math-renderer"),
@@ -214,6 +215,7 @@ describe("repository task ownership", () => {
       "check:types:repository",
       "check:types:frontend",
       "frontend:build",
+      "ui:build",
       "test:repository",
       "test:frontend",
     ]) {
@@ -231,7 +233,7 @@ describe("repository task ownership", () => {
     expect(repository.completed).toContain("check:types:repository");
     expect(repository.completed).toContain("test:repository");
     expect(frontend.completed.toSorted()).toEqual(
-      ["check:types:frontend", "frontend:build", "test:frontend"].toSorted(),
+      ["check:types:frontend", "frontend:build", "test:frontend", "ui:build"].toSorted(),
     );
     expect(repository.completed.filter((name) => frontend.completed.includes(name))).toEqual([]);
     expect(portable.completed.toSorted()).toEqual(
@@ -241,7 +243,7 @@ describe("repository task ownership", () => {
       "pnpm exec tsc --build tsconfig.node.json",
     ]);
     expect(tasks.find((task) => task.name === "check:types:frontend")!.run).toEqual([
-      "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer apps/desktop",
+      "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer packages/ui packages/adapter-lit-prerenderer apps/desktop apps/ui-preview",
     ]);
   });
 
@@ -250,7 +252,7 @@ describe("repository task ownership", () => {
     expect(frontend.dir).toBe(root.replace(/\/$/u, ""));
     expect(frontend.depends).toEqual(["check:types:frontend"]);
     expect(frontend.run).toEqual([
-      "pnpm exec vitest run --project desktop --project mcp-apps-host --project mcp-apps-view --project math-renderer",
+      "pnpm exec vitest run --project desktop --project mcp-apps-host --project mcp-apps-view --project math-renderer --project ui --project adapter-lit-prerenderer --project ui-preview",
     ]);
     const result = replay("verify:frontend");
     expect(result.status).toBe(0);

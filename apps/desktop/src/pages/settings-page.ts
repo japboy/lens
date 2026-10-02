@@ -1,5 +1,5 @@
-import { parseSettingsDestination } from "../agent-prompt-template";
-import { snapshotStatus } from "../rendering/snapshot-status";
+import { parseSettingsDestination } from "ui/presentation/agent-prompt-template";
+import { snapshotStatus } from "ui/presentation/snapshot-status";
 import { PageAttachment } from "../rendering/page-attachment";
 import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
@@ -9,11 +9,11 @@ import type { CommandIdentity } from "../application/command-state";
 import { settingsFeedback, settingsViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
 import { platformFromSearch } from "../presentation-context";
-import { LensSettingsView } from "../components/lens-settings-view";
-import type { SettingsIntent } from "../components/events";
+import { LensSettingsView } from "ui/components/views/lens-settings-view";
+import type { SettingsIntent } from "ui/contracts/events";
 import { AccessibilityPermissionController } from "../application/accessibility-permission-controller";
-import { agentLabel, selectedAgent } from "../view-model";
-import type { LensAgentSettings } from "../components/lens-agent-settings";
+import { agentLabel, selectedAgent } from "ui/presentation/view-model";
+import type { LensAgentSettings } from "ui/components/settings/lens-agent-settings";
 
 @customElement("lens-settings-page")
 export class SettingsPage extends ReactiveElement {
@@ -22,7 +22,7 @@ export class SettingsPage extends ReactiveElement {
   private readonly commands = new CommandController(this);
   private readonly platform = platformFromSearch(window.location.search);
   @state() private aboutOpenError = "";
-  @state() private mcpToolCatalogs: import("../types").McpServerToolCatalog[] = [];
+  @state() private mcpToolCatalogs: import("ui/contracts/lens").McpServerToolCatalog[] = [];
   private mcpCatalogKey = "";
   private mcpCatalogGeneration = 0;
   private readonly accessibility = new AccessibilityPermissionController(this, this.port);
@@ -37,21 +37,17 @@ export class SettingsPage extends ReactiveElement {
       {
         name: "agent",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () =>
-          Promise.all([
-            import("../components/lens-agent-settings"),
-            import("../components/lens-mcp-app-settings"),
-          ]),
+        load: () => import("ui/entries/settings"),
       },
       {
         name: "agent-defaults",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () => import("../components/lens-agent-defaults"),
+        load: () => import("ui/entries/settings-defaults"),
       },
       {
         name: "prompt",
         ready: () => Boolean(this.snapshots.snapshot),
-        load: () => import("../components/lens-prompt-settings"),
+        load: () => import("ui/entries/settings-prompts"),
       },
     ],
   );
@@ -190,9 +186,9 @@ export class SettingsPage extends ReactiveElement {
         await this.commands.run(identity, async () => {
           await this.port.setMcpAppsServers([]);
           const editor =
-            this.view.shadowRoot?.querySelector<
-              import("../components/lens-mcp-app-settings").LensMcpAppSettings
-            >("lens-mcp-app-settings");
+            this.view.shadowRoot?.querySelector<import("ui/entries/settings").LensMcpAppSettings>(
+              "lens-mcp-app-settings",
+            );
           editor?.acceptResetPresets();
         });
         return;
@@ -247,7 +243,7 @@ export class SettingsPage extends ReactiveElement {
             const config = await this.port.updatePromptPresets(change);
             if (change.type === "reset_all") {
               const editor = this.view.shadowRoot?.querySelector("lens-prompt-settings") as
-                | import("../components/lens-prompt-settings").LensPromptSettings
+                | import("ui/entries/settings-prompts").LensPromptSettings
                 | null;
               editor?.acceptResetPresets(config.prompt_presets);
             }
@@ -257,7 +253,7 @@ export class SettingsPage extends ReactiveElement {
                 .find((preset) => !previousIds.has(preset.id));
               if (created) {
                 const editor = this.view.shadowRoot?.querySelector("lens-prompt-settings") as
-                  | import("../components/lens-prompt-settings").LensPromptSettings
+                  | import("ui/entries/settings-prompts").LensPromptSettings
                   | null;
                 editor?.openCreatedPreset(config.prompt_presets, created.id);
               }

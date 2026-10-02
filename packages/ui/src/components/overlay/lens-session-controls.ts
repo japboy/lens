@@ -1,0 +1,264 @@
+import "../controls/lens-select";
+import type { LensSelect } from "../controls/lens-select";
+import { keyed } from "lit/directives/keyed.js";
+import type { InteractionSubmission } from "../../contracts/view-models";
+import { LitElement, html, nothing } from "lit";
+import { customElement, property } from "lit/decorators.js";
+import type {
+  AgentSessionControlState,
+  InteractionResponse,
+  ElicitationSchema,
+  ElicitationField,
+} from "../../contracts/lens";
+import {
+  OVERLAY_INTENT_EVENT,
+  dispatchComponentEvent,
+  type OverlayIntent,
+} from "../../contracts/events";
+
+@customElement("lens-session-controls")
+export class LensSessionControls extends LitElement {
+  @property({ attribute: false }) controls: AgentSessionControlState | undefined;
+  @property() presentation: "diagnostics" | "interaction" = "diagnostics";
+  @property({ attribute: false }) submission: InteractionSubmission | undefined;
+  private formIdentity = "";
+  private readonly selectionDrafts = new Map<string, string[]>();
+  protected createRenderRoot() {
+    return this;
+  }
+  protected render() {
+    const controls = this.controls;
+    if (!controls) return nothing;
+    const pending = controls.active
+      ? controls.interactions
+          .filter((i) => i.status === "pending")
+          .sort((a, b) => a.sequence - b.sequence)
+      : [];
+    if (this.presentation === "diagnostics") {
+      return html`<section aria-label="Agent session controls" class="session-controls">
+        <p>
+          ${controls.agent_name} · Mode:
+          <strong>${controls.effective_mode ?? "Not reported by Agent"}</strong
+          >${!controls.active ? " · Session ended" : ""}
+        </p>
+        ${controls.notice ? html`<p role="status">${controls.notice}</p>` : nothing}
+        ${controls.interactions.map((i) => html`<p>Interaction ${i.sequence}: ${i.status}</p>`)}
+      </section>`;
+    }
+    const interaction = pending[0];
+    if (!interaction?.details) return nothing;
+    const details = interaction.details;
+    const submission =
+      this.submission?.instanceId === controls.instance_id &&
+      this.submission.interactionId === interaction.id
+        ? this.submission
+        : undefined;
+    const busy = submission?.stage === "sending" || submission?.stage === "sent";
+    return keyed(
+      `${controls.instance_id}:${interaction.id}`,
+      html` <section
+        class="agent-interaction"
+        aria-label="Agent decision required"
+        aria-busy=${busy}
+      >
+        <fieldset ?disabled=${busy}>
+          ${
+            details.kind === "form"
+              ? this.form(interaction.id, details.message, details.schema, busy)
+              : html` <div class="interaction-body">
+                    <h3>${details.kind === "url" ? "Open the requested URL?" : details.title}</h3>
+                    ${
+                      details.kind === "url"
+                        ? html`<p>${details.message}</p>
+                            <p class="elicitation-url">${details.url}</p>`
+                        : html`<p>Requested effect: ${details.effect}</p>
+                            <pre>${JSON.stringify(details.arguments, null, 2)}</pre>
+                            <details>
+                              <summary>Request details</summary>
+                              <p>Tool call: ${details.tool_call_id}</p>
+                            </details>`
+                    }
+                  </div>
+                  <div class="interaction-actions">
+                    ${
+                      details.kind === "url"
+                        ? html` <button
+                              type="button"
+                              data-lens-button-role="cancel"
+                              @click=${() => this.respond(interaction.id, { action: "decline" })}
+                            >
+                              Decline
+                            </button>
+                            <button
+                              type="button"
+                              data-lens-button-role="normal"
+                              @click=${() => this.respond(interaction.id, { action: "accept" })}
+                            >
+                              Open URL and Continue
+                            </button>`
+                        : [...details.options]
+                            .sort(
+                              (a, b) =>
+                                Number(a.kind === "allow_once") - Number(b.kind === "allow_once"),
+                            )
+                            .map(
+                              (option) =>
+                                html`<button
+                                  type="button"
+                                  data-lens-button-role=${option.kind === "reject_once" ? "cancel" : "normal"}
+                                  @click=${() => this.respond(interaction.id, { action: "select", option_id: option.optionId })}
+                                >
+                                  ${option.name}
+                                </button>`,
+                            )
+                    }
+                    ${details.kind === "permission" && !details.options.some((o) => o.kind === "reject_once") ? html`<button type="button" data-lens-button-role="cancel" @click=${() => this.respond(interaction.id, { action: "cancel" })}>Cancel Request</button>` : nothing}
+                  </div>`
+          }
+        </fieldset>
+        ${busy ? html`<p class="interaction-feedback" role="status">Sending response…</p>` : nothing}
+        ${submission?.stage === "failed" ? html`<p class="interaction-feedback" role="alert">${submission.message}</p>` : nothing}
+        ${pending.length > 1 ? html`<p class="interaction-feedback">${pending.length - 1} more requests waiting</p>` : nothing}
+      </section>`,
+    );
+  }
+  private form(id: string, message: string, schema: ElicitationSchema, busy: boolean) {
+    const identity = `${this.controls?.instance_id}:${id}`;
+    if (identity !== this.formIdentity) {
+      this.formIdentity = identity;
+      this.selectionDrafts.clear();
+    }
+    return html`<form @submit=${(event: SubmitEvent) => this.submitForm(event, id, schema)}>
+      <div class="interaction-body">
+        <h3>${schema.title ?? "Agent input requested"}</h3>
+        <p>${message}</p>
+        <p>${schema.description ?? ""}</p>
+        ${Object.entries(schema.properties).map(([name, field]) => html`<label class="session-form-field"><span>${field.title ?? name}${schema.required?.includes(name) ? " (required)" : ""}</span>${this.formField(name, field, schema.required?.includes(name) ?? false, busy)}<span class="help">${field.description ?? ""}</span></label>`)}
+      </div>
+      <div class="interaction-actions">
+        <button
+          data-lens-button-role="cancel"
+          type="button"
+          @click=${() => this.respond(id, { action: "decline" })}
+        >
+          Decline
+        </button>
+        <button data-lens-button-role="primary" type="submit">Send Response</button>
+      </div>
+    </form>`;
+  }
+  private formField(name: string, field: ElicitationField, required: boolean, busy: boolean) {
+    const values = field.type === "array" ? field.items : field;
+    const choices =
+      field.type === "boolean"
+        ? [
+            { const: "true", title: "Yes" },
+            { const: "false", title: "No" },
+          ]
+        : (values?.oneOf ?? values?.enum?.map((value) => ({ const: value, title: value })));
+    if (choices) {
+      const multiple = field.type === "array";
+      if (!this.selectionDrafts.has(name)) {
+        const defaults = Array.isArray(field.default)
+          ? field.default
+          : field.default === undefined
+            ? []
+            : [String(field.default)];
+        this.selectionDrafts.set(
+          name,
+          defaults.filter((value) => choices.some((choice) => choice.const === value)),
+        );
+      }
+      const draft = this.selectionDrafts.get(name)!;
+      return html`<lens-select
+        name=${name}
+        .label=${`${field.title ?? name}${required ? " (required)" : ""}`}
+        .multiple=${multiple}
+        .required=${required}
+        .disabled=${busy}
+        .value=${draft[0] ?? ""}
+        .values=${draft}
+        .options=${[
+          ...(multiple ? [] : [{ value: "", label: "Choose…" }]),
+          ...choices.map((choice) => ({ value: choice.const, label: choice.title })),
+        ]}
+        @change=${(event: Event) => {
+          const select = event.currentTarget as LensSelect;
+          this.selectionDrafts.set(name, multiple ? [...select.values] : [select.value]);
+        }}
+      ></lens-select>`;
+    }
+    if (field.type === "number" || field.type === "integer")
+      return html`<input
+        data-lens-control="text-entry"
+        name=${name}
+        type="number"
+        step=${field.type === "integer" ? "1" : "any"}
+        min=${field.minimum ?? nothing}
+        max=${field.maximum ?? nothing}
+        ?required=${required}
+      />`;
+    return html`<input
+      data-lens-control="text-entry"
+      name=${name}
+      type="text"
+      minlength=${field.minLength ?? nothing}
+      maxlength=${field.maxLength ?? 16384}
+      ?required=${required}
+      autocomplete="off"
+    />`;
+  }
+  private submitForm(event: SubmitEvent, id: string, schema: ElicitationSchema) {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    if (!form.reportValidity()) return;
+    for (const select of form.querySelectorAll<LensSelect>("lens-select")) {
+      if (!select.reportValidity()) return;
+    }
+    const values = new FormData(form);
+    for (const select of form.querySelectorAll<LensSelect>("lens-select")) {
+      for (const [name, value] of select.formEntries()) values.append(name, value);
+    }
+    const content: Record<string, string | number | boolean | string[]> = {};
+    for (const [name, field] of Object.entries(schema.properties)) {
+      const value = values.get(name);
+      if (field.type === "array") {
+        const selected = values
+          .getAll(name)
+          .filter((v): v is string => typeof v === "string" && v !== "");
+        if (selected.length || schema.required?.includes(name)) content[name] = selected;
+      } else if (typeof value === "string" && value !== "") {
+        content[name] =
+          field.type === "boolean"
+            ? value === "true"
+            : field.type === "number" || field.type === "integer"
+              ? Number(value)
+              : value;
+      }
+    }
+    this.respond(id, { action: "submit", content });
+  }
+  private respond(interactionId: string, response: InteractionResponse) {
+    const controls = this.controls;
+    if (
+      !controls?.active ||
+      !controls.interactions.some((i) => i.id === interactionId && i.status === "pending")
+    )
+      return;
+    if (
+      this.submission?.instanceId === controls.instance_id &&
+      this.submission.interactionId === interactionId &&
+      this.submission.stage !== "failed"
+    )
+      return;
+    this.emit({
+      type: "respond-interaction",
+      instanceId: controls.instance_id,
+      interactionId,
+      response,
+    });
+  }
+  private emit(intent: OverlayIntent) {
+    dispatchComponentEvent(this, OVERLAY_INTENT_EVENT, intent);
+  }
+}

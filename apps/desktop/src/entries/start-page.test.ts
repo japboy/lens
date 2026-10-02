@@ -1,4 +1,4 @@
-import type { LensSelect } from "../components/lens-select";
+import type { LensSelect } from "ui/components/controls/lens-select";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installGeneratedPage } from "../rendering/generated-page.test-helper";

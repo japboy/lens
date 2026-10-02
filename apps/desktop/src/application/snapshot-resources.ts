@@ -1,9 +1,8 @@
-import type { AppSnapshot, LensOutputBlock } from "../types";
+import type { AppSnapshot } from "../types";
+import type { LensOutputBlock } from "ui/contracts/lens";
 import type { LensOutputResource, LensSourceResource, WebviewPort } from "./webview-port";
 
-export type ResourceState =
-  | { stage: "idle" | "loading" | "ready" }
-  | { stage: "failed"; message: string };
+import type { ResourceState } from "ui/contracts/resource-state";
 
 /** One in-flight request per resource, plus one replaceable latest reference. */
 export class SnapshotResources {

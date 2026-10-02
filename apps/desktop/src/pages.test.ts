@@ -3,8 +3,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { installGeneratedPage } from "./rendering/generated-page.test-helper";
 import { startPage } from "./entries/start-page";
-import type { LensSelect } from "./components/lens-select";
-import type { AppView } from "./presentation-context";
+import type { LensSelect } from "ui/components/controls/lens-select";
+import type { AppView } from "./page-entries";
 import type { AppSnapshot } from "./types";
 
 const operationId = "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d";
@@ -340,9 +340,9 @@ describe("progressive DSD resources", () => {
       await (
         page.querySelector(
           "lens-settings-view",
-        ) as import("./components/lens-settings-view").LensSettingsView
+        ) as import("ui/components/views/lens-settings-view").LensSettingsView
       ).updateComplete;
-      await (prompt as import("./components/lens-prompt-settings").LensPromptSettings)
+      await (prompt as import("ui/components/settings/lens-prompt-settings").LensPromptSettings)
         .updateComplete;
       expect(root.querySelector("lens-prompt-settings")).toBe(prompt);
       expect(prompt.querySelector("textarea")).toBe(editor);
@@ -428,14 +428,14 @@ describe("About", () => {
     );
     const view = viewRoot(element, "lens-about-view")!.querySelector(
       "lens-license-document",
-    ) as import("./components/lens-license-document").LensLicenseDocument;
+    ) as import("ui/components/about/lens-license-document").LensLicenseDocument;
     const license =
       Array.from({ length: 100 }, (_, index) =>
         index % 3 === 0 ? "\r\n" : `Line ${index} <not-markup>\n`,
       ).join("") + "Final line";
     const aboutView = element.querySelector(
       "lens-about-view",
-    ) as import("./components/lens-about-view").LensAboutView;
+    ) as import("ui/components/views/lens-about-view").LensAboutView;
     aboutView.documents = { stage: "ready", value: { license, notice: "" } };
     await aboutView.updateComplete;
     await view.updateComplete;
@@ -1034,7 +1034,7 @@ describe("Lens rich Agent output", () => {
     try {
       const element = await createPage("overlay");
       const view =
-        element.querySelector<import("./components/lens-overlay-view").LensOverlayView>(
+        element.querySelector<import("ui/components/views/lens-overlay-view").LensOverlayView>(
           "lens-overlay-view",
         )!;
       await vi.waitFor(() => expect(view.model).toBeDefined());
@@ -1520,7 +1520,7 @@ describe("Lens Settings", () => {
   it("refreshes the updated adapter catalog and unsaved model without Revert", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
-    const { DEFAULT_AGENT_DEFAULTS } = await import("./components/lens-agent-defaults");
+    const { DEFAULT_AGENT_DEFAULTS } = await import("ui/components/settings/lens-agent-defaults");
     const original = vi.mocked(invoke).getMockImplementation()!;
     const originalSelection = snapshot.agent_selection;
     const originalConfig = snapshot.config;
@@ -1756,7 +1756,7 @@ describe("Lens Settings", () => {
   it("saves an advertised Agent mode without a separate privilege confirmation", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const { confirm } = await import("@tauri-apps/plugin-dialog");
-    const { DEFAULT_AGENT_DEFAULTS } = await import("./components/lens-agent-defaults");
+    const { DEFAULT_AGENT_DEFAULTS } = await import("ui/components/settings/lens-agent-defaults");
     const previousSelection = snapshot.agent_selection;
     snapshot.agent_selection = {
       ...previousSelection,
@@ -2050,8 +2050,8 @@ it("invalidates cached MCP tools when execution config or selection changes and 
   const server = { id: "mcp-test", name: "Test", url: "https://example.com/mcp" };
   snapshot.config = { ...snapshot.config, mcp_apps_servers: [server] };
   let reads = 0;
-  let resolveOld!: (value: import("./types").McpServerToolCatalog[]) => void;
-  const old = new Promise<import("./types").McpServerToolCatalog[]>((resolve) => {
+  let resolveOld!: (value: import("ui/contracts/lens").McpServerToolCatalog[]) => void;
+  const old = new Promise<import("ui/contracts/lens").McpServerToolCatalog[]>((resolve) => {
     resolveOld = resolve;
   });
   vi.mocked(invoke).mockImplementation((command, ...arguments_) => {
@@ -2139,9 +2139,9 @@ it.each(["cancel", "success", "failure"] as const)(
       const page = await createPage("settings");
       const root = viewRoot(page, "lens-settings-view")!;
       const editor =
-        root.querySelector<import("./components/lens-mcp-app-settings").LensMcpAppSettings>(
-          "lens-mcp-app-settings",
-        )!;
+        root.querySelector<
+          import("ui/components/settings/lens-mcp-app-settings").LensMcpAppSettings
+        >("lens-mcp-app-settings")!;
       await vi.waitFor(() => expect(editor.querySelector("lens-select")).not.toBeNull());
       const select = editor.querySelector<LensSelect>("lens-select")!;
       select.value = server.id;

@@ -2,7 +2,7 @@ import { BUILD_PATHS } from "../../tooling/build-paths";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppView } from "../presentation-context";
+import type { AppView } from "../page-entries";
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 

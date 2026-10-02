@@ -27,7 +27,7 @@ run = [
 ]
 
 [tasks."check:types"]
-description = "Check repository, desktop and shared web TypeScript"
+description = "Check repository, application, UI and generation TypeScript"
 dir = "{{config_root}}"
 depends = ["check:types:repository", "check:types:frontend"]
 
@@ -37,9 +37,9 @@ dir = "{{config_root}}"
 run = "pnpm exec tsc --build tsconfig.node.json"
 
 [tasks."check:types:frontend"]
-description = "Check desktop and shared web adapter TypeScript"
+description = "Check Desktop, UI preview, shared UI, adapters and generation TypeScript"
 dir = "{{config_root}}"
-run = "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer apps/desktop"
+run = "pnpm exec tsc --build packages/adapter-mcp-apps-host packages/adapter-mcp-apps-view packages/adapter-math-renderer packages/ui packages/adapter-lit-prerenderer apps/desktop apps/ui-preview"
 
 [tasks."frontend:dev"]
 description = "Run the desktop frontend development server"
@@ -53,16 +53,27 @@ depends = ["check:types:frontend"]
 wait_for = ["test:frontend"]
 run = "pnpm run build:assets"
 
+[tasks."ui:dev"]
+description = "Run the browser UI preview"
+dir = "{{config_root}}/apps/ui-preview"
+run = "pnpm run dev"
+
+[tasks."ui:build"]
+description = "Build the browser UI preview"
+dir = "{{config_root}}/apps/ui-preview"
+depends = ["check:types:frontend"]
+run = "pnpm run build"
+
 [tasks."test:repository"]
 description = "Run repository policy tests"
 dir = "{{config_root}}"
 run = "pnpm exec vitest run --project repository"
 
 [tasks."test:frontend"]
-description = "Run all frontend projects in one Vitest worker budget"
+description = "Run browser and generation projects in one Vitest worker budget"
 dir = "{{config_root}}"
 depends = ["check:types:frontend"]
-run = "pnpm exec vitest run --project desktop --project mcp-apps-host --project mcp-apps-view --project math-renderer"
+run = "pnpm exec vitest run --project desktop --project mcp-apps-host --project mcp-apps-view --project math-renderer --project ui --project adapter-lit-prerenderer --project ui-preview"
 
 [tasks."test:mcp-apps-host"]
 description = "Run framework-free MCP Apps Host tests"
@@ -102,9 +113,9 @@ depends = [
 ]
 
 [tasks."verify:frontend"]
-description = "Verify frontend types, tests and production assets"
+description = "Verify browser and generation types, tests, Desktop assets and UI preview"
 dir = "{{config_root}}"
-depends = ["frontend:build", "test:frontend"]
+depends = ["frontend:build", "ui:build", "test:frontend"]
 
 [tasks."verify:portable"]
 description = "Verify repository and frontend owners"

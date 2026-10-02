@@ -9,13 +9,9 @@ ARCHITECTURE.md
 # Common ignores
 *.log
 /.DS_Store
-/.build/
-/packages/adapter-mcp-apps-host/.build/
-/packages/adapter-mcp-apps-view/.build/
-/packages/adapter-math-renderer/.build/
+.build/
 
 # Tauri project ignores
-/apps/desktop/.build/
 /apps/desktop/src-tauri/binaries/*-aarch64-apple-darwin
 /apps/desktop/src-tauri/binaries/*-x86_64-apple-darwin
 /target/

@@ -1,5 +1,8 @@
 packages:
   - "apps/desktop"
+  - "apps/ui-preview"
+  - "packages/ui"
+  - "packages/adapter-lit-prerenderer"
   - "packages/typescript-config"
   - "packages/adapter-mcp-apps-host"
   - "packages/adapter-mcp-apps-view"

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { SettingsIntent } from "../components/events";
-import type { AccessibilityPermissionState } from "./accessibility-permission-controller";
-import type { SnapshotConnectionState } from "./app-snapshot-controller";
+import type { SettingsIntent } from "ui/contracts/events";
+import type { AccessibilityPermissionState } from "ui/contracts/resource-state";
+import type { SnapshotConnectionState } from "ui/contracts/resource-state";
 import type { CommandState } from "./command-state";
 import { settingsViewModel } from "./view-models";
 import type { AppSnapshot } from "../types";

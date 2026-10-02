@@ -8,13 +8,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const desktop = fileURLToPath(new URL("../../apps/desktop/", import.meta.url));
+const ui = fileURLToPath(new URL("../../packages/ui/", import.meta.url));
 const directory = join(desktop, "agent-icons");
 function main() {
   const arguments_ = process.argv.slice(2);
   if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
     throw new Error("usage: mise run generate:agent-icons [--check]");
   }
-  const catalog = JSON.parse(readFileSync(join(directory, "catalog.json"), "utf8")) as {
+  const catalog = JSON.parse(readFileSync(join(ui, "src/assets/agent-icons.json"), "utf8")) as {
     version: number;
     assets: Record<string, string>;
     rules: { containsAny: string[]; icon: string }[];
@@ -45,7 +46,7 @@ function main() {
   try {
     for (const [name, source] of Object.entries(catalog.assets)) {
       const svg = readFileSync(
-        join(desktop, "node_modules/@fortawesome/fontawesome-free/svgs", source),
+        join(ui, "node_modules/@fortawesome/fontawesome-free/svgs", source),
         "utf8",
       );
       // Native PNGs need a square canvas; web masks center the original package SVG with CSS.

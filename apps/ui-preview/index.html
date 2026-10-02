@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en" data-view="settings" data-platform="macos">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lens UI Preview</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 18px;
+        font: 14px system-ui;
+      }
+      nav {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 18px;
+      }
+      #mount {
+        height: 760px;
+        max-width: 1080px;
+        border: 1px solid ButtonBorder;
+      }
+      #mount > * {
+        display: block;
+        height: 100%;
+      }
+      #intents {
+        white-space: pre-wrap;
+      }
+      section {
+        padding: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <label
+        >View
+        <select id="view">
+          <option>about</option>
+          <option>settings</option>
+          <option>target-selection</option>
+          <option>overlay</option>
+          <option>settings-recovery</option>
+        </select></label
+      ><label
+        >Scenario
+        <select id="scenario">
+          <option>ready</option>
+          <option>loading</option>
+          <option>failed</option>
+          <option>pending</option>
+          <option>delayed</option>
+        </select></label
+      ><label
+        >Platform
+        <select id="platform">
+          <option>macos</option>
+          <option>windows</option>
+          <option>linux</option>
+        </select></label
+      >
+    </nav>
+    <main id="mount"></main>
+    <section>
+      <h2>Semantic intents</h2>
+      <pre id="intents">[]</pre>
+    </section>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

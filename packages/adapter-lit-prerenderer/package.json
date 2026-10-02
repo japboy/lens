@@ -1,0 +1,32 @@
+{
+  "name": "adapter-lit-prerenderer",
+  "version": "0.8.3",
+  "private": true,
+  "description": "Node-only sealed Lit prerender generations and immutable development serving",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./verify": "./src/verify.ts",
+    "./source-snapshot": "./src/source-snapshot.ts",
+    "./workspace-dependencies": "./src/workspace-dependencies.ts"
+  },
+  "scripts": {
+    "check:types": "tsc --build",
+    "test": "vitest run --config ../../vitest.config.ts --project adapter-lit-prerenderer"
+  },
+  "dependencies": {
+    "vite": "8.3.1"
+  },
+  "devDependencies": {
+    "@lit-labs/ssr": "4.1.0",
+    "@types/node": "24.19.0",
+    "lit": "3.3.3",
+    "typescript": "7.0.2",
+    "typescript-config": "workspace:*",
+    "vitest": "5.0.2"
+  },
+  "engines": {
+    "node": "24.21.0",
+    "pnpm": "12.8.1"
+  }
+}

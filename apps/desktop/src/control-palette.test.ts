@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { APP_VIEWS, DESKTOP_PLATFORMS } from "./presentation-context";
+import { APP_VIEWS } from "./page-entries";
+import { DESKTOP_PLATFORMS } from "ui/contracts/context";
 import { installControlPalette } from "./control-palette";
 
 const context = { view: "settings", platform: "macos" } as const;

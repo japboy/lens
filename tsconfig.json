@@ -15,6 +15,15 @@
     },
     {
       "path": "./apps/desktop"
+    },
+    {
+      "path": "./packages/ui"
+    },
+    {
+      "path": "./packages/adapter-lit-prerenderer"
+    },
+    {
+      "path": "./apps/ui-preview"
     }
   ]
 }

@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   LensSettingsRecoveryView,
   type SettingsRecoveryInfo,
-} from "../components/lens-settings-recovery-view";
+} from "ui/components/views/lens-settings-recovery-view";
 import { PageAttachment } from "../rendering/page-attachment";
 @customElement("lens-settings-recovery-page")
 export class SettingsRecoveryPage extends ReactiveElement {

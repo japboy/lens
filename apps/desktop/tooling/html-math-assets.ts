@@ -1,6 +1,6 @@
 import type { Plugin } from "vite";
 import { createHtmlMathAssets, inlineHtmlMathCss } from "adapter-math-renderer/node";
-import { HTML_MATH_MANIFEST } from "./html-math-manifest.ts";
+import { HTML_MATH_MANIFEST } from "adapter-math-renderer/html-math-manifest";
 
 /** Desktop owns virtual-module naming and Vite publication, not resource generation. */
 export async function htmlMathAssetsPlugin(buildRoot: string): Promise<Plugin> {

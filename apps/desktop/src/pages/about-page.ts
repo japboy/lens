@@ -1,13 +1,10 @@
 import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import {
-  tauriWebviewPort,
-  type ReleaseAvailability,
-  type Unlisten,
-} from "../application/webview-port";
-import type { AboutIntent } from "../components/events";
-import { LensAboutView } from "../components/lens-about-view";
-import { initialAboutState } from "../rendering/initial-state";
+import { tauriWebviewPort, type Unlisten } from "../application/webview-port";
+import { type ReleaseAvailability } from "ui/contracts/about";
+import type { AboutIntent } from "ui/contracts/events";
+import { LensAboutView } from "ui/components/views/lens-about-view";
+import { initialAboutState } from "ui/presentation/initial-state";
 import { PageAttachment } from "../rendering/page-attachment";
 
 @customElement("lens-about-page")
@@ -32,7 +29,7 @@ export class AboutPage extends ReactiveElement {
       {
         name: "documents",
         ready: () => true,
-        load: () => import("../components/lens-license-document"),
+        load: () => import("ui/entries/about"),
       },
     ],
   );
