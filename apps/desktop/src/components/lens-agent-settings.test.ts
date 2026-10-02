@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { LensSelect } from "./lens-select";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { LensAgentSettings } from "./lens-agent-settings";
 import type { LensSettingsHelp } from "./lens-settings-help";
 import type { AgentIntent } from "./events";
@@ -338,10 +338,10 @@ it("shows help from its independent info trigger without running the adjacent ac
   await info.updateComplete;
   expect(help.hidden).toBe(true);
   trigger.blur();
-  trigger.dispatchEvent(new Event("pointerenter"));
+  info.dispatchEvent(new Event("pointerenter"));
   await info.updateComplete;
   expect(help.hidden).toBe(false);
-  trigger.dispatchEvent(new Event("pointerleave"));
+  info.dispatchEvent(new Event("pointerleave"));
   await info.updateComplete;
   expect(help.hidden).toBe(true);
   expect(element.querySelector(".preset-add-actions lens-settings-help")).toBeNull();
@@ -356,6 +356,94 @@ it("shows help from its independent info trigger without running the adjacent ac
       .closest(".settings-field")
       ?.querySelector<LensSettingsHelp>(".settings-label-help lens-settings-help");
     expect(labelHelp?.helpId).toBe(helpId);
+  }
+});
+
+async function mountHelp() {
+  const info = document.createElement("lens-settings-help") as LensSettingsHelp;
+  info.helpId = "tooltip-test";
+  info.text = "Settings information";
+  document.body.append(info);
+  await info.updateComplete;
+  return {
+    info,
+    trigger: info.querySelector<HTMLButtonElement>("button")!,
+    tooltip: info.querySelector<HTMLElement>('[role="tooltip"]')!,
+  };
+}
+
+it("dismisses hover-only help with Escape without consuming the keyboard event", async () => {
+  const { info, tooltip } = await mountHelp();
+  expect(document.activeElement).toBe(document.body);
+  info.dispatchEvent(new Event("pointerenter"));
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(false);
+  const escape = new KeyboardEvent("keydown", {
+    key: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  const windowListener = vi.fn<(event: KeyboardEvent) => void>();
+  window.addEventListener("keydown", windowListener, { once: true });
+  document.body.dispatchEvent(escape);
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(true);
+  expect(escape.defaultPrevented).toBe(false);
+  expect(windowListener).toHaveBeenCalledWith(escape);
+  info.dispatchEvent(new Event("pointerleave"));
+  info.dispatchEvent(new Event("pointerenter"));
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(false);
+});
+
+it("keeps help visible while either its trigger has focus or its tooltip is hovered", async () => {
+  const { info, trigger, tooltip } = await mountHelp();
+  trigger.focus();
+  info.dispatchEvent(new Event("pointerenter"));
+  info.dispatchEvent(new Event("pointerleave"));
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(false);
+  info.dispatchEvent(new Event("pointerenter"));
+  trigger.blur();
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(false);
+  // Moving between the trigger and tooltip does not leave their owning element.
+  trigger.dispatchEvent(new Event("pointerleave"));
+  tooltip.dispatchEvent(new Event("pointerenter"));
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(false);
+  info.dispatchEvent(new Event("pointerleave"));
+  await info.updateComplete;
+  expect(tooltip.hidden).toBe(true);
+});
+
+it("releases the document Escape listener on removal and reconnects without stale help", async () => {
+  const add = vi.spyOn(document, "addEventListener");
+  const remove = vi.spyOn(document, "removeEventListener");
+  try {
+    const { info, tooltip } = await mountHelp();
+    const keydown = add.mock.calls.find(([name]) => name === "keydown")!;
+    expect(keydown).toBeDefined();
+    info.dispatchEvent(new Event("pointerenter"));
+    await info.updateComplete;
+    expect(tooltip.hidden).toBe(false);
+    info.remove();
+    await info.updateComplete;
+    expect(remove).toHaveBeenCalledWith("keydown", keydown[1]);
+    expect(tooltip.hidden).toBe(true);
+    document.body.append(info);
+    await info.updateComplete;
+    expect(tooltip.hidden).toBe(true);
+    expect(add.mock.calls.filter(([name]) => name === "keydown")).toHaveLength(2);
+    info.dispatchEvent(new Event("pointerenter"));
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await info.updateComplete;
+    expect(tooltip.hidden).toBe(true);
+    info.remove();
+    expect(remove.mock.calls.filter(([name]) => name === "keydown")).toHaveLength(2);
+  } finally {
+    add.mockRestore();
+    remove.mockRestore();
   }
 });
 

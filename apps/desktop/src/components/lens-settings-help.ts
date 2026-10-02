@@ -7,7 +7,46 @@ export class LensSettingsHelp extends LitElement {
   @property() helpId = "";
   @property() label = "More information";
   @property() text = "";
-  @state() private visible = false;
+  @state() private hovered = false;
+  @state() private focused = false;
+  @state() private dismissed = false;
+  private listeningDocument?: Document;
+
+  private get visible(): boolean {
+    return !this.dismissed && (this.hovered || this.focused);
+  }
+
+  private readonly handlePointerEnter = () => {
+    this.hovered = true;
+    this.dismissed = false;
+  };
+
+  private readonly handlePointerLeave = () => {
+    this.hovered = false;
+  };
+
+  private readonly handleDocumentKeydown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && this.visible) this.dismissed = true;
+  };
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener("pointerenter", this.handlePointerEnter);
+    this.addEventListener("pointerleave", this.handlePointerLeave);
+    this.listeningDocument = this.ownerDocument;
+    this.listeningDocument.addEventListener("keydown", this.handleDocumentKeydown);
+  }
+
+  disconnectedCallback(): void {
+    this.removeEventListener("pointerenter", this.handlePointerEnter);
+    this.removeEventListener("pointerleave", this.handlePointerLeave);
+    this.listeningDocument?.removeEventListener("keydown", this.handleDocumentKeydown);
+    this.listeningDocument = undefined;
+    this.hovered = false;
+    this.focused = false;
+    this.dismissed = false;
+    super.disconnectedCallback();
+  }
 
   protected createRenderRoot(): HTMLElement {
     return this;
@@ -19,20 +58,12 @@ export class LensSettingsHelp extends LitElement {
         class="settings-info"
         aria-label=${this.label}
         aria-describedby=${this.helpId}
-        @pointerenter=${() => {
-          this.visible = true;
-        }}
-        @pointerleave=${() => {
-          this.visible = false;
-        }}
         @focus=${() => {
-          this.visible = true;
+          this.focused = true;
+          this.dismissed = false;
         }}
         @blur=${() => {
-          this.visible = false;
-        }}
-        @keydown=${(event: KeyboardEvent) => {
-          if (event.key === "Escape") this.visible = false;
+          this.focused = false;
         }}
       >
         <i class="fa-solid fa-circle-info" aria-hidden="true"></i></button
