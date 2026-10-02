@@ -13,7 +13,7 @@
   enabledManagers: ["npm", "cargo", "mise", "github-actions", "custom.regex"],
   timezone: "Asia/Tokyo",
   schedule: ["* 0-5 * * 1"],
-  prCreation: "not-pending",
+  prCreation: "immediate",
   minimumReleaseAge: "3 days",
   internalChecksFilter: "strict",
   platformAutomerge: true,
