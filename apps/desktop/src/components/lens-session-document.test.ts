@@ -281,6 +281,20 @@ describe("Conversation body ownership", () => {
   });
 });
 describe("canonical session renderer", () => {
+  it("displays resource-link diagnostic metadata literally without opening or loading its URI", async () => {
+    const metadata =
+      "Name: <img src=x onerror=alert(1)>\nTitle: [App](https://example.com)\nDescription: <script>never execute</script>\nURI: ui://lens/publication/2";
+    const cell = conversationCell();
+    cell.block = { type: "markdown", text: metadata };
+    cell.contentKey = "resource-metadata";
+    document.body.append(cell);
+    await vi.waitFor(() => expect(displayedText(cell)?.text).toBe(metadata));
+    const text = displayedText(cell)!;
+    await text.updateComplete;
+    expect(text.shadowRoot!.querySelector(".text")!.textContent).toBe(metadata);
+    expect(cell.shadowRoot!.querySelector("iframe, img, a, script")).toBeNull();
+    expect(text.shadowRoot!.querySelector("iframe, img, a, script")).toBeNull();
+  });
   it("keeps ordered messages and displays HTML literally without loading embedded resources", async () => {
     expect(conversationRows(documentModel).map((row) => row.id)).toEqual([
       "u:header",

@@ -942,6 +942,20 @@ fn delivery_coverage(content: &ContentBlock) -> Option<LensDeliveryCoverage> {
 fn convert(content: ContentBlock) -> DocumentBlock {
     match content {
         ContentBlock::Text(value) => DocumentBlock::Markdown { text: value.text },
+        ContentBlock::ResourceLink(value) => {
+            // Conversation blocks are diagnostic text; this neither reads nor opens the URI.
+            let mut lines = vec![format!("Name: {}", value.name)];
+            if let Some(title) = value.title {
+                lines.push(format!("Title: {title}"));
+            }
+            if let Some(description) = value.description {
+                lines.push(format!("Description: {description}"));
+            }
+            lines.push(format!("URI: {}", value.uri));
+            DocumentBlock::Markdown {
+                text: lines.join("\n"),
+            }
+        }
         ContentBlock::Image(value)
             if [
                 "image/png",
@@ -993,6 +1007,37 @@ mod tests {
     }
     fn assistant(value: &str) -> SessionUpdate {
         SessionUpdate::AgentMessageChunk(ContentChunk::new(text(value)))
+    }
+    #[test]
+    fn tool_resource_links_preserve_metadata_as_diagnostic_text() {
+        for (metadata, expected) in [
+            (
+                serde_json::json!({"type":"resource_link","name":"Published HTML App","uri":"ui://lens/publication/1"}),
+                "Name: Published HTML App\nURI: ui://lens/publication/1",
+            ),
+            (
+                serde_json::json!({"type":"resource_link","name":"<img src=x onerror=alert(1)>","title":"[App](https://example.com)","description":"<script>never execute</script>","uri":"ui://lens/publication/2"}),
+                "Name: <img src=x onerror=alert(1)>\nTitle: [App](https://example.com)\nDescription: <script>never execute</script>\nURI: ui://lens/publication/2",
+            ),
+        ] {
+            for explicit in [true, false] {
+                let mut document = SessionDocument::default();
+                let mut fields = ToolCallUpdateFields::new()
+                    .title("Resource tool")
+                    .status(ToolCallStatus::Completed);
+                if explicit {
+                    fields = fields.content(serde_json::from_value::<Vec<ToolCallContent>>(serde_json::json!([
+                        {"type":"content","content":metadata}
+                    ])).unwrap());
+                } else {
+                    fields = fields.raw_output(serde_json::json!({"content":[metadata]}));
+                }
+                document.tool("resource".into(), fields).unwrap();
+                assert!(matches!(&document.entries[0], DocumentEntry::Tool { blocks, accepted_html:None, .. }
+                    if blocks == &vec![DocumentBlock::Markdown { text: expected.into() }]));
+                assert_accounting(&document);
+            }
+        }
     }
     fn delivery_projection() -> Value {
         serde_json::json!({
