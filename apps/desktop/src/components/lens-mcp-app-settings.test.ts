@@ -76,6 +76,49 @@ describe("MCP preset settings", () => {
     expect(intents).toEqual([]);
   });
 
+  it("retains a new unsaved draft across built-in selection through the combobox", async () => {
+    const { element, intents } = await mount([]);
+    button(element, "Add Preset").click();
+    await element.updateComplete;
+    await input(element, "MCP preset name", "validation-draft");
+    await input(element, "Streamable HTTP URL", "https://example.com/mcp");
+    const selector = element.querySelector<LensSelect>("lens-select")!;
+    await selector.updateComplete;
+    const draftId = selector.value;
+    const choose = async (value: string) => {
+      const trigger = selector.shadowRoot!.querySelector<HTMLButtonElement>("button")!;
+      trigger.click();
+      await selector.updateComplete;
+      expect(trigger.getAttribute("aria-expanded")).toBe("true");
+      const index = selector.options.findIndex((option) => option.value === value);
+      expect(index).toBeGreaterThanOrEqual(0);
+      selector.shadowRoot!.querySelector<HTMLElement>(`[data-index="${index}"]`)!.click();
+      await element.updateComplete;
+      await selector.updateComplete;
+      expect(selector.value).toBe(value);
+      expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    };
+    await choose("lens_rich_content");
+    expect(element.querySelector("form")).toBeNull();
+    element.servers = [];
+    await element.updateComplete;
+    await selector.updateComplete;
+    expect(selector.options).toEqual([
+      { value: "lens_rich_content", label: "lens_rich_content · Built-in" },
+      { value: draftId, label: "validation-draft (unsaved)" },
+    ]);
+    await choose(draftId);
+    expect(element.querySelector<HTMLInputElement>('[aria-label="MCP preset name"]')!.value).toBe(
+      "validation-draft",
+    );
+    expect(
+      element.querySelector<HTMLInputElement>('[aria-label="Streamable HTTP URL"]')!.value,
+    ).toBe("https://example.com/mcp");
+    expect(button(element, "Discard Draft")).toBeDefined();
+    expect(button(element, "Delete Preset")).toBeUndefined();
+    expect(intents).toEqual([]);
+  });
+
   it("retains unsaved text across equal snapshots and selection and saves the entire registry", async () => {
     const { element, intents } = await mount();
     await select(element, first.id);
