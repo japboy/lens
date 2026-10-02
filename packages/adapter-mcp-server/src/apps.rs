@@ -834,12 +834,7 @@ impl DocumentPolicy {
                 format!("'sha256-{trusted_script_sha256}'")
             }
         };
-        let attributes = if matches!(self, Self::Static { .. }) {
-            "; script-src-attr 'none'"
-        } else {
-            ""
-        };
-        Ok(format!("default-src 'none'; script-src {scripts}{attributes}; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"))
+        Ok(format!("default-src 'none'; script-src {scripts}; script-src-attr 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"))
     }
 }
 
