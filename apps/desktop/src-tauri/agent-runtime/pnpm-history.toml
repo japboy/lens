@@ -1,4 +1,8 @@
-# Previously shipped JavaScript runtime. This history never selects new installations.
+# Previously shipped pnpm runtimes. This history never selects new installations.
+[[previous]]
+version = "12.6.0"
+archive_digest = "sha256:1030f38e14fa2e6c87fe6ab0313a3bf3b794a961504f4439bad2ca2110d3583e"
+
 [[previous]]
 version = "11.22.0"
 archive_digest = "sha512:1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621"
