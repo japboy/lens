@@ -16,7 +16,6 @@ export class LensMcpApp extends LitElement {
     | undefined;
   @property({ attribute: false }) port: McpAppsPort | undefined;
   @property({ type: Boolean }) active = false;
-  @property({ type: Boolean }) replay = false;
   @state() private stopped = false;
   private controller: McpAppController | undefined;
   private openingIdentity: string | undefined;

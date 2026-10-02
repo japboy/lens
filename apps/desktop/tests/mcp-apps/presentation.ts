@@ -22,7 +22,7 @@ const lease: McpAppLease = {
 const flush = async () => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 };
-function mount(port: McpAppsPort, replay = false) {
+function mount(port: McpAppsPort) {
   vi.spyOn(AppBridge.prototype, "connect").mockResolvedValue();
   vi.spyOn(AppBridge.prototype, "teardownResource").mockResolvedValue({});
   vi.spyOn(AppBridge.prototype, "close").mockResolvedValue();
@@ -37,7 +37,6 @@ function mount(port: McpAppsPort, replay = false) {
   };
   element.port = port;
   element.active = true;
-  element.replay = replay;
   document.body.append(element);
   return element;
 }
@@ -67,7 +66,7 @@ describe("App presentation lifecycle", () => {
     vi.mocked(native.mcpAppRequest).mockResolvedValueOnce({
       result: { isError: false },
     });
-    const element = mount(native, true);
+    const element = mount(native);
 
     vi.spyOn(AppBridge.prototype, "sendSandboxResourceReady").mockResolvedValue();
     vi.spyOn(AppBridge.prototype, "sendToolInput").mockResolvedValue();
@@ -155,7 +154,7 @@ describe("App presentation lifecycle", () => {
   });
   it("mounts an immutable saved App without opening agent or tool authority", async () => {
     const native = port();
-    const element = mount(native, true);
+    const element = mount(native);
     await element.updateComplete;
     await flush();
     expect(native.openMcpApp).toHaveBeenCalledWith("artifact", window.location.origin);

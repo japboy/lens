@@ -132,7 +132,7 @@ export class LensAgentOutput extends LitElement {
         data-auto-scroll-container
         role="document"
       >
-        ${media.length ? html`<lens-output-media .media=${media} .appPort=${this.appPort} .replayApps=${this.sessionKind === "history"} .notificationContent=${this.notificationContent}></lens-output-media>` : nothing}
+        ${media.length ? html`<lens-output-media .media=${media} .appPort=${this.appPort} .notificationContent=${this.notificationContent}></lens-output-media>` : nothing}
         ${
           media.length && narrative.length
             ? html`
@@ -303,7 +303,6 @@ export class LensAgentOutput extends LitElement {
                 .notificationContent=${this.notificationContent}
                 .media=${media}
                 .appPort=${this.appPort}
-                .replayApps=${this.sessionKind === "history"}
                 .mediaErrors=${history.mediaErrors}
                 @lens-output-media-demand=${(
                   event: CustomEvent<{ mediaIds: readonly string[] }>,

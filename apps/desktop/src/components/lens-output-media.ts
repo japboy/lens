@@ -41,7 +41,6 @@ interface LoadedImage {
 @customElement("lens-output-media")
 export class LensOutputMedia extends LitElement {
   @property({ attribute: false }) appPort: McpAppsPort | undefined;
-  @property({ type: Boolean }) replayApps = false;
   private static nextId = 0;
   private readonly detailsId = `lens-output-media-details-${++LensOutputMedia.nextId}`;
 
@@ -489,7 +488,6 @@ export class LensOutputMedia extends LitElement {
                 .descriptor=${descriptor}
                 .port=${this.appPort}
                 .active=${selected}
-                .replay=${item.kind === "app" ? this.replayApps : item.presentationSource?.kind === "history"}
                 @lens-mcp-app-state=${() => {
                   this.completeNavigation();
                   this.requestUpdate();
