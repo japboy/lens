@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ReactiveControllerHost } from "lit";
 import { ResponseHistoryController } from "./response-history-controller";
-import { mediaCases, mediaFixture, artifact } from "../../tests/fixtures/media-parity";
+import { mediaCases, mediaFixture } from "../../tests/fixtures/media-parity";
 
 describe("live/replay media contract", () => {
   it.each(mediaCases)("preserves %s media, ordering, and narrative", async (choice) => {
@@ -48,16 +48,6 @@ describe("live/replay media contract", () => {
               .length,
         )
         .toBe(choice === "none" ? 0 : choice === "single" ? 1 : 3);
-      const htmlBlocks = expected.filter((block) => block.type === "html");
-      for (const block of htmlBlocks) {
-        await expect(
-          controller.loadBlock(
-            presentation.scopeId,
-            presentation.responses[0]!.id,
-            block.block_index,
-          ),
-        ).resolves.toMatchObject({ type: "html", text: artifact });
-      }
       for (const media of presentation.media.filter((media) => media.kind === "html"))
         expect(media.presentationSource?.kind).toBe(controller === live ? "live" : "history");
     }

@@ -8,7 +8,6 @@ import type {
 import type { DeferredDocumentBlock, DocumentBlock, SessionView } from "./session-document";
 import { presentMcpApps, type PresentedOutputMedia } from "../output-media";
 import { imageDataUrl } from "../view-model";
-import { MAX_HTML_SOURCE_BYTES } from "adapter-mcp-apps-view";
 import type { WebviewPort } from "./webview-port";
 
 export const RESPONSE_BODY_CACHE_BYTES = 16 * 1024 * 1024;
@@ -84,7 +83,7 @@ export type LoadResponseBlock = (
 export const responseBlockIdentity = (operation: string, response: string, index: number): string =>
   JSON.stringify([operation, response, index]);
 interface CacheEntry {
-  value: LensOutputBlock | string;
+  value: LensOutputBlock;
   bytes: number;
 }
 interface PendingRequest {
@@ -101,7 +100,7 @@ export class ResponseHistoryController implements ReactiveController {
   private generation = 0;
   private cache = new Map<string, CacheEntry>();
   private cacheBytes = 0;
-  private inflight = new Map<string, Promise<LensOutputBlock | string>>();
+  private inflight = new Map<string, Promise<LensOutputBlock>>();
   private queue: PendingRequest[] = [];
   private active = 0;
   private mediaDemand = new Set<string>();
@@ -120,7 +119,7 @@ export class ResponseHistoryController implements ReactiveController {
 
   constructor(
     private readonly host: ReactiveControllerHost,
-    private readonly port: Pick<WebviewPort, "getResponseBlock" | "getHtmlOutput">,
+    private readonly port: Pick<WebviewPort, "getResponseBlock">,
     private readonly loadHistoryBlock?: (
       reference: DeferredDocumentBlock,
     ) => Promise<DocumentBlock>,
@@ -283,15 +282,8 @@ export class ResponseHistoryController implements ReactiveController {
     const descriptor = this.descriptor(operation, response, index);
     const key = responseBlockIdentity(operation, response, index);
     if (descriptor.type === "html")
-      return {
-        type: "html",
-        resource_id: descriptor.resource_id,
-        mime_type: "text/html",
-        uri: descriptor.uri,
-        byte_length: descriptor.byte_length,
-        text: await this.loadHtmlBody(operation, response, descriptor, key),
-      };
-    return (await this.obtain(key, async () => {
+      throw new Error("HTML display requires a native presentation lease.");
+    return this.obtain(key, async () => {
       const block = descriptor.source
         ? await this.loadReplayBlock(descriptor)
         : await this.port.getResponseBlock(operation, response, index);
@@ -310,7 +302,7 @@ export class ResponseHistoryController implements ReactiveController {
       )
         throw new Error("Response image does not match its descriptor.");
       return block;
-    })) as LensOutputBlock;
+    });
   };
   readonly requestMedia = (ids: readonly string[]): void => {
     const demand = new Set(ids);
@@ -370,31 +362,6 @@ export class ResponseHistoryController implements ReactiveController {
     }
     this.publish();
   }
-  private async loadHtmlBody(
-    operation: string,
-    response: string,
-    descriptor: Extract<ResponseBlockDescriptor, { type: "html" }>,
-    id: string,
-  ): Promise<string> {
-    if (
-      !Number.isSafeInteger(descriptor.byte_length) ||
-      descriptor.byte_length < 0 ||
-      descriptor.byte_length > MAX_HTML_SOURCE_BYTES
-    )
-      throw new Error("HTML content exceeds the supported size.");
-    return (await this.obtain(`${id}:html`, async () => {
-      let content: string;
-      if (descriptor.source) {
-        if (!this.loadHistoryBlock) throw new Error("Session block loader unavailable.");
-        const block = await this.loadHistoryBlock(descriptor.source);
-        if (block.type !== "html") throw new Error("Session HTML does not match its descriptor.");
-        content = block.text;
-      } else content = await this.port.getHtmlOutput(operation, response, descriptor.resource_id);
-      if (new TextEncoder().encode(content).byteLength !== descriptor.byte_length)
-        throw new Error("HTML content does not match its descriptor.");
-      return content;
-    })) as string;
-  }
   private async loadReplayBlock(descriptor: ResponseBlockDescriptor): Promise<LensOutputBlock> {
     if (!descriptor.source || !this.loadHistoryBlock)
       throw new Error("Session block loader unavailable.");
@@ -410,10 +377,7 @@ export class ResponseHistoryController implements ReactiveController {
         throw new Error("Session content was not materialized.");
     }
   }
-  private obtain(
-    key: string,
-    load: () => Promise<LensOutputBlock | string>,
-  ): Promise<LensOutputBlock | string> {
+  private obtain(key: string, load: () => Promise<LensOutputBlock>): Promise<LensOutputBlock> {
     const cached = this.cache.get(key);
     if (cached) {
       this.cache.delete(key);
@@ -423,7 +387,7 @@ export class ResponseHistoryController implements ReactiveController {
     const pending = this.inflight.get(key);
     if (pending) return pending;
     const generation = this.generation;
-    const promise = new Promise<LensOutputBlock | string>((resolve, reject) => {
+    const promise = new Promise<LensOutputBlock>((resolve, reject) => {
       this.queue.push({
         generation,
         reject,
@@ -432,9 +396,7 @@ export class ResponseHistoryController implements ReactiveController {
           void load()
             .then((value) => {
               if (generation !== this.generation) throw new Error("Response is no longer active.");
-              const bytes = new TextEncoder().encode(
-                typeof value === "string" ? value : JSON.stringify(value),
-              ).byteLength;
+              const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
               if (bytes > RESPONSE_BODY_CACHE_BYTES) {
                 resolve(value);
                 return;

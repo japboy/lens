@@ -148,7 +148,6 @@ fn command_handler<R: tauri::Runtime>(
             session_view::get_session_view,
             command_work::get_session_block,
             session_view::close_session_view,
-            command_work::get_html_output,
             command_work::get_response_block,
             mcp_apps::open_mcp_app,
             mcp_apps::close_mcp_app,

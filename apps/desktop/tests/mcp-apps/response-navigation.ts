@@ -95,7 +95,6 @@ async function mount() {
       type: "markdown",
       text: "abc",
     })),
-    getHtmlOutput: vi.fn<WebviewPort["getHtmlOutput"]>(async () => "unused"),
   });
   const publish = (count: number) => {
     const snapshot = lens(count);

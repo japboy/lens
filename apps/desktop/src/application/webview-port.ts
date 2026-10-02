@@ -72,7 +72,6 @@ export interface WebviewPort extends McpAppsPort {
     representationId: string,
     blockIndex: number,
   ): Promise<LensOutputBlock>;
-  getHtmlOutput(operationId: string, representationId: string, resourceId: string): Promise<string>;
   getAboutInfo(): Promise<AboutInfo>;
   getAboutDocuments(): Promise<AboutDocuments>;
   getReleaseAvailability(): Promise<ReleaseAvailability>;
@@ -169,8 +168,6 @@ export const tauriWebviewPort: WebviewPort = {
     }),
   getResponseBlock: (operationId, representationId, blockIndex) =>
     invoke<LensOutputBlock>("get_response_block", { operationId, representationId, blockIndex }),
-  getHtmlOutput: (operationId, representationId, resourceId) =>
-    invoke<string>("get_html_output", { operationId, representationId, resourceId }),
   getAboutInfo: () => invoke<AboutInfo>("get_about_info"),
   getAboutDocuments: () => invoke<AboutDocuments>("get_about_documents"),
   getReleaseAvailability: () => invoke<ReleaseAvailability>("get_release_availability"),

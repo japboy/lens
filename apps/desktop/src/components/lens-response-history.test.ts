@@ -731,7 +731,7 @@ describe("Overlay committed response presentation", () => {
           element.history = controller.presentation;
         },
       } as unknown as ReactiveControllerHost,
-      { getResponseBlock: request, getHtmlOutput: async () => "" },
+      { getResponseBlock: request },
     );
     element.lens = {
       operation_id: "op",

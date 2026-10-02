@@ -62,7 +62,6 @@ it("loads committed image bodies only through history demand and preserves publi
       mime_type: "image/png",
       data: "YWJj",
     })),
-    getHtmlOutput: vi.fn<WebviewPort["getHtmlOutput"]>(),
   };
   const resources = new SnapshotResources(port as unknown as WebviewPort, vi.fn<() => void>());
   const history = new ResponseHistoryController(

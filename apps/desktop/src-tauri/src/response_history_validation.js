@@ -13,17 +13,22 @@
   const toggleCount = () =>
     root()?.querySelector(".overlay-status-toggle .overlay-new-response-count")?.textContent ?? "";
   const checks = {};
-  const wait = async (predicate, stage = "DOM readiness") => {
+  let currentStage = "initial response";
+  const wait = async (predicate, name) => {
+    currentStage = name;
     const deadline = performance.now() + 25000;
     while (!predicate()) {
-      if (performance.now() > deadline) throw new Error(`Native ${stage} deadline exceeded`);
+      if (performance.now() > deadline) throw new Error(`Native ${name} deadline exceeded`);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   };
   try {
-    await wait(() => root()?.querySelector("[data-response-id]"));
+    await wait(() => root()?.querySelector("[data-response-id]"), "initial response");
     const retained = root().querySelector("[data-response-id]");
-    await wait(() => root().querySelector("iframe")?.srcdoc.includes("Retained visual 1"));
+    await wait(
+      () => root().querySelector("lens-mcp-app")?.stage === "ready",
+      "retained HTML native presentation readiness",
+    );
     const retainedFrame = root().querySelector("iframe");
     checks.initialSnapshotQuiet =
       !root().querySelector(".lens-response-update") && !toggleCount() && pendingCount() === 0;
@@ -31,8 +36,10 @@
     output.style.scrollSnapType = "none";
     const narrative = root().querySelector(".lens-output-narrative");
     output.scrollTop = narrative.offsetTop;
-    await wait(() =>
-      retained.querySelector("lens-markdown")?.textContent.includes("Native cumulative output"),
+    await wait(
+      () =>
+        retained.querySelector("lens-markdown")?.textContent.includes("Native cumulative output"),
+      "retained narrative readiness",
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
     const markdown = retained.querySelector("lens-markdown");
@@ -45,7 +52,10 @@
     const readingPosition = output.scrollTop;
     const initialBottomGap = output.scrollHeight - output.clientHeight - readingPosition;
     await invoke("plugin:event|emit", { event: "lens-response-history-ready", payload: true });
-    await wait(() => root()?.querySelectorAll("[data-response-id]").length === 3);
+    await wait(
+      () => root()?.querySelectorAll("[data-response-id]").length === 3,
+      "three response manifests",
+    );
     await wait(
       () => pendingCount() === 2 && notificationShown(),
       "two appended response notification",
@@ -54,16 +64,19 @@
     const positionRetained = Math.abs(output.scrollTop - readingPosition) <= 3;
     const frameRetained = root().querySelector("iframe") === retainedFrame;
     const markdownRetained = retained.querySelector("lens-markdown") === markdown;
+    currentStage = "retained markdown IPC";
     const block = await invoke("get_response_block", {
       operationId: "__OPERATION_ID__",
       representationId: "__REPRESENTATION_ID__",
       blockIndex: 1,
     });
-    const html = await invoke("get_html_output", {
+    currentStage = "retained HTML descriptor IPC";
+    const html = await invoke("get_response_block", {
       operationId: "__OPERATION_ID__",
       representationId: "__REPRESENTATION_ID__",
-      resourceId: "retained-validation-html",
+      blockIndex: 0,
     });
+    currentStage = "stale operation IPC";
     let rejected = false;
     try {
       await invoke("get_response_block", {
@@ -83,16 +96,28 @@
       readingPositionRetained: positionRetained && initialBottomGap > 100,
       oldResponseDOM: root().querySelector("[data-response-id]") === retained,
       oldMarkdownIPC: block.type === "markdown" && block.text.includes("Response 1"),
-      oldHTMLIPC: html.includes("Retained visual 1"),
+      oldHTMLDescriptorIPC:
+        html.type === "html" &&
+        html.resource_id === "retained-validation-html" &&
+        !Object.hasOwn(html, "text"),
+      htmlNativeLeaseReady:
+        root().querySelector("lens-mcp-app")?.stage === "ready" &&
+        new URL(retainedFrame.src).hostname === "127.0.0.1" &&
+        !retainedFrame.hasAttribute("srcdoc"),
       wrongOperationRejected: rejected,
       twoAppendsCounted: pendingCount() === 2,
       appendedNotificationShown: notificationShown(),
     });
     root().querySelector("#source-tab").click();
-    await wait(() => root().querySelector("#source-tab")?.getAttribute("aria-selected") === "true");
+    await wait(
+      () => root().querySelector("#source-tab")?.getAttribute("aria-selected") === "true",
+      "source tab selection",
+    );
     root().querySelector("#interpretation-tab").click();
-    await wait(() =>
-      retained.querySelector("lens-markdown")?.textContent.includes("Native cumulative output"),
+    await wait(
+      () =>
+        retained.querySelector("lens-markdown")?.textContent.includes("Native cumulative output"),
+      "interpretation narrative restoration",
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     checks.tabReadingPositionRetained =
@@ -133,6 +158,7 @@
     checks.viewLatestRevealsNarrative = Math.abs(latestOffset) <= 3;
     checks.viewLatestFocusesTarget = root().activeElement === latest;
     checks.viewLatestAcknowledgesPending = pendingCount() === 0 && !toggleCount();
+    currentStage = "validation report";
     await report({
       passed: Object.values(checks).every(Boolean),
       checks,
@@ -147,6 +173,7 @@
     await report({
       passed: false,
       error: String(error),
+      stage: currentStage,
       checks,
       pendingCount: pendingCount(),
       toggleCount: toggleCount(),
