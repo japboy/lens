@@ -37,10 +37,10 @@ agent-client-protocol = "=2.2.0"
 base64.workspace = true
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 dirs = "=6.0.0"
-flate2 = "=1.1.9"
+flate2 = "=1.1.10"
 libc = "=0.2.189"
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
-rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"
 serde.workspace = true
 serde_json.workspace = true
