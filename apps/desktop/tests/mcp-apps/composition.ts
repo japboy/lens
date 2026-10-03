@@ -2,10 +2,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { McpAppDescriptor, McpAppLease } from "adapter-mcp-apps-host";
 import { version } from "../../package.json";
-import {
-  createDesktopMcpAppController,
-  type DesktopMcpAppsPort,
-} from "../../src/mcp-apps/composition";
+import { createUiMcpAppController } from "ui/resources/document-host";
+import { toUiMcpAppsPort, type DesktopMcpAppsPort } from "../../src/mcp-apps/composition";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -55,7 +53,7 @@ it.each(["external", "builtin", "static", "interactive-replay"] as const)(
     };
     const container = document.createElement("div");
     document.body.append(container);
-    const controller = createDesktopMcpAppController(port, vi.fn<() => void>());
+    const controller = createUiMcpAppController(toUiMcpAppsPort(port), vi.fn<() => void>());
     const source = {
       kind: "history" as const,
       generation: "saved-generation",

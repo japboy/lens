@@ -8,7 +8,10 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { MEMBERS, TARGET_DEPENDENCIES } from "../../scripts/workspace-policy.ts";
-import { webSourceViolations } from "../../scripts/web-source-boundaries.ts";
+import {
+  crossPackageRelativeImportViolations,
+  webSourceViolations,
+} from "../../scripts/web-source-boundaries.ts";
 import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
   portableSourceViolations,
@@ -356,14 +359,34 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
     ]),
   );
   validateInventory(root, cargo, pnpm, manifests, paths);
+  const sharedPackages = MEMBERS.filter(
+    (member) => member.ecosystem === "pnpm" && member.directory.startsWith("packages/"),
+  ).map((member) => member.directory);
+  for (const path of paths.filter((entry) => /\.(?:[cm]?[jt]sx?)$/u.test(entry))) {
+    const violations = crossPackageRelativeImportViolations(
+      path,
+      readFileSync(resolve(root, path), "utf8"),
+      sharedPackages,
+    );
+    assert(violations.length === 0, `${path}: ${violations.join("; ")}`);
+  }
+  const runtimePackages = MEMBERS.filter(
+    (member) =>
+      member.ecosystem === "pnpm" &&
+      member.directory.startsWith("packages/") &&
+      (member.implementation === "webview" || member.implementation === "tooling"),
+  );
   for (const path of paths.filter(
-    (entry) =>
-      /^packages\/(?:adapter-mcp-apps-host|adapter-mcp-apps-view|adapter-math-renderer)\/src\/.*\.(?:ts|js)$/u.test(
-        entry,
-      ) && !entry.endsWith(".test.ts"),
+    (entry) => /\.(?:ts|js)$/u.test(entry) && !entry.endsWith(".test.ts"),
   )) {
-    const owner = path.split("/").slice(0, 2).join("/");
-    const violations = webSourceViolations(path, readFileSync(resolve(root, path), "utf8"), owner);
+    const member = runtimePackages.find((entry) => path.startsWith(`${entry.directory}/src/`));
+    if (!member) continue;
+    const violations = webSourceViolations(
+      path,
+      readFileSync(resolve(root, path), "utf8"),
+      member.directory,
+      member.implementation === "tooling" ? "node" : "browser",
+    );
     assert(violations.length === 0, `${path}: ${violations.join("; ")}`);
   }
   for (const path of paths.filter((entry) => entry.endsWith(".rs"))) {

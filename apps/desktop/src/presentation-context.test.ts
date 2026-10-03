@@ -1,12 +1,9 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import {
-  applyPresentationContext,
-  APP_VIEWS,
-  DESKTOP_PLATFORMS,
-  presentationContextForPage,
-} from "./presentation-context";
+import { applyPresentationContext, presentationContextForPage } from "./presentation-context";
+import { APP_VIEWS } from "./page-entries";
+import { DESKTOP_PLATFORMS } from "ui/contracts/context";
 
 describe("presentation context", () => {
   it("accepts every finite view and desktop platform pair", () => {

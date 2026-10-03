@@ -5,7 +5,15 @@ export type Member = {
   ecosystem: "cargo" | "pnpm";
   name: string;
   directory: string;
-  role: "repository" | "application" | "domain" | "usecase" | "port" | "adapter" | "configuration";
+  role:
+    | "repository"
+    | "application"
+    | "presentation"
+    | "domain"
+    | "usecase"
+    | "port"
+    | "adapter"
+    | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
   implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "transport";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
@@ -20,7 +28,9 @@ export const MEMBERS: readonly Member[] = [
     role: "repository",
     capability: "repository",
     implementation: "tooling",
-    dependencies: { dev: ["typescript-config", "adapter-math-renderer"] },
+    dependencies: {
+      dev: ["typescript-config", "adapter-math-renderer", "adapter-lit-prerenderer"],
+    },
   },
   {
     ecosystem: "pnpm",
@@ -30,9 +40,39 @@ export const MEMBERS: readonly Member[] = [
     capability: "desktop",
     implementation: "webview",
     dependencies: {
-      normal: ["adapter-mcp-apps-host", "adapter-mcp-apps-view", "adapter-math-renderer"],
+      normal: ["ui", "adapter-mcp-apps-host", "adapter-mcp-apps-view", "adapter-math-renderer"],
+      dev: ["typescript-config", "adapter-lit-prerenderer"],
+    },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "ui-preview",
+    directory: "apps/ui-preview",
+    role: "application",
+    capability: "desktop",
+    implementation: "webview",
+    dependencies: { normal: ["ui"], dev: ["typescript-config"] },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "ui",
+    directory: "packages/ui",
+    role: "presentation",
+    capability: "desktop",
+    implementation: "webview",
+    dependencies: {
+      normal: ["adapter-mcp-apps-host", "adapter-math-renderer"],
       dev: ["typescript-config"],
     },
+  },
+  {
+    ecosystem: "pnpm",
+    name: "adapter-lit-prerenderer",
+    directory: "packages/adapter-lit-prerenderer",
+    role: "adapter",
+    capability: "repository",
+    implementation: "tooling",
+    dependencies: { dev: ["typescript-config"] },
   },
   {
     ecosystem: "pnpm",

@@ -1,0 +1,29 @@
+{
+  "name": "ui-preview",
+  "version": "0.8.3",
+  "private": true,
+  "description": "Browser preview of canonical Lens UI scenarios",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4183",
+    "build": "pnpm run check:types && vite build",
+    "check:types": "tsc --build",
+    "test": "vitest run --config ../../vitest.config.ts --project ui-preview"
+  },
+  "dependencies": {
+    "lit": "3.3.3",
+    "ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "jsdom": "30.1.1",
+    "typescript": "7.0.2",
+    "typescript-config": "workspace:*",
+    "vite": "8.3.1",
+    "vitest": "5.0.2"
+  },
+  "engines": {
+    "node": "24.21.0",
+    "pnpm": "12.8.1"
+  }
+}

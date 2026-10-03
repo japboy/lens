@@ -1,10 +1,10 @@
-import type { LensSelect } from "../components/lens-select";
+import type { LensSelect } from "ui/components/controls/lens-select";
 // @vitest-environment jsdom
 import "@lit-labs/ssr-client/lit-element-hydrate-support.js";
 import { ReactiveElement } from "lit";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import "../components/lens-about-view";
-import type { LensAboutView } from "../components/lens-about-view";
+import "ui/components/views/lens-about-view";
+import type { LensAboutView } from "ui/components/views/lens-about-view";
 import { installGeneratedPage } from "./generated-page.test-helper";
 import { PageAttachment, type RegionModule } from "./page-attachment";
 

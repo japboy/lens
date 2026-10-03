@@ -1,12 +1,12 @@
 // Development-only: deliberately absent from PAGE_ENTRIES.
-import "./styles/document.css";
-import "./components/lens-overlay-view";
-import "./components/lens-agent-output";
-import "./components/lens-session-document";
-import { ResponseHistoryController } from "./application/response-history-controller";
+import "ui/styles/document.css";
+import "ui/components/views/lens-overlay-view";
+import "ui/components/overlay/lens-agent-output";
+import "ui/components/overlay/lens-session-document";
+import { ResponseHistoryController } from "ui/resources/response-history-controller";
 import type { ReactiveControllerHost } from "lit";
-import type { LensOverlayView } from "./components/lens-overlay-view";
-import { mediaCases, mediaFixture, type MediaCase } from "../tests/fixtures/media-parity";
+import type { LensOverlayView } from "ui/components/views/lens-overlay-view";
+import { mediaCases, mediaFixture, type MediaCase } from "ui/test-fixtures/media-parity";
 const normal = document.querySelector<LensOverlayView>("#normal")!;
 const history = document.querySelector<LensOverlayView>("#history")!;
 const select = document.querySelector<HTMLSelectElement>("#case")!;

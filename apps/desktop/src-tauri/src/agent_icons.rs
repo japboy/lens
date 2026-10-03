@@ -29,8 +29,10 @@ struct Catalog {
 }
 
 static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../agent-icons/catalog.json"))
-        .expect("bundled Agent icon catalog must be valid")
+    serde_json::from_str(include_str!(
+        "../../../../packages/ui/src/assets/agent-icons.json"
+    ))
+    .expect("bundled Agent icon catalog must be valid")
 });
 
 fn icon_name(name: &str) -> AgentIcon {
@@ -69,8 +71,10 @@ mod tests {
 
     #[test]
     fn shared_name_matching_contract() {
-        let fixtures: Vec<Fixture> =
-            serde_json::from_str(include_str!("../../agent-icons/fixtures.json")).unwrap();
+        let fixtures: Vec<Fixture> = serde_json::from_str(include_str!(
+            "../../../../packages/ui/tests/fixtures/agent-icons.json"
+        ))
+        .unwrap();
         for fixture in fixtures {
             assert_eq!(icon_name(&fixture.name), fixture.icon, "{}", fixture.name);
             assert!(icon_png(&fixture.name).starts_with(b"\x89PNG\r\n\x1a\n"));

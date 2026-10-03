@@ -9,12 +9,14 @@ export const TEST_DISCOVERY_EXCLUDES = [
 ] as const;
 
 const TEST_OWNERS =
-  /^(?:tests\/|apps\/desktop\/tests\/|packages\/(?:adapter-mcp-apps-host|adapter-mcp-apps-view|adapter-math-renderer)\/tests\/)/u;
+  /^(?:tests\/|apps\/(?:desktop|ui-preview)\/tests\/|packages\/(?:adapter-mcp-apps-host|adapter-mcp-apps-view|adapter-math-renderer|ui|adapter-lit-prerenderer)\/tests\/)/u;
 
 export function isTypescriptTestSupport(path: string): boolean {
   return (
     /\.(?:ts|tsx|js|mjs)$/u.test(path) &&
-    (path === "apps/desktop/src/media-qualification.ts" ||
+    (path === "vitest.config.ts" ||
+      path === "apps/desktop/src/media-qualification.ts" ||
+      path === "packages/ui/test-setup.ts" ||
       TEST_OWNERS.test(path) ||
       /\.(?:test|test-helper|fixture)\.tsx?$/u.test(path))
   );
@@ -30,6 +32,10 @@ export function testSupportImportViolations(
   const violations: string[] = [];
   for (const match of source.matchAll(/["'`]([^"'`\r\n]+)["'`]/gu)) {
     const reference = match[1]!;
+    if (/^ui\/(?:tests\/|test-fixtures\/|test-setup$)/u.test(reference)) {
+      violations.push(`${path} imports test-only ${reference}`);
+      continue;
+    }
     if (!reference.startsWith(".")) continue;
     const target = posix.normalize(posix.join(posix.dirname(path), reference));
     const candidates = [target, `${target}.ts`, target.replace(/\.js$/u, ".ts")];

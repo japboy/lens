@@ -9,6 +9,8 @@ export const NATIVE_CODE_INPUTS = new Set([
   "apps/desktop/tests/fixtures/workspace-contracts.json",
   "apps/desktop/tests/fixtures/acp-generated-image.json",
   "apps/desktop/src/html-output.ts",
+  "packages/ui/src/assets/agent-icons.json",
+  "packages/ui/tests/fixtures/agent-icons.json",
   "packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.html",
   "packages/adapter-mcp-apps-host/src/assets/sandbox-proxy.js",
   "packages/adapter-mcp-apps-view/src/assets/rich-html-app.html",

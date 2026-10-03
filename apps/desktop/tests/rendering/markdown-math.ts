@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { renderMarkdownFragment } from "../../src/markdown";
+import { renderMarkdownFragment } from "ui/rendering/markdown";
 import { MATH_LIMITS } from "adapter-math-renderer";
 
 function render(source: string): HTMLDivElement {

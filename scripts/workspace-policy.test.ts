@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
+import { BUILD_VARIANTS, MEMBERS, variantArguments } from "./workspace-policy.ts";
+
+describe("presentation and build workspace ownership", () => {
+  it("declares shared UI and Node generation with independent application consumers", () => {
+    const member = (name: string) =>
+      MEMBERS.find((entry) => entry.ecosystem === "pnpm" && entry.name === name)!;
+    expect(member("ui")).toMatchObject({
+      directory: "packages/ui",
+      role: "presentation",
+      implementation: "webview",
+    });
+    expect(member("adapter-lit-prerenderer")).toMatchObject({
+      directory: "packages/adapter-lit-prerenderer",
+      role: "adapter",
+      capability: "repository",
+      implementation: "tooling",
+    });
+    for (const name of ["desktop", "ui-preview"]) {
+      expect(member(name).dependencies.normal).toContain("ui");
+    }
+    expect(member("desktop").dependencies.dev).toContain("adapter-lit-prerenderer");
+    for (const name of ["ui", "adapter-lit-prerenderer", "ui-preview"]) {
+      expect(Object.values(member(name).dependencies).flat()).not.toContain("desktop");
+    }
+  });
+});
 
 describe("explicit production and test variants", () => {
   it("uses finite exact target/package/feature/profile commands without workspace-wide Linux selection", () => {

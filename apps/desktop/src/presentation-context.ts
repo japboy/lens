@@ -1,8 +1,6 @@
-import { APP_VIEWS, type AppView } from "./page-entries";
-export { APP_VIEWS, type AppView };
+import type { AppView } from "./page-entries";
 
-export const DESKTOP_PLATFORMS = ["macos", "windows", "linux"] as const;
-export type DesktopPlatform = (typeof DESKTOP_PLATFORMS)[number];
+import { DESKTOP_PLATFORMS, type DesktopPlatform } from "ui/contracts/context";
 
 export interface PresentationContext {
   view: AppView;

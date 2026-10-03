@@ -1,66 +1,36 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { sourceInputs, sourceDigest, WORKSPACE_PACKAGE_PATHS } from "./source.ts";
-const owned: string[] = [];
-afterEach(async () => {
-  await Promise.all(owned.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
-async function write(path: string, data: string) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, data);
-}
-async function fixture() {
-  const original = await mkdtemp(join(tmpdir(), "lens-source-inputs-"));
-  owned.push(original);
-  for (const path of WORKSPACE_PACKAGE_PATHS)
-    await write(join(original, path, "package.json"), JSON.stringify({ name: path.split("/")[1] }));
-  await write(join(original, "packages/adapter-mcp-apps-host/source.json"), '{"value":"original"}');
-  return { original };
-}
-describe("sealed source input ownership", () => {
-  it("seals the current tree after a tracked package source is deleted", async () => {
-    const { original } = await fixture();
-    execFileSync("git", ["init", "--quiet"], { cwd: original });
-    execFileSync("git", ["add", "packages"], { cwd: original });
-    const source = "packages/adapter-mcp-apps-host/source.json";
-    const before = sourceDigest(sourceInputs(original));
-    await rm(join(original, source));
-    const inputs = sourceInputs(original);
-    expect(inputs.has(source)).toBe(false);
-    expect(sourceDigest(inputs)).not.toBe(before);
-  });
-  it("excludes generated shared-package caches using repository ignore policy", async () => {
-    const { original } = await fixture();
-    execFileSync("git", ["init", "--quiet"], { cwd: original });
-    await write(
-      join(original, ".gitignore"),
-      await readFile(new URL("../../../../.gitignore", import.meta.url), "utf8"),
-    );
-    const before = sourceDigest(sourceInputs(original));
-    for (const packagePath of WORKSPACE_PACKAGE_PATHS.filter(
-      (path) => path !== "packages/typescript-config",
-    )) {
-      const cache = `${packagePath}/.build/cache/typescript/browser.tsbuildinfo`;
-      await write(join(original, cache), "generated cache bytes");
-      const inputs = sourceInputs(original);
-      expect(inputs.has(cache)).toBe(false);
-      expect(sourceDigest(inputs)).toBe(before);
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { sourcePaths } from "adapter-lit-prerenderer/source-snapshot";
+import { sourceContract, sourceInputs, sourceWatchRoots } from "./source.ts";
+
+const repository = fileURLToPath(new URL("../../../../", import.meta.url));
+
+describe("Desktop source and development watch contract", () => {
+  it("watches every sealed source file and every declared scope, including artifact bootstrap", () => {
+    const roots = sourceWatchRoots(repository);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.directory).toBe(repository.replace(/\/$/u, ""));
+    const { accepts } = roots[0]!;
+    for (const path of sourceInputs(repository).keys()) expect(accepts(path)).toBe(true);
+    for (const path of sourcePaths(sourceContract(repository))) {
+      expect(accepts(path)).toBe(true);
+      expect(accepts(`${path}/new-source.ts`)).toBe(true);
     }
+    expect(accepts("scripts/no-install-workspace.ts")).toBe(true);
+    expect(accepts("apps/desktop/agent-icons/claude.png")).toBe(true);
   });
-  it("captures and hashes actual new package source edits", async () => {
-    const { original } = await fixture();
-    execFileSync("git", ["init", "--quiet"], { cwd: original });
-    const before = sourceInputs(original);
-    expect(before.has("packages/adapter-mcp-apps-host/source.json")).toBe(true);
-    await write(
-      join(original, "packages/adapter-math-renderer/math.ts"),
-      "export const value = 73;",
-    );
-    const after = sourceInputs(original);
-    expect(after.has("packages/adapter-math-renderer/math.ts")).toBe(true);
-    expect(sourceDigest(after)).not.toBe(sourceDigest(before));
+
+  it("rejects caches, installed dependencies, unrelated owners and sibling prefixes", () => {
+    const { accepts } = sourceWatchRoots(repository)[0]!;
+    for (const path of [
+      "apps/desktop/.build/webview/about.html",
+      "packages/ui/.build/cache/typescript/app.tsbuildinfo",
+      "packages/ui/node_modules/lit/index.js",
+      "node_modules/.pnpm/lock.yaml",
+      "apps/desktop/src-unrelated/example.ts",
+      "apps/ui-preview/src/main.ts",
+      "scripts/no-install-workspace.ts.backup",
+    ])
+      expect(accepts(path)).toBe(false);
   });
 });

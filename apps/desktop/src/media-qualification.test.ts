@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import type { LensOverlayView } from "./components/lens-overlay-view";
-import type { LensAgentOutput } from "./components/lens-agent-output";
+import type { LensOverlayView } from "ui/components/views/lens-overlay-view";
+import type { LensAgentOutput } from "ui/components/overlay/lens-agent-output";
 
 it("registers and mounts real overlays and media through the qualification entrypoint", async () => {
   window.matchMedia ??= () =>

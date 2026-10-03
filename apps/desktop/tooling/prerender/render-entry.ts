@@ -1,20 +1,16 @@
 import { writeFileSync } from "node:fs";
 import { render } from "@lit-labs/ssr";
 import { html } from "lit";
-import "../../src/components/lens-about-view";
-import "../../src/components/lens-settings-view";
-import "../../src/components/lens-overlay-view";
-import "../../src/components/lens-target-selection-view";
-
-import "../../src/components/lens-settings-recovery-view";
+import "ui/ssr";
+import { aboutIconUrl, overlayIconUrl } from "../../src/ui-assets";
 
 const templates = {
   "settings-recovery": html`<lens-settings-recovery-view
     defer-hydration
   ></lens-settings-recovery-view>`,
-  about: html`<lens-about-view defer-hydration></lens-about-view>`,
+  about: html`<lens-about-view icon-url=${aboutIconUrl} defer-hydration></lens-about-view>`,
   settings: html`<lens-settings-view defer-hydration></lens-settings-view>`,
-  overlay: html`<lens-overlay-view defer-hydration></lens-overlay-view>`,
+  overlay: html`<lens-overlay-view icon-url=${overlayIconUrl} defer-hydration></lens-overlay-view>`,
   "target-selection": html`<lens-target-selection-view
     defer-hydration
   ></lens-target-selection-view>`,

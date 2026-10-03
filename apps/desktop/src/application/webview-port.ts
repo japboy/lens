@@ -1,12 +1,16 @@
-import type { SessionView, DocumentBlock } from "./session-document";
+import type { SessionView, DocumentBlock } from "ui/contracts/session-document";
 import type { McpAppsServer } from "adapter-mcp-apps-host";
 import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
-import { parseSettingsDestination, type SettingsDestination } from "../agent-prompt-template";
+import {
+  parseSettingsDestination,
+  type SettingsDestination,
+} from "ui/presentation/agent-prompt-template";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { AppSnapshot } from "../types";
 import type {
   AppConfig,
   LensOutputBlock,
@@ -16,28 +20,13 @@ import type {
   AgentRuntimeState,
   ExternalAgentDraft,
   AgentPromptTemplate,
-  AppSnapshot,
   AgentDefaults,
   InteractionResponse,
-} from "../types";
+} from "ui/contracts/lens";
 
 export type Unlisten = () => void;
 
-export interface AboutInfo {
-  name: string;
-  version: string;
-  copyright: string;
-}
-
-export interface AboutDocuments {
-  license: string;
-  notice: string;
-}
-
-export type ReleaseAvailability =
-  | { revision: number; stage: "idle" | "checking" | "current" }
-  | { revision: number; stage: "failed"; retry_after_epoch_ms?: number }
-  | { revision: number; stage: "available"; version: string; release_url: string };
+import type { AboutInfo, AboutDocuments, ReleaseAvailability } from "ui/contracts/about";
 
 export interface LensSourceResource {
   source_ref: string;
@@ -108,7 +97,7 @@ export interface WebviewPort extends McpAppsPort {
   ): Promise<void>;
   subscribeToAppSnapshot(listener: (snapshot: AppSnapshot) => void): Promise<Unlisten>;
   setMcpAppsServers(servers: McpAppsServer[]): Promise<void>;
-  getMcpServerToolCatalogs(): Promise<import("../types").McpServerToolCatalog[]>;
+  getMcpServerToolCatalogs(): Promise<import("ui/contracts/lens").McpServerToolCatalog[]>;
   getAppSnapshot(): Promise<AppSnapshot>;
   openScreenRecordingSettings(): Promise<void>;
   getAccessibilityPermission(): Promise<boolean>;

@@ -230,6 +230,10 @@ export function sourceInclusionViolations(
       token.text === "include_str" &&
       ["LICENSE", "NOTICE"].some((document) => target === resolve(root, document));
     const applicationAssets: Record<string, readonly string[]> = {
+      "apps/desktop/src-tauri/src/agent_icons.rs": [
+        "packages/ui/src/assets/agent-icons.json",
+        "packages/ui/tests/fixtures/agent-icons.json",
+      ],
       "apps/desktop/src-tauri/src/agent.rs": [
         "packages/adapter-mcp-apps-view/src/assets/rich-html-app.html",
       ],

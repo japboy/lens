@@ -50,6 +50,21 @@
           "type": "json",
           "path": "packages/adapter-mcp-apps-view/package.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/ui/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/adapter-lit-prerenderer/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "apps/ui-preview/package.json",
+          "jsonpath": "$.version"
         }
       ]
     }

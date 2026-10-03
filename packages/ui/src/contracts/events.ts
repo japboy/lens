@@ -1,0 +1,127 @@
+import type {
+  PromptPresetChange,
+  AgentKind,
+  ManagedAgentKind,
+  ExternalAgentDraft,
+  AgentPromptTemplate,
+  AgentDefaults,
+  InteractionResponse,
+} from "./lens";
+
+export const AGENT_INTENT_EVENT = "lens-agent-intent";
+export const PROMPT_INTENT_EVENT = "lens-prompt-intent";
+export const SETTINGS_INTENT_EVENT = "lens-settings-intent";
+export const TARGET_REMOVE_EVENT = "lens-target-remove";
+export const TARGET_SELECTION_INTENT_EVENT = "lens-target-selection-intent";
+export const AGENT_OUTPUT_INTENT_EVENT = "lens-agent-output-intent";
+export const OUTPUT_MEDIA_DEMAND_EVENT = "lens-output-media-demand";
+export interface OutputMediaDemand {
+  readonly mediaIds: readonly string[];
+}
+export const OVERLAY_INTENT_EVENT = "lens-overlay-intent";
+
+export type AgentIntent =
+  | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }
+  | { type: "save-external-agent"; profile: ExternalAgentDraft }
+  | { type: "delete-external-agent"; id: string }
+  | { type: "reset-agent-presets" }
+  | { type: "preview-model"; configId: string; value?: string }
+  | { type: "save-defaults"; defaults: AgentDefaults }
+  | { type: "select"; agent: AgentKind }
+  | { type: "update-managed-agent"; agent: ManagedAgentKind }
+  | { type: "authenticate"; methodId: string }
+  | { type: "reauthenticate" }
+  | { type: "sign-out" };
+
+export type PromptIntent =
+  | { type: "presets"; change: PromptPresetChange }
+  | { type: "save"; agentPromptTemplate: AgentPromptTemplate }
+  | { type: "reset" };
+
+export const ABOUT_INTENT_EVENT = "lens-about-intent";
+
+export type AboutIntent =
+  | { type: "open-repository" }
+  | { type: "open-release" }
+  | { type: "retry-update-check" };
+
+export type SettingsIntent =
+  | { type: "set-mcp-apps-servers"; servers: import("adapter-mcp-apps-host").McpAppsServer[] }
+  | { type: "reset-mcp-presets" }
+  | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }
+  | { type: "save-external-agent"; profile: ExternalAgentDraft }
+  | { type: "delete-external-agent"; id: string }
+  | { type: "reset-agent-presets" }
+  | { type: "update-prompt-presets"; change: PromptPresetChange }
+  | { type: "open-about" }
+  | { type: "preview-agent-model"; configId: string; value?: string }
+  | { type: "save-agent-defaults"; defaults: AgentDefaults }
+  | { type: "select-agent"; agent: AgentKind }
+  | { type: "update-managed-agent"; agent: ManagedAgentKind }
+  | { type: "authenticate-agent-selection"; methodId: string }
+  | { type: "reauthenticate-agent-selection" }
+  | { type: "sign-out-agent-selection" }
+  | { type: "save-agent-prompt-template"; agentPromptTemplate: AgentPromptTemplate }
+  | { type: "reset-agent-prompt-template" }
+  | { type: "choose-directory" }
+  | { type: "request-accessibility-permission" }
+  | { type: "open-screen-recording-settings" };
+
+export type TargetSelectionIntent =
+  | { type: "add" }
+  | { type: "remove"; targetId: string }
+  | { type: "confirm" };
+
+export type AgentOutputIntent =
+  | { type: "open-external-url"; url: string }
+  | { type: "report-error"; message: string };
+
+export type OverlayIntent =
+  | {
+      type: "set-session-option";
+      instanceId: string;
+      revision: number;
+      configId: string;
+      value: string;
+    }
+  | {
+      type: "respond-interaction";
+      instanceId: string;
+      interactionId: string;
+      response: InteractionResponse;
+    }
+  | { type: "authenticate"; methodId: string }
+  | { type: "retry" }
+  | { type: "cancel" }
+  | { type: "pause" }
+  | { type: "resume" }
+  | { type: "close" }
+  | { type: "open-external-url"; url: string }
+  | { type: "report-error"; message: string };
+
+export interface MediaPresentation {
+  selectedMediaId?: string;
+  fullscreen: boolean;
+}
+
+export function dispatchComponentEvent<T>(target: EventTarget, type: string, detail: T): boolean {
+  return target.dispatchEvent(
+    new CustomEvent<T>(type, {
+      bubbles: true,
+      composed: true,
+      detail,
+    }),
+  );
+}
+
+/** Semantic events emitted by the independent window views. */
+declare global {
+  interface HTMLElementEventMap {
+    "lens-output-media-demand": CustomEvent<OutputMediaDemand>;
+    "lens-media-presentation": CustomEvent<MediaPresentation>;
+    "lens-settings-intent": CustomEvent<SettingsIntent>;
+    "lens-about-intent": CustomEvent<AboutIntent>;
+    "lens-overlay-intent": CustomEvent<OverlayIntent>;
+    "lens-target-selection-intent": CustomEvent<TargetSelectionIntent>;
+  }
+}

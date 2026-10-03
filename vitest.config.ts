@@ -30,6 +30,35 @@ export default defineConfig({
       },
       {
         extends: false,
+        root: ownerRoot("./packages/ui/"),
+        test: {
+          name: "ui",
+          include: ["src/**/*.test.ts", "tests/**/*.ts"],
+          exclude: [...TEST_DISCOVERY_EXCLUDES],
+          setupFiles: ["./test-setup.ts"],
+        },
+      },
+      {
+        extends: false,
+        root: ownerRoot("./packages/adapter-lit-prerenderer/"),
+        test: {
+          name: "adapter-lit-prerenderer",
+          include: ["src/**/*.test.ts", "tests/**/*.ts"],
+          exclude: [...TEST_DISCOVERY_EXCLUDES],
+        },
+      },
+      {
+        extends: ownerRoot("./apps/ui-preview/vite.config.ts"),
+        root: ownerRoot("./apps/ui-preview/"),
+        test: {
+          name: "ui-preview",
+          include: ["src/**/*.test.ts", "tests/**/*.ts"],
+          exclude: [...TEST_DISCOVERY_EXCLUDES],
+          setupFiles: [ownerRoot("./packages/ui/test-setup.ts")],
+        },
+      },
+      {
+        extends: false,
         root: ownerRoot("./packages/adapter-mcp-apps-host/"),
         test: {
           name: "mcp-apps-host",

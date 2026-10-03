@@ -1,17 +1,10 @@
-import type { DesktopPlatform } from "../presentation-context";
-import type { ResourceState } from "./snapshot-resources";
-import type { SettingsDestination } from "../agent-prompt-template";
-import type {
-  AgentRuntimeState,
-  ManagedAgentKind,
-  AgentSelectionState,
-  AppConfig,
-  AppSnapshot,
-  LensState,
-} from "../types";
-import { STAGE_LABEL } from "../view-model";
-import type { AccessibilityPermissionState } from "./accessibility-permission-controller";
-import { snapshotConnectionMessage, type SnapshotConnectionState } from "./app-snapshot-controller";
+import type { DesktopPlatform } from "ui/contracts/context";
+import type { SettingsDestination } from "ui/presentation/agent-prompt-template";
+import type { AppSnapshot } from "../types";
+import { STAGE_LABEL } from "ui/presentation/view-model";
+import type { AccessibilityPermissionState } from "ui/contracts/resource-state";
+import { snapshotConnectionMessage } from "./app-snapshot-controller";
+import { type SnapshotConnectionState } from "ui/contracts/resource-state";
 import {
   commandMessage,
   isPendingCommand,
@@ -19,62 +12,12 @@ import {
   type CommandState,
 } from "./command-state";
 
-export type PromptSynchronization = "preserve-local-draft" | "accept-parent-value";
-
-export type SettingsFeedbackTarget = "application" | SettingsDestination;
-
-export type SettingsFeedback =
-  | { stage: "none" }
-  | {
-      stage: "status" | "error";
-      target: SettingsFeedbackTarget;
-      message: string;
-    };
-
-export type SettingsFeedbackMessage = Exclude<SettingsFeedback, { stage: "none" }>;
-
-export interface SettingsViewModel {
-  platform: DesktopPlatform;
-  config?: AppConfig;
-  agentSelection: AgentSelectionState;
-  agentRuntime: AgentRuntimeState;
-  updatePending: boolean;
-  updateAgent?: ManagedAgentKind;
-  permission: AccessibilityPermissionState;
-  pending: boolean;
-  pendingDestinations?: SettingsDestination[];
-  feedbackByDestination?: Partial<Record<SettingsDestination, SettingsFeedback>>;
-  promptSynchronization: PromptSynchronization;
-  lensStageLabel: string;
-  feedback: SettingsFeedback;
-}
-
-export interface TargetSelectionViewModel {
-  platform: DesktopPlatform;
-  lens: LensState;
-  pending: boolean;
-  message: string;
-}
-
-export interface InteractionSubmission {
-  instanceId: string;
-  interactionId: string;
-  stage: "sending" | "sent" | "failed";
-  message?: string;
-}
-
-export interface OverlayViewModel {
-  sourceResource?: ResourceState;
-  sourceMetadata?: AppSnapshot["source_metadata"];
-  outputResource?: ResourceState;
-  interactionSubmission?: InteractionSubmission;
-  platform: DesktopPlatform;
-  lens: LensState;
-  pending: boolean;
-  cancelPending: boolean;
-  lifecyclePending?: "pause" | "resume" | "close";
-  message: string;
-}
+import type {
+  SettingsViewModel,
+  TargetSelectionViewModel,
+  OverlayViewModel,
+  SettingsFeedback,
+} from "ui/contracts/view-models";
 
 function presentationMessage(command: CommandState, connectionMessage: string): string {
   return commandMessage(command) || connectionMessage;

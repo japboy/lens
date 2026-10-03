@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ReactiveControllerHost } from "lit";
 import type { WebviewPort } from "./webview-port";
-import type { SessionView } from "./session-document";
+import type { SessionView } from "ui/contracts/session-document";
 import { SessionViewController } from "./session-view-controller";
 
 describe("session view delivery", () => {

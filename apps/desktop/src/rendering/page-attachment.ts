@@ -1,5 +1,5 @@
 import type { LitElement, ReactiveController, ReactiveControllerHost } from "lit";
-import type { AttachmentState } from "./initial-state";
+import type { AttachmentState } from "ui/presentation/initial-state";
 import { hydrateView } from "./hydrate-view";
 
 export interface RegionModule {

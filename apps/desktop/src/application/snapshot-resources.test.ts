@@ -1,8 +1,12 @@
 import { expect, it, vi } from "vitest";
 import { SnapshotResources } from "./snapshot-resources";
-import { ResponseHistoryController, responseBlockIdentity } from "./response-history-controller";
+import {
+  ResponseHistoryController,
+  responseBlockIdentity,
+} from "ui/resources/response-history-controller";
 import type { ReactiveControllerHost } from "lit";
-import type { AppSnapshot, LensRepresentation, LensResponseManifest } from "../types";
+import type { AppSnapshot } from "../types";
+import type { LensRepresentation, LensResponseManifest } from "ui/contracts/lens";
 import type { LensOutputResource, LensSourceResource, WebviewPort } from "./webview-port";
 
 function deferred<T>() {

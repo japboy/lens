@@ -23,6 +23,9 @@ describe("shared TypeScript configuration", () => {
     const workspace = readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8");
     expect((parse(workspace) as { packages: string[] }).packages).toEqual([
       "apps/desktop",
+      "apps/ui-preview",
+      "packages/ui",
+      "packages/adapter-lit-prerenderer",
       "packages/typescript-config",
       "packages/adapter-mcp-apps-host",
       "packages/adapter-mcp-apps-view",
@@ -82,6 +85,9 @@ describe("shared TypeScript configuration", () => {
     expect(owners.map((project) => project.test?.name)).toEqual([
       "repository",
       "desktop",
+      "ui",
+      "adapter-lit-prerenderer",
+      "ui-preview",
       "mcp-apps-host",
       "mcp-apps-view",
       "math-renderer",
@@ -90,6 +96,9 @@ describe("shared TypeScript configuration", () => {
       root.replace(/\/$/u, ""),
       ...[
         "apps/desktop",
+        "packages/ui",
+        "packages/adapter-lit-prerenderer",
+        "apps/ui-preview",
         "packages/adapter-mcp-apps-host",
         "packages/adapter-mcp-apps-view",
         "packages/adapter-math-renderer",
@@ -98,13 +107,20 @@ describe("shared TypeScript configuration", () => {
     expect(owners[0]?.test?.include).toContain("tests/**/*.ts");
     for (const project of owners) {
       expect(project.extends).toBe(
-        project.test?.name === "desktop" ? resolve(root, "apps/desktop/vite.config.ts") : false,
+        project.test?.name === "desktop"
+          ? resolve(root, "apps/desktop/vite.config.ts")
+          : project.test?.name === "ui-preview"
+            ? resolve(root, "apps/ui-preview/vite.config.ts")
+            : false,
       );
       expect(project.test?.exclude).toEqual([...TEST_DISCOVERY_EXCLUDES]);
     }
     expect(read("tsconfig.node.json").include).toContain("tests/**/*.ts");
     for (const owner of [
       "apps/desktop",
+      "packages/ui",
+      "packages/adapter-lit-prerenderer",
+      "apps/ui-preview",
       "packages/adapter-mcp-apps-host",
       "packages/adapter-mcp-apps-view",
       "packages/adapter-math-renderer",
@@ -113,9 +129,10 @@ describe("shared TypeScript configuration", () => {
       expect(tests.include).toContain("tests/**/*.ts");
       expect(tests.include).toContain("src/**/*.test.ts");
       expect(tests.exclude).toEqual([...TEST_DISCOVERY_EXCLUDES]);
-      const runtimeConfigs =
-        owner === "apps/desktop"
-          ? ["tsconfig.app.json"]
+      const runtimeConfigs = ["apps/desktop", "packages/ui", "apps/ui-preview"].includes(owner)
+        ? ["tsconfig.app.json"]
+        : owner === "packages/adapter-lit-prerenderer"
+          ? ["tsconfig.node.json"]
           : owner === "packages/adapter-math-renderer"
             ? ["tsconfig.browser.json", "tsconfig.node.json"]
             : ["tsconfig.browser.json"];
@@ -140,6 +157,9 @@ describe("shared TypeScript configuration", () => {
   it("selects the central owner explicitly from package scripts", () => {
     for (const [owner, project] of [
       ["apps/desktop", "desktop"],
+      ["packages/ui", "ui"],
+      ["packages/adapter-lit-prerenderer", "adapter-lit-prerenderer"],
+      ["apps/ui-preview", "ui-preview"],
       ["packages/adapter-mcp-apps-host", "mcp-apps-host"],
       ["packages/adapter-mcp-apps-view", "mcp-apps-view"],
       ["packages/adapter-math-renderer", "math-renderer"],
@@ -152,6 +172,9 @@ describe("shared TypeScript configuration", () => {
   it("keeps a single Vitest definition and leaves desktop production Vite test-free", () => {
     for (const owner of [
       "apps/desktop",
+      "packages/ui",
+      "packages/adapter-lit-prerenderer",
+      "apps/ui-preview",
       "packages/adapter-mcp-apps-host",
       "packages/adapter-mcp-apps-view",
       "packages/adapter-math-renderer",

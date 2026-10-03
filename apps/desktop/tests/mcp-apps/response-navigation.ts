@@ -1,18 +1,19 @@
+import { toUiMcpAppsPort } from "../../src/mcp-apps/composition";
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AppBridge, type McpAppDescriptor } from "adapter-mcp-apps-host";
-import { ResponseHistoryController } from "../../src/application/response-history-controller";
+import { ResponseHistoryController } from "ui/resources/response-history-controller";
 import type { WebviewPort } from "../../src/application/webview-port";
-import type { LensOverlayView } from "../../src/components/lens-overlay-view";
-import type { LensMcpApp } from "../../src/components/lens-mcp-app";
+import type { LensOverlayView } from "ui/components/views/lens-overlay-view";
+import type { LensMcpApp } from "ui/components/overlay/lens-mcp-app";
 import type { DesktopMcpAppsPort } from "../../src/mcp-apps/composition";
-import type { LensResponseManifest, LensState } from "../../src/types";
+import type { LensResponseManifest, LensState } from "ui/contracts/lens";
 
 beforeAll(async () => {
   window.matchMedia ??= () => ({ matches: false }) as MediaQueryList;
   HTMLElement.prototype.scrollTo ??= () => undefined;
-  await import("../../src/components/lens-agent-output");
-  await import("../../src/components/lens-overlay-view");
+  await import("ui/components/overlay/lens-agent-output");
+  await import("ui/components/views/lens-overlay-view");
 });
 afterEach(() => {
   document.body.replaceChildren();
@@ -109,7 +110,7 @@ async function mount() {
     view.responseHistory = history.presentation;
   };
   view.active = true;
-  view.appPort = port;
+  view.appPort = toUiMcpAppsPort(port);
   view.loadResponseBlock = history.loadBlock;
   publish(1);
   document.body.append(view);

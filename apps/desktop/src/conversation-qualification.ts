@@ -1,6 +1,6 @@
 // Development-only fixture, deliberately absent from PAGE_ENTRIES and production bundles.
-import { LensSessionDocument } from "./components/lens-session-document";
-import type { DocumentBlock } from "./application/session-document";
+import { LensSessionDocument } from "ui/components/overlay/lens-session-document";
+import type { DocumentBlock } from "ui/contracts/session-document";
 const view = new LensSessionDocument();
 view.identity = "qualification-4096";
 view.document = {

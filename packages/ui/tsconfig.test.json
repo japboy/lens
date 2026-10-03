@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"],
+    "tsBuildInfoFile": "./.build/cache/typescript/test.tsbuildinfo",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.test.ts", "tests/**/*.ts", "test-setup.ts"],
+  "exclude": ["**/helpers/**", "**/fixtures/**", "**/*.test-helper.ts", "**/*.fixture.ts"]
+}

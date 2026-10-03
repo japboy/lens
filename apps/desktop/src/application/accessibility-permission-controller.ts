@@ -1,12 +1,7 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { WebviewPort } from "./webview-port";
 
-export type AccessibilityPermissionState =
-  | { stage: "inactive" }
-  | { stage: "checking" }
-  | { stage: "allowed" }
-  | { stage: "required" }
-  | { stage: "failed"; message: string };
+import type { AccessibilityPermissionState } from "ui/contracts/resource-state";
 
 export class AccessibilityPermissionController implements ReactiveController {
   state: AccessibilityPermissionState = { stage: "inactive" };
