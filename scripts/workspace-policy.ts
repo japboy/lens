@@ -28,7 +28,9 @@ export const MEMBERS: readonly Member[] = [
     role: "repository",
     capability: "repository",
     implementation: "tooling",
-    dependencies: { dev: ["typescript-config", "adapter-math-renderer"] },
+    dependencies: {
+      dev: ["typescript-config", "adapter-math-renderer", "adapter-lit-prerenderer"],
+    },
   },
   {
     ecosystem: "pnpm",
@@ -49,7 +51,7 @@ export const MEMBERS: readonly Member[] = [
     role: "application",
     capability: "desktop",
     implementation: "webview",
-    dependencies: { normal: ["ui", "adapter-mcp-apps-host"], dev: ["typescript-config"] },
+    dependencies: { normal: ["ui"], dev: ["typescript-config"] },
   },
   {
     ecosystem: "pnpm",

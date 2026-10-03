@@ -1,7 +1,7 @@
 import { html, nothing } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { ResponseHistoryPresentation } from "../resources/response-history-controller";
+import type { ResponseHistoryPresentation } from "../contracts/response-history";
 import { inputCoverage } from "./input-coverage";
 import type { LensDeliveryCoverage } from "../contracts/lens";
 

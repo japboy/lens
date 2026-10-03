@@ -15,13 +15,6 @@ import type {
   ProvisionalResponseBlock,
   LoadResponseBlock,
 } from "../contracts/response-history";
-export type {
-  ResponseBlockDescriptor,
-  ResponseManifest,
-  ResponseHistoryPresentation,
-  ProvisionalResponseBlock,
-  LoadResponseBlock,
-} from "../contracts/response-history";
 
 export const RESPONSE_BODY_CACHE_BYTES = 16 * 1024 * 1024;
 export const RESPONSE_BODY_CONCURRENCY = 2;

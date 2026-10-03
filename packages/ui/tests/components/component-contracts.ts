@@ -2,10 +2,8 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SessionView } from "../../src/contracts/session-document";
-import {
-  presentResponseMedia,
-  type ResponseManifest,
-} from "../../src/resources/response-history-controller";
+import { presentResponseMedia } from "../../src/resources/response-history-controller";
+import { type ResponseManifest } from "../../src/contracts/response-history";
 import type { LensOverlayView } from "../../src/components/views/lens-overlay-view";
 const appIconUrl = "https://fixture.invalid/icon.svg";
 import type { OverlayViewModel, TargetSelectionViewModel } from "../../src/contracts/view-models";

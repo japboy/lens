@@ -4,7 +4,7 @@ import { keyed } from "lit/directives/keyed.js";
 import type {
   ResponseHistoryPresentation,
   LoadResponseBlock,
-} from "../../resources/response-history-controller";
+} from "../../contracts/response-history";
 import type { LensResponseBlock } from "./lens-response-block";
 import type { LensOutputMedia } from "./lens-output-media";
 import {

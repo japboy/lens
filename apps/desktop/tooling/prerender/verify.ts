@@ -2,7 +2,6 @@
 import { verifyGeneration as verify } from "adapter-lit-prerenderer/verify";
 import { PAGE_ENTRIES } from "../../src/page-entries.ts";
 import { readHtmlMathManifest } from "adapter-math-renderer/html-math-manifest";
-export { generationFiles } from "adapter-lit-prerenderer/verify";
 export const VERIFICATION_CONTRACT = {
   pages: Object.fromEntries(
     Object.entries(PAGE_ENTRIES).map(([view, html]) => [

@@ -12,9 +12,9 @@ import type { AboutDocuments, AboutInfo, ReleaseAvailability } from "../../contr
 import {
   initialAboutState,
   documentKind,
-  type Resource,
   type DocumentKind,
 } from "../../presentation/initial-state";
+import { type Resource } from "../../contracts/resource-state";
 
 @customElement("lens-about-view")
 export class LensAboutView extends LitElement {

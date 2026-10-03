@@ -17,7 +17,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createHtmlMathAssets } from "adapter-math-renderer/node";
 import { HTML_MATH_MANIFEST } from "adapter-math-renderer/html-math-manifest";
 import { frontendArtifact, frontendFiles } from "../../scripts/frontend-artifact.ts";
-import { generationFiles } from "../../apps/desktop/tooling/prerender/verify.ts";
+import { generationFiles } from "adapter-lit-prerenderer/verify";
 import { sourceDigest, sourceInputs } from "../../apps/desktop/tooling/prerender/source.ts";
 import { MEMBERS } from "../../scripts/workspace-policy.ts";
 

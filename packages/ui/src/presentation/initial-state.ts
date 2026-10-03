@@ -4,9 +4,8 @@ import type {
   OverlayViewModel,
   TargetSelectionViewModel,
 } from "../contracts/view-models";
-import type { SnapshotStatus } from "./snapshot-status";
+import type { SnapshotStatus } from "../contracts/resource-state";
 
-export type { Resource } from "../contracts/resource-state";
 import type { Resource } from "../contracts/resource-state";
 
 export type DocumentKind = "license" | "notice";

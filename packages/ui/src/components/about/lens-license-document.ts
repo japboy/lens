@@ -2,7 +2,7 @@ import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { AboutDocuments } from "../../contracts/about";
 
-import type { Resource } from "../../presentation/initial-state";
+import type { Resource } from "../../contracts/resource-state";
 export type AboutResource<T> = Resource<T>;
 
 @customElement("lens-license-document")

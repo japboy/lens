@@ -1,4 +1,3 @@
-import { McpAppController } from "adapter-mcp-apps-host";
 import { prepareHtmlDocument } from "adapter-mcp-apps-view";
 import { htmlMathInlineCss } from "virtual:lens-html-math-assets";
 import { version } from "../../package.json";
@@ -35,12 +34,4 @@ export function desktopMcpAppHostOptions(
 }
 export function toUiMcpAppsPort(port: DesktopMcpAppsPort): UiMcpAppsPort {
   return { ...port, presentation: desktopMcpAppHostOptions(port) };
-}
-/** Native preparation and product metadata are application-owned. */
-export function createDesktopMcpAppController(
-  port: DesktopMcpAppsPort,
-  changed: () => void,
-  bridgeFactory?: ConstructorParameters<typeof McpAppController>[3],
-): McpAppController {
-  return new McpAppController(port, changed, desktopMcpAppHostOptions(port), bridgeFactory);
 }

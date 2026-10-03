@@ -11,7 +11,7 @@ beforeAll(async () => {
     }) as unknown as MediaQueryList;
   HTMLElement.prototype.scrollTo = () => undefined;
   document.body.innerHTML =
-    '<select id="view"><option>about</option><option>settings</option><option>target-selection</option><option>overlay</option><option>settings-recovery</option></select><select id="scenario"><option>ready</option><option>loading</option><option>failed</option></select><select id="platform"><option>macos</option></select><div id="mount"></div><pre id="intents"></pre>';
+    '<select id="view"></select><select id="scenario"></select><select id="platform"></select><div id="mount"></div><pre id="intents"></pre>';
   preview = await import("../src/main");
 });
 afterEach(() => {
@@ -19,6 +19,7 @@ afterEach(() => {
 });
 async function mount(view: string, scenario = "ready") {
   document.querySelector<HTMLSelectElement>("#view")!.value = view;
+  preview.show();
   document.querySelector<HTMLSelectElement>("#scenario")!.value = scenario;
   const element = preview.show();
   await element.updateComplete;
@@ -100,4 +101,29 @@ it("Settings draft survives equivalent parent model publication", async () => {
   expect(prompt.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe(
     "Local unsaved fixture",
   );
+});
+
+it("limits scenarios to meaningful view states and resets an incompatible selection", async () => {
+  await mount("overlay", "delayed");
+  const scenarios = document.querySelector<HTMLSelectElement>("#scenario")!;
+  expect(scenarios.value).toBe("delayed");
+  document.querySelector<HTMLSelectElement>("#view")!.value = "about";
+  const about = preview.show();
+  await about.updateComplete;
+  expect([...scenarios.options].map((option) => option.value)).toEqual([
+    "ready",
+    "loading",
+    "failed",
+  ]);
+  expect(scenarios.value).toBe("ready");
+  expect(about.shadowRoot!.textContent).toContain("Lens browser preview");
+  await mount("settings", "pending");
+  expect(scenarios.value).toBe("pending");
+  expect([...scenarios.options].map((option) => option.value)).not.toContain("delayed");
+  const target = await mount("target-selection", "pending");
+  expect(
+    target.shadowRoot!.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled,
+  ).toBe(true);
+  await mount("settings-recovery");
+  expect([...scenarios.options].map((option) => option.value)).not.toContain("pending");
 });

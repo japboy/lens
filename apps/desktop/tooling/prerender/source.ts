@@ -1,9 +1,10 @@
 import {
   sourceInputs as captureSource,
   sourceDigest,
-  workspaceDirectories,
+  sourcePaths,
   type SourceSnapshotContract,
 } from "adapter-lit-prerenderer/source-snapshot";
+import { resolve } from "node:path";
 import { MEMBERS } from "../../../../scripts/workspace-policy.ts";
 
 const APPLICATION_SOURCE_PATHS = [
@@ -37,8 +38,15 @@ export function sourceInputs(repository: string): Map<string, Buffer> {
   return captureSource(sourceContract(repository));
 }
 export { sourceDigest };
-export function workspacePackagePaths(repository: string): string[] {
-  return workspaceDirectories(sourceContract(repository)).filter(
-    (directory) => directory !== "." && directory !== "apps/desktop",
-  );
+/** The same admitted path scopes drive source identity and development rebuilds. */
+export function sourceWatchRoots(repository: string) {
+  const paths = sourcePaths(sourceContract(repository));
+  return [
+    {
+      directory: resolve(repository),
+      accepts: (path: string) =>
+        !path.split("/").some((part) => part === "node_modules" || part === ".build") &&
+        paths.some((scope) => path === scope || path.startsWith(`${scope}/`)),
+    },
+  ];
 }

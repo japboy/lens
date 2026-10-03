@@ -1,7 +1,7 @@
 import type {
   ResponseHistoryPresentation,
   LoadResponseBlock,
-} from "../../resources/response-history-controller";
+} from "../../contracts/response-history";
 import {
   isHistoryView,
   type SessionView,

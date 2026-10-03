@@ -2,7 +2,6 @@ import { html, nothing } from "lit";
 import type { SnapshotConnectionState } from "../contracts/resource-state";
 
 import type { SnapshotStatus } from "../contracts/resource-state";
-export type { SnapshotStatus } from "../contracts/resource-state";
 
 export function snapshotStatus(
   snapshot: object | undefined,

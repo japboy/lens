@@ -1,6 +1,5 @@
 import type { DeferredDocumentBlock, DocumentBlock } from "ui/contracts/session-document";
-export const PREVIEW_SCENARIOS = ["ready", "loading", "failed", "pending", "delayed"] as const;
-export type PreviewScenario = (typeof PREVIEW_SCENARIOS)[number];
+import type { PreviewScenario } from "./scenarios";
 /** Fixed browser-owned resources exercise the real deferred document renderer. */
 export function previewDocumentLoader(scenario: PreviewScenario, answer: DocumentBlock) {
   return async (request: DeferredDocumentBlock): Promise<DocumentBlock> => {

@@ -1,10 +1,7 @@
 import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { LensOutputBlock, LensResponseBlockDescriptor } from "../../contracts/lens";
-import type {
-  LoadResponseBlock,
-  ProvisionalResponseBlock,
-} from "../../resources/response-history-controller";
+import type { LoadResponseBlock, ProvisionalResponseBlock } from "../../contracts/response-history";
 import "../../rendering/streaming-markdown";
 
 /** Retains visible Markdown DOM across publications; offscreen bodies are reloadable. */

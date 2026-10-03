@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResponseHistoryPresentation } from "../resources/response-history-controller";
+import type { ResponseHistoryPresentation } from "../contracts/response-history";
 import {
   acknowledgeResponseUpdate,
   captureResponseUpdate,

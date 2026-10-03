@@ -1,4 +1,4 @@
-import type { ResponseHistoryPresentation } from "../resources/response-history-controller";
+import type { ResponseHistoryPresentation } from "../contracts/response-history";
 
 export interface ResponseUpdateState {
   readonly scopeId: string;

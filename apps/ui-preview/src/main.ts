@@ -1,16 +1,10 @@
 import { version } from "../package.json";
 import "ui/styles/icon-fonts.css";
 import "ui/styles/math-fonts.css";
-import { previewDocumentLoader, PREVIEW_SCENARIOS, type PreviewScenario } from "./services";
+import { previewDocumentLoader } from "./services";
+import { PREVIEW_SCENARIOS, PREVIEW_VIEWS } from "./scenarios";
 import { DESKTOP_PLATFORMS } from "ui/contracts/context";
 import type { LensState } from "ui/contracts/lens";
-const PREVIEW_VIEWS = [
-  "about",
-  "settings",
-  "target-selection",
-  "overlay",
-  "settings-recovery",
-] as const;
 function finiteValue<const T extends readonly string[]>(value: string, allowed: T): T[number] {
   if (allowed.includes(value)) return value;
   throw new Error(`Unexpected preview state ${value}`);
@@ -78,10 +72,19 @@ const targetLens = {
     ],
   },
 };
+function setOptions(control: HTMLSelectElement, values: readonly string[]) {
+  const selected = control.value;
+  control.replaceChildren(...values.map((value) => new Option(value, value)));
+  control.value = values.includes(selected) ? selected : values[0]!;
+}
+setOptions(viewControl, PREVIEW_VIEWS);
+setOptions(platformControl, DESKTOP_PLATFORMS);
 export function show() {
-  const selected = finiteValue(viewControl.value, PREVIEW_VIEWS),
-    scenario: PreviewScenario = finiteValue(scenarioControl.value, PREVIEW_SCENARIOS),
-    platform = finiteValue(platformControl.value, DESKTOP_PLATFORMS);
+  const selected = finiteValue(viewControl.value, PREVIEW_VIEWS);
+  const scenarios = PREVIEW_SCENARIOS[selected];
+  setOptions(scenarioControl, scenarios);
+  const scenario = finiteValue(scenarioControl.value, scenarios);
+  const platform = finiteValue(platformControl.value, DESKTOP_PLATFORMS);
   document.documentElement.dataset.view = selected;
   document.documentElement.dataset.platform = platform;
   const view =

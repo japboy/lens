@@ -13,7 +13,7 @@ import type {
   ResponseHistoryPresentation,
   ResponseManifest,
   LoadResponseBlock,
-} from "../../src/resources/response-history-controller";
+} from "../../src/contracts/response-history";
 import type { LensOutputBlock, LensResponseHistory } from "../../src/contracts/lens";
 
 let intersections: Array<{ callback: IntersectionObserverCallback; target: Element }> = [];
