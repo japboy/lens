@@ -27,7 +27,7 @@ required-features = ["native-webview-lifecycle-test"]
 [build-dependencies]
 serde_json.workspace = true
 toml = "=1.1.6"
-tauri-build = { version = "=2.7.0", features = [] }
+tauri-build = { version = "=2.7.1", features = [] }
 
 [dependencies]
 usecase.workspace = true
@@ -49,7 +49,7 @@ sha2.workspace = true
 shlex = "=2.0.1"
 tar = "=0.4.46"
 tempfile = "=3.27.0"
-tauri = { version = "=2.12.0", default-features = false, features = [
+tauri = { version = "=2.12.1", default-features = false, features = [
   "image-png",
   "macos-private-api",
   "tray-icon",
@@ -59,8 +59,8 @@ tauri = { version = "=2.12.0", default-features = false, features = [
   "x11",
   "dbus",
 ] }
-tauri-plugin-dialog = "=2.7.3"
-tauri-plugin-opener = "=2.5.5"
+tauri-plugin-dialog = "=2.8.0"
+tauri-plugin-opener = "=2.7.0"
 thiserror.workspace = true
 tokio-util = "=0.7.19"
 tokio = { version = "=1.53.1", features = [
@@ -80,8 +80,8 @@ tokio-util = { version = "=0.7.19", features = ["compat"] }
 tokio = { version = "=1.53.1", features = ["test-util"] }
 toml = "=1.1.6"
 pretty_assertions = "=1.4.1"
-tauri = { version = "=2.12.0", default-features = false, features = ["test"] }
+tauri = { version = "=2.12.1", default-features = false, features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 adapter-platform-macos.workspace = true
-tauri = { version = "=2.12.0", features = ["macos-private-api"] }
+tauri = { version = "=2.12.1", features = ["macos-private-api"] }
