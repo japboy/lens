@@ -15,7 +15,7 @@
     "test": "vitest run --config ../../vitest.config.ts --project adapter-lit-prerenderer"
   },
   "dependencies": {
-    "vite": "8.3.1"
+    "vite": "8.3.3"
   },
   "devDependencies": {
     "@lit-labs/ssr": "4.1.0",
