@@ -107,7 +107,7 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
           version: "v2026.9.16" # Exact release tag required for Renovate's paired checksum lookup.
           sha256: 86cda8dde0fa9181706e825323dd8e26e96721a1b3cf37cbc610dd1680fecfda # macos-arm64
