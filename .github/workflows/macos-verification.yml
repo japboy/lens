@@ -222,6 +222,17 @@ jobs:
           BUNDLE_TASK: ${{ steps.source.outputs.generation == 'legacy' && 'verify:bundle' || 'verify:macos-bundle' }}
         run: mise run "$BUNDLE_TASK" -- "$BUNDLE_KIND"
 
+      - name: Verify the actual ACP helper process lifecycle
+        if: steps.source.outputs.generation == 'current' && (inputs.verification_mode != 'code' || inputs.seed_bundle_cache)
+        env:
+          LENS_TEST_EXECUTABLE: ${{ github.workspace }}/target/aarch64-apple-darwin/release/lens
+        run: >-
+          cargo test --locked --target aarch64-apple-darwin
+          --package domain --package port-platform --package usecase --package desktop
+          --package adapter-mcp-server --package adapter-platform-macos
+          --lib --bins --profile test agent_launch::tests::actual_helper_
+          -- --ignored --test-threads=1
+
       - name: Check out the trusted release controller separately
         if: inputs.release_tag != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

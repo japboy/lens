@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { VERIFICATION_REQUIREMENTS } from "./ci-plan.ts";
 import { MACOS_BUILD_CACHE_INPUTS } from "./macos-build-contract.ts";
-import { BUILD_VARIANTS } from "./workspace-policy.ts";
+import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
 
 const quality = readFileSync(".github/workflows/code-quality.yml", "utf8");
 const linux = readFileSync(".github/workflows/shared-rust-verification.yml", "utf8");
@@ -439,6 +439,33 @@ describe("actual workflow admission", () => {
     expect(nativeSteps[verifyAssets].if).toBe(
       "inputs.verification_mode != 'code' || inputs.seed_bundle_cache",
     );
+  });
+
+  it("exercises owned ACP helper drivers against the source-built native binary", () => {
+    const index = (name: string) =>
+      nativeSteps.findIndex((step: { name?: string }) => step.name === name);
+    const helper = nativeSteps[index("Verify the actual ACP helper process lifecycle")];
+    expect(index("Verify the actual ACP helper process lifecycle")).toBeGreaterThan(
+      index("Build and verify the native application bundle"),
+    );
+    expect(index("Verify the actual ACP helper process lifecycle")).toBeGreaterThan(
+      index("Populate packaged Rust dependency artifacts"),
+    );
+    expect(helper.if).toBe(
+      "steps.source.outputs.generation == 'current' && (inputs.verification_mode != 'code' || inputs.seed_bundle_cache)",
+    );
+    expect(helper.env).toEqual({
+      LENS_TEST_EXECUTABLE: "${{ github.workspace }}/target/aarch64-apple-darwin/release/lens",
+    });
+    const variant = BUILD_VARIANTS.find((entry) => entry.id === "macos-test")!;
+    expect(helper.run.trim().split(/\s+/u)).toEqual([
+      "cargo",
+      ...variantArguments(variant),
+      "agent_launch::tests::actual_helper_",
+      "--",
+      "--ignored",
+      "--test-threads=1",
+    ]);
   });
 
   it("keys and seeds complete trusted cache contracts before restoring", () => {
