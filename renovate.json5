@@ -95,6 +95,13 @@
     // Coupled families take precedence over the broad groups above. Their branch
     // names do not split by SemVer level, including across package managers.
     {
+      description: "Vite plugin contracts share one version across build adapters and consumers.",
+      matchManagers: ["npm"],
+      matchPackageNames: ["vite"],
+      groupName: "Vite dependencies",
+      separateMajorMinor: false,
+    },
+    {
       description: "Tauri JavaScript bindings, Rust crates, and CLI update together.",
       matchPackageNames: ["@tauri-apps/**", "tauri", "tauri-build", "tauri-plugin-**"],
       groupName: "Tauri dependencies",
@@ -191,6 +198,13 @@
     {
       description: "Node minor updates require review because Node also executes managed Agents.",
       matchPackageNames: ["node"],
+      matchUpdateTypes: ["minor"],
+      automerge: false,
+    },
+    {
+      description: "Vite minor updates require review for the shared application build contract.",
+      matchManagers: ["npm"],
+      matchPackageNames: ["vite"],
       matchUpdateTypes: ["minor"],
       automerge: false,
     },
