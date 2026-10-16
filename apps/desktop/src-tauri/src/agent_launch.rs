@@ -745,8 +745,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             environment: BTreeMap::new(),
         };
-        let (_channel, future) = launch.into_channel_and_future();
-        let connection = tokio::spawn(future);
+        let (_channel, driver) = launch.into_channel_and_future();
+        let driver = driver.expect("launch transport owns connection work");
+        let connection = tokio::spawn(driver);
         let processes: Vec<i32> = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Ok(value) = std::fs::read_to_string(&pids) {
@@ -805,8 +806,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             environment: BTreeMap::new(),
         };
-        let (_channel, future) = launch.into_channel_and_future();
-        let error = tokio::time::timeout(Duration::from_secs(10), future)
+        let (_channel, driver) = launch.into_channel_and_future();
+        let driver = driver.expect("launch transport owns connection work");
+        let error = tokio::time::timeout(Duration::from_secs(10), driver)
             .await
             .unwrap()
             .unwrap_err();
