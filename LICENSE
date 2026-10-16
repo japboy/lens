@@ -54468,9 +54468,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-codegen 2.7.2
+Rust: tauri-codegen 2.7.3
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-codegen/tauri-codegen-2.7.2.crate
+Source: https://static.crates.io/crates/tauri-codegen/tauri-codegen-2.7.3.crate
 ===============================================================================
 
 --- LICENSE-APACHE-2.0 ---
@@ -54676,9 +54676,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-macros 2.7.2
+Rust: tauri-macros 2.7.3
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-macros/tauri-macros-2.7.2.crate
+Source: https://static.crates.io/crates/tauri-macros/tauri-macros-2.7.3.crate
 ===============================================================================
 
 --- LICENSE-APACHE-2.0 ---
@@ -54884,12 +54884,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-plugin 2.7.1
+Rust: tauri-plugin 2.7.2
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-plugin/tauri-plugin-2.7.1.crate
+Source: https://static.crates.io/crates/tauri-plugin/tauri-plugin-2.7.2.crate
 ===============================================================================
 
---- https://raw.githubusercontent.com/tauri-apps/tauri/30da1fd6e17de6107ecc850c95dfb16b5729f2dd/LICENSE-MIT ---
+--- https://raw.githubusercontent.com/tauri-apps/tauri/59b63ab500da9859f12d8888c3298bc29bba0b92/LICENSE-MIT ---
 MIT License
 
 Copyright (c) 2017 - Present Tauri Apps Contributors
@@ -55143,9 +55143,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-plugin-fs 2.7.0
+Rust: tauri-plugin-fs 2.7.1
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-plugin-fs/tauri-plugin-fs-2.7.0.crate
+Source: https://static.crates.io/crates/tauri-plugin-fs/tauri-plugin-fs-2.7.1.crate
 ===============================================================================
 
 --- LICENSE.spdx ---
@@ -55603,9 +55603,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-runtime 2.12.1
+Rust: tauri-runtime 2.12.2
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-runtime/tauri-runtime-2.12.1.crate
+Source: https://static.crates.io/crates/tauri-runtime/tauri-runtime-2.12.2.crate
 ===============================================================================
 
 --- LICENSE-APACHE-2.0 ---
@@ -55811,9 +55811,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-runtime-wry 2.12.1
+Rust: tauri-runtime-wry 2.12.2
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-runtime-wry/tauri-runtime-wry-2.12.1.crate
+Source: https://static.crates.io/crates/tauri-runtime-wry/tauri-runtime-wry-2.12.2.crate
 ===============================================================================
 
 --- LICENSE-APACHE-2.0 ---
@@ -56019,9 +56019,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: tauri-utils 2.10.1
+Rust: tauri-utils 2.10.2
 Declared license: Apache-2.0 OR MIT
-Source: https://static.crates.io/crates/tauri-utils/tauri-utils-2.10.1.crate
+Source: https://static.crates.io/crates/tauri-utils/tauri-utils-2.10.2.crate
 ===============================================================================
 
 --- LICENSE-APACHE-2.0 ---
