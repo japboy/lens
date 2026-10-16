@@ -10,15 +10,15 @@ publish.workspace = true
 domain = { path = "../domain" }
 base64.workspace = true
 axum = "=0.8.9"
-hyper = { version = "=1.11.0", features = ["server", "http1"] }
-hyper-util = { version = "=0.1.20", features = ["tokio", "service"] }
+hyper = { version = "=1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio", "service"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
-tokio = { version = "=1.53.1", features = ["net", "rt", "macros"] }
+tokio = { version = "=1.53.2", features = ["net", "rt", "macros"] }
 
 [dev-dependencies]
 reqwest.workspace = true
-tokio = { version = "=1.53.1", features = ["time", "io-util"] }
+tokio = { version = "=1.53.2", features = ["time", "io-util"] }
