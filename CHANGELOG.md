@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.9.0](https://github.com/japboy/lens/compare/v0.8.3...v0.9.0) (2026-10-16)
+
+
+### Features
+
+* **desktop:** allow declared external HTML dependencies with bounded MCP Apps CSP; preserve each publication's accepted policy when replaying history; dependency bytes are not archived ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **desktop:** replace lens_output.publish_html with lens_rich_content.render_html while preserving recorded HTML in session history ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **desktop:** support external MCP Apps and interactive HTML in the Lens Overlay ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **prompts:** enable interactive HTML/CSS/JavaScript in bundled presets; saved prompts are not migrated automatically; after upgrading, adopt the new instructions with Settings &gt; Agent &gt; Prompt Presets &gt; Reset All Presets, or manually remove JavaScript/static-only restrictions and use an authorized MCP App (bundled fallback: lens_rich_content.render_html); copy custom instructions first because reset deletes all added presets, saved edits and unsaved drafts; resetting is not required to enable MCP connections ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+
+
+### Bug Fixes
+
+* **deps:** migrate ACP native transport to v3 ([#196](https://github.com/japboy/lens/issues/196)) ([4996426](https://github.com/japboy/lens/commit/49964267266f4d78c1969ede5ab0156599a4ffe1))
+* **deps:** patch rustls security advisories ([#193](https://github.com/japboy/lens/issues/193)) ([3e61799](https://github.com/japboy/lens/commit/3e61799d5c6be09cd6692a0c4bf609d09b89bb28))
+* **deps:** synchronize Vite workspace updates ([#194](https://github.com/japboy/lens/issues/194)) ([ef67493](https://github.com/japboy/lens/commit/ef67493337377432a914c86b9aacd93d7905aecb))
+* **deps:** update ACP derive macros to 3.4 ([#190](https://github.com/japboy/lens/issues/190)) ([98476a6](https://github.com/japboy/lens/commit/98476a6020ea7102cf36a9556ac8a3ea4996d148))
+* **deps:** update application dependencies ([#184](https://github.com/japboy/lens/issues/184)) ([9bff122](https://github.com/japboy/lens/commit/9bff122de8cc11596c309590fab84da5552d13e3))
+* **deps:** update dirs and zip dependencies ([#197](https://github.com/japboy/lens/issues/197)) ([d4faaf8](https://github.com/japboy/lens/commit/d4faaf89685bcc4ff8ddbea3d91690c87e261173))
+* **deps:** update Tauri patch dependencies ([#185](https://github.com/japboy/lens/issues/185)) ([0cbb9c1](https://github.com/japboy/lens/commit/0cbb9c12a671a198ab7c09209eb293f81e4f5c6f))
+* **deps:** update Tauri with generated icons ([#195](https://github.com/japboy/lens/issues/195)) ([8cc75d2](https://github.com/japboy/lens/commit/8cc75d27064bdf690328f7b27a33a162e9094dfe))
+* **desktop:** await ACP cancellation completion after retiring App authority; report unconfirmed termination explicitly ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **desktop:** bound optional provider session titles without changing source data so oversized metadata cannot block valid history ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **desktop:** retain ACP ResourceLink metadata as inert Conversation text ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **prompts:** keep per-turn HTML publication instructions neutral about external assets ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+* **settings:** dismiss hover and keyboard tooltips with Escape and release help listeners on disconnect ([9b21fcf](https://github.com/japboy/lens/commit/9b21fcf845a1253f31fb99976a8fdcc402d1a855))
+
 ## [0.8.3](https://github.com/japboy/lens/compare/v0.8.2...v0.8.3) (2026-10-02)
 
 
