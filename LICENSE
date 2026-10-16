@@ -463,12 +463,12 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ===============================================================================
-Rust: agent-client-protocol 2.1.0
+Rust: agent-client-protocol 3.3.0
 Declared license: Apache-2.0
-Source: https://static.crates.io/crates/agent-client-protocol/agent-client-protocol-2.1.0.crate
+Source: https://static.crates.io/crates/agent-client-protocol/agent-client-protocol-3.3.0.crate
 ===============================================================================
 
---- https://raw.githubusercontent.com/agentclientprotocol/rust-sdk/726c5030bfaa88cfdac2fb1f71a63abb331ce586/LICENSE ---
+--- https://raw.githubusercontent.com/agentclientprotocol/rust-sdk/199532c7433f1aec207dd0cada299901a5621ece/LICENSE ---
 
                                  Apache License
                            Version 2.0, January 2004
@@ -662,12 +662,12 @@ Source: https://static.crates.io/crates/agent-client-protocol/agent-client-proto
    limitations under the License.
 
 ===============================================================================
-Rust: agent-client-protocol-derive 2.1.0
+Rust: agent-client-protocol-derive 3.3.0
 Declared license: Apache-2.0
-Source: https://static.crates.io/crates/agent-client-protocol-derive/agent-client-protocol-derive-2.1.0.crate
+Source: https://static.crates.io/crates/agent-client-protocol-derive/agent-client-protocol-derive-3.3.0.crate
 ===============================================================================
 
---- https://raw.githubusercontent.com/agentclientprotocol/rust-sdk/726c5030bfaa88cfdac2fb1f71a63abb331ce586/LICENSE ---
+--- https://raw.githubusercontent.com/agentclientprotocol/rust-sdk/199532c7433f1aec207dd0cada299901a5621ece/LICENSE ---
 
                                  Apache License
                            Version 2.0, January 2004
@@ -861,12 +861,12 @@ Source: https://static.crates.io/crates/agent-client-protocol-derive/agent-clien
    limitations under the License.
 
 ===============================================================================
-Rust: agent-client-protocol-schema 1.7.0
+Rust: agent-client-protocol-schema 1.11.0
 Declared license: Apache-2.0
-Source: https://static.crates.io/crates/agent-client-protocol-schema/agent-client-protocol-schema-1.7.0.crate
+Source: https://static.crates.io/crates/agent-client-protocol-schema/agent-client-protocol-schema-1.11.0.crate
 ===============================================================================
 
---- https://raw.githubusercontent.com/agentclientprotocol/agent-client-protocol/272bf799f35a258c6a4107a0410ed361e83683d3/LICENSE ---
+--- https://raw.githubusercontent.com/agentclientprotocol/agent-client-protocol/4cf3dd858c819fc3ab99ae53f76883ede0345a10/LICENSE ---
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
