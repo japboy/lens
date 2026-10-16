@@ -1,6 +1,6 @@
 {
   "name": "ui-preview",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "private": true,
   "description": "Browser preview of canonical Lens UI scenarios",
   "type": "module",
