@@ -36,7 +36,7 @@ adapter-mcp-server.workspace = true
 agent-client-protocol = "=2.2.0"
 base64.workspace = true
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
-dirs = "=6.0.0"
+dirs = "=7.0.0"
 flate2 = "=1.1.9"
 libc = "=0.2.189"
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
@@ -73,7 +73,7 @@ tokio = { version = "=1.53.1", features = [
   "time",
 ] }
 uuid.workspace = true
-zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tokio-util = { version = "=0.7.19", features = ["compat"] }
