@@ -48587,9 +48587,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ===============================================================================
-Rust: serde_json_canonicalizer 0.3.2
+Rust: serde_json_canonicalizer 0.4.1
 Declared license: MIT
-Source: https://static.crates.io/crates/serde_json_canonicalizer/serde_json_canonicalizer-0.3.2.crate
+Source: https://static.crates.io/crates/serde_json_canonicalizer/serde_json_canonicalizer-0.4.1.crate
 ===============================================================================
 
 --- LICENSE ---
