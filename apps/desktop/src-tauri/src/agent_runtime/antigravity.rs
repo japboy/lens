@@ -345,14 +345,16 @@ fn extract(archive: &Path, destination: &Path) -> Result<(), String> {
         return Err("Antigravity ZIP has missing or duplicate entries".into());
     }
     let mut names = BTreeSet::new();
+    let mut validated_names = Vec::with_capacity(EXECUTABLES.len());
     let mut total = 0_u64;
     // Validate the complete metadata before creating any payload file.
     for index in 0..archive.len() {
         let file = archive.by_index(index).map_err(|error| error.to_string())?;
-        if !allowed_name(file.name())
-            || file.name_raw() != file.name().as_bytes()
+        let name = file.name().map_err(|error| error.to_string())?;
+        if !allowed_name(name.as_ref())
+            || file.name_raw() != name.as_bytes()
             || !file.is_file()
-            || !names.insert(file.name().to_owned())
+            || !names.insert(name.clone().into_owned())
             || !file
                 .unix_mode()
                 .is_some_and(|mode| mode & 0o170000 == 0o100000)
@@ -370,12 +372,13 @@ fn extract(archive: &Path, destination: &Path) -> Result<(), String> {
         if total > PAYLOAD_MAX_BYTES {
             return Err("Antigravity ZIP exceeds the expanded size policy".into());
         }
+        validated_names.push(name.into_owned());
     }
     fs::create_dir(destination).map_err(|error| error.to_string())?;
-    for index in 0..archive.len() {
+    for (index, name) in validated_names.iter().enumerate() {
         let mut file = archive.by_index(index).map_err(|error| error.to_string())?;
         let expected_size = file.size();
-        let path = destination.join(file.name());
+        let path = destination.join(name);
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -830,6 +833,27 @@ mod tests {
         fs::write(&archive, corrupt).unwrap();
         assert!(extract(&archive, &root.path().join("bad-crc")).is_err());
         assert!(!root.path().join("escape").exists());
+    }
+
+    #[test]
+    fn extraction_rejects_non_utf8_entry_names_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bytes = zip_fixture(&[EXECUTABLES[0].0, EXECUTABLES[1].0], false);
+        let name = EXECUTABLES[0].0.as_bytes();
+        let offsets = bytes
+            .windows(name.len())
+            .enumerate()
+            .filter_map(|(offset, value)| (value == name).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 2);
+        for offset in offsets {
+            bytes[offset] = 0xff;
+        }
+        let path = root.path().join("non-utf8.zip");
+        fs::write(&path, bytes).unwrap();
+        let destination = root.path().join("must-not-extract");
+        assert!(extract(&path, &destination).is_err());
+        assert!(!destination.exists());
     }
 
     #[test]
