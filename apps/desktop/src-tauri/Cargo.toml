@@ -37,10 +37,10 @@ agent-client-protocol = { version = "=3.3.0", features = ["process"] }
 base64.workspace = true
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 dirs = "=7.0.0"
-flate2 = "=1.1.9"
-libc = "=0.2.189"
+flate2 = "=1.1.10"
+libc = "=0.2.190"
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
-rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"
 serde.workspace = true
 serde_json.workspace = true
@@ -62,8 +62,8 @@ tauri = { version = "=2.12.3", default-features = false, features = [
 tauri-plugin-dialog = "=2.8.2"
 tauri-plugin-opener = "=2.7.1"
 thiserror.workspace = true
-tokio-util = "=0.7.19"
-tokio = { version = "=1.53.1", features = [
+tokio-util = "=0.7.20"
+tokio = { version = "=1.53.2", features = [
   "fs",
   "io-util",
   "macros",
@@ -76,8 +76,8 @@ uuid.workspace = true
 zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
-tokio-util = { version = "=0.7.19", features = ["compat"] }
-tokio = { version = "=1.53.1", features = ["test-util"] }
+tokio-util = { version = "=0.7.20", features = ["compat"] }
+tokio = { version = "=1.53.2", features = ["test-util"] }
 toml = "=1.1.6"
 pretty_assertions = "=1.4.1"
 tauri = { version = "=2.12.3", default-features = false, features = ["test"] }
