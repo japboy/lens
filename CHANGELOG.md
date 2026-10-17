@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/japboy/lens/compare/v0.9.0...v0.10.0) (2026-10-17)
+
+
+### Features
+
+* **mcp-apps:** support contextual App questions ([#198](https://github.com/japboy/lens/issues/198)) ([14890fe](https://github.com/japboy/lens/commit/14890fe74ecd1d30037d03f4afba8e15afd9a099))
+
 ## [0.9.0](https://github.com/japboy/lens/compare/v0.8.3...v0.9.0) (2026-10-16)
 
 
