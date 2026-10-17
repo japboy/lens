@@ -3,6 +3,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LensMcpAppSettings } from "./lens-mcp-app-settings";
 import type { LensSelect } from "../controls/lens-select";
 import { SETTINGS_INTENT_EVENT } from "../../contracts/events";
+import type { McpServerToolCatalog } from "../../contracts/lens";
+const builtinCatalog: McpServerToolCatalog = {
+  server: null,
+  tools: [
+    { name: "render_html", description: "Render HTML.", visibility: ["model"] },
+    { name: "ask_question", description: "Ask a question.", visibility: ["app"] },
+  ],
+};
 const first = {
   id: "11111111-1111-4111-8111-111111111111",
   name: "Original",
@@ -17,6 +25,7 @@ afterEach(() => document.body.replaceChildren());
 async function mount(servers = [first, second]) {
   const element = new LensMcpAppSettings();
   element.servers = servers;
+  element.catalogs = [builtinCatalog];
   document.body.append(element);
   await element.updateComplete;
   const intents: unknown[] = [];
@@ -56,7 +65,19 @@ describe("MCP preset settings", () => {
       { value: "lens_rich_content", label: "lens_rich_content · Built-in" },
     ]);
     expect(element.querySelector("h2")!.textContent).toBe("MCP");
-    expect(element.textContent).toContain("render_html");
+    const summary = element.querySelector(".mcp-preset-summary")!;
+    expect(summary.querySelector(".mcp-server-summary dt")!.textContent).toBe("MCP server");
+    expect(summary.querySelector(".mcp-server-summary dd")!.textContent?.trim()).toBe(
+      "lens_rich_content",
+    );
+    expect(summary.children[1]!.querySelector("dt")!.textContent?.replace(/\s+/g, " ").trim()).toBe(
+      "Tools 2",
+    );
+    expect(summary.children[1]!.querySelector(".mcp-tool-list")).not.toBeNull();
+    expect(element.querySelector(".mcp-tool-description")!.textContent).toBe("Render HTML.");
+    expect(
+      [...element.querySelectorAll(".mcp-tool-audience")].map((badge) => badge.textContent),
+    ).toEqual(["Agent", "App"]);
     expect(button(element, "Delete Preset")).toBeUndefined();
     expect(button(element, "Save")).toBeUndefined();
     button(element, "Add Preset").click();
@@ -64,6 +85,7 @@ describe("MCP preset settings", () => {
     const serverSummary = element.querySelector(".mcp-preset-summary dd")!;
     expect(serverSummary.textContent?.trim()).toBe("Not registered");
     expect(serverSummary.querySelector("code")).toBeNull();
+    expect(element.querySelector(".mcp-tool-list")).toBeNull();
     const controls = element.querySelectorAll("input");
     expect([...controls].map((item) => item.value)).toEqual(["", ""]);
     expect([...controls].map((item) => item.placeholder)).toEqual([
@@ -214,10 +236,35 @@ describe("MCP preset settings", () => {
     element.catalogs = [{ server: { ...first }, tools: [] }];
     await element.updateComplete;
     expect(tools()).toContain("No tools");
-    element.catalogs = [{ server: { ...first }, tools: ["ordinary_tool", "render_chart"] }];
+    element.catalogs = [
+      {
+        server: { ...first },
+        tools: [
+          { name: "ordinary_tool", description: null, visibility: ["model"] },
+          {
+            name: "render_chart",
+            description: "<b>Show a chart.</b>\nKeep details.",
+            visibility: ["model", "app"],
+          },
+        ],
+      },
+    ];
     await element.updateComplete;
     expect(tools()).toContain("ordinary_tool");
     expect(tools()).toContain("render_chart");
+    const rows = element.querySelectorAll(".mcp-tool-list > li");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.querySelector(".mcp-tool-description")).toBeNull();
+    expect(
+      [...rows[0]!.querySelectorAll(".mcp-tool-audience")].map((badge) => badge.textContent),
+    ).toEqual(["Agent"]);
+    expect(
+      [...rows[1]!.querySelectorAll(".mcp-tool-audience")].map((badge) => badge.textContent),
+    ).toEqual(["Agent", "App"]);
+    expect(rows[1]!.querySelector(".mcp-tool-description")!.textContent).toBe(
+      "<b>Show a chart.</b>\nKeep details.",
+    );
+    expect(rows[1]!.querySelector("b")).toBeNull();
     element.servers = [{ ...first, url: "https://replacement.example/mcp" }, second];
     await element.updateComplete;
     expect(tools()).toContain("Not loaded");

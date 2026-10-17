@@ -18,6 +18,8 @@ export interface McpAppHostOptions {
 /** Immutable identity; resource bodies are fetched only when a selected App opens. */
 export interface McpAppDescriptor {
   id: string;
+  /** Stable root for revisions of a built-in App; absent for ordinary external Apps. */
+  app_id?: string;
   operation_id: string;
   session_id: string;
   server_id: string;

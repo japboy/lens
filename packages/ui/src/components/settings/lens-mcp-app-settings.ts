@@ -44,7 +44,7 @@ export class LensMcpAppSettings extends LitElement {
     this.servers = [];
     this.authoritativeServers = [];
     this.drafts = {};
-    this.catalogs = [];
+    this.catalogs = this.catalogs.filter((catalog) => catalog.server === null);
     this.editingId = BUILTIN;
     this.error = "";
   }
@@ -151,14 +151,13 @@ export class LensMcpAppSettings extends LitElement {
     const draft = this.drafts[this.editingId],
       saved = this.servers.find((server) => server.id === this.editingId);
     const dirty = Boolean(draft && JSON.stringify(draft) !== JSON.stringify(saved));
-    const catalog =
-      saved &&
-      this.catalogs.find(
-        (catalog) =>
-          catalog.server.id === saved.id &&
+    const catalog = this.catalogs.find((catalog) =>
+      saved
+        ? catalog.server?.id === saved.id &&
           catalog.server.name === saved.name &&
-          catalog.server.url === saved.url,
-      );
+          catalog.server.url === saved.url
+        : this.editingId === BUILTIN && catalog.server === null,
+    );
     return html`<section class="settings-group" aria-labelledby="mcp-apps-heading">
       <div class="settings-heading-row">
         <h2 id="mcp-apps-heading">MCP</h2>
@@ -288,7 +287,7 @@ export class LensMcpAppSettings extends LitElement {
       }
       ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
       <dl class="mcp-preset-summary">
-        <div>
+        <div class="mcp-server-summary">
           <dt>MCP server</dt>
           <dd>
             ${
@@ -299,18 +298,41 @@ export class LensMcpAppSettings extends LitElement {
           </dd>
         </div>
         <div>
-          <dt>Tools</dt>
+          <dt>Tools ${catalog ? html`<span>${catalog.tools.length}</span>` : nothing}</dt>
           <dd>
             ${
-              !draft
-                ? html`<code>render_html</code>`
-                : !saved
-                  ? html`<span>Not registered</span>`
-                  : !catalog
-                    ? html`<span>Not loaded</span>`
-                    : catalog.tools.length === 0
-                      ? html`<span>No tools</span>`
-                      : catalog.tools.map((tool) => html`<div><code>${tool}</code></div>`)
+              draft && !saved
+                ? html`<span>Not registered</span>`
+                : !catalog
+                  ? html`<span>Not loaded</span>`
+                  : catalog.tools.length === 0
+                    ? html`<span>No tools</span>`
+                    : html`<ul class="mcp-tool-list">
+                        ${catalog.tools.map(
+                          (tool) => html`<li>
+                            <div class="mcp-tool-heading">
+                              <code>${tool.name}</code>
+                              <span class="mcp-tool-audiences" aria-label="Available to">
+                                ${
+                                  tool.visibility.includes("model")
+                                    ? html`<span class="mcp-tool-audience">Agent</span>`
+                                    : nothing
+                                }
+                                ${
+                                  tool.visibility.includes("app")
+                                    ? html`<span class="mcp-tool-audience">App</span>`
+                                    : nothing
+                                }
+                              </span>
+                            </div>
+                            ${
+                              tool.description
+                                ? html`<p class="mcp-tool-description">${tool.description}</p>`
+                                : nothing
+                            }
+                          </li>`,
+                        )}
+                      </ul>`
             }
           </dd>
         </div>

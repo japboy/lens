@@ -131,3 +131,30 @@ it.each(["external", "builtin", "static", "interactive-replay"] as const)(
     await controller.close();
   },
 );
+
+it("returns answer history without preparing or navigating to the latest artifact", async () => {
+  const nativeResult = {
+    structuredContent: {
+      appId: "root",
+      revision: 4,
+      questions: [],
+      latestApp: { artifactId: "revision", revision: 4 },
+    },
+  };
+  const port: DesktopMcpAppsPort = {
+    openMcpApp: vi.fn<DesktopMcpAppsPort["openMcpApp"]>(),
+    closeMcpApp: vi.fn<DesktopMcpAppsPort["closeMcpApp"]>(),
+    openHtmlPresentation: vi.fn<DesktopMcpAppsPort["openHtmlPresentation"]>(),
+    mcpAppRequest: vi.fn<DesktopMcpAppsPort["mcpAppRequest"]>(async () => ({
+      result: nativeResult,
+    })),
+    prepareMcpAppDocument: vi.fn<DesktopMcpAppsPort["prepareMcpAppDocument"]>(),
+  };
+  expect(
+    await toUiMcpAppsPort(port).mcpAppRequest("historical-lease", {
+      method: "tools/call",
+      params: { name: "get_answers", arguments: {} },
+    }),
+  ).toEqual({ result: nativeResult });
+  expect(port.prepareMcpAppDocument).not.toHaveBeenCalled();
+});

@@ -169,6 +169,7 @@ impl PromptPresetCatalog {
                         "practical",
                         "analytical",
                         "evocative",
+                        "illustrated",
                     ]
                     .contains(&source.id.as_str())
                 {
@@ -299,13 +300,13 @@ fn increment(revision: u32) -> Result<u32, String> {
 
 pub fn bundled_presets() -> Vec<PromptPreset> {
     let mut presets: Vec<_> = [
-        ("conceptual", "Conceptual", "Lead with the central idea and a clear account of how the concepts relate. Define essential terms, explain causes and dependencies, and distinguish similar concepts. Use a concept map, comparison panel, or annotated illustration when it makes the structure easier to understand. Choose its format using the shared output rules. Follow with a plain-language explanation and a concrete example. Identify the limits of analogies and important qualifications. Do not add a visual that contributes no explanatory value."),
-        ("practical", "Practical", "Lead with a concrete worked example that makes the information usable. Show the starting conditions, decisions, steps, and expected result. Use a walkthrough, annotated example, decision diagram, or checklist when it makes the procedure easier to follow. Choose its format using the shared output rules. Explain how the same reasoning transfers to another case and highlight common mistakes. Label invented examples and describe actions without performing them on the user's behalf."),
-        ("analytical", "Analytical", "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a visualization when it clarifies the model or comparison. Choose its format using the shared output rules."),
-    ].into_iter().map(|(id, name, instruction)| PromptPreset {
+        ("conceptual", "Conceptual", 10, "Help the user build a coherent mental model of the source. Lead with the central idea, define essential terms, and explain how the concepts relate, why those relationships hold, and where their limits lie. Distinguish similar concepts and make important causes, dependencies and qualifications clear in plain language. Use a brief example, counterexample or analogy when it clarifies a concept or distinction; connect it back to the general idea and state the limits of any analogy. Use a concept map, comparison or annotated illustration when it clarifies the structure, choosing its format using the shared output rules. When using an HTML App, choose useful interactions that let the user inspect a concept, compare related concepts or trace a relationship. Carry that context into questions and offer follow-ups that help explain why a relationship holds, resolve a distinction or explore a qualification."),
+        ("practical", "Practical", 10, "Help the user apply the source to a concrete situation. Lead with a worked example that carries the explanation from starting conditions and a clear goal through the relevant decisions and actions to an expected result. Explain the reasoning at each decision and how to recognize a successful outcome. Introduce concepts where they explain the example, then show what carries over to another case, what changes with the conditions, and common mistakes. Label invented examples and assumptions, and describe actions without performing them on the user's behalf. Use a walkthrough, annotated example, decision diagram or checklist when it makes the application easier to follow, choosing its format using the shared output rules. When using an HTML App, choose useful interactions that let the user explore the worked example, inspect a decision or step, or compare a plausible alternative. Carry the relevant step and selected conditions into questions, and connect answers to outcomes, transfer to another case and common mistakes."),
+        ("analytical", "Analytical", 9, "Explain the information through its underlying relationships and structure. Define relevant quantities, variables, assumptions, and constraints. Use equations, logical expressions, tables, or graphs when they clarify those relationships, and connect each formal representation to a plain-language explanation and a concrete example. State units, uncertainty, and the conditions under which a model applies. Distinguish source-supported relationships from illustrative models or assumptions; do not invent numerical precision or force qualitative information into formulas. Use a visualization when it clarifies the model or comparison. Choose its format using the shared output rules. When using an HTML App, let interactions help the user examine an assumption, compare cases, or explore the effect of a meaningful parameter when useful. Keep variables, units, uncertainty and model limits visible where relevant. Carry the relevant model and selected case into questions; do not imply that an illustrative calculation is source evidence."),
+    ].into_iter().map(|(id, name, version, instruction)| PromptPreset {
         id: id.into(), name: name.into(), revision: 1,
         template: AgentPromptTemplate::with_explanation_strategy(instruction),
-        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version: 7 }),
+        bundled_source: Some(BundledPromptPresetSource { id: id.into(), version }),
     }).collect();
     presets.push(PromptPreset {
         id: "evocative".into(),
@@ -314,7 +315,19 @@ pub fn bundled_presets() -> Vec<PromptPreset> {
         template: AgentPromptTemplate::evocative(),
         bundled_source: Some(BundledPromptPresetSource {
             id: "evocative".into(),
-            version: 7,
+            version: 8,
+        }),
+    });
+    presets.push(PromptPreset {
+        id: "illustrated".into(),
+        name: "Illustrated".into(),
+        revision: 1,
+        template: AgentPromptTemplate::with_explanation_strategy(
+            "Make a visual composition the core of the explanation. Preserve the source's substantive claims, reasoning, conditions, exceptions, examples and uncertainty; prioritize clarity and depth over brevity unless the user asks for a summary. State any substantive content the composition does not represent. Before choosing output tools, plan the entities, relationships, sequence and labels, then make placement, connections, grouping and annotations communicate that structure. Choose scenes, cutaways, processes, comparisons, maps or infographics according to the content. Use multiple connected sections, panels or views when needed, with a clear reading order. Keep labels concise and place enough explanation beside the relevant elements to make their meaning and reasoning understandable. Choose the medium using the shared output rules: HTML, CSS and SVG suit precise text, values, connectors and layout; generated imagery suits appearance, materials and spatial context, or an integrated diagram when it communicates the content well. When an image is the primary explanation, create a complete annotated visual with the necessary labels, arrows and legends, inspect it when possible and correct material errors; put precision-critical text in HTML or SVG when needed. Publish only actual image bytes or usable URLs returned by tools, and integrate each image at its corresponding point in the explanation. If an image cannot be embedded, rethink the composition; do not duplicate an image gallery with a complete HTML explanation. Distinguish illustrative imagery from source evidence. In an HTML App, use meaningful interactions to reveal annotations, compare views, trace relationships or explore a meaningful variable, while keeping the central explanation readable initially. Let users ask contextual questions about selected figures, labels or relationships through the shared Lens question API.",
+        ),
+        bundled_source: Some(BundledPromptPresetSource {
+            id: "illustrated".into(),
+            version: 1,
         }),
     });
     presets
@@ -326,7 +339,7 @@ mod tests {
     use domain::prompt_template::BUILT_IN_RESPONSE_INSTRUCTION;
 
     #[test]
-    fn defaults_are_four_ordered_seeds_and_first_is_selected() {
+    fn defaults_are_five_ordered_seeds_and_first_is_selected() {
         let catalog = PromptPresetCatalog::default().normalize().unwrap();
         assert_eq!(catalog.schema_version, 2);
         assert_eq!(
@@ -335,14 +348,22 @@ mod tests {
                 .iter()
                 .map(|preset| preset.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Conceptual", "Practical", "Analytical", "Evocative"]
+            [
+                "Conceptual",
+                "Practical",
+                "Analytical",
+                "Evocative",
+                "Illustrated"
+            ]
         );
-        assert!(catalog.presets.iter().all(|preset| preset
-            .bundled_source
-            .as_ref()
-            .unwrap()
-            .version
-            == 7));
+        assert_eq!(
+            catalog
+                .presets
+                .iter()
+                .map(|preset| preset.bundled_source.as_ref().unwrap().version)
+                .collect::<Vec<_>>(),
+            [10, 10, 9, 8, 1]
+        );
         assert_eq!(catalog.selected_id, catalog.presets[0].id);
         assert_eq!(catalog.selected_id, "conceptual");
         assert!(catalog
@@ -407,7 +428,7 @@ mod tests {
                 expected_catalog_revision: selected.revision,
             })
             .unwrap();
-        assert_eq!(reset.presets.len(), 4);
+        assert_eq!(reset.presets.len(), 5);
         assert_eq!(reset.selected_id, reset.presets[0].id);
         assert!(reset.revision > selected.revision);
         assert!(reset.execution_revision > selected.execution_revision);

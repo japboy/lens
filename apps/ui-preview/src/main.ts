@@ -140,6 +140,39 @@ export function show() {
   }
   if (view instanceof LensSettingsView) {
     view.active = true;
+    view.mcpToolCatalogs = [
+      {
+        server: null,
+        tools: [
+          {
+            name: "render_html",
+            description: "Display an interactive HTML explanation.",
+            visibility: ["model"],
+          },
+          {
+            name: "ask_question",
+            description: "Ask a question about this explanation.",
+            visibility: ["app"],
+          },
+          {
+            name: "get_answers",
+            description: "Read the shared questions and answers.",
+            visibility: ["app"],
+          },
+        ],
+      },
+      {
+        server: { id: "preview-mcp", name: "Reference", url: "https://mcp.example.com/mcp" },
+        tools: [
+          {
+            name: "search_reference",
+            description: "Search the reference material.",
+            visibility: ["model", "app"],
+          },
+          { name: "open_reference", description: null, visibility: ["app"] },
+        ],
+      },
+    ];
     view.snapshotStatus =
       scenario === "failed"
         ? { stage: "failed", message: "Fixture snapshot failure" }
@@ -152,6 +185,9 @@ export function show() {
             config: {
               agent: "codex",
               working_directory: "/preview",
+              mcp_apps_servers: [
+                { id: "preview-mcp", name: "Reference", url: "https://mcp.example.com/mcp" },
+              ],
               agent_prompt_template: template,
               prompt_presets: {
                 schema_version: 2,

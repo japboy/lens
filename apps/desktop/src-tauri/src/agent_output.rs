@@ -257,6 +257,25 @@ impl AgentOutputCandidate {
         blocks
     }
 
+    /// The question turn's user-facing text, excluding thoughts and tool payloads.
+    pub(crate) fn app_answer(&self) -> Result<String, String> {
+        let mut parts = Vec::new();
+        for entry in &self.entries {
+            if let OutputEntry::Message(content) = entry {
+                for block in content {
+                    if let LensOutputBlock::Markdown { text, .. } = block {
+                        parts.push(text.as_str());
+                    }
+                }
+            }
+        }
+        let answer = parts.join("\n\n");
+        if answer.len() > 64 * 1024 {
+            return Err("App answer exceeds capacity".into());
+        }
+        Ok(answer)
+    }
+
     pub(crate) fn has_output(&self) -> bool {
         self.entries.iter().any(|entry| match entry {
             OutputEntry::Message(blocks) => blocks.iter().any(|block| match block {
@@ -906,6 +925,23 @@ mod tests {
             LensOutputBlock::Markdown { text: first, .. }, LensOutputBlock::Image { .. },
             LensOutputBlock::Markdown { text: after, .. }, LensOutputBlock::Markdown { text: next, .. }
         ] if first == "First message" && after == "After" && next == "Next"));
+    }
+
+    #[test]
+    fn app_answer_contains_only_user_facing_message_text() {
+        let mut candidate = AgentOutputCandidate::default();
+        candidate
+            .record_update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                ContentBlock::Text(TextContent::new("private thought")),
+            )))
+            .unwrap();
+        candidate
+            .record_update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                ContentBlock::Text(TextContent::new("Visible answer")),
+            )))
+            .unwrap();
+        assert_eq!(candidate.app_answer().unwrap(), "Visible answer");
+        assert!(!candidate.app_answer().unwrap().contains("private"));
     }
 
     #[test]

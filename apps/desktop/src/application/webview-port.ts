@@ -195,7 +195,9 @@ export const tauriWebviewPort: WebviewPort = {
     await invoke("respond_agent_interaction", { operationId, instanceId, interactionId, response });
   },
   async subscribeToAppSnapshot(listener) {
-    return listen<AppSnapshot>("window-app-state-changed", ({ payload }) => listener(payload));
+    return listen<AppSnapshot>("window-app-state-changed", ({ payload }) => listener(payload), {
+      target: { kind: "WebviewWindow", label: getCurrentWindow().label },
+    });
   },
   getAppSnapshot: () => invoke<AppSnapshot>("get_window_snapshot"),
   openScreenRecordingSettings: () => invoke<void>("open_screen_recording_settings"),

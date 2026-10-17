@@ -302,6 +302,8 @@ pub struct McpAppServer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpAppDescriptor {
     pub id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<Uuid>,
     pub operation_id: Uuid,
     pub session_id: String,
     pub server_id: String,
@@ -985,7 +987,7 @@ mod tests {
             PathBuf::from("/host"),
         )
         .unwrap();
-        assert_eq!(config.prompt_presets.presets.len(), 5);
+        assert_eq!(config.prompt_presets.presets.len(), 6);
         assert_eq!(config.prompt_presets.selected_id, "conceptual-migrated-1");
         assert_eq!(
             config.prompt_presets.selected().name,
@@ -997,8 +999,12 @@ mod tests {
 
     #[test]
     fn older_bundle_contents_are_preserved_until_an_explicit_reset() {
-        for version in [1, 2, 3, 4, 5, 6] {
+        for version in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
             let mut config = AppConfig::new(PathBuf::from("/host"));
+            config
+                .prompt_presets
+                .presets
+                .retain(|preset| preset.id != "illustrated");
             if version < 6 {
                 config
                     .prompt_presets
@@ -1052,7 +1058,7 @@ mod tests {
                     expected_catalog_revision: loaded.prompt_presets.revision,
                 })
                 .unwrap();
-            assert_eq!(reset.presets.len(), 4);
+            assert_eq!(reset.presets.len(), 5);
             assert_eq!(reset.selected_id, "conceptual");
             assert!(!reset
                 .presets

@@ -84,6 +84,66 @@ pub struct AppBroker {
     origin: String,
     task: JoinHandle<()>,
 }
+
+/// Scoped application effect injected by the composition root. No Agent/Tauri ownership.
+pub trait BundledAppToolHandler: Send + Sync {
+    fn call(&self, artifact: &AppArtifact, name: &str, arguments: Value) -> Result<Value, String>;
+}
+
+fn bundled_tools() -> HashMap<String, Value> {
+    let tool = json!({"name":"render_html","title":"Render interactive HTML","description":"Render complete HTML/CSS/JavaScript as an interactive Lens interpretation. Provide complete HTML, not a path, URL or Markdown. Generate a question-and-answer interface tailored to the explanation using injected window.lensQuestions version 1, available before document scripts run. Lens owns authoritative state and transport; generated HTML owns contextual wording, layout and follow-up controls. Call window.lensQuestions.ask({question, questionId?, parentQuestionId?, selection?}); question is required text, IDs are optional UUIDs, omitted selection uses selected text/figure and empty selection clears it for this question. Its Promise resolves to admission, not the eventual answer. window.lensQuestions.subscribe(listener) immediately emits a snapshot and later changes and returns unsubscribe; getSnapshot() and clearSelection() return Promises for snapshots. Snapshot fields: version, state, selection, message, answers. State is loading/idle/submitting/pending/readonly/expired: submit only while idle and visibly explain unavailable/error states and selection clearing. answers is null or the full shared conversation with appId, revision, questions and optional latestApp. Each question has questionId, question, optional selection/parentQuestionId, status pending/completed/failed/cancelled, optional answer Markdown, error and updatedApp. Render restored history including other revisions safely as Markdown or readable text; never insert raw answer HTML, invent answers, persist authoritative history or implement question MCP transport. Handle rejected Promises visibly. To revise an App, publish complete HTML/CSS/JavaScript including contextual question UI. Each publication is an immutable Hero Selection page sharing Lens-owned Q&A; latestApp metadata must not navigate or replace a historical document. For other supported interactions, send standard MCP Apps JSON-RPC to window.parent.postMessage(message, '*'). Initial HTML body LaTeX using \\(...\\) and \\[...\\] is rendered by Lens. Normal HTTP(S) anchors open the default browser through the Host's validated ui/open-link operation; never open links automatically. Supported methods: ui/open-link with {url}, ui/message with {role:'user',content:[{type:'text',text:'message'}]}, ui/update-model-context with {content,structuredContent}, and tools/call with {name,arguments}. Include jsonrpc:'2.0' and a unique id. Responses arrive as window message events. User ui/message requests are admitted directly into the same live Agent session using the latest App context; busy, expired and read-only displays reject them. A successful response acknowledges admission, not the Agent's eventual answer. External resource dependencies require csp.resourceDomains; fetch/WebSocket require csp.connectDomains. Declare only the origins needed by this content. Undeclared network access, external frames, eval and native access are unavailable. Prefer an appropriate external renderer if one is available.","inputSchema":{"type":"object","properties":{"html":{"type":"string","maxLength":524288},"csp":{"type":"object","properties":{"resourceDomains":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":256}},"connectDomains":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":256}}},"additionalProperties":false}},"required":["html"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true},"_meta":{"ui":{"resourceUri":FALLBACK_URI,"visibility":["model"]}}});
+    HashMap::from([
+        ("render_html".into(), tool),
+        ("ask_question".into(), bundled_question_tool()),
+        ("get_answers".into(), bundled_answers_tool()),
+    ])
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolAudience {
+    Model,
+    App,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ToolMetadata {
+    pub name: String,
+    pub description: Option<String>,
+    pub visibility: Vec<ToolAudience>,
+}
+
+fn tool_metadata(tools: &HashMap<String, Value>) -> Vec<ToolMetadata> {
+    let mut metadata: Vec<_> = tools
+        .iter()
+        .map(|(name, tool)| ToolMetadata {
+            name: name.clone(),
+            description: tool
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            visibility: [(ToolAudience::Model, "model"), (ToolAudience::App, "app")]
+                .into_iter()
+                .filter_map(|(value, audience)| visible(tool, audience).then_some(value))
+                .collect(),
+        })
+        .collect();
+    metadata.sort_by(|left, right| left.name.cmp(&right.name));
+    metadata
+}
+
+/// Metadata from the same definitions advertised by the bundled MCP source.
+pub fn bundled_tool_catalog() -> Vec<ToolMetadata> {
+    tool_metadata(&bundled_tools())
+}
+
+fn bundled_question_tool() -> Value {
+    json!({"name":"ask_question","description":"Ask the live Agent about this App, with an idempotent question ID. The App shell reads the eventual answer with get_answers.","inputSchema":{"type":"object","properties":{"questionId":{"type":"string","format":"uuid"},"question":{"type":"string","minLength":1,"maxLength":16384},"selection":{"type":"string","maxLength":16384},"parentQuestionId":{"type":"string","format":"uuid"}},"required":["questionId","question"],"additionalProperties":false},"_meta":{"ui":{"visibility":["app"]}}})
+}
+
+fn bundled_answers_tool() -> Value {
+    json!({"name":"get_answers","description":"Read this App's bounded live question/answer state and latest complete document revision.","inputSchema":{"type":"object","properties":{"afterRevision":{"type":"integer","minimum":0}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},"_meta":{"ui":{"visibility":["app"]}}})
+}
 impl Drop for AppBroker {
     fn drop(&mut self) {
         self.state
@@ -145,8 +205,7 @@ impl AppBroker {
                 }),
             );
         }
-        let tool = json!({"name":"render_html","title":"Render interactive HTML","description":"Render complete HTML/CSS/JavaScript as an interactive Lens interpretation. Provide complete HTML, not a path, URL or Markdown. For interactive input, send standard MCP Apps JSON-RPC to window.parent.postMessage(message, '*'). Initial HTML body LaTeX using \\(...\\) and \\[...\\] is rendered by Lens. Normal HTTP(S) anchors open the default browser through the Host's validated ui/open-link operation; never open links automatically. Supported methods: ui/open-link with {url}, ui/message with {role:'user',content:[{type:'text',text:'message'}]}, ui/update-model-context with {content,structuredContent}, and tools/call with {name,arguments}. Include jsonrpc:'2.0' and a unique id. Responses arrive as window message events. User ui/message requests are admitted directly into the same live Agent session using the latest App context; busy, expired and read-only displays reject them. A successful response acknowledges admission, not the Agent's eventual answer. External resource dependencies require csp.resourceDomains; fetch/WebSocket require csp.connectDomains. Declare only the origins needed by this content. Undeclared network access, external frames, eval and native access are unavailable. Prefer an appropriate external renderer if one is available.","inputSchema":{"type":"object","properties":{"html":{"type":"string","maxLength":524288},"csp":{"type":"object","properties":{"resourceDomains":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":256}},"connectDomains":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":256}}},"additionalProperties":false}},"required":["html"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true},"_meta":{"ui":{"resourceUri":FALLBACK_URI,"visibility":["model"]}}});
-        sources.insert(FALLBACK_SERVER.into(),Arc::new(Source {id:FALLBACK_SERVER.into(),name:FALLBACK_SERVER.into(),peer:json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":FALLBACK_SERVER,"version":env!("CARGO_PKG_VERSION")}}),tools:HashMap::from([("render_html".into(),tool)]),upstream:None,shell}));
+        sources.insert(FALLBACK_SERVER.into(),Arc::new(Source {id:FALLBACK_SERVER.into(),name:FALLBACK_SERVER.into(),peer:json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":FALLBACK_SERVER,"version":env!("CARGO_PKG_VERSION")}}),tools:bundled_tools(),upstream:None,shell}));
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let origin = format!("http://{}", listener.local_addr()?);
         let state = Arc::new(BrokerState {
@@ -175,20 +234,12 @@ impl AppBroker {
             task,
         })
     }
-    /// Already-discovered model tools only; never performs upstream discovery.
-    pub fn model_tool_names(&self, source_id: &str) -> Option<Vec<String>> {
+    /// Already-discovered tools for Settings; never performs upstream discovery.
+    pub fn tool_catalog(&self, source_id: &str) -> Option<Vec<ToolMetadata>> {
         if self.state.closed.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
-        let source = self.state.sources.get(source_id)?;
-        let mut names: Vec<_> = source
-            .tools
-            .iter()
-            .filter(|(_, tool)| visible(tool, "model"))
-            .map(|(name, _)| name.clone())
-            .collect();
-        names.sort();
-        Some(names)
+        Some(tool_metadata(&self.state.sources.get(source_id)?.tools))
     }
 
     pub fn registrations(&self) -> Vec<(String, String, String)> {
@@ -280,6 +331,16 @@ impl AppBroker {
         artifact: &AppArtifact,
         params: Value,
     ) -> Result<Value, String> {
+        self.call_from_app_with_handler(artifact, params, None)
+            .await
+    }
+
+    pub async fn call_from_app_with_handler(
+        &self,
+        artifact: &AppArtifact,
+        params: Value,
+        handler: Option<&dyn BundledAppToolHandler>,
+    ) -> Result<Value, String> {
         if self.state.closed.load(std::sync::atomic::Ordering::Acquire) {
             return Err("MCP source connection closed".into());
         }
@@ -322,6 +383,13 @@ impl AppBroker {
             let tool = source.tools.get(name).ok_or("Unknown App tool")?;
             if !visible(tool, "app") {
                 return Err("Tool is not App-visible".into());
+            }
+            if source.id == FALLBACK_SERVER && matches!(name, "ask_question" | "get_answers") {
+                return handler.ok_or("App question service unavailable")?.call(
+                    artifact,
+                    name,
+                    params.get("arguments").cloned().unwrap_or(json!({})),
+                );
             }
             source
                 .call("tools/call", params)
@@ -868,6 +936,7 @@ impl DisplayServer {
         *current = Some(document);
         Ok(())
     }
+
     pub async fn start(
         resource: AppResource,
         document: Option<String>,
@@ -1072,6 +1141,28 @@ mod tests {
             .unwrap();
         assert_eq!(list["tools"].as_array().unwrap().len(), 1);
         assert_eq!(list["tools"][0]["name"], "render_html");
+        let description = list["tools"][0]["description"].as_str().unwrap();
+        for contract in [
+            "window.lensQuestions version 1",
+            "ask({question, questionId?, parentQuestionId?, selection?})",
+            "subscribe(listener)",
+            "getSnapshot()",
+            "clearSelection()",
+            "loading/idle/submitting/pending/readonly/expired",
+            "pending/completed/failed/cancelled",
+            "full shared conversation",
+            "immutable Hero Selection page",
+            "must not navigate or replace a historical document",
+            "ui/open-link",
+            "ui/message",
+            "ui/update-model-context",
+            "tools/call",
+        ] {
+            assert!(
+                description.contains(contract),
+                "Missing renderer contract: {contract}"
+            );
+        }
         let resource = proxy_request(
             &broker.state,
             source,
@@ -1402,6 +1493,7 @@ mod tests {
         .unwrap();
         assert!(external.prepare_document("<p>changed</p>".into()).is_err());
     }
+
     #[tokio::test]
     async fn builtin_broker_preserves_raw_transaction_and_does_not_authorize_model_only_tools() {
         let broker = AppBroker::start(Vec::new(), "<p>fixed App</p>".into())
@@ -1418,10 +1510,44 @@ mod tests {
         assert_eq!(artifacts[0].input, original);
         assert_eq!(artifacts[0].result, response["result"]);
         assert_eq!(artifacts[0].resource.html, "<p>fixed App</p>");
+        let tools = broker.list_from_app(&artifacts[0]).await.unwrap();
         assert_eq!(
-            broker.list_from_app(&artifacts[0]).await.unwrap(),
-            json!({"tools":[]})
+            tools["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["ask_question", "get_answers"]
         );
+        struct Handler;
+        impl BundledAppToolHandler for Handler {
+            fn call(
+                &self,
+                artifact: &AppArtifact,
+                name: &str,
+                arguments: Value,
+            ) -> Result<Value, String> {
+                Ok(
+                    json!({"content":[],"structuredContent":{"artifact":artifact.id,"name":name,"arguments":arguments}}),
+                )
+            }
+        }
+        let from_app = broker.call_from_app_with_handler(&artifacts[0], json!({"name":"ask_question","arguments":{"questionId":"question","question":"Why?"}}), Some(&Handler)).await.unwrap();
+        assert_eq!(
+            from_app["structuredContent"]["artifact"],
+            json!(artifacts[0].id)
+        );
+        assert_eq!(from_app["structuredContent"]["name"], "ask_question");
+        broker.begin_turn(Uuid::new_v4()).unwrap();
+        let source = broker.state.sources.get(FALLBACK_SERVER).unwrap();
+        assert!(proxy_request(
+            &broker.state,
+            source,
+            &json!({"method":"tools/call","params":{"name":"ask_question","arguments":{}}})
+        )
+        .await
+        .is_err());
         assert!(broker
             .call_from_app(
                 &artifacts[0],
@@ -1460,8 +1586,9 @@ mod tests {
                     "tools/list" if tag == "settings-empty" => json!({"tools":[]}),
                     "tools/list" if tag == "settings-catalog" => json!({"tools":[
                         {"name":"ordinary_tool","inputSchema":{"type":"object"}},
-                        {"name":"app_only","inputSchema":{"type":"object"},"_meta":{"ui":{"visibility":["app"]}}},
-                        {"name":"render_chart","inputSchema":{"type":"object"},"_meta":{"ui":{"resourceUri":"ui://fixture/app.html"}}}
+                        {"name":"app_only","description":"App description","inputSchema":{"type":"object"},"_meta":{"ui":{"visibility":["app"]}}},
+                        {"name":"model_only","description":"Model description","inputSchema":{"type":"object"},"_meta":{"ui":{"visibility":["model"]}}},
+                        {"name":"render_chart","description":"Shared description","inputSchema":{"type":"object"},"_meta":{"ui":{"resourceUri":"ui://fixture/app.html","visibility":["model","app"]}}}
                     ]}),
                     "tools/list" => {
                         let read = catalog_reads.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -1574,7 +1701,7 @@ mod tests {
         task.abort();
     }
     #[tokio::test]
-    async fn cached_model_tool_catalogs_do_not_open_or_refresh_connections() {
+    async fn cached_tool_catalogs_do_not_open_or_refresh_connections() {
         let (loaded, loaded_task) = fixture_source("settings-catalog", false, None).await;
         let (empty, empty_task) = fixture_source("settings-empty", false, None).await;
         let broker = AppBroker::start(vec![loaded, empty], "<p>shell</p>".into())
@@ -1584,17 +1711,49 @@ mod tests {
         empty_task.abort();
         tokio::task::yield_now().await;
         assert_eq!(
-            broker.model_tool_names("settings-catalog"),
-            Some(vec!["ordinary_tool".into(), "render_chart".into()])
+            serde_json::to_value(broker.tool_catalog("settings-catalog").unwrap()).unwrap(),
+            json!([
+                {"name":"app_only","description":"App description","visibility":["app"]},
+                {"name":"model_only","description":"Model description","visibility":["model"]},
+                {"name":"ordinary_tool","description":null,"visibility":["model","app"]},
+                {"name":"render_chart","description":"Shared description","visibility":["model","app"]}
+            ])
         );
-        assert_eq!(broker.model_tool_names("settings-empty"), Some(Vec::new()));
-        assert_eq!(broker.model_tool_names("not-connected"), None);
+        assert_eq!(broker.tool_catalog("settings-empty"), Some(Vec::new()));
+        assert_eq!(broker.tool_catalog("not-connected"), None);
         assert_eq!(
-            broker.model_tool_names(FALLBACK_SERVER),
-            Some(vec!["render_html".into()])
+            broker.tool_catalog(FALLBACK_SERVER),
+            Some(bundled_tool_catalog())
         );
+        let external_list = proxy_request(
+            &broker.state,
+            &broker.state.sources["settings-catalog"],
+            &json!({"method":"tools/list","params":{}}),
+        )
+        .await
+        .unwrap();
+        let external_names: Vec<_> = external_list["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            external_names,
+            vec!["model_only", "ordinary_tool", "render_chart"]
+        );
+        let source = &broker.state.sources[FALLBACK_SERVER];
+        let listed = proxy_request(
+            &broker.state,
+            source,
+            &json!({"method":"tools/list","params":{}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["tools"][0]["name"], "render_html");
         broker.close().await;
-        assert_eq!(broker.model_tool_names("settings-catalog"), None);
+        assert_eq!(broker.tool_catalog("settings-catalog"), None);
     }
 
     #[tokio::test]

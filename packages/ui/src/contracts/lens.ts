@@ -81,8 +81,13 @@ export type PromptPresetChange =
   | { type: "reset_all"; expected_catalog_revision: number };
 
 export interface McpServerToolCatalog {
-  server: import("adapter-mcp-apps-host").McpAppsServer;
-  tools: readonly string[];
+  /** null identifies the permanent built-in server, which is not a saved preset. */
+  server: import("adapter-mcp-apps-host").McpAppsServer | null;
+  tools: readonly {
+    name: string;
+    description: string | null;
+    visibility: readonly ("model" | "app")[];
+  }[];
 }
 
 export interface AppConfig {

@@ -324,7 +324,17 @@ describe("progressive DSD resources", () => {
       );
       const prompt = root.querySelector("lens-prompt-settings")!;
       resolveSnapshot(windowSnapshot());
-      await vi.waitFor(() => expect(prompt.querySelector("textarea")).not.toBeNull());
+      await pending;
+      await page.updateComplete;
+      await (
+        page.querySelector(
+          "lens-settings-view",
+        ) as import("ui/components/views/lens-settings-view").LensSettingsView
+      ).updateComplete;
+      await customElements.whenDefined("lens-prompt-settings");
+      await (prompt as import("ui/components/settings/lens-prompt-settings").LensPromptSettings)
+        .updateComplete;
+      expect(prompt.querySelector("textarea")).not.toBeNull();
       const editor = prompt.querySelector("textarea")!;
       editor.value = "Unsaved progressive draft\\n{turn_instruction}";
       editor.dispatchEvent(new Event("input", { bubbles: true }));
@@ -974,11 +984,23 @@ describe("Lens rich Agent output", () => {
 
   it("presents ACP images in the Hero while preserving narrative block order", async () => {
     const element = await createPage("overlay");
-    await vi.waitFor(() => {
-      expect(
-        viewRoot(element, "lens-overlay-view")?.querySelector(".lens-output img"),
-      ).not.toBeNull();
-    });
+    await (
+      element.querySelector(
+        "lens-overlay-view",
+      ) as import("ui/components/views/lens-overlay-view").LensOverlayView
+    ).updateComplete;
+    await customElements.whenDefined("lens-agent-output");
+    const agentOutput = viewRoot(element, "lens-overlay-view")!.querySelector(
+      "lens-agent-output",
+    ) as import("ui/components/overlay/lens-agent-output").LensAgentOutput;
+    await agentOutput.updateComplete;
+    const media = agentOutput.querySelector(
+      "lens-output-media",
+    ) as import("ui/components/overlay/lens-output-media").LensOutputMedia;
+    await media.updateComplete;
+    expect(
+      viewRoot(element, "lens-overlay-view")?.querySelector(".lens-output img"),
+    ).not.toBeNull();
     const overlayRoot = viewRoot(element, "lens-overlay-view");
 
     const output = overlayRoot?.querySelector(".lens-output");
@@ -2058,7 +2080,9 @@ it("invalidates cached MCP tools when execution config or selection changes and 
     if (command === "get_mcp_server_tool_catalogs") {
       reads++;
       return reads === 1
-        ? Promise.resolve([{ server, tools: ["initial_tool"] }])
+        ? Promise.resolve([
+            { server, tools: [{ name: "initial_tool", description: null, visibility: ["model"] }] },
+          ])
         : reads === 2
           ? old
           : Promise.resolve([]);
@@ -2096,7 +2120,9 @@ it("invalidates cached MCP tools when execution config or selection changes and 
     };
     publish();
     await vi.waitFor(() => expect(reads).toBe(3));
-    resolveOld([{ server, tools: ["late_old_tool"] }]);
+    resolveOld([
+      { server, tools: [{ name: "late_old_tool", description: null, visibility: ["model"] }] },
+    ]);
     await old;
     await page.updateComplete;
     expect(summary()).toContain("Not loaded");
@@ -2122,7 +2148,19 @@ it.each(["cancel", "success", "failure"] as const)(
     vi.mocked(confirm).mockResolvedValue(outcome !== "cancel");
     vi.mocked(invoke).mockImplementation(async (command, ...arguments_) => {
       if (command === "get_mcp_server_tool_catalogs")
-        return [{ server, tools: ["ordinary_tool", "render_chart"] }];
+        return [
+          {
+            server: null,
+            tools: [{ name: "builtin_tool", description: "Built-in tool.", visibility: ["model"] }],
+          },
+          {
+            server,
+            tools: [
+              { name: "ordinary_tool", description: null, visibility: ["model"] },
+              { name: "render_chart", description: "Render chart.", visibility: ["model", "app"] },
+            ],
+          },
+        ];
       if (command === "set_mcp_apps_servers") {
         if (outcome === "failure") throw new Error("MCP reset write failed");
         snapshot.config = { ...snapshot.config, mcp_apps_servers: [] };
@@ -2183,6 +2221,9 @@ it.each(["cancel", "success", "failure"] as const)(
         vi.mocked(invoke).mock.calls.filter(([command]) => command === "set_mcp_apps_servers"),
       ).toEqual(outcome === "cancel" ? [] : [["set_mcp_apps_servers", { servers: [] }]]);
       expect(select.value).toBe(outcome === "success" ? "lens_rich_content" : draftId);
+      expect(
+        editor.querySelector(".mcp-tool-list")?.textContent?.includes("builtin_tool") ?? false,
+      ).toBe(outcome === "success");
       expect(snapshot.config.agent).toEqual(previousConfig.agent);
       expect(snapshot.config.external_agents).toEqual(previousConfig.external_agents);
       expect(snapshot.config.prompt_presets).toEqual(previousConfig.prompt_presets);

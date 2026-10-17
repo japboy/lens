@@ -511,3 +511,42 @@ it("preserves immutable delivery coverage through live and replay manifests with
   expect(controller.presentation?.responses[0]?.delivery).toEqual(delivery);
   expect(port.getResponseBlock).not.toHaveBeenCalled();
 });
+
+it("keeps immutable App revisions as distinct pages sharing one question root", () => {
+  const { controller } = setup();
+  const state = lens("op", 1);
+  const original = {
+    id: "first-artifact",
+    operation_id: "op",
+    session_id: "session",
+    server_id: "lens_rich_content",
+    tool_name: "render_html",
+    resource_uri: "ui://rich-html",
+  };
+  state.response_history.responses[0]!.mcp_apps = [original];
+  controller.synchronize(state);
+  const first = controller.presentation!.media.find((item) => item.kind === "app")!;
+  expect(first.id).toBe("app:first-artifact");
+  const next = lens("op", 2);
+  next.response_history.responses[0]!.mcp_apps = [original];
+  next.response_history.responses[1]!.mcp_apps = [
+    { ...original, id: "updated-artifact", app_id: original.id },
+  ];
+  controller.synchronize(next);
+  const apps = controller.presentation!.media.filter((item) => item.kind === "app");
+  expect(apps.map((item) => item.id)).toEqual([first.id, "app:updated-artifact"]);
+  expect(apps[0]!.descriptor).toBe(original);
+  expect(apps[1]!.descriptor.app_id).toBe(original.id);
+  controller.synchronize(next);
+  expect(controller.presentation!.media.filter((item) => item.kind === "app")).toEqual(apps);
+  const third = lens("op", 3);
+  third.response_history.responses[0]!.mcp_apps = [original];
+  third.response_history.responses[1]!.mcp_apps = next.response_history.responses[1]!.mcp_apps;
+  third.response_history.responses[2]!.mcp_apps = [
+    { ...original, id: "third-artifact", app_id: original.id },
+  ];
+  controller.synchronize(third);
+  expect(
+    controller.presentation!.media.filter((item) => item.kind === "app").map((item) => item.id),
+  ).toEqual([first.id, "app:updated-artifact", "app:third-artifact"]);
+});

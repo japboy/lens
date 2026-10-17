@@ -40,6 +40,7 @@ pub(crate) struct AgentSessionTurn {
     pub projection_ref: ProjectionRef,
     pub projection: LensAgentProjection,
     pub app_prompt: Option<Vec<agent_client_protocol::schema::v1::ContentBlock>>,
+    pub app_question: Option<Arc<crate::mcp_apps::AppQuestionTurn>>,
     completion: Option<oneshot::Sender<Result<AgentSessionTurnCompletion, String>>>,
     work: Option<AgentWorkLease>,
 }
@@ -60,6 +61,7 @@ impl AgentSessionTurn {
                 projection_ref,
                 projection,
                 app_prompt: None,
+                app_question: None,
                 completion: Some(completion),
                 work: None,
             },
@@ -347,6 +349,7 @@ impl AgentControl {
         app: &AppHandle<R>,
         descriptor: &usecase::model::McpAppDescriptor,
         prompt: Vec<agent_client_protocol::schema::v1::ContentBlock>,
+        app_question: Option<Arc<crate::mcp_apps::AppQuestionTurn>>,
     ) -> Result<(), String> {
         let state = app.state::<AppState>();
         let material = state.lens_prompt_material(descriptor.operation_id)?;
@@ -400,6 +403,7 @@ impl AgentControl {
             projection_ref: material.projection,
             projection,
             app_prompt: Some(prompt),
+            app_question,
             completion: None,
             work: None,
         };
