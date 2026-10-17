@@ -318,14 +318,12 @@ impl AppQuestionStore {
         // Reserve the answer at admission, so normal completion cannot exceed the store budget.
         let over_capacity =
             retained + pending * (6 * 64 * 1024 + 8192) + reservation > 4 * 1024 * 1024;
-        let conversation = self.conversations.entry(app_id).or_insert(AppConversation {
-            app_id,
-            revision: 0,
-            questions: Vec::new(),
-            latest_app: None,
-        });
-        if let Some(existing) = conversation
-            .questions
+        let questions = self
+            .conversations
+            .get(&app_id)
+            .map(|conversation| conversation.questions.as_slice())
+            .unwrap_or_default();
+        if let Some(existing) = questions
             .iter()
             .find(|q| q.request.question_id == request.question_id)
         {
@@ -338,24 +336,27 @@ impl AppQuestionStore {
         if over_capacity {
             return Err("App question storage capacity reached".into());
         }
-        if conversation.questions.len() >= 64 {
+        if questions.len() >= 64 {
             return Err("App question capacity reached".into());
         }
-        if request.parent_question_id.is_some_and(|id| {
-            !conversation
-                .questions
-                .iter()
-                .any(|q| q.request.question_id == id)
-        }) {
+        if request
+            .parent_question_id
+            .is_some_and(|id| !questions.iter().any(|q| q.request.question_id == id))
+        {
             return Err("Parent question does not belong to this App".into());
         }
-        if conversation
-            .questions
+        if questions
             .iter()
             .any(|q| q.status == AppQuestionStatus::Pending)
         {
             return Err("An App question is already pending".into());
         }
+        let conversation = self.conversations.entry(app_id).or_insert(AppConversation {
+            app_id,
+            revision: 0,
+            questions: Vec::new(),
+            latest_app: None,
+        });
         conversation.revision = conversation
             .revision
             .checked_add(1)
@@ -375,6 +376,9 @@ impl AppQuestionStore {
             conversation
                 .questions
                 .retain(|q| q.request.question_id != question_id);
+            if conversation.questions.is_empty() {
+                self.conversations.remove(&app_id);
+            }
         }
     }
 
@@ -589,10 +593,59 @@ mod question_tests {
         store.begin(operation, root, request(3)).unwrap();
         store.rollback(root, Uuid::from_u128(3));
         assert!(store.snapshot(root).questions.is_empty());
+        assert_eq!(store.snapshot(root).revision, 0);
         assert!(store.begin(operation, root, request(3)).unwrap());
-        let mut child = request(4);
+        store
+            .finish(
+                operation,
+                root,
+                Uuid::from_u128(3),
+                AppQuestionCompletion {
+                    status: AppQuestionStatus::Completed,
+                    answer: Some("Answer".into()),
+                    error: None,
+                    artifact_id: Some(Uuid::from_u128(5)),
+                },
+            )
+            .unwrap();
+        let mut expected = store.snapshot(root);
+        store.begin(operation, root, request(4)).unwrap();
+        expected.revision += 1;
+        store.rollback(root, Uuid::from_u128(4));
+        assert_eq!(
+            serde_json::to_value(store.snapshot(root)).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        store.rollback(root, Uuid::from_u128(99));
+        assert_eq!(
+            serde_json::to_value(store.snapshot(root)).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(store.begin(operation, root, request(4)).unwrap());
+        let mut child = request(6);
         child.parent_question_id = Some(Uuid::from_u128(99));
         assert!(store.begin(operation, root, child).is_err());
+    }
+
+    #[test]
+    fn rolled_back_admissions_do_not_consume_conversation_capacity() {
+        let operation = Uuid::from_u128(1);
+        let mut store = AppQuestionStore::default();
+        store.sync_operation(Some(operation));
+        for id in 2..34 {
+            let root = Uuid::from_u128(id);
+            let mut invalid = request(100);
+            invalid.parent_question_id = Some(Uuid::from_u128(99));
+            assert!(store.begin(operation, root, invalid).is_err());
+        }
+        for id in 34..66 {
+            let root = Uuid::from_u128(id);
+            assert!(store.begin(operation, root, request(100)).unwrap());
+            store.rollback(root, Uuid::from_u128(100));
+        }
+        assert!(store
+            .begin(operation, Uuid::from_u128(66), request(100))
+            .unwrap());
     }
 
     #[test]
