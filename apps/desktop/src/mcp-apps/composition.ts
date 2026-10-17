@@ -33,5 +33,8 @@ export function desktopMcpAppHostOptions(
   };
 }
 export function toUiMcpAppsPort(port: DesktopMcpAppsPort): UiMcpAppsPort {
-  return { ...port, presentation: desktopMcpAppHostOptions(port) };
+  return {
+    ...port,
+    presentation: desktopMcpAppHostOptions(port),
+  };
 }

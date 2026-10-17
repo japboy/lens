@@ -407,30 +407,74 @@ export class LensSettingsView extends LitElement {
       }
       .mcp-preset-summary {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: 24px;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 20px;
         margin: 20px 0 0;
         padding-top: 20px;
         border-top: 1px solid var(--settings-group-border);
       }
       .mcp-preset-summary dt {
         color: GrayText;
+        display: flex;
+        gap: 6px;
+      }
+      .mcp-server-summary {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 16px;
+      }
+      .mcp-preset-summary .mcp-server-summary dd {
+        margin: 0;
       }
       .mcp-preset-summary dd {
         margin: 7px 0 0;
         min-width: 0;
         overflow-wrap: anywhere;
       }
+      .mcp-tool-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .mcp-tool-list > li {
+        padding: 11px 0;
+      }
+      .mcp-tool-list > li + li {
+        border-top: 1px solid var(--settings-group-border);
+      }
+      .mcp-tool-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+      .mcp-tool-heading code {
+        min-width: 0;
+      }
+      .mcp-tool-audiences {
+        display: inline-flex;
+        flex-shrink: 0;
+        gap: 4px;
+      }
+      .mcp-tool-audience {
+        color: GrayText;
+        background: light-dark(#f0f0f2, #3a3a40);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+      .mcp-tool-description {
+        color: GrayText;
+        font-size: 12px;
+        margin: 4px 0 0;
+        white-space: pre-wrap;
+      }
       .mcp-preset-reset-actions {
         margin-top: 20px;
         padding-top: 16px;
         border-top: 1px solid var(--settings-group-border);
-      }
-      @media (max-width: 640px) {
-        .mcp-preset-summary {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 16px;
-        }
       }
       .agent-reset-actions {
         margin-top: 16px;

@@ -12,6 +12,17 @@
         height: 100%;
         overflow: hidden;
       }
+      body {
+        display: flex;
+        flex-direction: column;
+        font: 14px system-ui;
+        color: CanvasText;
+        background: Canvas;
+      }
+      #document {
+        flex: 1;
+        min-height: 0;
+      }
       iframe {
         border: 0;
         width: 100%;
@@ -22,6 +33,7 @@
   </head>
   <body>
     <p id="status">Loading Interpretation…</p>
+    <main id="document"></main>
     <script>
       // Fixed MCP App resource. The Host prepares a separate opaque presentation document.
       let phase = "initializing",
@@ -29,6 +41,194 @@
         host;
       let sequence = 0;
       const pending = new Map();
+      const ownRequests = new Map();
+      const requestTimers = new Set();
+      let questionRevision,
+        appId,
+        selection = "",
+        pollTimer;
+      let questionState = "loading",
+        ownSequence = 0,
+        answers = null,
+        questionMessage = "";
+      function snapshot() {
+        return { version: 1, state: questionState, selection, message: questionMessage, answers };
+      }
+      function publish() {
+        frame?.contentWindow?.postMessage(
+          { jsonrpc: "2.0", method: "lens/questions/changed", params: snapshot() },
+          "*",
+        );
+      }
+      function setQuestionState(state, message = "") {
+        questionState = state;
+        questionMessage = message;
+        publish();
+      }
+      function requestHost(method, params, done) {
+        if (phase !== "ready" || ownRequests.size >= 32) {
+          done(undefined, { code: -32000, message: "App operation unavailable" });
+          return;
+        }
+        const id = `lens-question-${++ownSequence}`;
+        const timer = setTimeout(() => {
+          requestTimers.delete(timer);
+          if (!ownRequests.delete(id) || phase !== "ready") return;
+          const error = {
+            code: -32000,
+            message: "The App request timed out. Reopen the App to continue.",
+          };
+          setQuestionState("expired", error.message);
+          done(undefined, error);
+        }, 30000);
+        requestTimers.add(timer);
+        ownRequests.set(id, (result, error) => {
+          requestTimers.delete(timer);
+          clearTimeout(timer);
+          done(result, error);
+        });
+        send({ jsonrpc: "2.0", id, method, params });
+      }
+      function requestTool(name, args, done) {
+        if (!host?.hostCapabilities?.serverTools) {
+          done(undefined, { code: -32601, message: "Questions are unavailable for this App." });
+          return;
+        }
+        requestHost("tools/call", { name, arguments: args }, done);
+      }
+      function refreshQuestions() {
+        if (phase !== "ready" || questionState === "expired") return;
+        if (!host.hostCapabilities?.serverTools) {
+          setQuestionState("readonly", "This App is read-only.");
+          return;
+        }
+        requestTool(
+          "get_answers",
+          questionRevision === undefined ? {} : { afterRevision: questionRevision },
+          (result, error) => {
+            if (questionState === "expired") return;
+            if (error || result?.isError) {
+              setQuestionState(
+                "expired",
+                error?.message ?? "This App connection has expired. Reopen the App to continue.",
+              );
+              return;
+            }
+            const value = result?.structuredContent;
+            if (
+              !value ||
+              typeof value.appId !== "string" ||
+              !Array.isArray(value.questions) ||
+              !Number.isSafeInteger(value.revision) ||
+              (appId && value.appId !== appId)
+            ) {
+              setQuestionState("expired", "The App returned an invalid answer.");
+              return;
+            }
+            appId = value.appId;
+            // Unchanged native responses can omit items; retain the last complete snapshot.
+            if (questionRevision !== value.revision) {
+              questionRevision = value.revision;
+              answers = value;
+            }
+            const waiting = answers.questions.some((item) => item.status === "pending");
+            setQuestionState(waiting ? "pending" : "idle", waiting ? "Waiting for an answer…" : "");
+            if (waiting) pollTimer = setTimeout(refreshQuestions, 1000);
+            // latestApp describes history; it never changes this artifact's document.
+          },
+        );
+      }
+      function questionRequest(message) {
+        if (message.method === "lens/questions/snapshot") {
+          childReply(message.id, snapshot());
+          return;
+        }
+        if (message.method === "lens/questions/clear-selection") {
+          selection = "";
+          publish();
+          childReply(message.id, snapshot());
+          return;
+        }
+        if (message.method !== "lens/questions/ask") {
+          childReply(message.id, undefined, {
+            code: -32601,
+            message: "Unknown question operation",
+          });
+          return;
+        }
+        const args = message.params;
+        const question = typeof args?.question === "string" ? args.question.trim() : "";
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (
+          !question ||
+          question.length > 8000 ||
+          (args.questionId !== undefined &&
+            (typeof args.questionId !== "string" || !uuid.test(args.questionId))) ||
+          (args.parentQuestionId !== undefined &&
+            (typeof args.parentQuestionId !== "string" || !uuid.test(args.parentQuestionId))) ||
+          (args.selection !== undefined &&
+            (typeof args.selection !== "string" || args.selection.length > 4000))
+        ) {
+          childReply(message.id, undefined, {
+            code: -32602,
+            message: "Invalid question arguments",
+          });
+          return;
+        }
+        if (questionState !== "idle") {
+          childReply(message.id, undefined, {
+            code: -32000,
+            message: questionMessage || "Questions are currently unavailable.",
+          });
+          return;
+        }
+        setQuestionState("submitting", "Sending question…");
+        const context = args.selection ?? selection;
+        requestTool(
+          "ask_question",
+          {
+            questionId: args.questionId ?? crypto.randomUUID(),
+            question,
+            ...(context ? { selection: context } : {}),
+            ...(args.parentQuestionId ? { parentQuestionId: args.parentQuestionId } : {}),
+          },
+          (result, error) => {
+            if (error || result?.isError) {
+              if (questionState !== "expired")
+                setQuestionState(
+                  "idle",
+                  error?.message ?? "The Agent is busy or unavailable. Try again.",
+                );
+              childReply(
+                message.id,
+                undefined,
+                error ?? { code: -32000, message: "Question was not accepted." },
+              );
+              return;
+            }
+            childReply(message.id, result?.structuredContent);
+            setQuestionState("pending", "Waiting for an answer…");
+            clearTimeout(pollTimer);
+            questionRevision = undefined;
+            refreshQuestions();
+          },
+        );
+      }
+      function mountDocument(url) {
+        if (frame?.src === url) return;
+        const parsed = new URL(url);
+        if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") return;
+        frame?.remove();
+        pending.clear();
+        frame = document.createElement("iframe");
+        frame.title = "Generated Interpretation";
+        frame.setAttribute("sandbox", "allow-scripts allow-forms");
+        frame.setAttribute("referrerpolicy", "no-referrer");
+        document.getElementById("status")?.remove();
+        document.getElementById("document").append(frame);
+        frame.addEventListener("load", publish);
+        frame.src = url;
+      }
       const allowed = new Set([
         "ui/message",
         "ui/open-link",
@@ -87,6 +287,10 @@
             frame?.remove();
             frame = undefined;
             pending.clear();
+            ownRequests.clear();
+            for (const timer of requestTimers) clearTimeout(timer);
+            requestTimers.clear();
+            clearTimeout(pollTimer);
             host = undefined;
             reply(message.id, {});
             return;
@@ -99,17 +303,14 @@
                 "Interpretation document is unavailable.";
               return;
             }
-            const parsed = new URL(url);
-            if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") return;
-            frame?.remove();
-            pending.clear();
-            frame = document.createElement("iframe");
-            frame.title = "Generated Interpretation";
-            frame.setAttribute("sandbox", "allow-scripts allow-forms");
-            frame.setAttribute("referrerpolicy", "no-referrer");
-            document.getElementById("status").remove();
-            document.body.append(frame);
-            frame.src = url;
+            mountDocument(url);
+            if (!appId) refreshQuestions();
+            return;
+          }
+          if (message.method === undefined && ownRequests.has(message.id)) {
+            const done = ownRequests.get(message.id);
+            ownRequests.delete(message.id);
+            done(message.result, message.error);
             return;
           }
           if (message.method === undefined && pending.has(message.id)) {
@@ -120,8 +321,21 @@
           return;
         }
         if (phase !== "ready" || message.id === undefined) return;
+        if (typeof message.method === "string" && message.method.startsWith("lens/questions/")) {
+          questionRequest(message);
+          return;
+        }
         if (message.method === "ui/initialize") {
           childReply(message.id, host);
+          return;
+        }
+        if (
+          message.method === "ui/update-model-context" &&
+          typeof message.params?.structuredContent?.lensSelection === "string"
+        ) {
+          selection = message.params.structuredContent.lensSelection.slice(0, 4000);
+          publish();
+          childReply(message.id, {});
           return;
         }
         if (!allowed.has(message.method) || pending.size >= 32) {

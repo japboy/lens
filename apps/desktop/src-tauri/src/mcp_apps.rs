@@ -102,8 +102,173 @@ pub struct McpAppsStore {
     source: Mutex<Option<SourceAuthority>>,
     active_lease: Mutex<Option<ActiveLease>>,
     storage: Mutex<ArtifactStorage>,
+    questions: Arc<Mutex<usecase::mcp_apps::AppQuestionStore>>,
     open_epoch: std::sync::atomic::AtomicU64,
     closed: std::sync::atomic::AtomicBool,
+}
+
+/// Owns terminal completion even when a queued turn is dropped before execution.
+pub(crate) struct AppQuestionTurn {
+    store: Arc<Mutex<usecase::mcp_apps::AppQuestionStore>>,
+    operation_id: Uuid,
+    app_id: Uuid,
+    question_id: Uuid,
+    armed: std::sync::atomic::AtomicBool,
+}
+
+impl AppQuestionTurn {
+    pub(crate) fn finish(
+        &self,
+        status: usecase::mcp_apps::AppQuestionStatus,
+        answer: Option<String>,
+        error: Option<String>,
+        artifact_id: Option<Uuid>,
+    ) {
+        if !self.armed.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(mut store) = self.store.lock() {
+            // An expired operation must never be recreated by a late completion.
+            let _ = store.finish(
+                self.operation_id,
+                self.app_id,
+                self.question_id,
+                usecase::mcp_apps::AppQuestionCompletion {
+                    status,
+                    answer,
+                    error,
+                    artifact_id,
+                },
+            );
+        }
+    }
+
+    fn admit(
+        store: &Arc<Mutex<usecase::mcp_apps::AppQuestionStore>>,
+        descriptor: &McpAppDescriptor,
+        request: usecase::mcp_apps::AppQuestionRequest,
+        submit: impl FnOnce(
+            Vec<agent_client_protocol::schema::v1::ContentBlock>,
+            Arc<Self>,
+        ) -> Result<(), String>,
+    ) -> Result<usecase::mcp_apps::AppConversation, String> {
+        let (app_id, inserted, context) = {
+            let mut questions = store.lock().map_err(|_| "App question state unavailable")?;
+            let app_id = descriptor.app_id.unwrap_or(descriptor.id);
+            let inserted = questions.begin(descriptor.operation_id, app_id, request.clone())?;
+            let context = questions.document_context(app_id, descriptor.id);
+            (app_id, inserted, context)
+        };
+        if inserted {
+            // Completion can re-enter the store on the last Arc drop, including when
+            // a concurrent mailbox close drops the queued owner before submit returns.
+            let turn = Arc::new(Self {
+                store: Arc::clone(store),
+                operation_id: descriptor.operation_id,
+                app_id,
+                question_id: request.question_id,
+                armed: std::sync::atomic::AtomicBool::new(true),
+            });
+            let prompt = usecase::mcp_apps::app_question_prompt(descriptor, &request, &context);
+            if let Err(error) = submit(prompt, Arc::clone(&turn)) {
+                turn.armed
+                    .store(false, std::sync::atomic::Ordering::Release);
+                store
+                    .lock()
+                    .map_err(|_| "App question state unavailable")?
+                    .rollback(app_id, request.question_id);
+                return Err(error);
+            }
+        }
+        let snapshot = store
+            .lock()
+            .map_err(|_| "App question state unavailable")?
+            .snapshot(app_id);
+        Ok(snapshot)
+    }
+
+    pub(crate) fn app_id(&self) -> Uuid {
+        self.app_id
+    }
+
+    pub(crate) fn fail(&self, cancelled: bool, error: String) {
+        let status = if cancelled {
+            usecase::mcp_apps::AppQuestionStatus::Cancelled
+        } else {
+            usecase::mcp_apps::AppQuestionStatus::Failed
+        };
+        self.finish(status, None, Some(error.chars().take(1024).collect()), None);
+    }
+}
+
+impl Drop for AppQuestionTurn {
+    fn drop(&mut self) {
+        self.finish(
+            usecase::mcp_apps::AppQuestionStatus::Failed,
+            None,
+            Some("Agent question ended without an answer".into()),
+            None,
+        );
+    }
+}
+
+struct NativeAppTools<'a, R: tauri::Runtime> {
+    app: &'a AppHandle<R>,
+    lease_id: Uuid,
+}
+
+impl<R: tauri::Runtime> adapter_mcp_server::apps::BundledAppToolHandler for NativeAppTools<'_, R> {
+    fn call(&self, artifact: &AppArtifact, name: &str, arguments: Value) -> Result<Value, String> {
+        let state = self.app.state::<AppState>();
+        let active = state
+            .mcp_apps
+            .active_lease
+            .lock()
+            .map_err(|_| "App lease unavailable")?;
+        let lease = &active
+            .as_ref()
+            .filter(|l| l.id == self.lease_id)
+            .ok_or("App lease expired")?
+            .lease;
+        let original = lease.content.artifact().ok_or("App source unavailable")?;
+        if original.artifact.id != artifact.id
+            || artifact.server_id != adapter_mcp_server::apps::FALLBACK_SERVER
+        {
+            return Err("App source authority mismatch".into());
+        }
+        state.mcp_apps.with_live_source(&state, lease, || {
+            match name {
+                "get_answers" => {
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct Read { #[serde(default)] after_revision: Option<u64> }
+                    let read: Read = serde_json::from_value(arguments).map_err(|_| "Invalid answer request")?;
+                    let snapshot = {
+                        let store = state.mcp_apps.questions.lock().map_err(|_| "App question state unavailable")?;
+                        let app_id = original.descriptor.app_id.unwrap_or(original.descriptor.id);
+                        store.snapshot(app_id)
+                    };
+                    if read.after_revision.is_some_and(|r| r > snapshot.revision) { return Err("App revision is ahead of the server".into()); }
+                    Ok(json!({"content":[],"structuredContent":snapshot}))
+                },
+                "ask_question" => {
+                    let request: usecase::mcp_apps::AppQuestionRequest = serde_json::from_value(arguments).map_err(|_| "Invalid App question")?;
+                    let question_id = request.question_id;
+                    let snapshot = AppQuestionTurn::admit(
+                        &state.mcp_apps.questions,
+                        &original.descriptor,
+                        request,
+                        |prompt, turn| state.agent_control.submit_app_message(
+                            self.app, &original.descriptor, prompt, Some(turn),
+                        ),
+                    )?;
+                    let status = snapshot.questions.iter().find(|q| q.request.question_id == question_id).map(|q| q.status).ok_or("App question disappeared")?;
+                    Ok(json!({"content":[],"structuredContent":{"appId":snapshot.app_id,"revision":snapshot.revision,"questionId":question_id,"status":status}}))
+                },
+                _ => Err("Unknown bundled App tool".into()),
+            }
+        })
+    }
 }
 pub struct SourceLifetime {
     store: Arc<McpAppsStore>,
@@ -132,8 +297,9 @@ impl Drop for SourceLifetime {
 }
 #[derive(Serialize)]
 pub struct McpServerToolCatalog {
-    server: McpAppServer,
-    tools: Vec<String>,
+    /// None identifies the bundled source, which is available without a live session.
+    server: Option<McpAppServer>,
+    tools: Vec<adapter_mcp_server::apps::ToolMetadata>,
 }
 
 #[derive(Serialize)]
@@ -204,6 +370,10 @@ impl McpAppsStore {
                 .close()
                 .map_err(|_| "Unable to release App artifacts")?;
         }
+        self.questions
+            .lock()
+            .map_err(|_| "App question state unavailable")?
+            .sync_operation(None);
         Ok(())
     }
 
@@ -252,6 +422,20 @@ impl McpAppsStore {
                 self.open_epoch
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
+        }
+        {
+            let mut questions = self
+                .questions
+                .lock()
+                .map_err(|_| "App question state unavailable")?;
+            questions.sync_operation(
+                state
+                    .runtime
+                    .read()
+                    .map_err(|_| "Application state unavailable")?
+                    .lens
+                    .operation_id,
+            );
         }
         let mut active = self
             .active_lease
@@ -470,6 +654,10 @@ impl McpAppsStore {
     }
     fn tool_catalogs(&self, runtime: &AppSnapshot) -> Result<Vec<McpServerToolCatalog>, String> {
         self.ensure_open()?;
+        let mut catalogs = vec![McpServerToolCatalog {
+            server: None,
+            tools: adapter_mcp_server::apps::bundled_tool_catalog(),
+        }];
         let source = self
             .source
             .lock()
@@ -478,24 +666,20 @@ impl McpAppsStore {
             runtime.lens.operation_id == Some(source.operation_id)
                 && source.config.same_active_session_config(&runtime.config)
         }) else {
-            return Ok(Vec::new());
+            return Ok(catalogs);
         };
         let Some(broker) = source.broker.upgrade() else {
-            return Ok(Vec::new());
+            return Ok(catalogs);
         };
-        Ok(source
-            .config
-            .mcp_apps_servers
-            .iter()
-            .filter_map(|server| {
-                broker
-                    .model_tool_names(&server.id.to_string())
-                    .map(|tools| McpServerToolCatalog {
-                        server: server.clone(),
-                        tools,
-                    })
-            })
-            .collect())
+        catalogs.extend(source.config.mcp_apps_servers.iter().filter_map(|server| {
+            broker
+                .tool_catalog(&server.id.to_string())
+                .map(|tools| McpServerToolCatalog {
+                    server: Some(server.clone()),
+                    tools,
+                })
+        }));
+        Ok(catalogs)
     }
 
     fn is_live(&self, descriptor: &McpAppDescriptor) -> bool {
@@ -511,12 +695,24 @@ impl McpAppsStore {
             })
             .unwrap_or(false)
     }
+    #[cfg(test)]
     pub fn retain<R: tauri::Runtime>(
         &self,
         app: &AppHandle<R>,
         operation_id: Uuid,
         session_id: &str,
         artifacts: Vec<AppArtifact>,
+    ) -> Result<Vec<McpAppDescriptor>, String> {
+        self.retain_for_app(app, operation_id, session_id, artifacts, None)
+    }
+
+    pub fn retain_for_app<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        operation_id: Uuid,
+        session_id: &str,
+        artifacts: Vec<AppArtifact>,
+        app_id: Option<Uuid>,
     ) -> Result<Vec<McpAppDescriptor>, String> {
         let state = app.state::<AppState>();
         let mut storage = self.storage.lock().map_err(|_| "MCP storage unavailable")?;
@@ -557,6 +753,10 @@ impl McpAppsStore {
                 continue;
             }
             let descriptor = McpAppDescriptor {
+                app_id: app_id.filter(|_| {
+                    artifact.server_id == adapter_mcp_server::apps::FALLBACK_SERVER
+                        && artifact.tool_name == "render_html"
+                }),
                 id: artifact.id,
                 operation_id,
                 session_id: session_id.into(),
@@ -1088,15 +1288,24 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
                 state.mcp_apps.with_live_source(&state, lease, || {
                     state
                         .agent_control
-                        .submit_app_message(&app, &artifact.descriptor, prompt)
+                        .submit_app_message(&app, &artifact.descriptor, prompt, None)
                 })?;
                 return Ok(AppRequestResult { result: json!({}) });
             }
             "tools/call" | "tools/list" => {}
             _ => return Err("Unsupported App operation".into()),
         }
-        if state.lens()?.stage == LensStage::Transforming
-            || state.agent_control.has_pending_work()?
+        let bundled_question_tool = method == "tools/call"
+            && lease.content.artifact().is_some_and(|a| {
+                a.descriptor.server_id == adapter_mcp_server::apps::FALLBACK_SERVER
+            })
+            && params
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| matches!(name, "ask_question" | "get_answers"));
+        if !bundled_question_tool
+            && (state.lens()?.stage == LensStage::Transforming
+                || state.agent_control.has_pending_work()?)
         {
             return Err("Agent is busy; retry the App operation when it finishes".into());
         }
@@ -1116,7 +1325,16 @@ pub async fn mcp_app_request<R: tauri::Runtime>(
         if method == "tools/list" {
             source.list_from_app(&artifact).await
         } else {
-            source.call_from_app(&artifact, params).await
+            source
+                .call_from_app_with_handler(
+                    &artifact,
+                    params,
+                    Some(&NativeAppTools {
+                        app: &app,
+                        lease_id,
+                    }),
+                )
+                .await
         }
     };
     let result = tokio::select! {_=cancellation.cancelled()=>return Err("App lease expired".into()),result=tokio::time::timeout(Duration::from_secs(30),operation)=>result.map_err(|_|"App tool request timed out")??};
@@ -1196,6 +1414,23 @@ impl Drop for AppTurnLifetime<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_builtin_catalog_is_available_without_an_active_source() {
+        let state = crate::test_support::state();
+        let runtime = state.snapshot().unwrap();
+        let catalogs = state.mcp_apps.tool_catalogs(&runtime).unwrap();
+        assert_eq!(catalogs.len(), 1);
+        assert!(catalogs[0].server.is_none());
+        assert_eq!(
+            catalogs[0].tools,
+            adapter_mcp_server::apps::bundled_tool_catalog()
+        );
+        assert_eq!(
+            serde_json::to_value(&catalogs).unwrap()[0]["server"],
+            Value::Null
+        );
+    }
+
     #[tokio::test]
     async fn source_retirement_cannot_overtake_synchronous_message_admission() {
         use std::sync::{mpsc, TryLockError};
@@ -1273,6 +1508,431 @@ mod tests {
                 panic!("retired source must not admit a late message")
             })
             .is_err());
+        broker.close().await;
+    }
+
+    #[tokio::test]
+    async fn question_admission_survives_mailbox_close_before_local_owner_drops() {
+        use crate::app_state::{AgentSessionMailbox, AgentSessionTurn};
+        use usecase::mcp_apps::{AppQuestionRequest, AppQuestionStatus};
+
+        let state = crate::test_support::state();
+        let (operation, targets, _, input) = crate::mcp_apps_validation::fixture().unwrap();
+        let projection =
+            crate::live_sync::LensAgentProjection::from_input(&input, &targets, &[]).unwrap();
+        let projection_ref = projection.projection_ref(std::num::NonZeroU64::new(1).unwrap());
+        let descriptor = descriptor(operation);
+        state.runtime.write().unwrap().lens.operation_id = Some(operation);
+        let store = Arc::clone(&state.mcp_apps);
+        store
+            .questions
+            .lock()
+            .unwrap()
+            .sync_operation(Some(operation));
+        let broker = Arc::new(
+            AppBroker::start(vec![], "<p>shell</p>".into())
+                .await
+                .unwrap(),
+        );
+        let lifetime = store
+            .install(
+                operation,
+                descriptor.session_id.clone(),
+                &broker,
+                &state.config().unwrap(),
+            )
+            .unwrap();
+        let display = lease(
+            descriptor.clone(),
+            Arc::downgrade(&broker),
+            Some(lifetime.generation),
+        )
+        .await;
+        *store.active_lease.lock().unwrap() = Some(ActiveLease {
+            id: Uuid::new_v4(),
+            lease: display,
+        });
+        let mailbox = AgentSessionMailbox::new();
+        let request = AppQuestionRequest {
+            question_id: Uuid::new_v4(),
+            question: "Why?".into(),
+            selection: None,
+            parent_question_id: None,
+        };
+
+        let snapshot = {
+            let active = store.active_lease.lock().unwrap();
+            store
+                .with_live_source(&state, &active.as_ref().unwrap().lease, || {
+                    AppQuestionTurn::admit(
+                        &store.questions,
+                        &descriptor,
+                        request.clone(),
+                        |prompt, turn| {
+                            let observer = Arc::downgrade(&turn);
+                            let (mut queued, mut completion) = AgentSessionTurn::new(
+                                input.context_revision,
+                                projection_ref,
+                                projection,
+                            );
+                            queued.app_prompt = Some(prompt);
+                            queued.app_question = Some(turn);
+                            mailbox.replace(queued).unwrap();
+                            let (questions_available, source_protected) =
+                                std::thread::scope(|scope| {
+                                    scope
+                                        .spawn(|| {
+                                            let questions_available =
+                                                store.questions.try_lock().is_ok();
+                                            let source_protected = matches!(
+                                                store.source.try_lock(),
+                                                Err(std::sync::TryLockError::WouldBlock)
+                                            );
+                                            mailbox.close("Working directory changed").unwrap();
+                                            (questions_available, source_protected)
+                                        })
+                                        .join()
+                                        .unwrap()
+                                });
+                            // Fail without a reentrant Drop if a future regression holds the store.
+                            if !questions_available {
+                                observer
+                                    .upgrade()
+                                    .unwrap()
+                                    .armed
+                                    .store(false, std::sync::atomic::Ordering::Release);
+                            }
+                            assert!(
+                                questions_available,
+                                "admission must release the question store before submitting"
+                            );
+                            assert!(
+                                source_protected,
+                                "admission must retain source authority through submit"
+                            );
+                            assert_eq!(
+                                observer.strong_count(),
+                                1,
+                                "mailbox close must drop its owner before submit returns"
+                            );
+                            assert!(completion.try_recv().unwrap().is_err());
+                            Ok(())
+                        },
+                    )
+                })
+                .unwrap()
+        };
+        assert!(mailbox.is_closed());
+        assert!(!mailbox.has_app_message());
+        assert_eq!(snapshot.questions.len(), 1);
+        assert_eq!(
+            snapshot.questions[0].request.question_id,
+            request.question_id
+        );
+        assert_eq!(snapshot.questions[0].status, AppQuestionStatus::Failed);
+        let duplicate = AppQuestionTurn::admit(&store.questions, &descriptor, request, |_, _| {
+            panic!("an idempotent retry must not submit another turn")
+        })
+        .unwrap();
+        assert_eq!(duplicate.revision, snapshot.revision);
+        assert_eq!(duplicate.questions[0].status, AppQuestionStatus::Failed);
+        drop(lifetime);
+        broker.close().await;
+    }
+
+    #[test]
+    fn rejected_question_admission_rolls_back_and_allows_the_same_request_to_retry() {
+        use usecase::mcp_apps::{AppQuestionRequest, AppQuestionStatus, AppQuestionStore};
+
+        let descriptor = descriptor(Uuid::new_v4());
+        let store = Arc::new(Mutex::new(AppQuestionStore::default()));
+        store
+            .lock()
+            .unwrap()
+            .sync_operation(Some(descriptor.operation_id));
+        let request = AppQuestionRequest {
+            question_id: Uuid::new_v4(),
+            question: "Why?".into(),
+            selection: None,
+            parent_question_id: None,
+        };
+        let rejected = AppQuestionTurn::admit(&store, &descriptor, request.clone(), |_, _| {
+            Err("Agent is busy".into())
+        });
+        assert_eq!(rejected.unwrap_err(), "Agent is busy");
+        assert!(store
+            .lock()
+            .unwrap()
+            .snapshot(descriptor.id)
+            .questions
+            .is_empty());
+        let mut revised = descriptor.clone();
+        revised.id = Uuid::new_v4();
+        revised.app_id = Some(descriptor.id);
+        let mut admitted = None;
+        let snapshot = AppQuestionTurn::admit(&store, &revised, request.clone(), |_, turn| {
+            admitted = Some(turn);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(snapshot.app_id, descriptor.id);
+        assert_eq!(snapshot.questions.len(), 1);
+        assert_eq!(snapshot.questions[0].status, AppQuestionStatus::Pending);
+        let duplicate = AppQuestionTurn::admit(&store, &descriptor, request, |_, _| {
+            panic!("a pending retry must not submit another turn")
+        })
+        .unwrap();
+        assert_eq!(duplicate.revision, snapshot.revision);
+        let turn = admitted.unwrap();
+        turn.finish(
+            AppQuestionStatus::Completed,
+            Some("Because.".into()),
+            None,
+            None,
+        );
+        drop(turn);
+        assert_eq!(
+            store.lock().unwrap().snapshot(descriptor.id).questions[0].status,
+            AppQuestionStatus::Completed
+        );
+    }
+
+    #[test]
+    fn dropped_question_turn_finishes_once_and_never_recreates_an_operation() {
+        use usecase::mcp_apps::{AppQuestionRequest, AppQuestionStatus, AppQuestionStore};
+        let operation = Uuid::from_u128(1);
+        let app_id = Uuid::from_u128(2);
+        let question_id = Uuid::from_u128(3);
+        let store = Arc::new(Mutex::new(AppQuestionStore::default()));
+        store.lock().unwrap().sync_operation(Some(operation));
+        store
+            .lock()
+            .unwrap()
+            .begin(
+                operation,
+                app_id,
+                AppQuestionRequest {
+                    question_id,
+                    question: "Why?".into(),
+                    selection: None,
+                    parent_question_id: None,
+                },
+            )
+            .unwrap();
+        let turn = AppQuestionTurn {
+            store: Arc::clone(&store),
+            operation_id: operation,
+            app_id,
+            question_id,
+            armed: std::sync::atomic::AtomicBool::new(true),
+        };
+        drop(turn);
+        assert_eq!(
+            store.lock().unwrap().snapshot(app_id).questions[0].status,
+            AppQuestionStatus::Failed
+        );
+        store
+            .lock()
+            .unwrap()
+            .sync_operation(Some(Uuid::from_u128(4)));
+        let late = AppQuestionTurn {
+            store: Arc::clone(&store),
+            operation_id: operation,
+            app_id,
+            question_id,
+            armed: std::sync::atomic::AtomicBool::new(true),
+        };
+        late.finish(
+            AppQuestionStatus::Completed,
+            Some("late".into()),
+            None,
+            Some(Uuid::from_u128(5)),
+        );
+        assert!(store.lock().unwrap().snapshot(app_id).questions.is_empty());
+    }
+
+    #[test]
+    fn cancellation_wins_over_a_drain_failure_and_cannot_be_overwritten() {
+        use usecase::mcp_apps::{AppQuestionRequest, AppQuestionStatus, AppQuestionStore};
+        let operation = Uuid::from_u128(1);
+        let app_id = Uuid::from_u128(2);
+        let question_id = Uuid::from_u128(3);
+        let store = Arc::new(Mutex::new(AppQuestionStore::default()));
+        store.lock().unwrap().sync_operation(Some(operation));
+        store
+            .lock()
+            .unwrap()
+            .begin(
+                operation,
+                app_id,
+                AppQuestionRequest {
+                    question_id,
+                    question: "Why?".into(),
+                    selection: None,
+                    parent_question_id: None,
+                },
+            )
+            .unwrap();
+        let turn = AppQuestionTurn {
+            store: Arc::clone(&store),
+            operation_id: operation,
+            app_id,
+            question_id,
+            armed: std::sync::atomic::AtomicBool::new(true),
+        };
+        turn.fail(true, "Cancelled transport did not drain".into());
+        turn.finish(
+            AppQuestionStatus::Completed,
+            Some("late".into()),
+            None,
+            Some(Uuid::from_u128(4)),
+        );
+        drop(turn);
+        let snapshot = store.lock().unwrap().snapshot(app_id);
+        assert_eq!(snapshot.questions[0].status, AppQuestionStatus::Cancelled);
+        assert!(snapshot.questions[0].answer.is_none());
+        assert!(snapshot.latest_app.is_none());
+    }
+
+    #[tokio::test]
+    async fn answers_remain_readable_while_busy_and_expired_sources_cannot_read() {
+        let state = crate::test_support::state();
+        let operation = Uuid::new_v4();
+        let mut descriptor = descriptor(operation);
+        descriptor.server_id = adapter_mcp_server::apps::FALLBACK_SERVER.into();
+        descriptor.tool_name = "render_html".into();
+        {
+            let mut runtime = state.runtime.write().unwrap();
+            runtime.lens.operation_id = Some(operation);
+            runtime.lens.stage = LensStage::Transforming;
+        }
+        let store = Arc::clone(&state.mcp_apps);
+        store.sync_operation(&state).unwrap();
+        let broker = Arc::new(
+            AppBroker::start(vec![], "<p>shell</p>".into())
+                .await
+                .unwrap(),
+        );
+        let source = store
+            .install(
+                operation,
+                descriptor.session_id.clone(),
+                &broker,
+                &state.config().unwrap(),
+            )
+            .unwrap();
+        let display = lease(
+            descriptor.clone(),
+            Arc::downgrade(&broker),
+            Some(source.generation),
+        )
+        .await;
+        let id = Uuid::new_v4();
+        *store.active_lease.lock().unwrap() = Some(ActiveLease { id, lease: display });
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        // The viewed original artifact remains unchanged even after a later publication.
+        // The metadata is sufficient for shared history; no updated HTML is fetched or installed.
+        let future_artifact = Uuid::new_v4();
+        let question_id = Uuid::new_v4();
+        {
+            let state = app.state::<AppState>();
+            let mut questions = state.mcp_apps.questions.lock().unwrap();
+            questions
+                .begin(
+                    operation,
+                    descriptor.id,
+                    usecase::mcp_apps::AppQuestionRequest {
+                        question_id,
+                        question: "Reconstruct this report".into(),
+                        selection: None,
+                        parent_question_id: None,
+                    },
+                )
+                .unwrap();
+            questions
+                .finish(
+                    operation,
+                    descriptor.id,
+                    question_id,
+                    usecase::mcp_apps::AppQuestionCompletion {
+                        status: usecase::mcp_apps::AppQuestionStatus::Completed,
+                        answer: Some("Updated report published".into()),
+                        error: None,
+                        artifact_id: Some(future_artifact),
+                    },
+                )
+                .unwrap();
+        }
+        let read = json!({"method":"tools/call","params":{"name":"get_answers","arguments":{}}});
+        let result = mcp_app_request(app.handle().clone(), id, read.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.result["structuredContent"]["appId"],
+            json!(descriptor.id)
+        );
+        assert_eq!(result.result["structuredContent"]["revision"], 2);
+        assert_eq!(
+            result.result["structuredContent"]["latestApp"]["artifactId"],
+            json!(future_artifact)
+        );
+        assert!(result.result.get("_meta").is_none());
+        assert_eq!(
+            app.state::<AppState>()
+                .mcp_apps
+                .active_lease
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .lease
+                .content
+                .artifact()
+                .unwrap()
+                .descriptor
+                .id,
+            descriptor.id
+        );
+        assert!(mcp_app_request(
+            app.handle().clone(),
+            id,
+            json!({"method":"tools/call","params":{"name":"unknown","arguments":{}}})
+        )
+        .await
+        .err()
+        .expect("unknown tool must be busy")
+        .contains("busy"));
+        assert!(mcp_app_request(app.handle().clone(), id, json!({"method":"tools/call","params":{"name":"ask_question","arguments":{"questionId":Uuid::new_v4(),"question":"Why?"}}})).await.is_err());
+        let unchanged = store.questions.lock().unwrap().snapshot(descriptor.id);
+        assert_eq!(unchanged.questions.len(), 1);
+        assert_eq!(unchanged.questions[0].request.question_id, question_id);
+        assert_eq!(
+            unchanged.questions[0].status,
+            usecase::mcp_apps::AppQuestionStatus::Completed
+        );
+        let mut revised = descriptor.clone();
+        revised.id = future_artifact;
+        revised.app_id = Some(descriptor.id);
+        let revised_display =
+            lease(revised, Arc::downgrade(&broker), Some(source.generation)).await;
+        let revised_lease_id = Uuid::new_v4();
+        *store.active_lease.lock().unwrap() = Some(ActiveLease {
+            id: revised_lease_id,
+            lease: revised_display,
+        });
+        let revised_result = mcp_app_request(app.handle().clone(), revised_lease_id, read.clone())
+            .await
+            .unwrap();
+        assert_eq!(revised_result.result["structuredContent"], json!(unchanged));
+        drop(source);
+        assert!(
+            mcp_app_request(app.handle().clone(), revised_lease_id, read)
+                .await
+                .is_err()
+        );
         broker.close().await;
     }
     #[tokio::test]
@@ -1426,6 +2086,7 @@ mod tests {
     }
     fn descriptor(operation: Uuid) -> McpAppDescriptor {
         McpAppDescriptor {
+            app_id: None,
             id: Uuid::new_v4(),
             operation_id: operation,
             session_id: "same-physical-session".into(),
@@ -1985,17 +2646,21 @@ mod tests {
             .build(crate::product_context())
             .unwrap();
         let handle = app.handle().clone();
-        assert_eq!(
-            mcp_app_request(
-                handle.clone(),
-                id,
-                json!({"method":"tools/list","params":{}})
-            )
-            .await
+        let catalog = mcp_app_request(
+            handle.clone(),
+            id,
+            json!({"method":"tools/list","params":{}}),
+        )
+        .await
+        .unwrap()
+        .result;
+        let names: Vec<_> = catalog["tools"]
+            .as_array()
             .unwrap()
-            .result,
-            json!({"tools":[]})
-        );
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["ask_question", "get_answers"]);
         let pending = tokio::spawn({
             let cancel = cancel.clone();
             async move { cancel.cancelled().await }

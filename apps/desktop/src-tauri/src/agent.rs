@@ -149,6 +149,7 @@ struct AgentTurnExecution<'a, R: tauri::Runtime> {
     prompt_capabilities: &'a PromptCapabilities,
     apps: &'a adapter_mcp_server::apps::AppBroker,
     app_prompt: Option<Vec<ContentBlock>>,
+    app_question: Option<&'a Arc<crate::mcp_apps::AppQuestionTurn>>,
 }
 
 #[derive(Serialize)]
@@ -1877,6 +1878,7 @@ async fn run_persistent_session<R: tauri::Runtime>(
                         prompt_capabilities: &initialize.agent_capabilities.prompt_capabilities,
                         apps: &apps,
                         app_prompt: turn.app_prompt.clone(),
+                        app_question: turn.app_question.as_ref(),
                     },
                     run.key,
                     &mut run.cancellation,
@@ -2761,6 +2763,7 @@ async fn run_session_turn<R: tauri::Runtime>(
         prompt_capabilities,
         apps,
         app_prompt,
+        app_question,
     } = execution;
     let AgentTurnTarget { source, delivery } = target;
     if *cancellation.borrow() || *shutdown.borrow() {
@@ -2870,7 +2873,9 @@ async fn run_session_turn<R: tauri::Runtime>(
                     || *cancellation.borrow()
                     || *shutdown.borrow();
                 let app_artifacts = if locally_cancelled { Vec::new() } else { apps.finish_turn(key.run_id).map_err(state_error)? };
-                let app_descriptors = if cancelled { Vec::new() } else { app.state::<AppState>().mcp_apps.retain(app,identity.operation_id,&session_id.to_string(),app_artifacts).map_err(state_error)? };
+                let app_descriptors = if cancelled { Vec::new() } else { app.state::<AppState>().mcp_apps.retain_for_app(app,identity.operation_id,&session_id.to_string(),app_artifacts,app_question.map(|q| q.app_id())).map_err(state_error)? };
+                let question_answer = app_question.map(|_| candidate.app_answer());
+                let updated_app = app_descriptors.iter().rev().find(|a| a.server_id == adapter_mcp_server::apps::FALLBACK_SERVER && a.tool_name == "render_html").map(|a| a.id);
                 // Terminal commit owns the candidate even if subsequent event delivery fails.
                 progress.take_pending();
                 let mut response_admitted = false;
@@ -2902,6 +2907,20 @@ async fn run_session_turn<R: tauri::Runtime>(
                     app.state::<AppState>().mcp_apps.discard(identity.operation_id, &app_descriptors);
                 }
                 applied.map_err(state_error)?;
+                if let Some(question) = app_question {
+                    use usecase::mcp_apps::AppQuestionStatus;
+                    if cancelled {
+                        question.finish(AppQuestionStatus::Cancelled, None, Some("Agent question was cancelled".into()), None);
+                    } else if !response_admitted {
+                        question.finish(AppQuestionStatus::Failed, None, Some("Agent answer could not be published".into()), None);
+                    } else {
+                        match question_answer.expect("question answer was collected") {
+                            Ok(answer) if !answer.trim().is_empty() || updated_app.is_some() => question.finish(AppQuestionStatus::Completed, (!answer.trim().is_empty()).then_some(answer), None, updated_app),
+                            Ok(_) => question.finish(AppQuestionStatus::Failed, None, Some("Agent completed without a text answer or document update".into()), None),
+                            Err(error) => question.finish(AppQuestionStatus::Failed, None, Some(error), None),
+                        }
+                    }
+                }
                 if let Some(error) = control_retirement.borrow().clone() {
                     return Err(error);
                 }
@@ -2912,6 +2931,12 @@ async fn run_session_turn<R: tauri::Runtime>(
         crate::session_view::flush_live(app, identity.operation_id, &session_id.to_string())
     {
         eprintln!("Unable to flush terminal session display: {error}");
+    }
+    if let (Err(error), Some(question)) = (&result, app_question) {
+        question.fail(
+            *cancellation.borrow() || *shutdown.borrow(),
+            format!("Agent question failed: {error}"),
+        );
     }
     if result.is_err() {
         if let Some(output_dirty) = progress.take_pending() {

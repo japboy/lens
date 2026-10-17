@@ -1249,3 +1249,103 @@ it("preserves historical projection loss in Diagnostics across later input chang
     "UNKNOWN",
   );
 });
+
+it("pages immutable App revisions without replacing the selected historical artifact", async () => {
+  const element = document.createElement("lens-agent-output") as LensAgentOutput;
+  const root = {
+    id: "root-artifact",
+    operation_id: "op",
+    session_id: "session",
+    server_id: "lens_rich_content",
+    tool_name: "render_html",
+    resource_uri: "ui://rich-html",
+  };
+  const port: import("../../src/contracts/document-host").UiMcpAppsPort = {
+    presentation: {
+      hostInfo: { name: "Fixture host", version: "1" },
+      frameTitle: "App",
+      getHostContext: () => ({ platform: "web", theme: "light", displayMode: "inline" }),
+    },
+    openMcpApp: vi.fn<import("../../src/contracts/document-host").UiMcpAppsPort["openMcpApp"]>(
+      async (artifactId) => ({
+        id: `lease:${artifactId}`,
+        artifact_id: artifactId,
+        proxy_url: "http://127.0.0.1:43162/proxy",
+        proxy_origin: "http://127.0.0.1:43162",
+        resource: { html: "<p>App</p>" },
+        input: {},
+        result: { content: [] },
+        host_capabilities: {},
+        live: true,
+        document_mode: null,
+      }),
+    ),
+    openHtmlPresentation:
+      vi.fn<import("../../src/contracts/document-host").UiMcpAppsPort["openHtmlPresentation"]>(),
+    mcpAppRequest:
+      vi.fn<import("../../src/contracts/document-host").UiMcpAppsPort["mcpAppRequest"]>(),
+    closeMcpApp: vi.fn<import("../../src/contracts/document-host").UiMcpAppsPort["closeMcpApp"]>(
+      async () => {},
+    ),
+  };
+  element.appPort = port;
+  const controller = new ResponseHistoryController(
+    {
+      addController: () => undefined,
+      requestUpdate: () => {
+        element.history = controller.presentation;
+      },
+    } as unknown as ReactiveControllerHost,
+    { getResponseBlock: load },
+  );
+  const state: import("../../src/contracts/lens").LensState = {
+    operation_id: "op",
+    stage: "completed",
+    prompt_execution_revision: 1,
+    output_blocks: [],
+    response_history: nativeHistory(history(1)),
+  };
+  state.response_history.responses[0]!.mcp_apps = [root];
+  controller.synchronize(state);
+  document.body.append(element);
+  await vi.waitFor(() => expect(element.querySelector("iframe")).not.toBeNull());
+  const iframe = element.querySelector("iframe")!;
+  const app = element.querySelector("lens-mcp-app") as HTMLElement & { dispose(): Promise<void> };
+  const next = { ...state, response_history: nativeHistory(history(2)) };
+  next.response_history.responses[0]!.mcp_apps = [root];
+  next.response_history.responses[1]!.mcp_apps = [
+    { ...root, id: "revision-artifact", app_id: root.id },
+  ];
+  controller.synchronize(next);
+  await element.updateComplete;
+  await element.querySelector<LensOutputMedia>("lens-output-media")!.updateComplete;
+  const media = element.querySelector<LensOutputMedia>("lens-output-media")!;
+  expect(element.querySelectorAll(".output-media-slide")).toHaveLength(2);
+  expect(media.querySelector('.output-media-slide[aria-hidden="false"] lens-mcp-app')).toBe(app);
+  expect(app.querySelector("iframe")).toBe(iframe);
+  expect(port.openMcpApp).toHaveBeenCalledExactlyOnceWith(root.id, window.location.origin);
+  media.querySelector<HTMLButtonElement>(".output-media-next")!.click();
+  await media.updateComplete;
+  await vi.waitFor(() =>
+    expect(port.openMcpApp).toHaveBeenLastCalledWith("revision-artifact", window.location.origin),
+  );
+  expect(
+    media.querySelector('.output-media-slide[aria-hidden="false"]')?.getAttribute("aria-label"),
+  ).toBe("App 2 of 2");
+  media.querySelector<HTMLButtonElement>(".output-media-previous")!.click();
+  await media.updateComplete;
+  await vi.waitFor(() => expect(app.querySelector("iframe")).not.toBeNull());
+  expect(media.querySelector('.output-media-slide[aria-hidden="false"] lens-mcp-app')).toBe(app);
+  expect(port.openMcpApp).toHaveBeenNthCalledWith(1, root.id, window.location.origin);
+  expect(port.openMcpApp).toHaveBeenCalledTimes(2);
+  expect(app.querySelector("iframe")).toBe(iframe);
+  controller.synchronize(next);
+  await element.updateComplete;
+  await media.updateComplete;
+  expect(media.querySelector('.output-media-slide[aria-hidden="false"] lens-mcp-app')).toBe(app);
+  for (const mounted of element.querySelectorAll<HTMLElement & { dispose(): Promise<void> }>(
+    "lens-mcp-app",
+  )) {
+    await mounted.dispose();
+  }
+});
