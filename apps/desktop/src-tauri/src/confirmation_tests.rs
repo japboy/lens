@@ -2045,7 +2045,7 @@ fn verify_preset_switch(scenario: PresetSwitch) {
     assert!(serde_json::to_string(prompts[1])
         .unwrap()
         .contains(match scenario {
-            PresetSwitch::DifferentContent => "Lead with a concrete worked example",
+            PresetSwitch::DifferentContent => "Lead with a worked example",
             PresetSwitch::Duplicate | PresetSwitch::DeleteSelected => "Lead with the central idea",
         }));
 }
