@@ -146,15 +146,15 @@ impl Accessibility for Fixture {
             return Err(PlatformError::Operation("fixture AX unavailable".into()));
         }
         let mut extraction = json!({
-            "quality":"full", "resolved_window":{
+            "source_api":"macos_ax","quality":"full", "resolved_window":{
                 "facts":{"title":"Observed document", "application_name":"Fixture",
                     "frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}},
                 "resolution_score":1.0
             },
             "nodes":[
-                {"id":"text","parent_id":null,"order":0,"depth":0,"role":"AXStaticText",
+                {"id":"text","parent_id":null,"order":0,"depth":0,"semantic_role":"text","purpose":"content","role":"AXStaticText",
                  "value":"Fixture source text","bounds":null,"children":[]},
-                {"id":"image","parent_id":null,"order":1,"depth":0,"role":"AXImage",
+                {"id":"image","parent_id":null,"order":1,"depth":0,"semantic_role":"image","purpose":"content","role":"AXImage",
                  "description":"Fixture source image", "bounds":{"x":30.0,"y":40.0,"width":32.0,"height":32.0},"children":[]}
             ], "text":"Fixture source text",
             "metrics":{"visited_nodes":2,"text_bytes":19,"resource_ref_count":0,"resource_uri_bytes":0,

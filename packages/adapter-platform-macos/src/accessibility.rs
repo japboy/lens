@@ -156,6 +156,106 @@ impl Drop for NativeJson {
     }
 }
 
+// The native ABI remains an AX-facts document. Only this API-specific decoder
+// assigns semantics; portable extraction deserialization requires them explicitly.
+#[derive(Deserialize)]
+struct NativeExtraction {
+    quality: port_platform::model::ExtractionQuality,
+    #[serde(default)]
+    resolved_window: Option<port_platform::model::ResolvedWindow>,
+    #[serde(default)]
+    nodes: Vec<NativeNode>,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    metrics: port_platform::model::ExtractionMetrics,
+    #[serde(default)]
+    diagnostics: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct NativeNode {
+    id: String,
+    parent_id: Option<String>,
+    order: usize,
+    depth: usize,
+    role: Option<String>,
+    subrole: Option<String>,
+    title: Option<String>,
+    value: Option<String>,
+    description: Option<String>,
+    bounds: Option<Bounds>,
+    #[serde(default)]
+    resource_refs: Vec<port_platform::model::ResourceReference>,
+    #[serde(default)]
+    children: Vec<String>,
+}
+
+fn ax_semantics(
+    role: Option<&str>,
+) -> (
+    port_platform::model::SemanticRole,
+    port_platform::model::NodePurpose,
+) {
+    use port_platform::model::{NodePurpose as P, SemanticRole as R};
+    match role.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "axheading" => (R::Heading, P::Content),
+        "axstatictext" | "axtext" => (R::Text, P::Content),
+        "axlist" => (R::List, P::Content),
+        "axlistitem" => (R::ListItem, P::Content),
+        "axtable" | "axoutline" => (R::Table, P::Content),
+        "axrow" => (R::Row, P::Content),
+        "axcell" | "axcolumn" => (R::Cell, P::Content),
+        "axlink" => (R::Link, P::Content),
+        "axtextfield" | "axtextarea" | "axcombobox" => (R::Control, P::TextEntry),
+        "axbutton" | "axcheckbox" | "axradiobutton" | "axpopupbutton" | "axslider" | "axswitch" => {
+            (R::Control, P::Content)
+        }
+        "axdialog" | "axsheet" => (R::Dialog, P::Content),
+        "axwindow" => (R::Region, P::WindowRoot),
+        "axgroup" | "axsection" | "axlandmark" | "axwebarea" => (R::Region, P::Content),
+        "axparagraph" => (R::Paragraph, P::Content),
+        "aximage" => (R::Image, P::Content),
+        _ => (R::Unknown, P::Content),
+    }
+}
+
+impl From<NativeExtraction> for ExtractionResult {
+    fn from(raw: NativeExtraction) -> Self {
+        Self {
+            source_api: port_platform::model::SourceApi::MacosAx,
+            quality: raw.quality,
+            resolved_window: raw.resolved_window,
+            nodes: raw
+                .nodes
+                .into_iter()
+                .map(|node| {
+                    let (semantic_role, purpose) = ax_semantics(node.role.as_deref());
+                    port_platform::model::ExtractedNode {
+                        semantic_role,
+                        purpose,
+                        id: node.id,
+                        parent_id: node.parent_id,
+                        order: node.order,
+                        depth: node.depth,
+                        role: node.role,
+                        subrole: node.subrole,
+                        title: node.title,
+                        value: node.value,
+                        description: node.description,
+                        bounds: node.bounds,
+                        resource_refs: node.resource_refs,
+                        children: node.children,
+                    }
+                })
+                .collect(),
+            text: raw.text,
+            metrics: raw.metrics,
+            diagnostics: raw.diagnostics,
+        }
+    }
+}
+
 fn release_native_json(pointer: NonNull<c_char>) {
     #[allow(
         unsafe_code,
@@ -290,7 +390,9 @@ pub(crate) fn extract_window(
             )
         }
     };
-    NativeJson::response(raw, "native Accessibility extraction")?.parse()
+    NativeJson::response(raw, "native Accessibility extraction")?
+        .parse::<NativeExtraction>()
+        .map(Into::into)
 }
 
 pub(crate) fn extract_registered_window(
@@ -318,7 +420,9 @@ pub(crate) fn extract_registered_window(
             )
         }
     };
-    NativeJson::response(raw, "registered native Accessibility extraction")?.parse()
+    NativeJson::response(raw, "registered native Accessibility extraction")?
+        .parse::<NativeExtraction>()
+        .map(Into::into)
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -666,6 +770,57 @@ pub(crate) fn release_window_operation(operation_id: Uuid) -> Result<(), Platfor
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exact_ax_role_mapping_and_unknown_facts_are_preserved() {
+        use super::*;
+        use port_platform::model::{NodePurpose as P, SemanticRole as R, SourceApi};
+        for (raw, expected) in [
+            ("AXHeading", (R::Heading, P::Content)),
+            ("AXParagraph", (R::Paragraph, P::Content)),
+            ("AXList", (R::List, P::Content)),
+            ("AXListItem", (R::ListItem, P::Content)),
+            ("AXTable", (R::Table, P::Content)),
+            ("AXOutline", (R::Table, P::Content)),
+            ("AXRow", (R::Row, P::Content)),
+            ("AXCell", (R::Cell, P::Content)),
+            ("AXColumn", (R::Cell, P::Content)),
+            ("AXLink", (R::Link, P::Content)),
+            ("AXButton", (R::Control, P::Content)),
+            ("AXCheckBox", (R::Control, P::Content)),
+            ("AXRadioButton", (R::Control, P::Content)),
+            ("AXPopUpButton", (R::Control, P::Content)),
+            ("AXSlider", (R::Control, P::Content)),
+            ("AXSwitch", (R::Control, P::Content)),
+            ("AXTextArea", (R::Control, P::TextEntry)),
+            ("AXTextField", (R::Control, P::TextEntry)),
+            ("AXComboBox", (R::Control, P::TextEntry)),
+            ("AXWindow", (R::Region, P::WindowRoot)),
+            ("AXGroup", (R::Region, P::Content)),
+            ("AXSection", (R::Region, P::Content)),
+            ("AXLandmark", (R::Region, P::Content)),
+            ("AXWebArea", (R::Region, P::Content)),
+            ("AXStaticText", (R::Text, P::Content)),
+            ("AXText", (R::Text, P::Content)),
+            ("AXDialog", (R::Dialog, P::Content)),
+            ("AXSheet", (R::Dialog, P::Content)),
+            ("AXImage", (R::Image, P::Content)),
+            ("CustomAXImage", (R::Unknown, P::Content)),
+            ("", (R::Unknown, P::Content)),
+        ] {
+            assert_eq!(ax_semantics(Some(raw)), expected, "{raw}");
+            assert_eq!(ax_semantics(Some(&raw.to_ascii_lowercase())), expected);
+        }
+        assert_eq!(ax_semantics(None), (R::Unknown, P::Content));
+        for role in [serde_json::Value::Null, serde_json::json!("FutureAXImage")] {
+            let raw: NativeExtraction = serde_json::from_value(serde_json::json!({"quality":"partial","nodes":[{"id":"n","order":0,"depth":0,"role":role,"subrole":"raw-subrole"}],"diagnostics":["native diagnostic"]})).unwrap();
+            let result = ExtractionResult::from(raw);
+            assert_eq!(result.source_api, SourceApi::MacosAx);
+            assert_eq!(result.nodes[0].role.as_deref(), role.as_str());
+            assert_eq!(result.nodes[0].subrole.as_deref(), Some("raw-subrole"));
+            assert_eq!(result.nodes[0].semantic_role, R::Unknown);
+            assert_eq!(result.diagnostics, ["native diagnostic"]);
+        }
+    }
     use super::*;
     use std::{
         cell::{Cell, RefCell},

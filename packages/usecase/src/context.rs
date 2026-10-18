@@ -567,18 +567,18 @@ mod tests {
 
     fn extraction(image: bool) -> ExtractionResult {
         let mut nodes = vec![json!({
-            "id":"text", "parent_id":null, "order":0, "depth":0, "role":"AXStaticText",
+            "id":"text", "parent_id":null, "order":0, "depth":0, "semantic_role":"text","purpose":"content","role":"AXStaticText",
             "value":"Current text", "bounds":null, "children":[]
         })];
         if image {
             nodes.push(json!({
-                "id":"image", "parent_id":null, "order":1, "depth":0, "role":"AXImage",
+                "id":"image", "parent_id":null, "order":1, "depth":0, "semantic_role":"image","purpose":"content","role":"AXImage",
                 "description":"Current image",
                 "bounds":{"x":30.0,"y":40.0,"width":20.0,"height":10.0}, "children":[]
             }));
         }
         serde_json::from_value(json!({
-            "quality":"full",
+            "source_api":"macos_ax","quality":"full",
             "resolved_window":{
                 "facts":{"title":"Observed title","application_name":"Fixture",
                     "frame":{"x":10.0,"y":20.0,"width":200.0,"height":100.0}},

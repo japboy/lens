@@ -643,9 +643,12 @@ mod tests {
         use domain::{lens::LensTargetCapture, model::ExtractedNode};
         let targets = target_set(Uuid::from_u128(1), "Current");
         let capture = ExtractionResult {
+            source_api: domain::model::SourceApi::MacosAx,
             quality: ExtractionQuality::Full,
             resolved_window: None,
             nodes: vec![ExtractedNode {
+                semantic_role: domain::model::SemanticRole::Region,
+                purpose: domain::model::NodePurpose::WindowRoot,
                 id: "root".into(),
                 parent_id: None,
                 order: 0,

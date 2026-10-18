@@ -41,9 +41,11 @@ function lensInput(text: string): NonNullable<LensState["input"]> {
           window_id: 417,
         },
         document: {
+          source_api: "macos_ax",
           nodes: [
             {
               id: "node-000000",
+              purpose: "content",
               kind: "text",
               value: text,
             },
@@ -241,6 +243,7 @@ describe("Lens view model", () => {
               window_id: 417,
             },
             capture: {
+              source_api: "macos_ax",
               quality: "full",
               nodes: [],
               text: "",

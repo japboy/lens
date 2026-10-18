@@ -8,3 +8,4 @@ pub mod mcp_app_csp;
 pub mod model;
 pub mod projection;
 pub mod prompt_template;
+mod source_semantics_history;

@@ -77,14 +77,14 @@ pub(crate) fn fixture() -> Result<
     let targets =
         lens::LensTargetSet::try_new(operation, vec![target]).map_err(|error| error.to_string())?;
     let capture: model::ExtractionResult = serde_json::from_value(serde_json::json!({
-        "quality":"full", "resolved_window":null,
+        "source_api":"macos_ax","quality":"full", "resolved_window":null,
         "nodes":[{
             "id":"node-000000","parent_id":null,"order":0,"depth":0,
-            "role":"AXWindow","subrole":null,"title":"Public report","value":null,
+            "semantic_role":"region","purpose":"window_root","role":"AXWindow","subrole":null,"title":"Public report","value":null,
             "description":null,"bounds":null,"resource_refs":[],"children":["node-000001"]
         },{
             "id":"node-000001","parent_id":"node-000000","order":1,"depth":1,
-            "role":"AXStaticText","subrole":null,"title":null,
+            "semantic_role":"text","purpose":"content","role":"AXStaticText","subrole":null,"title":null,
             "value":"\u{516c}\u{958b}\u{30c6}\u{30b9}\u{30c8}\u{8cc7}\u{6599}\u{3002}\u{5bfe}\u{8c61}\u{306f}\u{6642}\u{523b}\u{306e}\u{8aac}\u{660e}\u{3068}\u{3001}\u{64cd}\u{4f5c}\u{3067}\u{9078}\u{629e}\u{3057}\u{305f}\u{6570}\u{5024}\u{306e}\u{8aac}\u{660e}\u{3067}\u{3059}\u{3002}\u{5019}\u{88dc}\u{5024}\u{306f} 10 \u{3068} 73\u{3002}\u{5b9f}\u{969b}\u{306e}\u{9078}\u{629e}\u{5024}\u{306f} App \u{304b}\u{3089}\u{6e21}\u{3055}\u{308c}\u{305f}\u{6700}\u{65b0}\u{306e} context \u{3067}\u{78ba}\u{8a8d}\u{3057}\u{307e}\u{3059}\u{3002}",
             "description":null,"bounds":null,"resource_refs":[],"children":[]
         }], "text":"", "diagnostics":[]

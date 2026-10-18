@@ -800,6 +800,7 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
             revision: 1,
             source: source.clone(),
             capture: model::ExtractionResult {
+                source_api: model::SourceApi::Unknown,
                 quality: model::ExtractionQuality::Full,
                 resolved_window: None,
                 nodes: Vec::new(),
@@ -835,8 +836,10 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
             source_revision: 1,
             source,
             document: Some(lens::LensDocumentProjection {
+                source_api: model::SourceApi::Unknown,
                 nodes: vec![
                     lens::LensContentNode {
+                        purpose: model::NodePurpose::Content,
                         id: "node-000001".into(),
                         parent_id: None,
                         kind: lens::LensNodeKind::Image,
@@ -852,6 +855,7 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
                         }],
                     },
                     lens::LensContentNode {
+                        purpose: model::NodePurpose::Content,
                         id: "node-000002".into(),
                         parent_id: None,
                         kind: lens::LensNodeKind::Image,

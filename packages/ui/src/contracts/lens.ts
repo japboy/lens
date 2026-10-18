@@ -160,6 +160,8 @@ export interface LensTargetSelection {
 }
 
 export interface ExtractedNode {
+  semantic_role: LensNodeKind;
+  purpose: NodePurpose;
   id: string;
   parent_id?: string;
   order: number;
@@ -175,6 +177,7 @@ export interface ExtractedNode {
 }
 
 export interface ExtractionResult {
+  source_api: SourceApi;
   quality: ExtractionQuality;
   resolved_window?: {
     facts: WindowObservableFacts;
@@ -222,8 +225,11 @@ export type LensNodeKind =
   | "unknown";
 
 export type LensCoordinateSpace = "screen_points";
+export type SourceApi = "macos_ax" | "windows_uia" | "unknown";
+export type NodePurpose = "content" | "window_root" | "text_entry";
 
 export interface LensNode {
+  purpose: NodePurpose;
   id: string;
   parent_id?: string;
   order: number;
@@ -242,6 +248,7 @@ export interface LensNode {
 }
 
 export interface LensDocument {
+  source_api: SourceApi;
   schema_version: number;
   source: LensSource;
   roots: string[];
@@ -309,6 +316,7 @@ export interface LensContext {
 }
 
 export interface LensContentNode {
+  purpose: NodePurpose;
   id: string;
   parent_id?: string;
   kind: LensNodeKind;
@@ -322,6 +330,7 @@ export interface LensContentNode {
 }
 
 export interface LensDocumentProjection {
+  source_api: SourceApi;
   nodes: LensContentNode[];
 }
 

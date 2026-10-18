@@ -6,7 +6,7 @@ use crate::{
         LensMediaOmissionReason, LensMediaPayload, LensMediaScope, LensNodeKind, LensTargetSet,
         ProjectionOmission,
     },
-    model::{Bounds, ExtractionQuality},
+    model::{Bounds, ExtractionQuality, NodePurpose},
 };
 use base64::prelude::*;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -375,7 +375,7 @@ impl LensAgentProjection {
             .collect::<Result<Vec<_>, LensAgentProjectionError>>()?;
 
         let payload = LensAgentProjectionPayload {
-            schema_version: 1,
+            schema_version: 2,
             delivery: None,
             sources,
             media: normalized_media,
@@ -581,10 +581,7 @@ pub struct LensDelivery {
 // already acquired as accessibility content can convey text, never pixel understanding.
 fn meaningful_content_text(node: &LensContentNode) -> bool {
     if node.kind == LensNodeKind::Control {
-        return node
-            .role
-            .as_deref()
-            .is_some_and(crate::lens::is_text_entry_role)
+        return node.purpose == NodePurpose::TextEntry
             && node
                 .value
                 .as_ref()
@@ -641,7 +638,10 @@ fn normalize_projection_document(
         .iter()
         .map(|node| normalize_projection_node(node, &local_ids))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(LensDocumentProjection { nodes })
+    Ok(LensDocumentProjection {
+        source_api: document.source_api,
+        nodes,
+    })
 }
 
 fn normalize_projection_node(
@@ -656,6 +656,7 @@ fn normalize_projection_node(
             })
     };
     Ok(LensContentNode {
+        purpose: node.purpose,
         id: resolve(&node.id)?,
         parent_id: node.parent_id.as_deref().map(resolve).transpose()?,
         kind: node.kind,
@@ -901,8 +902,10 @@ mod tests {
                     window_id,
                 },
                 document: Some(LensDocumentProjection {
+                    source_api: crate::model::SourceApi::MacosAx,
                     nodes: vec![
                         LensContentNode {
+                            purpose: crate::model::NodePurpose::WindowRoot,
                             id: "node-000000".into(),
                             parent_id: None,
                             kind: LensNodeKind::Region,
@@ -915,6 +918,7 @@ mod tests {
                             resource_refs: vec![],
                         },
                         LensContentNode {
+                            purpose: crate::model::NodePurpose::Content,
                             id: "node-000001".into(),
                             parent_id: Some("node-000000".into()),
                             kind: LensNodeKind::Image,
@@ -1259,6 +1263,11 @@ mod tests {
             let node = &mut input.sources[0].document.as_mut().unwrap().nodes[1];
             node.kind = kind;
             node.role = Some(role.into());
+            node.purpose = if role == "AXTextArea" {
+                NodePurpose::TextEntry
+            } else {
+                NodePurpose::Content
+            };
             node.value = Some(value.into());
             let source = LensAgentProjection::from_input(&input, &targets, &media).unwrap();
             let reference = source.projection_ref(NonZeroU64::new(1).unwrap());
@@ -1303,6 +1312,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn text_entry_coverage_depends_on_purpose_not_native_role() {
+        let (mut input, targets, media) = agent_projection_fixture(
+            Uuid::from_u128(1),
+            1,
+            1,
+            7,
+            (0.0, 0.0),
+            "Editor text",
+            "aGVsbG8=",
+        );
+        let coverage = |input: &LensInput| {
+            let p = LensAgentProjection::from_input(input, &targets, &media)
+                .unwrap()
+                .for_image_support(false)
+                .unwrap();
+            p.delivery(p.projection_ref(NonZeroU64::new(1).unwrap()))
+                .coverage
+                .mode
+        };
+        let node = &mut input.sources[0].document.as_mut().unwrap().nodes[1];
+        node.kind = LensNodeKind::Control;
+        node.purpose = NodePurpose::TextEntry;
+        node.role = Some("Edit".into());
+        assert_eq!(coverage(&input), LensDeliveryMode::TextOnlyPartial);
+        let node = &mut input.sources[0].document.as_mut().unwrap().nodes[1];
+        node.purpose = NodePurpose::Content;
+        node.role = Some("AXTextArea".into());
+        assert_eq!(coverage(&input), LensDeliveryMode::Unavailable);
     }
 
     #[test]
