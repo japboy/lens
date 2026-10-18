@@ -4,6 +4,23 @@ use std::time::Duration;
 use tauri::{Listener, Manager};
 use uuid::Uuid;
 
+/// Inspect an actual provider replay without replacing its document or closing the window.
+pub(crate) fn run_provider_replay<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    app.listen("lens-provider-history-result", move |event| {
+        println!("LENS_PROVIDER_HISTORY_RESULT={}", event.payload());
+    });
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if let Some(window) = app.get_webview_window(ui::LENS_WINDOW_LABEL) {
+            if let Err(error) = window.eval(include_str!("provider_history_validation.js")) {
+                eprintln!("LENS_PROVIDER_HISTORY_RESULT=failed to start DOM probe: {error}");
+            }
+        } else {
+            eprintln!("LENS_PROVIDER_HISTORY_RESULT=Lens overlay is absent");
+        }
+    });
+}
+
 fn append(state: &mut model::LensState, ordinal: u64) -> Result<(), String> {
     let operation_id = state.operation_id.ok_or("Missing validation operation")?;
     let projection = CanonicalProjection::from_serializable(&ordinal)

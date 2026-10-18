@@ -95,7 +95,9 @@ async fn validate_history_session<R: tauri::Runtime>(
     if matches.next().is_some() {
         return Err("Requested session ID is ambiguous across Agents".into());
     }
-    session_view::open(app, catalog.generation, index).await
+    session_view::open(app.clone(), catalog.generation, index).await?;
+    response_history_validation::run_provider_replay(app);
+    Ok(())
 }
 
 /// Generate product assets, capabilities and embedded metadata once for every runtime.
