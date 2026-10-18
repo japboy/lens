@@ -1,7 +1,16 @@
 /** Each selector option represents a state the corresponding fixture renders. */
 export const PREVIEW_SCENARIOS = {
   about: ["ready", "loading", "failed"],
-  settings: ["ready", "loading", "failed", "pending"],
+  settings: [
+    "ready",
+    "loading",
+    "failed",
+    "pending",
+    "history-ready",
+    "history-loading",
+    "history-empty",
+    "history-partial",
+  ],
   "target-selection": ["ready", "loading", "failed", "pending"],
   overlay: ["ready", "loading", "failed", "pending", "delayed"],
   "settings-recovery": ["ready", "loading", "failed"],

@@ -127,3 +127,43 @@ it("limits scenarios to meaningful view states and resets an incompatible select
   await mount("settings-recovery");
   expect([...scenarios.options].map((option) => option.value)).not.toContain("pending");
 });
+
+it("previews actual history rows and records semantic intents without native effects", async () => {
+  const view = await mount("settings", "history-ready");
+  const history = view.shadowRoot!.querySelector<LitElement>("lens-session-history")!;
+  await history.updateComplete;
+  const text = history.shadowRoot!.textContent!;
+  expect(text).toContain("Review session history management");
+  expect(text).toContain("履歴一覧の日本語表示");
+  expect(text).toContain("Original Agent settings unavailable");
+  const open = history.shadowRoot!.querySelector<HTMLButtonElement>(
+    'button[aria-label="Open Review session history management"]',
+  )!;
+  open.click();
+  expect(preview.intents).toContainEqual({
+    event: "lens-settings-intent",
+    detail: { type: "open-history", id: "fixture-codex" },
+  });
+  expect(
+    history.shadowRoot!.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open Previously configured Agent session"]',
+    )!.disabled,
+  ).toBe(true);
+  expect("__TAURI_INTERNALS__" in window).toBe(false);
+});
+
+it.each([
+  { scenario: "history-empty", expected: "No saved session history.", allDisabled: false },
+  { scenario: "history-partial", expected: "Sync completed with failures", allDisabled: false },
+  { scenario: "history-loading", expected: "Syncing with Agents", allDisabled: true },
+])("previews $scenario presentation", async ({ scenario, expected, allDisabled }) => {
+  const view = await mount("settings", scenario);
+  const history = view.shadowRoot!.querySelector<LitElement>("lens-session-history")!;
+  await history.updateComplete;
+  expect(history.shadowRoot!.textContent).toContain(expected);
+  expect(
+    [...history.shadowRoot!.querySelectorAll<HTMLButtonElement>("button")].every(
+      (button) => button.disabled,
+    ),
+  ).toBe(allDisabled);
+});

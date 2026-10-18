@@ -8,6 +8,7 @@ import type {
   SettingsFeedback,
   SettingsFeedbackMessage,
   SettingsViewModel,
+  HistoryPresentation,
 } from "../../contracts/view-models";
 import {
   accessibilityStyles,
@@ -23,6 +24,7 @@ import {
   type AgentIntent,
   type PromptIntent,
   type SettingsIntent,
+  type HistoryIntent,
 } from "../../contracts/events";
 
 @customElement("lens-settings-view")
@@ -937,6 +939,11 @@ export class LensSettingsView extends LitElement {
   ];
 
   @property() aboutOpenError = "";
+  @property({ attribute: false }) history: HistoryPresentation = {
+    stage: "inactive",
+    offset: 0,
+    operation: "idle",
+  };
   @property({ attribute: false })
   permission: import("../../contracts/resource-state").AccessibilityPermissionState = {
     stage: "inactive",
@@ -1003,6 +1010,7 @@ export class LensSettingsView extends LitElement {
         data-window-emphasis=${this.windowEmphasis}
         @lens-agent-intent=${this.forwardAgentIntent}
         @lens-prompt-intent=${this.forwardPromptIntent}
+        @lens-history-intent=${this.forwardHistoryIntent}
       >
         <aside class="settings-sidebar">
           <nav aria-label="Settings sections">
@@ -1010,6 +1018,7 @@ export class LensSettingsView extends LitElement {
               <span class="settings-nav-heading">Agent</span>
               ${this.navigationButton("connection", "Connection")}
               ${this.navigationButton("session-defaults", "Session Defaults")}
+              ${this.navigationButton("session-history", "Session History")}
               ${this.navigationButton("prompt-presets", "Prompt Presets")}
             </div>
             <div class="settings-nav-group">
@@ -1131,6 +1140,19 @@ export class LensSettingsView extends LitElement {
               ></lens-agent-defaults>
             </div>
           </div>
+          <div class="settings-detail-panel" ?hidden=${this.destination !== "session-history"}>
+            <header class="settings-detail-header">
+              <div>
+                <h1>Session History</h1>
+                <p>Browse and manage all sessions saved in Lens.</p>
+              </div>
+            </header>
+            <div data-region-error="history"></div>
+            <lens-session-history
+              .history=${this.history}
+              .disabled=${!this.active}
+            ></lens-session-history>
+          </div>
           <div class="settings-detail-panel" ?hidden=${this.destination !== "privacy-security"}>
             <header class="settings-detail-header">
               <div>
@@ -1222,6 +1244,7 @@ export class LensSettingsView extends LitElement {
       aria-current=${this.destination === destination ? "page" : nothing}
       @click=${() => {
         this.destination = destination;
+        if (destination === "session-history") this.emit({ type: "list-history", offset: 0 });
       }}
     >
       ${label}
@@ -1297,6 +1320,11 @@ export class LensSettingsView extends LitElement {
   private emit(intent: SettingsIntent): void {
     dispatchComponentEvent(this, SETTINGS_INTENT_EVENT, intent);
   }
+
+  private forwardHistoryIntent = (event: CustomEvent<HistoryIntent>): void => {
+    event.stopPropagation();
+    this.emit(event.detail);
+  };
 }
 
 function feedbackForDestination(

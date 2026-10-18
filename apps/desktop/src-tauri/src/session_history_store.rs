@@ -30,6 +30,25 @@ pub(crate) struct StoredEntry {
     pub can_load: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HistoryScope {
+    pub source: HistorySource,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HistoryRecord {
+    pub source: HistorySource,
+    pub entry: StoredEntry,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryPage {
+    pub entries: Vec<HistoryRecord>,
+    pub total: usize,
+    pub revision: i64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ListedEntry {
     pub session_id: String,
@@ -155,6 +174,59 @@ fn capacity(tx: &Transaction<'_>, source: &HistorySource, cwd: &str) -> Result<(
     Ok(())
 }
 
+fn read_records(connection: &Connection) -> Result<Vec<HistoryRecord>, String> {
+    let mut statement = connection.prepare(
+        "SELECT agent,invocation,session_id,cwd,title,provider_updated_at,local_activity_at,state,can_load
+         FROM history_entries ORDER BY agent,invocation,cwd,session_id"
+    ).map_err(error)?;
+    let records = statement
+        .query_map([], |row| {
+            let agent: String = row.get(0)?;
+            let agent = serde_json::from_str(&agent).map_err(|cause| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(cause),
+                )
+            })?;
+            let state = match row.get::<_, i64>(7)? {
+                0 => EntryState::Listed,
+                1 => EntryState::LocalOnly,
+                2 => EntryState::NotSeen,
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            };
+            Ok(HistoryRecord {
+                source: HistorySource {
+                    agent,
+                    invocation: row.get(1)?,
+                },
+                entry: StoredEntry {
+                    session_id: row.get(2)?,
+                    cwd: row.get(3)?,
+                    title: row.get(4)?,
+                    provider_updated_at: row.get(5)?,
+                    local_activity_at: row.get(6)?,
+                    state,
+                    can_load: row.get(8)?,
+                },
+            })
+        })
+        .map_err(error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(error);
+    records
+}
+
+fn activity(entry: &StoredEntry) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    [&entry.provider_updated_at, &entry.local_activity_at]
+        .into_iter()
+        .filter_map(|value| {
+            value
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        })
+        .max()
+}
 impl HistoryStore {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -204,6 +276,119 @@ impl HistoryStore {
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    pub fn current_revision(&self) -> Result<i64, String> {
+        self.connection
+            .lock()
+            .map_err(error)?
+            .query_row("SELECT revision FROM history_clock WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .map_err(error)
+    }
+
+    /// The page includes every stored namespace and undated entries. Parsed instants
+    /// preserve provider timezone and subsecond precision; stable identities break ties.
+    pub fn page(&self, offset: usize, limit: usize) -> Result<HistoryPage, String> {
+        if limit == 0 || limit > 200 {
+            return Err(error("history page size must be between 1 and 200"));
+        }
+        let mut connection = self.connection.lock().map_err(error)?;
+        let tx = connection.transaction().map_err(error)?;
+        let revision = tx
+            .query_row("SELECT revision FROM history_clock WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .map_err(error)?;
+        let mut entries = read_records(&tx)?;
+        entries.sort_by(|a, b| {
+            activity(&b.entry)
+                .cmp(&activity(&a.entry))
+                .then_with(|| a.source.agent.cmp(&b.source.agent))
+                .then_with(|| a.source.invocation.cmp(&b.source.invocation))
+                .then_with(|| a.entry.cwd.cmp(&b.entry.cwd))
+                .then_with(|| a.entry.session_id.cmp(&b.entry.session_id))
+        });
+        let total = entries.len();
+        let entries = entries.into_iter().skip(offset).take(limit).collect();
+        tx.commit().map_err(error)?;
+        Ok(HistoryPage {
+            entries,
+            total,
+            revision,
+        })
+    }
+
+    pub fn records(&self) -> Result<Vec<HistoryRecord>, String> {
+        let connection = self.connection.lock().map_err(error)?;
+        read_records(&connection)
+    }
+
+    /// Includes previously checked empty scopes as well as locally recorded scopes.
+    pub fn scopes(&self) -> Result<Vec<HistoryScope>, String> {
+        let connection = self.connection.lock().map_err(error)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT agent,invocation,cwd FROM history_entries UNION
+             SELECT agent,invocation,cwd FROM history_scans ORDER BY agent,invocation,cwd",
+            )
+            .map_err(error)?;
+        let records = statement
+            .query_map([], |row| {
+                let agent: String = row.get(0)?;
+                let agent = serde_json::from_str(&agent).map_err(|cause| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(cause),
+                    )
+                })?;
+                Ok(HistoryScope {
+                    source: HistorySource {
+                        agent,
+                        invocation: row.get(1)?,
+                    },
+                    cwd: row.get(2)?,
+                })
+            })
+            .map_err(error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(error);
+        records
+    }
+
+    /// Explicit synchronization may prune an identity that no longer has a matching
+    /// configured connection. Transport failures are never grounds for this operation.
+    /// The caller owns scope admission; the token rejects superseded observations.
+    pub fn prune_scope(&self, token: &ScanToken) -> Result<usize, String> {
+        let mut connection = self.connection.lock().map_err(error)?;
+        let tx = connection.transaction().map_err(error)?;
+        if !current(&tx, token)? {
+            return Err(error("history scope changed before pruning"));
+        }
+        let agent = agent_key(&token.source)?;
+        let newer: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM history_entries WHERE agent=?1 AND invocation=?2 AND cwd=?3 AND revision>?4)",
+            params![agent, token.source.invocation, token.cwd, token.revision], |row| row.get(0)
+        ).map_err(error)?;
+        if newer {
+            return Err(error("history scope changed before pruning"));
+        }
+        let removed = tx
+            .execute(
+                "DELETE FROM history_entries WHERE agent=?1 AND invocation=?2 AND cwd=?3",
+                params![agent, token.source.invocation, token.cwd],
+            )
+            .map_err(error)?;
+        tx.execute(
+            "DELETE FROM history_scans WHERE agent=?1 AND invocation=?2 AND cwd=?3",
+            params![agent, token.source.invocation, token.cwd],
+        )
+        .map_err(error)?;
+        revision(&tx).map_err(error)?;
+        tx.commit().map_err(error)?;
+        Ok(removed)
     }
 
     pub fn begin_scan(&self, source: &HistorySource, cwd: &str) -> Result<ScanToken, String> {
@@ -418,38 +603,47 @@ impl HistoryStore {
         Ok(changed != 0)
     }
 
-    /// Physical removal requires caller-confirmed deletion and a request token;
-    /// a newer scan or row mutation makes that confirmation stale.
-    #[allow(
-        dead_code,
-        reason = "Reserved for confirmed ACP session/delete responses; list absence is not proof"
-    )]
-    pub fn remove_confirmed(&self, token: &ScanToken, id: &str) -> Result<bool, String> {
-        session_id(id)?;
+    #[cfg(test)]
+    fn remove_confirmed(&self, token: &ScanToken, id: &str) -> Result<bool, String> {
+        self.remove_confirmed_batch(token, &[id.to_owned()])
+            .map(|count| count != 0)
+    }
+
+    /// Only IDs positively confirmed by the Agent may enter this operation. One
+    /// transaction removes the batch and consumes the scan, including empty rows,
+    /// preventing any delayed result carrying that token from recreating metadata.
+    pub fn remove_confirmed_batch(
+        &self,
+        token: &ScanToken,
+        ids: &[String],
+    ) -> Result<usize, String> {
+        for id in ids {
+            session_id(id)?;
+        }
+        if ids.is_empty() {
+            return Ok(0);
+        }
         let mut connection = self.connection.lock().map_err(error)?;
         let tx = connection.transaction().map_err(error)?;
         if !current(&tx, token)? {
-            return Ok(false);
+            return Ok(0);
         }
-        let changed = tx.execute("DELETE FROM history_entries WHERE agent=?1 AND invocation=?2 AND cwd=?3 AND session_id=?4 AND revision<=?5",
-            params![agent_key(&token.source)?, token.source.invocation, token.cwd, id, token.revision]).map_err(error)?;
-        if changed != 0 {
-            // Consuming the confirmation invalidates this request token too:
-            // a delayed listing from that request must not recreate the row.
-            let next_revision = revision(&tx).map_err(error)?;
-            tx.execute(
-                "UPDATE history_scans SET revision=?4 WHERE agent=?1 AND invocation=?2 AND cwd=?3",
-                params![
-                    agent_key(&token.source)?,
-                    token.source.invocation,
-                    token.cwd,
-                    next_revision
-                ],
-            )
-            .map_err(error)?;
+        let agent = agent_key(&token.source)?;
+        let mut removed = 0;
+        for id in ids.iter().collect::<HashSet<_>>() {
+            removed += tx.execute(
+                "DELETE FROM history_entries WHERE agent=?1 AND invocation=?2 AND cwd=?3 AND session_id=?4 AND revision<=?5",
+                params![agent, token.source.invocation, token.cwd, id, token.revision]
+            ).map_err(error)?;
         }
+        let next_revision = revision(&tx).map_err(error)?;
+        tx.execute(
+            "UPDATE history_scans SET revision=?4 WHERE agent=?1 AND invocation=?2 AND cwd=?3",
+            params![agent, token.source.invocation, token.cwd, next_revision],
+        )
+        .map_err(error)?;
         tx.commit().map_err(error)?;
-        Ok(changed != 0)
+        Ok(removed)
     }
 
     pub fn entries(&self, source: &HistorySource, cwd: &str) -> Result<Vec<StoredEntry>, String> {
@@ -530,6 +724,135 @@ mod tests {
             provider_updated_at: Some("2026-09-21T00:00:00Z".into()),
         }
     }
+
+    #[test]
+    fn scope_capacity_does_not_limit_global_pages_and_failed_writes_roll_back() {
+        let store = HistoryStore::memory().unwrap();
+        {
+            let connection = store.connection.lock().unwrap();
+            connection.execute(
+                "WITH RECURSIVE ids(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM ids WHERE id<10000)
+                 INSERT INTO history_entries(agent,invocation,cwd,session_id,state,revision)
+                 SELECT ?1,?2,'/work',CAST(id AS TEXT),1,0 FROM ids",
+                params![agent_key(&source()).unwrap(), source().invocation]
+            ).unwrap();
+        }
+        assert!(store.record_local(&source(), &local("overflow")).is_err());
+        let mut elsewhere = local("elsewhere");
+        elsewhere.cwd = "/other".into();
+        store.record_local(&source(), &elsewhere).unwrap();
+        let page = store.page(10_000, 200).unwrap();
+        assert_eq!(page.total, 10_001);
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(store.records().unwrap().len(), 10_001);
+    }
+
+    #[test]
+    fn global_pages_include_old_namespaces_undated_and_precise_chronology() {
+        let store = HistoryStore::memory().unwrap();
+        let mut old = source();
+        old.invocation = "old".into();
+        let mut first = local("one");
+        first.provider_updated_at = Some("2026-10-18T10:00:00.000000001+09:00".into());
+        first.local_activity_at = None;
+        store.record_local(&old, &first).unwrap();
+        let mut second = local("two");
+        second.cwd = "/other".into();
+        second.provider_updated_at = Some("2026-10-18T01:00:00.000000002Z".into());
+        second.local_activity_at = None;
+        store.record_local(&source(), &second).unwrap();
+        let mut undated = local("three");
+        undated.provider_updated_at = Some("invalid".into());
+        undated.local_activity_at = None;
+        store.record_local(&source(), &undated).unwrap();
+        let page = store.page(0, 2).unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(page.revision, store.current_revision().unwrap());
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|row| row.entry.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "one"]
+        );
+        assert_eq!(
+            store.page(2, 2).unwrap().entries[0].entry.session_id,
+            "three"
+        );
+        assert!(store.page(3, 2).unwrap().entries.is_empty());
+        assert!(store.page(0, 0).is_err());
+        assert!(store.page(0, 201).is_err());
+        assert_eq!(store.records().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn scopes_union_local_rows_and_empty_scan_namespaces_without_duplicates() {
+        let store = HistoryStore::memory().unwrap();
+        store.record_local(&source(), &local("one")).unwrap();
+        store.begin_scan(&source(), "/work").unwrap();
+        store.begin_scan(&source(), "/empty").unwrap();
+        let scopes = store.scopes().unwrap();
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].cwd, "/empty");
+        assert_eq!(scopes[1].cwd, "/work");
+    }
+
+    #[test]
+    fn confirmed_batch_invalidates_scan_and_preserves_newer_local_rows() {
+        let store = HistoryStore::memory().unwrap();
+        for id in ["one", "two", "three"] {
+            store.record_local(&source(), &local(id)).unwrap();
+        }
+        let token = store.begin_scan(&source(), "/work").unwrap();
+        store.record_local(&source(), &local("three")).unwrap();
+        assert_eq!(
+            store
+                .remove_confirmed_batch(
+                    &token,
+                    &["one".into(), "two".into(), "three".into(), "one".into()]
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store.entries(&source(), "/work").unwrap()[0].session_id,
+            "three"
+        );
+        assert!(!store
+            .apply_listing(&token, &[listed("one")], true, None)
+            .unwrap());
+        let token = store.begin_scan(&source(), "/work").unwrap();
+        assert_eq!(
+            store
+                .remove_confirmed_batch(&token, &["absent".into()])
+                .unwrap(),
+            0
+        );
+        assert!(!store
+            .apply_listing(&token, &[listed("absent")], true, None)
+            .unwrap());
+    }
+
+    #[test]
+    fn obsolete_scope_pruning_rejects_stale_and_concurrently_changed_rows() {
+        let store = HistoryStore::memory().unwrap();
+        store.record_local(&source(), &local("one")).unwrap();
+        let stale = store.begin_scan(&source(), "/work").unwrap();
+        let current = store.begin_scan(&source(), "/work").unwrap();
+        assert!(store.prune_scope(&stale).is_err());
+        store.record_local(&source(), &local("one")).unwrap();
+        assert!(store.prune_scope(&current).is_err());
+        let token = store.begin_scan(&source(), "/work").unwrap();
+        assert_eq!(store.prune_scope(&token).unwrap(), 1);
+        assert!(store.scopes().unwrap().is_empty());
+        assert!(!store
+            .apply_listing(&token, &[listed("one")], true, None)
+            .unwrap());
+        let token = store.begin_scan(&source(), "/empty").unwrap();
+        assert_eq!(store.prune_scope(&token).unwrap(), 0);
+        assert!(store.scopes().unwrap().is_empty());
+    }
+
     #[test]
     fn title_projection_is_utf8_safe_bounded_and_removes_nul() {
         let title = format!("{}\0\u{732b}🦀", "a".repeat(MAX_FIELD_BYTES - 2));

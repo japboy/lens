@@ -7,7 +7,7 @@ import type { AppView } from "../page-entries";
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** jsdom does not parse native DSD. Only the test adapter performs this parser step. */
-export function installGeneratedPage(view: AppView): HTMLElement {
+export function installGeneratedPage(view: AppView, search = "?platform=macos"): HTMLElement {
   const html = readFileSync(resolve(desktop, BUILD_PATHS.tests, `${view}.html`), "utf8");
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const page = parsed.querySelector<HTMLElement>(`lens-${view}-page`);
@@ -25,7 +25,7 @@ export function installGeneratedPage(view: AppView): HTMLElement {
   }
   attachRoots(page);
   document.documentElement.dataset.view = view;
-  window.history.replaceState({}, "", `/${view}.html?platform=macos`);
+  window.history.replaceState({}, "", `/${view}.html${search}`);
   document.body.replaceChildren(page);
   const recovery = parsed.querySelector<HTMLElement>("[data-page-error]");
   if (recovery) document.body.append(recovery);

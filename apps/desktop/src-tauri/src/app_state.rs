@@ -1114,6 +1114,14 @@ pub fn publish_lens_state<R: tauri::Runtime>(
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
+        if state
+            .session_view
+            .management_active
+            .load(std::sync::atomic::Ordering::Acquire)
+            && crate::session_view::active_session(&next)
+        {
+            return Err("Wait for session history management to finish".into());
+        }
         let sync_tray =
             (snapshot.lens.stage == LensStage::Selecting) != (next.stage == LensStage::Selecting);
         advance_revision(&mut snapshot)?;

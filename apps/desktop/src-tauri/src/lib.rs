@@ -34,6 +34,7 @@ mod output_mcp;
 #[cfg(target_os = "macos")]
 pub use native::run;
 mod history_catalog;
+mod history_management;
 mod history_writer;
 mod platform;
 mod projection_transport;
@@ -148,6 +149,11 @@ fn command_handler<R: tauri::Runtime>(
             command_work::get_lens_source,
             command_work::get_lens_output,
             command_work::get_lens_image,
+            history_management::list_history,
+            history_management::sync_history,
+            history_management::delete_history,
+            history_management::delete_all_history,
+            history_management::open_history,
             session_view::get_session_view,
             command_work::get_session_block,
             session_view::close_session_view,

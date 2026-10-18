@@ -687,6 +687,39 @@ async fn successful_replay_preserves_execution_selection_and_settings() {
     }
 }
 
+#[tokio::test]
+async fn manager_open_uses_record_directory_and_exact_clear_invalidates_display() {
+    let host = replay_host();
+    let (app, _) = replay_app(host.clone());
+    let state = app.state::<AppState>();
+    state.runtime.write().unwrap().config.working_directory = PathBuf::from("/");
+    let original = state.config().unwrap();
+    let entry = state.session_view.catalog().unwrap().entries[0].clone();
+    let source = history_catalog::source(&original, entry.agent).unwrap();
+    let opening = crate::session_view::open_record(app.handle().clone(), entry.clone());
+    let release = async {
+        host.entered.notified().await;
+        host.release.notify_one();
+    };
+    let (result, ()) = tokio::join!(opening, release);
+    result.unwrap();
+    assert_eq!(state.config().unwrap(), original);
+    let generation = state.session_view.view().unwrap().generation;
+    assert!(!state
+        .session_view
+        .clear_history(&source, "/tmp", Some(&["another".into()]))
+        .unwrap());
+    assert_eq!(state.session_view.view().unwrap().generation, generation);
+    assert!(state
+        .session_view
+        .clear_history(&source, "/tmp", Some(&[entry.session_id]))
+        .unwrap());
+    let view = state.session_view.view().unwrap();
+    assert_eq!(view.phase, ViewPhase::Idle);
+    assert_ne!(view.generation, generation);
+    assert!(view.document.is_none());
+}
+
 async fn replay_preserving_selection(agent: Option<AgentKind>) {
     let host = replay_host();
     let (app, catalog) = replay_app(host.clone());

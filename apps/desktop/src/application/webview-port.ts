@@ -1,4 +1,5 @@
 import type { SessionView, DocumentBlock } from "ui/contracts/session-document";
+import type { HistoryPage, HistoryResult } from "ui/contracts/view-models";
 import type { McpAppsServer } from "adapter-mcp-apps-host";
 import type { DesktopMcpAppsPort as McpAppsPort } from "../mcp-apps/composition";
 import {
@@ -39,6 +40,11 @@ export interface LensOutputResource {
 }
 
 export interface WebviewPort extends McpAppsPort {
+  listHistory(offset: number, limit: number): Promise<HistoryPage>;
+  openHistory(id: string, revision: number): Promise<void>;
+  deleteHistory(id: string, revision: number): Promise<HistoryResult>;
+  deleteAllHistory(revision: number): Promise<HistoryResult>;
+  syncHistory(): Promise<HistoryResult>;
   getLensSource(sourceRef: string): Promise<LensSourceResource>;
   getLensOutput(outputRef: string): Promise<LensOutputResource>;
   getLensImage(imageRef: string): Promise<{ image_ref: string; data: string }>;
@@ -130,6 +136,11 @@ export interface WebviewPort extends McpAppsPort {
 }
 
 export const tauriWebviewPort: WebviewPort = {
+  listHistory: (offset, limit) => invoke<HistoryPage>("list_history", { offset, limit }),
+  openHistory: (id, revision) => invoke<void>("open_history", { id, revision }),
+  deleteHistory: (id, revision) => invoke<HistoryResult>("delete_history", { id, revision }),
+  deleteAllHistory: (revision) => invoke<HistoryResult>("delete_all_history", { revision }),
+  syncHistory: () => invoke<HistoryResult>("sync_history"),
   setMcpAppsServers: (servers) => invoke("set_mcp_apps_servers", { servers }),
   getMcpServerToolCatalogs: () => invoke("get_mcp_server_tool_catalogs"),
   openMcpApp: (artifactId, hostOrigin) => invoke("open_mcp_app", { artifactId, hostOrigin }),

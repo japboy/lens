@@ -17,6 +17,7 @@ export type AgentPromptPreviewMode =
 export type SettingsDestination =
   | "connection"
   | "session-defaults"
+  | "session-history"
   | "prompt-presets"
   | "privacy-security";
 export function parseSettingsDestination(value: string | null): SettingsDestination | undefined {
@@ -27,6 +28,7 @@ export function parseSettingsDestination(value: string | null): SettingsDestinat
       return "prompt-presets";
     case "connection":
     case "session-defaults":
+    case "session-history":
     case "prompt-presets":
     case "privacy-security":
       return value;

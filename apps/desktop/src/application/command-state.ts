@@ -1,10 +1,18 @@
-import type { OverlayIntent, SettingsIntent, TargetSelectionIntent } from "ui/contracts/events";
+import type {
+  HistoryIntent,
+  OverlayIntent,
+  SettingsIntent,
+  TargetSelectionIntent,
+} from "ui/contracts/events";
 import type { ManagedAgentKind } from "ui/contracts/lens";
 
 export type CommandIdentity =
   | {
       scope: "settings";
-      type: Exclude<SettingsIntent["type"], "open-about" | "update-managed-agent">;
+      type: Exclude<
+        SettingsIntent["type"],
+        "open-about" | "update-managed-agent" | HistoryIntent["type"]
+      >;
     }
   | { scope: "settings"; type: "update-managed-agent"; agent: ManagedAgentKind }
   | { scope: "target-selection"; type: TargetSelectionIntent["type"] }

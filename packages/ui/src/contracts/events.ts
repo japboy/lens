@@ -45,7 +45,15 @@ export type AboutIntent =
   | { type: "open-release" }
   | { type: "retry-update-check" };
 
+export type HistoryIntent =
+  | { type: "list-history"; offset: number }
+  | { type: "open-history"; id: string }
+  | { type: "delete-history"; id: string }
+  | { type: "delete-all-history" }
+  | { type: "sync-history" };
+
 export type SettingsIntent =
+  | HistoryIntent
   | { type: "set-mcp-apps-servers"; servers: import("adapter-mcp-apps-host").McpAppsServer[] }
   | { type: "reset-mcp-presets" }
   | { type: "choose-external-executable"; draftRevision: number; defaultPath?: string }

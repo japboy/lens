@@ -38,6 +38,7 @@
     "./entries/overlay-source": "./src/entries/overlay-source.ts",
     "./entries/settings": "./src/entries/settings.ts",
     "./entries/settings-defaults": "./src/entries/settings-defaults.ts",
+    "./entries/settings-history": "./src/entries/settings-history.ts",
     "./entries/settings-prompts": "./src/entries/settings-prompts.ts",
     "./entries/target-selection": "./src/entries/target-selection.ts",
     "./presentation/agent-prompt-template": "./src/presentation/agent-prompt-template.ts",

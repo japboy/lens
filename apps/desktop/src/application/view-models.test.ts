@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SettingsIntent } from "ui/contracts/events";
 import type { AccessibilityPermissionState } from "ui/contracts/resource-state";
 import type { SnapshotConnectionState } from "ui/contracts/resource-state";
-import type { CommandState } from "./command-state";
+import type { CommandIdentity, CommandState } from "./command-state";
 import { settingsViewModel } from "./view-models";
 import type { AppSnapshot } from "../types";
 
@@ -90,7 +90,7 @@ it("scopes Settings conflicts and preserves separate pending feedback", () => {
   });
 });
 
-function succeeded(type: Exclude<SettingsIntent["type"], "open-about">): CommandState {
+function succeeded(type: Extract<CommandIdentity, { scope: "settings" }>["type"]): CommandState {
   return {
     stage: "succeeded",
     command:

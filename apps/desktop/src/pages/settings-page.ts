@@ -5,6 +5,7 @@ import { ReactiveElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { AppSnapshotController } from "../application/app-snapshot-controller";
 import { CommandController } from "../application/command-controller";
+import { HistoryController } from "../application/history-controller";
 import type { CommandIdentity } from "../application/command-state";
 import { settingsFeedback, settingsViewModel } from "../application/view-models";
 import { tauriWebviewPort } from "../application/webview-port";
@@ -20,6 +21,14 @@ export class SettingsPage extends ReactiveElement {
   private readonly port = tauriWebviewPort;
   private readonly snapshots = new AppSnapshotController(this, this.port);
   private readonly commands = new CommandController(this);
+  private readonly history = new HistoryController(this, {
+    listHistory: (offset, limit) => this.port.listHistory(offset, limit),
+    openHistory: (id, revision) => this.port.openHistory(id, revision),
+    deleteHistory: (id, revision) => this.port.deleteHistory(id, revision),
+    deleteAllHistory: (revision) => this.port.deleteAllHistory(revision),
+    syncHistory: () => this.port.syncHistory(),
+    confirmAction: (message, title) => this.port.confirmAction(message, title),
+  });
   private readonly platform = platformFromSearch(window.location.search);
   @state() private aboutOpenError = "";
   @state() private mcpToolCatalogs: import("ui/contracts/lens").McpServerToolCatalog[] = [];
@@ -34,6 +43,11 @@ export class SettingsPage extends ReactiveElement {
       this.view.activate();
     },
     [
+      {
+        name: "history",
+        ready: () => true,
+        load: () => import("ui/entries/settings-history"),
+      },
       {
         name: "agent",
         ready: () => Boolean(this.snapshots.snapshot),
@@ -61,6 +75,7 @@ export class SettingsPage extends ReactiveElement {
   async initialize(): Promise<void> {
     await this.attachment.initialize();
     if (this.destination) this.view.destination = this.destination;
+    if (this.destination === "session-history") void this.history.load(0);
   }
 
   private get view(): LensSettingsView {
@@ -81,6 +96,7 @@ export class SettingsPage extends ReactiveElement {
         if (generation !== this.destinationGeneration) return;
         this.destination = destination;
         if (this.attachment.stage === "active") this.view.destination = destination;
+        if (destination === "session-history") void this.history.load(0);
       })
       .then((unlisten) => {
         if (generation === this.destinationGeneration) this.destinationUnlisten = unlisten;
@@ -129,6 +145,7 @@ export class SettingsPage extends ReactiveElement {
     super.update(changed);
     if (this.attachment.stage !== "active") return;
     const view = this.view;
+    view.history = this.history.state;
     const snapshot = this.snapshots.snapshot;
     if (snapshot) this.refreshMcpCatalogs(snapshot);
     view.mcpToolCatalogs = this.mcpToolCatalogs;
@@ -154,6 +171,16 @@ export class SettingsPage extends ReactiveElement {
     event.stopPropagation();
     if (this.attachment.stage !== "active") return;
     const intent = event.detail;
+    if (
+      intent.type === "list-history" ||
+      intent.type === "open-history" ||
+      intent.type === "delete-history" ||
+      intent.type === "delete-all-history" ||
+      intent.type === "sync-history"
+    ) {
+      await this.history.handle(intent);
+      return;
+    }
     if (intent.type === "open-about") {
       this.aboutOpenError = "";
       try {
