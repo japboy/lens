@@ -112,11 +112,11 @@ fn pre_workspace_ax_context_migrates_to_the_current_contract() {
         contract_snapshot()["context"]
     );
     let input: LensInput = serde_json::from_value(archived["input"].clone()).unwrap();
-    assert_eq!(input.schema_version, crate::lens::LENS_INPUT_SCHEMA_VERSION);
-    assert_eq!(
-        input.sources[0].document.as_ref().unwrap().source_api,
-        crate::model::SourceApi::MacosAx
-    );
+    let mut expected = contract_snapshot()["input"].clone();
+    // Historical diagnostics are retained verbatim, not rewritten to the new
+    // platform-neutral wording used for fresh projections.
+    expected["sources"][0]["omissions"] = archived["input"]["sources"][0]["omissions"].clone();
+    assert_eq!(serde_json::to_value(input).unwrap(), expected);
 }
 
 #[test]

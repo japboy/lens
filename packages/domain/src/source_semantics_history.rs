@@ -88,16 +88,61 @@ fn migrate_document(value: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-fn migrate_projection(value: &mut Value) -> Result<(), String> {
+fn migrate_projection(value: &mut Value, omissions: &Value) -> Result<(), String> {
     if value.get("source_api").is_some() {
         return Err("legacy projection contains current provenance".into());
     }
-    for node in value
+    let nodes = value
         .get_mut("nodes")
         .and_then(Value::as_array_mut)
-        .ok_or("projection nodes must be an array")?
-    {
+        .ok_or("projection nodes must be an array")?;
+    // Input v3 deliberately omitted AXWindow roles and root chrome. Its
+    // document-wide omission proves a window root existed, but cannot identify
+    // one among multiple parentless regions (including children with omitted
+    // parents). Never reinterpret every parentless region as a window root.
+    let candidates: Vec<_> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| {
+            node.get("kind").and_then(Value::as_str) == Some("region")
+                && ["parent_id", "role", "title", "value", "description"]
+                    .iter()
+                    .all(|field| node.get(field).is_none_or(Value::is_null))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let omitted_root_chrome = omissions.as_array().is_some_and(|omissions| {
+        omissions.iter().any(|omission| {
+            omission.get("reason").and_then(Value::as_str) == Some("application_chrome")
+                && omission.get("omitted_node_count").and_then(Value::as_u64) == Some(0)
+                && ["first_order", "last_order"]
+                    .iter()
+                    .all(|field| omission.get(field).is_none_or(Value::is_null))
+                && omission.get("detail").and_then(Value::as_str)
+                    == Some("Root AXWindow text is represented by source metadata instead of document content.")
+        })
+    });
+    let explicit_window_roots = nodes
+        .iter()
+        .filter(|node| {
+            node.get("role").and_then(Value::as_str) == Some("AXWindow")
+                && node.get("parent_id").is_none_or(Value::is_null)
+        })
+        .count();
+    let window_root = match (
+        candidates.as_slice(),
+        omitted_root_chrome,
+        explicit_window_roots,
+    ) {
+        ([index], true, 0) => Some(*index),
+        ([], false, _) | ([], true, 1..) => None,
+        _ => return Err("legacy projection has ambiguous window-root purpose".into()),
+    };
+    for (index, node) in nodes.iter_mut().enumerate() {
         add_purpose(node)?;
+        if Some(index) == window_root {
+            node["purpose"] = json!("window_root");
+        }
     }
     value["source_api"] = json!("macos_ax");
     Ok(())
@@ -215,8 +260,9 @@ impl<'de> Deserialize<'de> for LensInput {
                 .and_then(Value::as_array_mut)
                 .ok_or_else(|| D::Error::custom("input sources must be an array"))?
             {
+                let omissions = source.get("omissions").cloned().unwrap_or(Value::Null);
                 if let Some(document) = source.get_mut("document").filter(|v| !v.is_null()) {
-                    migrate_projection(document).map_err(D::Error::custom)?;
+                    migrate_projection(document, &omissions).map_err(D::Error::custom)?;
                 }
             }
             value["schema_version"] = json!(4);
@@ -273,6 +319,114 @@ mod tests {
             serde_json::from_value::<LensInput>(serde_json::to_value(&input).unwrap()).unwrap(),
             input
         );
+    }
+
+    fn projected_source(nodes: Value) -> Value {
+        json!({"schema_version":3,"context_id":Uuid::from_u128(1),"context_revision":1,"sources":[{"source_id":"s","target_id":"t","source_revision":1,"source":source(),"document":{"nodes":nodes},"quality":"full","omissions":[]}],"media":[],"media_omissions":[],"quality":"full"})
+    }
+
+    fn root_chrome_omission() -> Value {
+        json!([{"reason":"application_chrome","omitted_node_count":0,"detail":"Root AXWindow text is represented by source metadata instead of document content."}])
+    }
+
+    #[test]
+    fn legacy_projection_recovers_only_an_unambiguous_omitted_window_root() {
+        let mut old = projected_source(json!([
+            {"id":"root","kind":"region"},
+            {"id":"group","kind":"region","parent_id":"root"},
+            {"id":"text","kind":"text","parent_id":"group","value":"Body"},
+            {"id":"other","kind":"region","title":"Visible group"}
+        ]));
+        old["sources"][0]["omissions"] = root_chrome_omission();
+        let migrated: LensInput = serde_json::from_value(old).unwrap();
+        let document = migrated.sources[0].document.as_ref().unwrap();
+        assert_eq!(document.nodes[0].purpose, NodePurpose::WindowRoot);
+        assert_eq!(document.nodes[0].role, None);
+        for node in &document.nodes[1..] {
+            assert_eq!(node.purpose, NodePurpose::Content);
+        }
+        assert_eq!(
+            serde_json::from_value::<LensInput>(serde_json::to_value(&migrated).unwrap()).unwrap(),
+            migrated
+        );
+    }
+
+    #[test]
+    fn legacy_projection_rejects_unrecoverable_or_unrelated_root_evidence() {
+        let root = json!({"id":"root","kind":"region"});
+        let mut old = projected_source(json!([root.clone()]));
+        // A blank AXWindow, AXGroup and AXWebArea all produced this same v3
+        // node. No raw role or source-level omission means no recoverable fact.
+        assert!(serde_json::from_value::<LensInput>(old.clone()).is_err());
+        for omissions in [
+            json!([{"reason":"token_budget","omitted_node_count":1}]),
+            json!([{"reason":"application_chrome","omitted_node_count":0,"detail":"Unrelated omission"}]),
+        ] {
+            old["sources"][0]["omissions"] = omissions;
+            assert!(serde_json::from_value::<LensInput>(old.clone()).is_err());
+        }
+        old["sources"][0]["omissions"] = root_chrome_omission();
+        // Also covers a region whose parent was excluded by projection limits:
+        // v3 removed that parent_id, so it cannot identify the window root.
+        old["sources"][0]["document"]["nodes"] =
+            json!([root, {"id":"orphaned-group","kind":"region"}]);
+        assert!(serde_json::from_value::<LensInput>(old.clone()).is_err());
+        old["sources"][0]["document"]["nodes"] =
+            json!([{"id":"unrelated","kind":"region","title":"Visible group"}]);
+        assert!(serde_json::from_value::<LensInput>(old).is_err());
+    }
+
+    #[test]
+    fn legacy_projection_does_not_promote_other_parentless_nodes() {
+        let old = projected_source(json!([
+            {"id":"group","kind":"region","title":"Visible group"},
+            {"id":"explicit-group","kind":"region","role":"AXGroup"},
+            {"id":"web","kind":"region","role":"AXWebArea"},
+            {"id":"text","kind":"text","value":"Body"}
+        ]));
+        let migrated: LensInput = serde_json::from_value(old).unwrap();
+        for node in &migrated.sources[0].document.as_ref().unwrap().nodes {
+            assert_eq!(node.purpose, NodePurpose::Content);
+        }
+    }
+
+    #[test]
+    fn explicit_legacy_window_role_does_not_attribute_its_omission_to_another_root() {
+        let mut old = projected_source(json!([
+            {"id":"explicit-window","kind":"unknown","role":"AXWindow"}
+        ]));
+        old["sources"][0]["omissions"] = root_chrome_omission();
+        let migrated: LensInput = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(
+            migrated.sources[0].document.as_ref().unwrap().nodes[0].purpose,
+            NodePurpose::WindowRoot
+        );
+        old["sources"][0]["document"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"other-group","kind":"region"}));
+        assert!(serde_json::from_value::<LensInput>(old).is_err());
+    }
+
+    #[test]
+    fn projection_recovery_never_relaxes_current_or_mixed_schema_validation() {
+        let mut old = projected_source(json!([{"id":"root","kind":"region"}]));
+        old["sources"][0]["omissions"] = root_chrome_omission();
+        for version in [0, 1, 2, 4, 5, u64::MAX] {
+            let mut invalid = old.clone();
+            invalid["schema_version"] = json!(version);
+            assert!(serde_json::from_value::<LensInput>(invalid).is_err());
+        }
+        for (field, value) in [
+            ("source_api", json!("macos_ax")),
+            ("source_api", json!("future_native_api")),
+        ] {
+            let mut invalid = old.clone();
+            invalid["sources"][0]["document"][field] = value;
+            assert!(serde_json::from_value::<LensInput>(invalid).is_err());
+        }
+        old["sources"][0]["document"]["nodes"][0]["purpose"] = json!("window_root");
+        assert!(serde_json::from_value::<LensInput>(old).is_err());
     }
 
     #[test]
