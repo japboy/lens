@@ -168,11 +168,21 @@ bool lens_window_background_rgba(uint8_t *rgba) {
 
 static char *LensCopyJSONString(id object) {
     NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
+    // Invalid numbers raise NSInvalidArgumentException rather than populating NSError.
+    // Validate before serialization so malformed native data never unwinds across Rust FFI.
+    BOOL valid = [NSJSONSerialization isValidJSONObject:object];
+    NSData *data = valid
+        ? [NSJSONSerialization dataWithJSONObject:object options:0 error:&error]
+        : nil;
     if (data == nil) {
-        NSString *message = error.localizedDescription ?: @"JSON serialization failed";
+        NSString *message = valid
+            ? (error.localizedDescription ?: @"JSON serialization failed")
+            : @"Native response contains values that cannot be represented as JSON";
         NSDictionary *fallback = @{ @"status": @"error", @"message": message };
         data = [NSJSONSerialization dataWithJSONObject:fallback options:0 error:nil];
+    }
+    if (data == nil) {
+        return NULL;
     }
     char *result = malloc(data.length + 1);
     if (result == NULL) {
@@ -1207,29 +1217,43 @@ static NSNumber *LensAXNumber(AXUIElementRef element, CFStringRef attribute) {
     return [value isKindOfClass:NSNumber.class] ? value : nil;
 }
 
-static BOOL LensAXFrame(AXUIElementRef element, CGRect *frameOut) {
+typedef NS_ENUM(NSUInteger, LensAXFrameReadState) {
+    LensAXFrameReadStateUnavailable,
+    LensAXFrameReadStateNonFinite,
+    LensAXFrameReadStateAvailable
+};
+
+static LensAXFrameReadState LensReadAXFrame(AXUIElementRef element, CGRect *frameOut) {
     id positionObject = LensCopyAXAttribute(element, kAXPositionAttribute, NULL);
     id sizeObject = LensCopyAXAttribute(element, kAXSizeAttribute, NULL);
     if (positionObject == nil || sizeObject == nil) {
-        return NO;
+        return LensAXFrameReadStateUnavailable;
     }
 
     AXValueRef positionValue = (__bridge AXValueRef)positionObject;
     AXValueRef sizeValue = (__bridge AXValueRef)sizeObject;
     if (CFGetTypeID(positionValue) != AXValueGetTypeID() ||
         CFGetTypeID(sizeValue) != AXValueGetTypeID()) {
-        return NO;
+        return LensAXFrameReadStateUnavailable;
     }
 
     CGPoint position = CGPointZero;
     CGSize size = CGSizeZero;
     if (!AXValueGetValue(positionValue, kAXValueTypeCGPoint, &position) ||
         !AXValueGetValue(sizeValue, kAXValueTypeCGSize, &size)) {
-        return NO;
+        return LensAXFrameReadStateUnavailable;
+    }
+    if (!isfinite(position.x) || !isfinite(position.y)
+        || !isfinite(size.width) || !isfinite(size.height)) {
+        return LensAXFrameReadStateNonFinite;
     }
 
     *frameOut = (CGRect){ position, size };
-    return YES;
+    return LensAXFrameReadStateAvailable;
+}
+
+static BOOL LensAXFrame(AXUIElementRef element, CGRect *frameOut) {
+    return LensReadAXFrame(element, frameOut) == LensAXFrameReadStateAvailable;
 }
 
 static NSDictionary *LensFrameDictionary(CGRect frame) {
@@ -1913,6 +1937,7 @@ static NSDictionary *LensExtractResolvedWindow(
         NSUInteger nextNodeOrder = 1;
         NSUInteger textBytes = 0;
         NSUInteger offscreenTextNodes = 0;
+        NSUInteger nonFiniteFrames = 0;
         NSUInteger virtualizationSignals = 0;
         NSUInteger childrenReadErrors = 0;
         NSUInteger resourceRefCount = 0;
@@ -1947,7 +1972,16 @@ static NSDictionary *LensExtractResolvedWindow(
                 ? LensAXURIString(element, kAXDocumentAttribute, YES, &resourceReadErrors)
                 : nil;
             CGRect frame = CGRectZero;
-            BOOL hasFrame = LensAXFrame(element, &frame);
+            LensAXFrameReadState frameState = LensReadAXFrame(element, &frame);
+            BOOL hasFrame = frameState == LensAXFrameReadStateAvailable;
+            if (frameState == LensAXFrameReadStateNonFinite) {
+                if (depth == 0) {
+                    CFRelease(scheduled);
+                    [diagnostics addObject:@"The resolved AXWindow exposed a non-finite frame; Accessibility extraction is unavailable."];
+                    return LensExtractionUnavailableWithDiagnostics(diagnostics);
+                }
+                nonFiniteFrames++;
+            }
 
             NSMutableDictionary *node = [NSMutableDictionary dictionaryWithDictionary:@{
                 @"id": nodeID,
@@ -2094,6 +2128,12 @@ static NSDictionary *LensExtractResolvedWindow(
                 (unsigned long)offscreenTextNodes
             ]];
         }
+        if (nonFiniteFrames > 0) {
+            [diagnostics addObject:[NSString stringWithFormat:
+                @"Omitted bounds for %lu Accessibility nodes with non-finite frame components; node content was retained.",
+                (unsigned long)nonFiniteFrames
+            ]];
+        }
         if (virtualizationSignals > 0) {
             [diagnostics addObject:[NSString stringWithFormat:
                 @"Detected %lu concrete row-count virtualization signals; partial extraction is expected.",
@@ -2133,7 +2173,7 @@ static NSDictionary *LensExtractResolvedWindow(
             ? @"unavailable"
             : (truncatedNodes || truncatedText || childrenReadErrors > 0
                 || virtualizationSignals > 0 || omittedResourceRefs > 0
-                || resourceReadErrors > 0
+                || resourceReadErrors > 0 || nonFiniteFrames > 0
                 ? @"partial"
                 : @"full");
         if (!hasUsefulContent) {
@@ -2282,7 +2322,7 @@ char *lens_extract_registered_window_json(
         CGRect currentFrame = CGRectZero;
         if (!LensAXFrame(resolvedWindow, &currentFrame)) {
             CFRelease(resolvedWindow);
-            [diagnostics addObject:@"The promoted AXWindow did not expose a current frame; stale picker geometry was not published as current facts."];
+            [diagnostics addObject:@"The promoted AXWindow did not expose a finite current frame; stale picker geometry was not published as current facts."];
             return LensCopyJSONString(LensExtractionUnavailableWithDiagnostics(diagnostics));
         }
         [diagnostics addObject:@"Extraction used the exact promoted AXWindow without heuristic re-resolution."];

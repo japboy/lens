@@ -22,6 +22,11 @@ ignore = [
   { id = "RUSTSEC-2025-0081", reason = "Unmaintained transitive rust-unic crate from Tauri 2.11.5 through urlpattern 0.3.0; the advisory has no safe upgrade." },
   { id = "RUSTSEC-2025-0098", reason = "Unmaintained transitive rust-unic crate from Tauri 2.11.5 through urlpattern 0.3.0; the advisory has no safe upgrade." },
   { id = "RUSTSEC-2025-0100", reason = "Unmaintained transitive rust-unic crate from Tauri 2.11.5 through urlpattern 0.3.0; the advisory has no safe upgrade." },
+  # Reviewed 2026-10-18: informational maintenance notices in opener's Linux-only
+  # zbus 5 graph. Even stable opener 2.7.2 requires zbus ^5.9; migration needs upstream.
+  { id = "RUSTSEC-2026-0370", reason = "Unmaintained zvariant 5.15.0 via zbus 5.19.0 and tauri-plugin-opener 2.7.1 on Linux. Merged into zbus 6 with no compatible upgrade. Remove when opener migrates to zbus 6." },
+  { id = "RUSTSEC-2026-0371", reason = "Unmaintained zbus_names 4.3.4 via zbus 5.19.0 and tauri-plugin-opener 2.7.1 on Linux. Merged into zbus 6 with no compatible upgrade. Remove when opener migrates to zbus 6." },
+  { id = "RUSTSEC-2026-0372", reason = "Unmaintained zvariant_derive 5.15.0 via zbus 5.19.0 and tauri-plugin-opener 2.7.1 on Linux. Merged into zbus 6 with no compatible upgrade. Remove when opener migrates to zbus 6." },
 ]
 
 [licenses]
