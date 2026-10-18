@@ -134,7 +134,7 @@ it("previews actual history rows and records semantic intents without native eff
   await history.updateComplete;
   const text = history.shadowRoot!.textContent!;
   expect(text).toContain("Review session history management");
-  expect(text).toContain("履歴一覧の日本語表示");
+  expect(text).toContain("\u5c65\u6b74\u4e00\u89a7\u306e\u65e5\u672c\u8a9e\u8868\u793a");
   expect(text).toContain("Original Agent settings unavailable");
   const open = history.shadowRoot!.querySelector<HTMLButtonElement>(
     'button[aria-label="Open Review session history management"]',

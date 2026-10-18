@@ -21,7 +21,7 @@ export function historyFixture(scenario: string): HistoryPresentation {
           {
             id: "fixture-claude",
             title:
-              "履歴一覧の日本語表示と、長いセッションタイトル・作業ディレクトリの折り返しを確認する",
+              "\u5c65\u6b74\u4e00\u89a7\u306e\u65e5\u672c\u8a9e\u8868\u793a\u3068\u3001\u9577\u3044\u30bb\u30c3\u30b7\u30e7\u30f3\u30bf\u30a4\u30c8\u30eb\u30fb\u4f5c\u696d\u30c7\u30a3\u30ec\u30af\u30c8\u30ea\u306e\u6298\u308a\u8fd4\u3057\u3092\u78ba\u8a8d\u3059\u308b",
             agent: "Claude",
             cwd: "/Projects/a-project-with-a-long-working-directory-name/packages/desktop",
             updated_at: "2026-10-17T14:05:00Z",
