@@ -1,4 +1,4 @@
-//! Byte-stable migration fixtures captured before splitting the backend workspace.
+//! Versioned golden contracts, retaining the pre-workspace archive for migration.
 use crate::lens::{LensContext, LensInput, LensMediaCapture, LensTargetCapture, LensTargetSet};
 use crate::live_sync::LensAgentProjection;
 use crate::model::{AppConfig, AppSnapshot, ExtractionResult, SelectedWindow};
@@ -17,15 +17,15 @@ fn contract_snapshot() -> Value {
     }))
     .unwrap();
     let extraction: ExtractionResult = serde_json::from_value(json!({
-        "quality":"full", "resolved_window":null,
+        "source_api":"macos_ax","quality":"full", "resolved_window":null,
         "nodes":[{
             "id":"node-000000","parent_id":null,"order":0,"depth":0,
-            "role":"AXWindow","subrole":null,"title":"Document","value":null,
+            "semantic_role":"region","purpose":"window_root","role":"AXWindow","subrole":null,"title":"Document","value":null,
             "description":null,"bounds":{"x":0.0,"y":0.0,"width":100.0,"height":100.0},
             "resource_refs":[],"children":["node-000001"]
         },{
             "id":"node-000001","parent_id":"node-000000","order":1,"depth":1,
-            "role":"AXStaticText","subrole":null,"title":null,"value":"A stable observation.",
+            "semantic_role":"text","purpose":"content","role":"AXStaticText","subrole":null,"title":null,"value":"A stable observation.",
             "description":null,"bounds":null,"resource_refs":[],"children":[]
         }],
         "text":"", "diagnostics":[]
@@ -84,13 +84,39 @@ fn contract_snapshot() -> Value {
 }
 
 #[test]
-fn serialized_contracts_match_the_pre_workspace_baseline() {
+fn serialized_contracts_match_the_portable_source_baseline() {
     let actual = contract_snapshot();
-    let expected: Value = serde_json::from_str(include_str!(
+    let mut expected: Value = serde_json::from_str(include_str!(
         "../../tests/fixtures/workspace-contracts.json"
     ))
     .unwrap();
+    let changed: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/portable-source-contracts.json"
+    ))
+    .unwrap();
+    for (key, value) in changed.as_object().unwrap() {
+        expected[key] = value.clone();
+    }
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn pre_workspace_ax_context_migrates_to_the_current_contract() {
+    let archived: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/workspace-contracts.json"
+    ))
+    .unwrap();
+    let migrated: LensContext = serde_json::from_value(archived["context"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(migrated).unwrap(),
+        contract_snapshot()["context"]
+    );
+    let input: LensInput = serde_json::from_value(archived["input"].clone()).unwrap();
+    let mut expected = contract_snapshot()["input"].clone();
+    // Historical diagnostics are retained verbatim, not rewritten to the new
+    // platform-neutral wording used for fresh projections.
+    expected["sources"][0]["omissions"] = archived["input"]["sources"][0]["omissions"].clone();
+    assert_eq!(serde_json::to_value(input).unwrap(), expected);
 }
 
 #[test]

@@ -1,5 +1,41 @@
 use serde::{Deserialize, Serialize};
 
+/// Native API provenance is retained independently of portable content semantics.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceApi {
+    MacosAx,
+    WindowsUia,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticRole {
+    Heading,
+    Paragraph,
+    List,
+    ListItem,
+    Table,
+    Row,
+    Cell,
+    Link,
+    Control,
+    Dialog,
+    Region,
+    Text,
+    Image,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodePurpose {
+    Content,
+    WindowRoot,
+    TextEntry,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Bounds {
     pub x: f64,
@@ -46,6 +82,8 @@ pub enum ExtractionQuality {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractedNode {
+    pub semantic_role: SemanticRole,
+    pub purpose: NodePurpose,
     pub id: String,
     #[serde(default)]
     pub parent_id: Option<String>,
@@ -92,6 +130,7 @@ pub struct ExtractionMetrics {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractionResult {
+    pub source_api: SourceApi,
     pub quality: ExtractionQuality,
     #[serde(default)]
     pub resolved_window: Option<ResolvedWindow>,

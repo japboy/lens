@@ -110,9 +110,11 @@ const snapshot: AppSnapshot = {
             window_id: 417,
           },
           document: {
+            source_api: "macos_ax",
             nodes: [
               {
                 id: "node-000001",
+                purpose: "content",
                 kind: "image",
                 media_refs: ["media-node-000001"],
                 resource_refs: [
@@ -121,6 +123,7 @@ const snapshot: AppSnapshot = {
               },
               {
                 id: "node-000002",
+                purpose: "content",
                 kind: "image",
                 media_refs: ["media-node-000002"],
               },

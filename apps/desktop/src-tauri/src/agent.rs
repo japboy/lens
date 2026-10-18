@@ -3832,7 +3832,9 @@ mod tests {
                     window_id: 42,
                 },
                 document: Some(LensDocumentProjection {
+                    source_api: crate::model::SourceApi::MacosAx,
                     nodes: vec![LensContentNode {
+                        purpose: crate::model::NodePurpose::Content,
                         id: "node-000000".into(),
                         parent_id: None,
                         kind: LensNodeKind::Text,
@@ -3936,6 +3938,7 @@ mod tests {
             .expect("document")
             .nodes
             .push(LensContentNode {
+                purpose: crate::model::NodePurpose::Content,
                 id: "node-000001".into(),
                 parent_id: Some("node-000000".into()),
                 kind: LensNodeKind::Image,
@@ -4044,6 +4047,7 @@ mod tests {
         let nodes = &mut input.sources[0].document.as_mut().unwrap().nodes;
         for index in 2..2318 {
             nodes.push(LensContentNode {
+                purpose: crate::model::NodePurpose::Content,
                 id: format!("node-{index:06}"),
                 parent_id: None,
                 kind: LensNodeKind::Text,

@@ -1,8 +1,9 @@
 use crate::live_sync::ProjectionRef;
 use crate::prompt_presets::PromptPresetCatalog;
 pub use domain::model::{
-    Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock,
-    ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
+    Bounds, ExtractionMetrics, ExtractionQuality, ExtractionResult, LensOutputBlock, NodePurpose,
+    ResourceReference, SelectedWindow, SemanticRole, SourceApi, WindowIdentity,
+    WindowObservableFacts,
 };
 use domain::prompt_template::AgentPromptTemplate;
 use serde::{Deserialize, Serialize};

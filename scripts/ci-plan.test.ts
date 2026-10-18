@@ -34,6 +34,7 @@ describe("finite verification requirements with per-input reasons", () => {
     ["LICENSE", code, "native-input"],
     ["NOTICE", code, "native-input"],
     ["apps/desktop/tests/fixtures/workspace-contracts.json", code, "native-input"],
+    ["apps/desktop/tests/fixtures/portable-source-contracts.json", code, "native-input"],
     ["apps/desktop/tests/fixtures/acp-generated-image.json", code, "native-input"],
     ["apps/desktop/src/html-output.ts", code, "native-input"],
     ["packages/ui/src/assets/agent-icons.json", code, "native-input"],

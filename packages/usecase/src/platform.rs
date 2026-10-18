@@ -97,6 +97,11 @@ fn facts_from_platform(facts: platform::WindowObservableFacts) -> domain::Window
 pub fn extraction(result: platform::ExtractionResult) -> domain::ExtractionResult {
     let metrics = result.metrics;
     domain::ExtractionResult {
+        source_api: match result.source_api {
+            platform::SourceApi::MacosAx => domain::SourceApi::MacosAx,
+            platform::SourceApi::WindowsUia => domain::SourceApi::WindowsUia,
+            platform::SourceApi::Unknown => domain::SourceApi::Unknown,
+        },
         quality: match result.quality {
             platform::ExtractionQuality::Full => domain::ExtractionQuality::Full,
             platform::ExtractionQuality::Partial => domain::ExtractionQuality::Partial,
@@ -110,6 +115,12 @@ pub fn extraction(result: platform::ExtractionResult) -> domain::ExtractionResul
             .nodes
             .into_iter()
             .map(|node| domain::ExtractedNode {
+                semantic_role: semantic_role(node.semantic_role),
+                purpose: match node.purpose {
+                    platform::NodePurpose::Content => domain::NodePurpose::Content,
+                    platform::NodePurpose::WindowRoot => domain::NodePurpose::WindowRoot,
+                    platform::NodePurpose::TextEntry => domain::NodePurpose::TextEntry,
+                },
                 id: node.id,
                 parent_id: node.parent_id,
                 order: node.order,
@@ -146,6 +157,25 @@ pub fn extraction(result: platform::ExtractionResult) -> domain::ExtractionResul
             resource_read_errors: metrics.resource_read_errors,
         },
         diagnostics: result.diagnostics,
+    }
+}
+
+fn semantic_role(role: platform::SemanticRole) -> domain::SemanticRole {
+    match role {
+        platform::SemanticRole::Heading => domain::SemanticRole::Heading,
+        platform::SemanticRole::Paragraph => domain::SemanticRole::Paragraph,
+        platform::SemanticRole::List => domain::SemanticRole::List,
+        platform::SemanticRole::ListItem => domain::SemanticRole::ListItem,
+        platform::SemanticRole::Table => domain::SemanticRole::Table,
+        platform::SemanticRole::Row => domain::SemanticRole::Row,
+        platform::SemanticRole::Cell => domain::SemanticRole::Cell,
+        platform::SemanticRole::Link => domain::SemanticRole::Link,
+        platform::SemanticRole::Control => domain::SemanticRole::Control,
+        platform::SemanticRole::Dialog => domain::SemanticRole::Dialog,
+        platform::SemanticRole::Region => domain::SemanticRole::Region,
+        platform::SemanticRole::Text => domain::SemanticRole::Text,
+        platform::SemanticRole::Image => domain::SemanticRole::Image,
+        platform::SemanticRole::Unknown => domain::SemanticRole::Unknown,
     }
 }
 
@@ -214,7 +244,7 @@ mod tests {
     #[test]
     fn extraction_conversion_preserves_every_graph_field_and_diagnostic() {
         let value = json!({
-            "quality":"partial",
+            "source_api":"macos_ax","quality":"partial",
             "resolved_window": {
                 "facts": {"title":"Changed title","application_name":"Fixture","frame":{
                     "x":20.0,"y":30.0,"width":350.0,"height":250.0
@@ -223,7 +253,7 @@ mod tests {
             },
             "nodes":[{
                 "id":"node-2","parent_id":"node-1","order":2,"depth":1,
-                "role":"AXImage","subrole":"AXUnknownSubrole","title":"Chart",
+                "semantic_role":"image","purpose":"content","role":"AXImage","subrole":"AXUnknownSubrole","title":"Chart",
                 "value":"42","description":"Description",
                 "bounds":{"x":21.0,"y":32.0,"width":10.0,"height":20.0},
                 "resource_refs":[{"uri":"https://example.com/image","source_attribute":"AXURL"}],
@@ -245,7 +275,7 @@ mod tests {
     #[test]
     fn missing_optional_extraction_fields_and_quality_variants_keep_defaults() {
         for quality in ["full", "partial", "unavailable"] {
-            let value = json!({"quality":quality,"nodes":[{"id":"node-1","order":0,"depth":0}]});
+            let value = json!({"source_api":"unknown","quality":quality,"nodes":[{"id":"node-1","order":0,"depth":0,"semantic_role":"unknown","purpose":"content"}]});
             let native: platform::ExtractionResult = serde_json::from_value(value.clone()).unwrap();
             let expected: domain::ExtractionResult = serde_json::from_value(value).unwrap();
             assert_eq!(extraction(native), expected);

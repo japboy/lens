@@ -1,16 +1,16 @@
 use crate::model::{
-    Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult,
-    ResourceReference, SelectedWindow, WindowIdentity, WindowObservableFacts,
+    Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult, NodePurpose,
+    ResourceReference, SelectedWindow, SourceApi, WindowIdentity, WindowObservableFacts,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 2;
+pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 3;
 pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 2;
-pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 4;
-pub const LENS_INPUT_SCHEMA_VERSION: u32 = 3;
+pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 5;
+pub const LENS_INPUT_SCHEMA_VERSION: u32 = 4;
 pub const MAX_LENS_TARGETS: usize = 4;
 pub const MAX_LENS_CONTEXT_NODES: usize = 60_000;
 pub const MAX_LENS_CONTEXT_TEXT_BYTES: usize = 2_000_000;
@@ -168,24 +168,7 @@ impl From<&LensTarget> for LensSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LensNodeKind {
-    Heading,
-    Paragraph,
-    List,
-    ListItem,
-    Table,
-    Row,
-    Cell,
-    Link,
-    Control,
-    Dialog,
-    Region,
-    Text,
-    Image,
-    Unknown,
-}
+pub use crate::model::SemanticRole as LensNodeKind;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -195,6 +178,7 @@ pub enum LensCoordinateSpace {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensNode {
+    pub purpose: NodePurpose,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
@@ -223,8 +207,9 @@ pub struct LensNode {
     pub resource_refs: Vec<ResourceReference>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LensDocument {
+    pub source_api: SourceApi,
     pub schema_version: u32,
     pub source: LensSource,
     pub roots: Vec<String>,
@@ -332,6 +317,7 @@ impl LensDocument {
         roots.sort_by_key(|id| nodes.get(id).map_or(usize::MAX, |node| node.order));
 
         Ok(Some(Self {
+            source_api: extraction.source_api,
             schema_version: LENS_DOCUMENT_SCHEMA_VERSION,
             source: LensSource::from(target),
             roots,
@@ -403,17 +389,18 @@ impl LensDocument {
             .filter(|node| included.contains(&node.id))
             .map(|node| {
                 let is_application_root =
-                    node.parent_id.is_none() && node.role.as_deref() == Some("AXWindow");
+                    node.parent_id.is_none() && node.purpose == NodePurpose::WindowRoot;
                 omitted_root_chrome |= is_application_root
                     && (node.title.is_some() || node.value.is_some() || node.description.is_some());
                 LensContentNode {
+                    purpose: node.purpose,
                     id: node.id.clone(),
                     parent_id: node.parent_id.clone().filter(|id| included.contains(id)),
                     kind: node.kind,
                     role: (matches!(node.kind, LensNodeKind::Unknown | LensNodeKind::Image)
-                        || node.role.as_deref().is_some_and(is_text_entry_role))
-                    .then(|| node.role.clone())
-                    .flatten(),
+                        || node.purpose == NodePurpose::TextEntry)
+                        .then(|| node.role.clone())
+                        .flatten(),
                     subrole: node.subrole.clone(),
                     title: (!is_application_root)
                         .then(|| project_text(node.title.as_deref(), &mut truncated_fields))
@@ -434,7 +421,7 @@ impl LensDocument {
         if omitted_root_chrome {
             omissions.push(ProjectionOmission::document_wide(
                 ProjectionOmissionReason::ApplicationChrome,
-                "Root AXWindow text is represented by source metadata instead of document content.",
+                "Root window text is represented by source metadata instead of document content.",
             ));
         }
         if truncated_fields {
@@ -471,18 +458,25 @@ impl LensDocument {
             });
         }
 
-        (LensDocumentProjection { nodes }, omissions)
+        (
+            LensDocumentProjection {
+                source_api: self.source_api,
+                nodes,
+            },
+            omissions,
+        )
     }
 }
 
 impl From<&ExtractedNode> for LensNode {
     fn from(node: &ExtractedNode) -> Self {
         Self {
+            purpose: node.purpose,
             id: node.id.clone(),
             parent_id: node.parent_id.clone(),
             order: node.order,
             depth: node.depth,
-            kind: normalize_kind(node.role.as_deref()),
+            kind: node.semantic_role,
             role: node.role.clone(),
             subrole: node.subrole.clone(),
             title: node.title.clone(),
@@ -501,32 +495,6 @@ fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 
-fn normalize_kind(role: Option<&str>) -> LensNodeKind {
-    match role.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "axheading" => LensNodeKind::Heading,
-        "axstatictext" | "axtext" => LensNodeKind::Text,
-        "axlist" => LensNodeKind::List,
-        "axlistitem" => LensNodeKind::ListItem,
-        "axtable" | "axoutline" => LensNodeKind::Table,
-        "axrow" => LensNodeKind::Row,
-        "axcell" | "axcolumn" => LensNodeKind::Cell,
-        "axlink" => LensNodeKind::Link,
-        "axbutton" | "axcheckbox" | "axradiobutton" | "axtextfield" | "axtextarea"
-        | "axcombobox" | "axpopupbutton" | "axslider" | "axswitch" => LensNodeKind::Control,
-        "axdialog" | "axsheet" => LensNodeKind::Dialog,
-        "axgroup" | "axsection" | "axlandmark" | "axwebarea" | "axwindow" => LensNodeKind::Region,
-        "axparagraph" => LensNodeKind::Paragraph,
-        "aximage" => LensNodeKind::Image,
-        _ => LensNodeKind::Unknown,
-    }
-}
-
-pub(crate) fn is_text_entry_role(role: &str) -> bool {
-    ["AXTextField", "AXTextArea", "AXComboBox"]
-        .iter()
-        .any(|known| role.eq_ignore_ascii_case(known))
-}
-
 fn project_text(value: Option<&str>, truncated: &mut bool) -> Option<String> {
     let value = value?;
     if value.len() <= MAX_LENS_INPUT_FIELD_BYTES {
@@ -543,6 +511,8 @@ fn project_text(value: Option<&str>, truncated: &mut bool) -> Option<String> {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LensMediaScope {
+    /// Historical wire spelling retained for media readers. All portable element
+    /// regions use this scope; classification comes from semantic_role, never AX.
     AxElementRegion,
     WindowFallback,
 }
@@ -667,11 +637,7 @@ impl LensMediaPlan {
         let mut image_nodes = extraction
             .nodes
             .iter()
-            .filter(|node| {
-                node.role
-                    .as_deref()
-                    .is_some_and(|role| role.eq_ignore_ascii_case("AXImage"))
-            })
+            .filter(|node| node.semantic_role == LensNodeKind::Image)
             .collect::<Vec<_>>();
         image_nodes.sort_by_key(|node| node.order);
         let mut plan = Self::default();
@@ -749,16 +715,16 @@ fn record_planning_omission(
 fn planning_omission_detail(reason: LensMediaOmissionReason, count: usize) -> String {
     match reason {
         LensMediaOmissionReason::MissingBounds => format!(
-            "{count} AXImage nodes expose no screen bounds, so their pixels cannot be captured deterministically."
+            "{count} Image nodes expose no screen bounds, so their pixels cannot be captured deterministically."
         ),
         LensMediaOmissionReason::InvalidBounds => format!(
-            "{count} AXImage nodes expose non-finite or non-positive screen bounds."
+            "{count} Image nodes expose non-finite or non-positive screen bounds."
         ),
         LensMediaOmissionReason::OutsideWindow => format!(
-            "{count} AXImage nodes do not intersect the selected-window frame, so they have no visible pixels to capture."
+            "{count} Image nodes do not intersect the selected-window frame, so they have no visible pixels to capture."
         ),
         LensMediaOmissionReason::AttachmentLimit => format!(
-            "{count} AXImage regions were omitted after the versioned {MAX_LENS_MEDIA_ATTACHMENTS}-attachment limit."
+            "{count} Image regions were omitted after the versioned {MAX_LENS_MEDIA_ATTACHMENTS}-attachment limit."
         ),
         LensMediaOmissionReason::ByteBudget | LensMediaOmissionReason::CaptureFailed => {
             unreachable!("native capture outcomes are not planning omissions")
@@ -810,7 +776,7 @@ pub struct LensTargetCapture {
     pub media: LensMediaCapture,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LensContext {
     pub schema_version: u32,
     pub context_id: Uuid,
@@ -978,7 +944,7 @@ impl LensContext {
                     })
                     .map(|attachment| {
                         format!(
-                            "{} media {}: only the selected-window-visible subregion of the AX image could be captured",
+                            "{} media {}: only the selected-window-visible subregion of the source image could be captured",
                             target.id, attachment.id
                         )
                     }),
@@ -1036,6 +1002,7 @@ impl LensContext {
 
     pub fn unavailable_accessibility(message: impl Into<String>) -> ExtractionResult {
         ExtractionResult {
+            source_api: SourceApi::Unknown,
             quality: ExtractionQuality::Unavailable,
             resolved_window: None,
             nodes: Vec::new(),
@@ -1055,11 +1022,13 @@ pub fn target_id(target: &SelectedWindow) -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensDocumentProjection {
+    pub source_api: SourceApi,
     pub nodes: Vec<LensContentNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensContentNode {
+    pub purpose: NodePurpose,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
@@ -1135,7 +1104,7 @@ pub struct LensInputSource {
     pub omissions: Vec<ProjectionOmission>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LensInput {
     pub schema_version: u32,
     pub context_id: Uuid,
@@ -1340,10 +1309,13 @@ mod tests {
 
     fn accessibility(quality: ExtractionQuality) -> ExtractionResult {
         ExtractionResult {
+            source_api: crate::model::SourceApi::MacosAx,
             quality,
             resolved_window: None,
             nodes: vec![
                 ExtractedNode {
+                    semantic_role: crate::model::SemanticRole::Region,
+                    purpose: crate::model::NodePurpose::WindowRoot,
                     id: "node-000000".into(),
                     parent_id: None,
                     order: 0,
@@ -1358,6 +1330,8 @@ mod tests {
                     children: vec!["node-000001".into(), "node-000002".into()],
                 },
                 ExtractedNode {
+                    semantic_role: crate::model::SemanticRole::Text,
+                    purpose: crate::model::NodePurpose::Content,
                     id: "node-000001".into(),
                     parent_id: Some("node-000000".into()),
                     order: 1,
@@ -1372,6 +1346,8 @@ mod tests {
                     children: vec![],
                 },
                 ExtractedNode {
+                    semantic_role: crate::model::SemanticRole::Image,
+                    purpose: crate::model::NodePurpose::Content,
                     id: "node-000002".into(),
                     parent_id: Some("node-000000".into()),
                     order: 2,
@@ -1613,6 +1589,12 @@ mod tests {
         for role in ["AXTextArea", "AXTextField", "AXComboBox", "AXButton"] {
             let mut extraction = accessibility(ExtractionQuality::Full);
             extraction.nodes[1].role = Some(role.into());
+            extraction.nodes[1].semantic_role = LensNodeKind::Control;
+            extraction.nodes[1].purpose = if role == "AXButton" {
+                NodePurpose::Content
+            } else {
+                NodePurpose::TextEntry
+            };
             let document = LensDocument::from_accessibility(&lens_target(), &extraction)
                 .unwrap()
                 .unwrap();
@@ -1644,6 +1626,52 @@ mod tests {
             Some("node-000002")
         );
         assert_eq!(plan.requests[0].bounds.expect("bounds").width, 60.0);
+    }
+
+    #[test]
+    fn declared_semantics_not_native_spelling_drive_content_and_image_plans() {
+        let ax = accessibility(ExtractionQuality::Full);
+        let mut other = ax.clone();
+        other.source_api = SourceApi::WindowsUia;
+        for (node, raw) in other.nodes.iter_mut().zip(["Window", "Text", "Image"]) {
+            node.role = Some(raw.into());
+            node.subrole = Some("ProviderSpecificSubrole".into());
+        }
+        let project = |value: &ExtractionResult| {
+            LensDocument::from_accessibility(&lens_target(), value)
+                .unwrap()
+                .unwrap()
+                .project(&BTreeSet::new(), usize::MAX)
+                .0
+        };
+        let a = project(&ax);
+        let b = project(&other);
+        assert_eq!(a.source_api, SourceApi::MacosAx);
+        assert_eq!(b.source_api, SourceApi::WindowsUia);
+        for (a, b) in a.nodes.iter().zip(&b.nodes) {
+            assert_eq!(
+                (a.kind, a.purpose, &a.title, &a.value, &a.description),
+                (b.kind, b.purpose, &b.title, &b.value, &b.description)
+            );
+        }
+        assert_eq!(a.nodes[0].title, None);
+        assert_eq!(
+            LensMediaPlan::from_accessibility(&lens_target(), &ax, 16),
+            LensMediaPlan::from_accessibility(&lens_target(), &other, 16)
+        );
+        other.nodes[2].semantic_role = LensNodeKind::Unknown;
+        other.nodes[2].role = Some("AXImage".into());
+        assert!(
+            LensMediaPlan::from_accessibility(&lens_target(), &other, 16)
+                .requests
+                .is_empty()
+        );
+        let projected = project(&other);
+        assert_eq!(projected.nodes[2].kind, LensNodeKind::Unknown);
+        assert_eq!(projected.nodes[2].role.as_deref(), Some("AXImage"));
+        other.nodes[0].purpose = NodePurpose::Content;
+        other.nodes[0].role = Some("AXWindow".into());
+        assert_eq!(project(&other).nodes[0].title.as_deref(), Some("Document"));
     }
 
     #[test]
@@ -1763,6 +1791,8 @@ mod tests {
             let id = format!("node-{index:06}");
             extraction.nodes[0].children.push(id.clone());
             extraction.nodes.push(ExtractedNode {
+                semantic_role: LensNodeKind::Image,
+                purpose: NodePurpose::Content,
                 id,
                 parent_id: Some("node-000000".into()),
                 order: index,
@@ -1867,6 +1897,8 @@ mod tests {
             let id = format!("node-{index:06}");
             extraction.nodes[0].children.push(id.clone());
             extraction.nodes.push(ExtractedNode {
+                semantic_role: LensNodeKind::Text,
+                purpose: NodePurpose::Content,
                 id,
                 parent_id: Some("node-000000".into()),
                 order: index,
@@ -1947,6 +1979,8 @@ mod tests {
             let id = format!("node-{index:06}");
             extraction.nodes[0].children.push(id.clone());
             extraction.nodes.push(ExtractedNode {
+                semantic_role: LensNodeKind::Text,
+                purpose: NodePurpose::Content,
                 id,
                 parent_id: Some("node-000000".into()),
                 order: index,

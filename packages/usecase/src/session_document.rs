@@ -877,7 +877,7 @@ fn delivery_coverage(content: &ContentBlock) -> Option<LensDeliveryCoverage> {
     if serde_json_canonicalizer::to_vec(&value).ok()?.len() > MAX_LENS_INPUT_BYTES {
         return None;
     }
-    if value.get("schema_version")?.as_u64()? != 1
+    if !matches!(value.get("schema_version")?.as_u64()?, 1 | 2)
         || !value.get("media")?.as_array()?.is_empty()
         || !value.get("media_omissions")?.is_array()
         || !matches!(
@@ -1077,6 +1077,16 @@ mod tests {
     }
     #[test]
     fn coverage_rejects_malformed_future_or_unrelated_values_and_assistant_claims() {
+        for version in [1, 2] {
+            let mut value = delivery_projection();
+            value["schema_version"] = serde_json::json!(version);
+            assert!(delivery_coverage(&text(&value.to_string())).is_some());
+        }
+        for version in [0, 3, u64::MAX] {
+            let mut value = delivery_projection();
+            value["schema_version"] = serde_json::json!(version);
+            assert!(delivery_coverage(&text(&value.to_string())).is_none());
+        }
         for path in ["schema_version", "sources", "delivery"] {
             let mut value = delivery_projection();
             value[path] = serde_json::json!("unknown");

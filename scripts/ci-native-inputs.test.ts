@@ -27,6 +27,22 @@ function requireNativeInput(path: string): void {
 }
 
 describe("checked native consumer inventory", () => {
+  it("retains native verification for the portable source contract fixture", () => {
+    const path = "apps/desktop/tests/fixtures/portable-source-contracts.json";
+    expect(
+      nativeInputInventory(sources).get("apps/desktop/src-tauri/src/contract_tests.rs"),
+    ).toContain(path);
+    for (const change of [
+      { path, before: null, after: "fixture" },
+      { path, before: "old", after: "fixture" },
+      { path, before: "fixture", after: null },
+    ])
+      expect(classifyChange(change)).toMatchObject({
+        ruleId: "native-input",
+        requirements: { sharedRust: true, macos: "code" },
+      });
+  });
+
   it("keeps every literal include and reviewed build input under native verification", () => {
     const inventory = nativeInputInventory(sources);
     expect([...inventory.values()].flat().length).toBeGreaterThan(20);

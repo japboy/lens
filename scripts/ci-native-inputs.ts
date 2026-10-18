@@ -7,6 +7,7 @@ export const NATIVE_CODE_INPUTS = new Set([
   "LICENSE",
   "NOTICE",
   "apps/desktop/tests/fixtures/workspace-contracts.json",
+  "apps/desktop/tests/fixtures/portable-source-contracts.json",
   "apps/desktop/tests/fixtures/acp-generated-image.json",
   "apps/desktop/src/html-output.ts",
   "packages/ui/src/assets/agent-icons.json",
