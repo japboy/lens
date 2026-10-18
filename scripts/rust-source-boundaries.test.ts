@@ -33,6 +33,14 @@ describe("portable source escape restrictions", () => {
     "use std::{fs as disk};",
     "use std::r#process::Command;",
     "use std::time::Instant;",
+    "use std::io;",
+    "use std::io::*;",
+    "use std::io::{Cursor, Read};",
+    "use std::io::Read;",
+    "use std::io::Write;",
+    "use std::io::stdin;",
+    "use std::{io::Cursor};",
+    "use other::io::Cursor;",
     "let id = uuid::Uuid::new_v4();",
     'include!(concat!(env!("OUT_DIR"), "/native.rs"));',
     "macro_rules! inject { () => { native() } }",
@@ -41,6 +49,19 @@ describe("portable source escape restrictions", () => {
     "windows::Win32::native();",
   ])("rejects %s", (source) => {
     expect(portableSourceViolations(source).length).toBeGreaterThan(0);
+  });
+
+  it("admits only fully qualified in-memory cursors without opening the I/O module", () => {
+    for (const source of [
+      "let reader = std::io::Cursor::new(bytes);",
+      "use std::io::Cursor;",
+      "use ::std /* buffer */ :: io :: Cursor as MemoryBuffer;",
+    ]) {
+      expect(portableSourceViolations(source)).toEqual([]);
+    }
+    expect(
+      portableSourceViolations("let reader = std::io::Cursor::new(std::fs::read(path));"),
+    ).not.toEqual([]);
   });
 
   it("keeps strings, chars, lifetimes, raw strings and nested comments distinct from code", () => {

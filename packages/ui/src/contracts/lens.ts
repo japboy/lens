@@ -178,6 +178,7 @@ export interface ExtractedNode {
 
 export interface ExtractionResult {
   source_api: SourceApi;
+  bounds_space?: DesktopSpace | null;
   quality: ExtractionQuality;
   resolved_window?: {
     facts: WindowObservableFacts;
@@ -224,7 +225,9 @@ export type LensNodeKind =
   | "image"
   | "unknown";
 
-export type LensCoordinateSpace = "screen_points";
+export type DesktopSpace = "desktop_logical" | "desktop_physical_pixels";
+/** screen_points is historical, unproven coordinate data only. */
+export type LensCoordinateSpace = "screen_points" | DesktopSpace;
 export type SourceApi = "macos_ax" | "windows_uia" | "unknown";
 export type NodePurpose = "content" | "window_root" | "text_entry";
 
@@ -261,16 +264,55 @@ export interface LensDocument {
 export type LensMediaScope = "ax_element_region" | "window_fallback";
 export type LensMediaCoverage = "full_region" | "visible_subregion";
 
+export interface PixelExtent {
+  width: number;
+  height: number;
+}
+export interface PixelRect extends PixelExtent {
+  x: number;
+  y: number;
+}
+export type DesktopMapping =
+  | {
+      status: "known";
+      space: DesktopSpace;
+      desktop_bounds: Bounds;
+      scale_x: number;
+      scale_y: number;
+    }
+  | {
+      status: "unavailable";
+      reason: "missing_metadata" | "invalid_metadata" | "unverified_configuration";
+    };
+export interface AcquiredFrame {
+  id: string;
+  extent: PixelExtent;
+  content_bounds: Bounds;
+  desktop_mapping: DesktopMapping;
+}
+export type LensMediaGeometry =
+  | {
+      provenance: "acquired";
+      frame: AcquiredFrame;
+      source_bounds: Bounds;
+      captured_bounds: Bounds;
+      crop: PixelRect;
+    }
+  | {
+      provenance: "historical_unproven";
+      source_bounds: Bounds;
+      captured_bounds: Bounds;
+      coordinate_space: LensCoordinateSpace;
+    };
+
 export interface LensMediaAttachment {
   id: string;
   target_id: string;
   uri: string;
   scope: LensMediaScope;
   source_node_id?: string;
-  source_bounds: Bounds;
-  captured_bounds: Bounds;
+  geometry: LensMediaGeometry;
   coverage: LensMediaCoverage;
-  coordinate_space: LensCoordinateSpace;
   mime_type: string;
   pixel_width: number;
   pixel_height: number;
@@ -287,7 +329,9 @@ export interface LensMediaOmission {
     | "outside_window"
     | "attachment_limit"
     | "byte_budget"
-    | "capture_failed";
+    | "capture_failed"
+    | "geometry_unavailable"
+    | "observation_changed";
   omitted_count: number;
   first_order?: number;
   last_order?: number;

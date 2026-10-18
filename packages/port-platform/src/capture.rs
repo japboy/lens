@@ -1,3 +1,4 @@
+use crate::geometry::{AcquiredFrame, DesktopSpace, FrameId, PixelRect};
 use crate::{authority::TargetReadKey, ImageCaptureLimits, PlatformError};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,19 @@ pub enum CaptureOmissionReason {
     AttachmentLimit,
     ByteBudget,
     CaptureFailed,
+    GeometryUnavailable,
+    ObservationChanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CaptureRegion {
+    FrameContent,
+    DesktopRegion {
+        space: DesktopSpace,
+        bounds: Bounds,
+        observed_window_frame: Bounds,
+    },
 }
 
 /// Native capture needs geometry and correlation only, not domain node IDs or media URIs.
@@ -43,14 +57,17 @@ pub enum CaptureOmissionReason {
 pub struct CaptureRequest {
     pub id: String,
     pub scope: CaptureScope,
-    pub bounds: Option<Bounds>,
+    pub region: CaptureRegion,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapturedImage {
     pub attachment_id: String,
+    pub frame_id: FrameId,
+    /// Requested and captured regions are frame_pixels, never desktop geometry.
     pub source_bounds: Bounds,
     pub captured_bounds: Bounds,
+    pub crop: PixelRect,
     pub coverage: CaptureCoverage,
     pub pixel_width: usize,
     pub pixel_height: usize,
@@ -67,7 +84,8 @@ pub struct CaptureOmission {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureBatch {
-    pub window_bounds: Option<Bounds>,
+    /// Required whenever captures exist; absent only when no image was acquired.
+    pub frame: Option<AcquiredFrame>,
     pub captures: Vec<CapturedImage>,
     pub omissions: Vec<CaptureOmission>,
     pub diagnostics: Vec<String>,

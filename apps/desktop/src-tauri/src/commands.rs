@@ -1149,6 +1149,7 @@ async fn build_target_selection_item<R: tauri::Runtime>(
                 target_id: capture_target_id,
                 context_id: operation_id,
                 context_revision: NonZeroU64::MIN,
+                desktop_observation: None,
             },
             plan,
             ImageCaptureLimits {
@@ -1613,7 +1614,7 @@ pub fn stop_lens<R: tauri::Runtime>(
         return Err("Lens operation was superseded".into());
     }
     state.terminate_source_operation(operation_id, OperationTerminalReason::Cancelled)?;
-    state.begin_source_cleanup(operation_id)?;
+    let quiescent = state.begin_source_cleanup(operation_id)?;
     #[cfg(debug_assertions)]
     stop_probe.record(
         &app,
@@ -1662,7 +1663,7 @@ pub fn stop_lens<R: tauri::Runtime>(
     }
     state.finish_source_cleanup(
         operation_id,
-        released.is_ok() && observation_cleanup.is_ok(),
+        quiescent && released.is_ok() && observation_cleanup.is_ok(),
     )?;
     #[cfg(debug_assertions)]
     stop_probe.record(

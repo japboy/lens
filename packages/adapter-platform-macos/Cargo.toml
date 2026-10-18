@@ -22,6 +22,11 @@ screencapturekit = { version = "=11.0.0", features = ["async", "macos_15_2"] }
 dispatch2 = "=0.3.1"
 objc2 = "=0.6.4"
 objc2-foundation = "=0.3.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSScreen",
+  "objc2-core-foundation",
+] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 
 [[test]]

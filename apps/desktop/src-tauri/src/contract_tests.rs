@@ -97,7 +97,13 @@ fn serialized_contracts_match_the_portable_source_baseline() {
     for (key, value) in changed.as_object().unwrap() {
         expected[key] = value.clone();
     }
-    assert_eq!(actual, expected);
+    for (key, value) in actual.as_object().unwrap() {
+        assert_eq!(value, &expected[key], "contract {key}");
+    }
+    assert_eq!(
+        actual.as_object().unwrap().len(),
+        expected.as_object().unwrap().len()
+    );
 }
 
 #[test]
@@ -107,10 +113,12 @@ fn pre_workspace_ax_context_migrates_to_the_current_contract() {
     ))
     .unwrap();
     let migrated: LensContext = serde_json::from_value(archived["context"].clone()).unwrap();
-    assert_eq!(
-        serde_json::to_value(migrated).unwrap(),
-        contract_snapshot()["context"]
-    );
+    let mut expected_context = contract_snapshot()["context"].clone();
+    // The archive explicitly declared legacy screen points; a fresh capture
+    // without a bounds-space observation must not invent those units.
+    expected_context["sources"][0]["document"]["nodes"]["node-000000"]["coordinate_space"] =
+        json!("screen_points");
+    assert_eq!(serde_json::to_value(migrated).unwrap(), expected_context);
     let input: LensInput = serde_json::from_value(archived["input"].clone()).unwrap();
     let mut expected = contract_snapshot()["input"].clone();
     // Historical diagnostics are retained verbatim, not rewritten to the new
@@ -125,6 +133,26 @@ fn print_workspace_contract_baseline() {
     println!(
         "WORKSPACE_CONTRACT_BASELINE={}",
         serde_json::to_string(&contract_snapshot()).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "Explicit fixture capture; never rewrites the checked-in expected result"]
+fn print_portable_source_contract_baseline() {
+    let snapshot = contract_snapshot();
+    let keys: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/portable-source-contracts.json"
+    ))
+    .unwrap();
+    let current: serde_json::Map<String, Value> = keys
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|key| (key.clone(), snapshot[key].clone()))
+        .collect();
+    println!(
+        "PORTABLE_SOURCE_CONTRACT_BASELINE={}",
+        serde_json::to_string_pretty(&current).unwrap()
     );
 }
 

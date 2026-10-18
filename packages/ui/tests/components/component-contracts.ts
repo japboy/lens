@@ -554,7 +554,7 @@ describe("component property and event contracts", () => {
 
   it("starts the initial Agent turn automatically and exposes retry only after failure", async () => {
     const input: NonNullable<LensState["input"]> = {
-      schema_version: 3,
+      schema_version: 5,
       context_id: "operation",
       context_revision: 1,
       sources: [],

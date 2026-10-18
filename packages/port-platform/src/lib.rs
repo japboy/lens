@@ -5,6 +5,7 @@
 pub mod accessibility;
 pub mod authority;
 pub mod capture;
+pub mod geometry;
 pub mod model;
 pub mod observation;
 pub mod selection;
@@ -50,6 +51,10 @@ pub enum PlatformError {
     PickerCallbackDropped,
     #[error("invalid native response: {0}")]
     InvalidResponse(String),
+    /// Native teardown is not confirmed. Further acquisition must not be
+    /// treated as unavailable media or resume within the same live operation.
+    #[error("native cleanup is unconfirmed: {0}")]
+    CleanupUnconfirmed(String),
     #[error("platform operation failed: {0}")]
     Operation(String),
 }

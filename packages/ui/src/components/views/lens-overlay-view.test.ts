@@ -75,7 +75,7 @@ it("withholds missing-source prose during pending source retrieval and clears pr
     lens: {
       ...view.model!.lens,
       input: {
-        schema_version: 3,
+        schema_version: 5,
         context_id: "old-source",
         context_revision: 1,
         sources: [],

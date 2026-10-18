@@ -56,6 +56,63 @@ pub(crate) fn bounds_from_platform(bounds: platform::Bounds) -> domain::Bounds {
     }
 }
 
+pub(crate) fn desktop_space_from_platform(
+    space: port_platform::geometry::DesktopSpace,
+) -> ::domain::geometry::DesktopSpace {
+    match space {
+        port_platform::geometry::DesktopSpace::DesktopLogical => {
+            ::domain::geometry::DesktopSpace::DesktopLogical
+        }
+        port_platform::geometry::DesktopSpace::DesktopPhysicalPixels => {
+            ::domain::geometry::DesktopSpace::DesktopPhysicalPixels
+        }
+    }
+}
+
+pub(crate) fn frame_from_platform(
+    frame: &port_platform::geometry::AcquiredFrame,
+) -> ::domain::geometry::AcquiredFrame {
+    use ::domain::geometry;
+    use port_platform::geometry as native;
+    let desktop_mapping = match frame.desktop_mapping {
+        native::DesktopMapping::Known {
+            space,
+            desktop_bounds,
+            scale_x,
+            scale_y,
+        } => geometry::DesktopMapping::Known {
+            space: desktop_space_from_platform(space),
+            desktop_bounds: bounds_from_platform(desktop_bounds),
+            scale_x,
+            scale_y,
+        },
+        native::DesktopMapping::Unavailable { reason } => geometry::DesktopMapping::Unavailable {
+            reason: match reason {
+                native::GeometryUnavailableReason::MissingMetadata => {
+                    geometry::GeometryUnavailableReason::MissingMetadata
+                }
+                native::GeometryUnavailableReason::InvalidMetadata => {
+                    geometry::GeometryUnavailableReason::InvalidMetadata
+                }
+                native::GeometryUnavailableReason::UnverifiedConfiguration => {
+                    geometry::GeometryUnavailableReason::UnverifiedConfiguration
+                }
+            },
+        },
+    };
+    geometry::AcquiredFrame {
+        id: uuid::Uuid::from(frame.id)
+            .try_into()
+            .expect("validated non-nil frame ID"),
+        extent: geometry::PixelExtent {
+            width: frame.extent.width,
+            height: frame.extent.height,
+        },
+        content_bounds: bounds_from_platform(frame.content_bounds),
+        desktop_mapping,
+    }
+}
+
 pub fn window_identity(identity: &domain::WindowIdentity) -> platform::WindowIdentity {
     platform::WindowIdentity {
         window_id: identity.window_id,
@@ -97,6 +154,7 @@ fn facts_from_platform(facts: platform::WindowObservableFacts) -> domain::Window
 pub fn extraction(result: platform::ExtractionResult) -> domain::ExtractionResult {
     let metrics = result.metrics;
     domain::ExtractionResult {
+        bounds_space: result.bounds_space.map(desktop_space_from_platform),
         source_api: match result.source_api {
             platform::SourceApi::MacosAx => domain::SourceApi::MacosAx,
             platform::SourceApi::WindowsUia => domain::SourceApi::WindowsUia,
@@ -244,7 +302,7 @@ mod tests {
     #[test]
     fn extraction_conversion_preserves_every_graph_field_and_diagnostic() {
         let value = json!({
-            "source_api":"macos_ax","quality":"partial",
+            "source_api":"macos_ax","bounds_space":"desktop_logical","quality":"partial",
             "resolved_window": {
                 "facts": {"title":"Changed title","application_name":"Fixture","frame":{
                     "x":20.0,"y":30.0,"width":350.0,"height":250.0

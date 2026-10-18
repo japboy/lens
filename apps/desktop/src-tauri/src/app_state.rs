@@ -912,7 +912,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn begin_source_cleanup(&self, operation_id: Uuid) -> Result<(), String> {
+    pub fn begin_source_cleanup(&self, operation_id: Uuid) -> Result<bool, String> {
         let mut admission = self
             .read_admission
             .lock()
@@ -923,7 +923,10 @@ impl AppState {
         {
             active.begin_cleanup();
         }
-        Ok(())
+        // Sample after closing admission, before native release. A worker which
+        // finishes between release and finish_cleanup cannot retroactively prove
+        // that the native release covered its later cleanup effects.
+        Ok(self.source_workers.load(Ordering::Acquire) == 0)
     }
 
     pub fn finish_source_cleanup(&self, operation_id: Uuid, confirmed: bool) -> Result<(), String> {
@@ -1171,9 +1174,9 @@ pub(crate) fn replace_active_source_state<R: tauri::Runtime>(
     };
     emit_app_snapshot(app, snapshot, sync_tray)?;
     if cancelled {
-        state.begin_source_cleanup(operation_id)?;
+        let quiescent = state.begin_source_cleanup(operation_id)?;
         let released = state.platform.selection.release_operation(operation_id);
-        state.finish_source_cleanup(operation_id, released.is_ok())?;
+        state.finish_source_cleanup(operation_id, quiescent && released.is_ok())?;
         if let Err(error) = released {
             eprintln!("Unable to confirm cancelled source cleanup: {error}");
         }

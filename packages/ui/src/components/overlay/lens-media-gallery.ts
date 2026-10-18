@@ -49,6 +49,7 @@ export class LensMediaGallery extends LitElement {
     const index = selectedIndex >= 0 ? selectedIndex : 0;
     const attachment = media[index];
     if (!attachment) return nothing;
+    const geometry = attachment.geometry;
     const source = inputMediaPreviewUrl(this.lens, attachment);
     const scopeLabel =
       attachment.scope === "window_fallback" ? "Whole-window fallback" : "AX image region";
@@ -158,7 +159,7 @@ export class LensMediaGallery extends LitElement {
                 </dd>
               </div>
               <div>
-                <dt>Pixels</dt>
+                <dt>Encoded pixels</dt>
                 <dd>${attachment.pixel_width} × ${attachment.pixel_height}</dd>
               </div>
               <div>
@@ -168,21 +169,46 @@ export class LensMediaGallery extends LitElement {
               <div>
                 <dt>Source bounds</dt>
                 <dd>
-                  ${attachment.source_bounds.x}, ${attachment.source_bounds.y} ·
-                  ${attachment.source_bounds.width} × ${attachment.source_bounds.height}
+                  ${geometry.source_bounds.x}, ${geometry.source_bounds.y} ·
+                  ${geometry.source_bounds.width} × ${geometry.source_bounds.height}
                 </dd>
               </div>
               <div>
                 <dt>Captured bounds</dt>
                 <dd>
-                  ${attachment.captured_bounds.x}, ${attachment.captured_bounds.y} ·
-                  ${attachment.captured_bounds.width} × ${attachment.captured_bounds.height}
+                  ${geometry.captured_bounds.x}, ${geometry.captured_bounds.y} ·
+                  ${geometry.captured_bounds.width} × ${geometry.captured_bounds.height}
                 </dd>
               </div>
               <div>
                 <dt>Coordinates</dt>
-                <dd>${attachment.coordinate_space}</dd>
+                <dd>
+                  ${geometry.provenance === "acquired" ? "frame_pixels" : `${geometry.coordinate_space} (historical; unproven)`}
+                </dd>
               </div>
+              ${
+                geometry.provenance === "acquired"
+                  ? html`
+                      <div>
+                        <dt>Source frame pixels</dt>
+                        <dd>${geometry.frame.extent.width} × ${geometry.frame.extent.height}</dd>
+                      </div>
+                      <div>
+                        <dt>Source crop pixels</dt>
+                        <dd>
+                          ${geometry.crop.x}, ${geometry.crop.y} · ${geometry.crop.width} ×
+                          ${geometry.crop.height}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Desktop mapping</dt>
+                        <dd>
+                          ${geometry.frame.desktop_mapping.status === "known" ? geometry.frame.desktop_mapping.space : `Unavailable: ${geometry.frame.desktop_mapping.reason}`}
+                        </dd>
+                      </div>
+                    `
+                  : nothing
+              }
               <div>
                 <dt>Format</dt>
                 <dd>${attachment.mime_type}</dd>

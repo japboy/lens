@@ -1613,38 +1613,6 @@ bool lens_register_ax_window_for_operation(
     return registered;
 }
 
-int32_t lens_registered_ax_window_frame(
-    const char *operationIDCString, uint32_t windowID,
-    double *x, double *y, double *width, double *height
-) {
-    if (!operationIDCString || !windowID || !x || !y || !width || !height) return -1;
-    NSString *operationID = [NSString stringWithUTF8String:operationIDCString];
-    if (!operationID.length) return -1;
-    __block int32_t result = -1;
-    // Lookup, promotion state and frame share the same main-thread transaction as
-    // release. A concurrently released source can never become "never promoted".
-    LensPerformSyncOnMainThread(^{
-        LensNativeWindowSource *source = LensWindowSourceForIdentity(operationID, windowID);
-        if (!source) return;
-        // Screenshot fallback precedes AX permission; do not promote to capture.
-        AXUIElementRef window = [source copyResolvedWindow];
-        if (!window) { result = 0; return; }
-        CGRect frame = CGRectZero;
-        BOOL available = LensAXFrame(window, &frame);
-        CFRelease(window);
-        if (!available || CGRectIsEmpty(frame) ||
-            !isfinite(frame.origin.x) || !isfinite(frame.origin.y) ||
-            !isfinite(frame.size.width) || !isfinite(frame.size.height) ||
-            !isfinite(CGRectGetMaxX(frame)) || !isfinite(CGRectGetMaxY(frame))) return;
-        *x = frame.origin.x;
-        *y = frame.origin.y;
-        *width = frame.size.width;
-        *height = frame.size.height;
-        result = 1;
-    });
-    return result;
-}
-
 char *lens_extract_window_json(
     int32_t pid,
     const char *selectedTitleCString,

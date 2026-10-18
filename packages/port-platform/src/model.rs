@@ -131,6 +131,9 @@ pub struct ExtractionMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractionResult {
     pub source_api: SourceApi,
+    /// None means the producer has not established the desktop coordinate units.
+    #[serde(default)]
+    pub bounds_space: Option<crate::geometry::DesktopSpace>,
     pub quality: ExtractionQuality,
     #[serde(default)]
     pub resolved_window: Option<ResolvedWindow>,

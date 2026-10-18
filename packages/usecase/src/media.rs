@@ -3,13 +3,13 @@ use crate::platform::{
 };
 use base64::prelude::*;
 use domain::lens::{
-    LensCoordinateSpace, LensMediaAttachment, LensMediaCapture, LensMediaCoverage,
-    LensMediaOmission, LensMediaOmissionReason, LensMediaPayload, LensMediaPlan, LensMediaScope,
+    LensMediaAttachment, LensMediaCapture, LensMediaCoverage, LensMediaGeometry, LensMediaOmission,
+    LensMediaOmissionReason, LensMediaPayload, LensMediaPlan, LensMediaScope,
 };
 use port_platform::{
     capture::{
-        Capture, CaptureBatch, CaptureCoverage, CaptureOmissionReason, CaptureRequest,
-        CaptureScope, CaptureTarget,
+        Capture, CaptureBatch, CaptureCoverage, CaptureOmissionReason, CaptureRegion,
+        CaptureRequest, CaptureScope, CaptureTarget,
     },
     ImageCaptureLimits, PlatformError,
 };
@@ -25,12 +25,20 @@ pub struct MediaCaptureContext {
     pub target_id: String,
     pub context_id: Uuid,
     pub context_revision: NonZeroU64,
+    pub desktop_observation: Option<DesktopObservation>,
+}
+
+/// Earlier tree geometry is an explicit correlated observation, not an image snapshot.
+#[derive(Debug, Clone, Copy)]
+pub struct DesktopObservation {
+    pub space: domain::geometry::DesktopSpace,
+    pub window_frame: domain::model::Bounds,
 }
 
 pub fn capture_media(
     capability: &dyn Capture,
     context: MediaCaptureContext,
-    plan: LensMediaPlan,
+    mut plan: LensMediaPlan,
     limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
     if plan.requests.is_empty() {
@@ -39,31 +47,77 @@ pub fn capture_media(
             ..LensMediaCapture::default()
         });
     }
-    let requests = plan
+    if plan
         .requests
-        .iter()
-        .map(|request| CaptureRequest {
-            id: request.id.clone(),
-            scope: match request.scope {
-                LensMediaScope::AxElementRegion => CaptureScope::AxElementRegion,
-                LensMediaScope::WindowFallback => CaptureScope::WindowFallback,
-            },
-            bounds: request.bounds.map(to_platform_bounds),
-        })
-        .collect::<Vec<_>>();
-    if requests
         .iter()
         .map(|request| &request.id)
         .collect::<BTreeSet<_>>()
         .len()
-        != requests.len()
+        != plan.requests.len()
     {
         return Err(PlatformError::Operation(
             "image capture request identities must be unique".into(),
         ));
     }
+    let mut requests = Vec::new();
+    let mut admitted = Vec::new();
+    for request in plan.requests {
+        let (scope, region) = match request.scope {
+            LensMediaScope::WindowFallback => {
+                (CaptureScope::WindowFallback, CaptureRegion::FrameContent)
+            }
+            LensMediaScope::AxElementRegion => {
+                match (request.bounds, context.desktop_observation) {
+                    (Some(bounds), Some(observation)) => (
+                        CaptureScope::AxElementRegion,
+                        CaptureRegion::DesktopRegion {
+                            space: to_platform_space(observation.space),
+                            bounds: to_platform_bounds(bounds),
+                            observed_window_frame: to_platform_bounds(observation.window_frame),
+                        },
+                    ),
+                    _ => {
+                        plan.omissions.push(LensMediaOmission {
+                        target_id: context.target_id.clone(), attachment_id: Some(request.id),
+                        source_node_id: request.source_node_id,
+                        reason: LensMediaOmissionReason::GeometryUnavailable, omitted_count: 1,
+                        first_order: None, last_order: None,
+                        detail: "Image-region capture has no explicit tree coordinate-space observation.".into(),
+                    });
+                        continue;
+                    }
+                }
+            }
+        };
+        requests.push(CaptureRequest {
+            id: request.id.clone(),
+            scope,
+            region,
+        });
+        admitted.push(request);
+    }
+    plan.requests = admitted;
+    if requests.is_empty() {
+        return Ok(LensMediaCapture {
+            omissions: plan.omissions,
+            ..LensMediaCapture::default()
+        });
+    }
     let batch = capability.capture(context.target, &requests, limits)?;
-    assemble_media(context, plan, batch)
+    assemble_media(context, plan, batch, limits)
+}
+
+fn to_platform_space(
+    space: domain::geometry::DesktopSpace,
+) -> port_platform::geometry::DesktopSpace {
+    match space {
+        domain::geometry::DesktopSpace::DesktopLogical => {
+            port_platform::geometry::DesktopSpace::DesktopLogical
+        }
+        domain::geometry::DesktopSpace::DesktopPhysicalPixels => {
+            port_platform::geometry::DesktopSpace::DesktopPhysicalPixels
+        }
+    }
 }
 
 fn to_domain_coverage(coverage: CaptureCoverage) -> LensMediaCoverage {
@@ -81,6 +135,8 @@ fn to_domain_omission(reason: CaptureOmissionReason) -> LensMediaOmissionReason 
         CaptureOmissionReason::AttachmentLimit => LensMediaOmissionReason::AttachmentLimit,
         CaptureOmissionReason::ByteBudget => LensMediaOmissionReason::ByteBudget,
         CaptureOmissionReason::CaptureFailed => LensMediaOmissionReason::CaptureFailed,
+        CaptureOmissionReason::GeometryUnavailable => LensMediaOmissionReason::GeometryUnavailable,
+        CaptureOmissionReason::ObservationChanged => LensMediaOmissionReason::ObservationChanged,
     }
 }
 
@@ -88,19 +144,37 @@ fn assemble_media(
     context: MediaCaptureContext,
     plan: LensMediaPlan,
     batch: CaptureBatch,
+    limits: ImageCaptureLimits,
 ) -> Result<LensMediaCapture, PlatformError> {
     let requests_by_id = plan
         .requests
         .iter()
         .map(|request| (request.id.as_str(), request))
         .collect::<BTreeMap<_, _>>();
+    if batch.frame.is_some() && batch.captures.is_empty() {
+        return Err(PlatformError::InvalidResponse(
+            "capture frame has no captured image".into(),
+        ));
+    }
+    let frame = batch
+        .frame
+        .as_ref()
+        .map(|frame| {
+            if frame.target != context.target || !frame.is_valid() {
+                return Err(PlatformError::InvalidResponse(
+                    "capture frame does not match the requested read or valid geometry".into(),
+                ));
+            }
+            Ok(crate::platform::frame_from_platform(frame))
+        })
+        .transpose()?;
     let mut result = LensMediaCapture {
-        observed_window_frame: batch.window_bounds.map(to_domain_bounds),
         omissions: plan.omissions,
         diagnostics: batch.diagnostics,
         ..LensMediaCapture::default()
     };
     let mut resolved = BTreeSet::new();
+    let mut total_bytes = 0usize;
     for capture in batch.captures {
         let request = requests_by_id
             .get(capture.attachment_id.as_str())
@@ -116,6 +190,66 @@ fn assemble_media(
                 capture.attachment_id
             )));
         }
+        let frame = frame.as_ref().ok_or_else(|| {
+            PlatformError::InvalidResponse("captured image has no acquired frame".into())
+        })?;
+        if Uuid::from(capture.frame_id) != Uuid::from(frame.id) {
+            return Err(PlatformError::InvalidResponse(
+                "captured image belongs to another frame".into(),
+            ));
+        }
+        let source_bounds = to_domain_bounds(capture.source_bounds);
+        let captured_bounds = to_domain_bounds(capture.captured_bounds);
+        let crop = domain::geometry::PixelRect {
+            x: capture.crop.x,
+            y: capture.crop.y,
+            width: capture.crop.width,
+            height: capture.crop.height,
+        };
+        let encoded = domain::geometry::PixelExtent {
+            width: u32::try_from(capture.pixel_width)
+                .map_err(|_| PlatformError::InvalidResponse("encoded width exceeds u32".into()))?,
+            height: u32::try_from(capture.pixel_height)
+                .map_err(|_| PlatformError::InvalidResponse("encoded height exceeds u32".into()))?,
+        };
+        let expected_source = match request.scope {
+            LensMediaScope::WindowFallback => Some(frame.content_bounds),
+            LensMediaScope::AxElementRegion => {
+                context.desktop_observation.and_then(|observation| {
+                    let domain::geometry::DesktopMapping::Known {
+                        space,
+                        desktop_bounds,
+                        ..
+                    } = frame.desktop_mapping
+                    else {
+                        return None;
+                    };
+                    if space != observation.space || desktop_bounds != observation.window_frame {
+                        return None;
+                    }
+                    frame.desktop_to_frame(observation.space, request.bounds?)
+                })
+            }
+        };
+        if expected_source != Some(source_bounds)
+            || !frame.validates_image(source_bounds, captured_bounds, crop, encoded)
+            || (capture.coverage == CaptureCoverage::FullRegion)
+                != (source_bounds == captured_bounds)
+        {
+            return Err(PlatformError::InvalidResponse(
+                "captured image geometry disagrees with its request, frame, crop, or coverage"
+                    .into(),
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(capture.png.len())
+            .ok_or_else(|| PlatformError::InvalidResponse("media byte count overflow".into()))?;
+        if total_bytes > limits.max_total_bytes as usize {
+            return Err(PlatformError::InvalidResponse(
+                "captured images exceed total byte limit".into(),
+            ));
+        }
+        validate_png(&capture.png, encoded, limits)?;
         let uri = media_uri(
             context.context_id,
             context.context_revision.get(),
@@ -127,10 +261,13 @@ fn assemble_media(
             uri: uri.clone(),
             scope: request.scope,
             source_node_id: request.source_node_id.clone(),
-            source_bounds: to_domain_bounds(capture.source_bounds),
-            captured_bounds: to_domain_bounds(capture.captured_bounds),
+            geometry: LensMediaGeometry::Acquired {
+                frame: frame.clone(),
+                source_bounds,
+                captured_bounds,
+                crop,
+            },
             coverage: to_domain_coverage(capture.coverage),
-            coordinate_space: LensCoordinateSpace::ScreenPoints,
             mime_type: "image/png".into(),
             pixel_width: capture.pixel_width,
             pixel_height: capture.pixel_height,
@@ -187,6 +324,44 @@ fn assemble_media(
     Ok(result)
 }
 
+fn validate_png(
+    png: &[u8],
+    encoded: domain::geometry::PixelExtent,
+    limits: ImageCaptureLimits,
+) -> Result<(), PlatformError> {
+    let invalid = |detail: String| {
+        PlatformError::InvalidResponse(format!("captured PNG is invalid: {detail}"))
+    };
+    if !encoded.is_valid()
+        || encoded.width.max(encoded.height) > limits.max_long_edge
+        || u64::from(encoded.width) * u64::from(encoded.height) > u64::from(limits.max_pixels)
+        || png.len() > limits.max_attachment_bytes as usize
+        || png.len() > limits.max_total_bytes as usize
+    {
+        return Err(invalid(
+            "declared dimensions or bytes exceed finite limits".into(),
+        ));
+    }
+    let reader = || {
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
+        let mut decode_limits = image::Limits::default();
+        decode_limits.max_image_width = Some(limits.max_long_edge);
+        decode_limits.max_image_height = Some(limits.max_long_edge);
+        decode_limits.max_alloc = Some(u64::from(limits.max_pixels) * 8);
+        reader.limits(decode_limits);
+        reader
+    };
+    let actual = reader()
+        .into_dimensions()
+        .map_err(|e| invalid(e.to_string()))?;
+    if actual != (encoded.width, encoded.height) {
+        return Err(invalid("encoded dimensions disagree with metadata".into()));
+    }
+    reader().decode().map_err(|e| invalid(e.to_string()))?;
+    Ok(())
+}
+
 fn media_uri(context_id: Uuid, context_revision: u64, attachment_id: &str) -> String {
     format!("lens://context/{context_id}/{context_revision}/media/{attachment_id}")
 }
@@ -211,9 +386,8 @@ mod tests {
             &self,
             target: CaptureTarget,
             requests: &[CaptureRequest],
-            limits: ImageCaptureLimits,
+            _limits: ImageCaptureLimits,
         ) -> Result<CaptureBatch, PlatformError> {
-            assert_eq!(limits.max_total_bytes, 16);
             self.calls.lock().unwrap().push((target, requests.to_vec()));
             match &self.failure {
                 Some(message) => Err(PlatformError::Operation(message.clone())),
@@ -234,6 +408,15 @@ mod tests {
             target_id: "window-17".into(),
             context_id: Uuid::from_u128(42),
             context_revision: NonZeroU64::new(7).unwrap(),
+            desktop_observation: Some(DesktopObservation {
+                space: domain::geometry::DesktopSpace::DesktopLogical,
+                window_frame: Bounds {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 3.0,
+                    height: 4.0,
+                },
+            }),
         }
     }
 
@@ -241,8 +424,8 @@ mod tests {
         ImageCaptureLimits {
             max_long_edge: 10,
             max_pixels: 100,
-            max_attachment_bytes: 8,
-            max_total_bytes: 16,
+            max_attachment_bytes: 1024,
+            max_total_bytes: 2048,
         }
     }
 
@@ -264,23 +447,50 @@ mod tests {
     }
 
     fn batch() -> CaptureBatch {
+        use image::ImageEncoder;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[0; 3 * 4 * 4], 3, 4, image::ExtendedColorType::Rgba8)
+            .unwrap();
         let bounds = capture::Bounds {
-            x: 1.0,
-            y: 2.0,
+            x: 0.0,
+            y: 0.0,
             width: 3.0,
             height: 4.0,
         };
         CaptureBatch {
-            window_bounds: Some(bounds),
+            frame: Some(port_platform::geometry::AcquiredFrame {
+                id: Uuid::from_u128(33).try_into().unwrap(),
+                target: context().target,
+                extent: port_platform::geometry::PixelExtent {
+                    width: 3,
+                    height: 4,
+                },
+                content_bounds: bounds,
+                desktop_mapping: port_platform::geometry::DesktopMapping::Known {
+                    space: port_platform::geometry::DesktopSpace::DesktopLogical,
+                    desktop_bounds: to_platform_bounds(
+                        context().desktop_observation.unwrap().window_frame,
+                    ),
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                },
+            }),
             captures: vec![CapturedImage {
                 attachment_id: "media-1".into(),
+                frame_id: Uuid::from_u128(33).try_into().unwrap(),
                 source_bounds: bounds,
                 captured_bounds: bounds,
+                crop: port_platform::geometry::PixelRect {
+                    x: 0,
+                    y: 0,
+                    width: 3,
+                    height: 4,
+                },
                 coverage: CaptureCoverage::FullRegion,
                 pixel_width: 3,
                 pixel_height: 4,
-                // Transfer fixture: this test does not decode image pixels.
-                png: vec![1, 2, 3],
+                png,
             }],
             omissions: vec![],
             diagnostics: vec!["capture diagnostic".into()],
@@ -301,31 +511,36 @@ mod tests {
                 vec![CaptureRequest {
                     id: "media-1".into(),
                     scope: CaptureScope::AxElementRegion,
-                    bounds: Some(to_platform_bounds(plan().requests[0].bounds.unwrap())),
+                    region: CaptureRegion::DesktopRegion {
+                        space: port_platform::geometry::DesktopSpace::DesktopLogical,
+                        bounds: to_platform_bounds(plan().requests[0].bounds.unwrap()),
+                        observed_window_frame: to_platform_bounds(
+                            context().desktop_observation.unwrap().window_frame
+                        ),
+                    },
                 }]
             )]
         );
-        assert_eq!(result.observed_window_frame, plan().requests[0].bounds);
         assert_eq!(result.diagnostics, ["capture diagnostic"]);
+        let attachment = &result.attachments[0];
         assert_eq!(
-            serde_json::to_value(&result.attachments).unwrap(),
-            serde_json::json!([{
-                "id":"media-1", "target_id":"window-17",
-                "uri":"lens://context/00000000-0000-0000-0000-00000000002a/7/media/media-1",
-                "scope":"ax_element_region", "source_node_id":"node-1",
-                "source_bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},
-                "captured_bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},
-                "coverage":"full_region", "coordinate_space":"screen_points",
-                "mime_type":"image/png", "pixel_width":3, "pixel_height":4, "encoded_bytes":3
-            }])
+            attachment.uri,
+            "lens://context/00000000-0000-0000-0000-00000000002a/7/media/media-1"
         );
+        assert!(
+            matches!(&attachment.geometry, LensMediaGeometry::Acquired { frame, crop, .. }
+            if Uuid::from(frame.id) == Uuid::from_u128(33) && crop.width == 3 && crop.height == 4)
+        );
+        assert!(!serde_json::to_string(&attachment.geometry)
+            .unwrap()
+            .contains("receipt"));
         assert_eq!(
             result.payloads,
             [LensMediaPayload {
                 attachment_id: "media-1".into(),
                 uri: result.attachments[0].uri.clone(),
                 mime_type: "image/png".into(),
-                data: "AQID".into(),
+                data: BASE64_STANDARD.encode(&batch().captures[0].png),
             }]
         );
         assert!(result.omissions.is_empty());
@@ -479,6 +694,14 @@ mod tests {
                 CaptureOmissionReason::CaptureFailed,
                 LensMediaOmissionReason::CaptureFailed,
             ),
+            (
+                CaptureOmissionReason::GeometryUnavailable,
+                LensMediaOmissionReason::GeometryUnavailable,
+            ),
+            (
+                CaptureOmissionReason::ObservationChanged,
+                LensMediaOmissionReason::ObservationChanged,
+            ),
         ] {
             assert_eq!(to_domain_omission(native), domain);
             assert_eq!(
@@ -504,7 +727,7 @@ mod tests {
                 vec![CaptureRequest {
                     id: "media-1".into(),
                     scope: CaptureScope::WindowFallback,
-                    bounds: None,
+                    region: CaptureRegion::FrameContent,
                 }]
             )
         );
@@ -516,6 +739,182 @@ mod tests {
         assert_eq!(
             media_uri(context_id, 7, "media-1"),
             "lens://context/00000000-0000-0000-0000-00000000002a/7/media/media-1"
+        );
+    }
+
+    #[test]
+    fn fake_providers_cannot_publish_self_consistent_but_unrequested_or_invalid_images() {
+        let mut wrong_read = batch();
+        if let CaptureTarget::Registered(mut key) = wrong_read.frame.as_ref().unwrap().target {
+            key.sequence = "2".to_owned().try_into().unwrap();
+            wrong_read.frame.as_mut().unwrap().target = CaptureTarget::Registered(key);
+        }
+        let mut wrong_frame = batch();
+        wrong_frame.captures[0].frame_id = Uuid::from_u128(99).try_into().unwrap();
+        let mut wrong_region = batch();
+        wrong_region.captures[0].source_bounds.x = 0.5;
+        wrong_region.captures[0].source_bounds.width = 2.0;
+        wrong_region.captures[0].captured_bounds = wrong_region.captures[0].source_bounds;
+        // It remains internally valid, so only reconstruction of the ORIGINAL request rejects it.
+        let image = &wrong_region.captures[0];
+        let frame = crate::platform::frame_from_platform(wrong_region.frame.as_ref().unwrap());
+        assert!(frame.validates_image(
+            to_domain_bounds(image.source_bounds),
+            to_domain_bounds(image.captured_bounds),
+            domain::geometry::PixelRect {
+                x: image.crop.x,
+                y: image.crop.y,
+                width: image.crop.width,
+                height: image.crop.height
+            },
+            domain::geometry::PixelExtent {
+                width: 3,
+                height: 4
+            }
+        ));
+        let mut changed_observation = batch();
+        if let port_platform::geometry::DesktopMapping::Known { desktop_bounds, .. } =
+            &mut changed_observation.frame.as_mut().unwrap().desktop_mapping
+        {
+            desktop_bounds.x += 1.0;
+        }
+        let mut wrong_units = batch();
+        if let port_platform::geometry::DesktopMapping::Known { space, .. } =
+            &mut wrong_units.frame.as_mut().unwrap().desktop_mapping
+        {
+            *space = port_platform::geometry::DesktopSpace::DesktopPhysicalPixels;
+        }
+        let mut wrong_dimensions = batch();
+        wrong_dimensions.captures[0].pixel_width = 4;
+        let mut malformed = batch();
+        malformed.captures[0].png = vec![1, 2, 3];
+        let mut truncated = batch();
+        truncated.captures[0].png.truncate(33);
+        let mut oversized = batch();
+        oversized.captures[0].png = vec![0; limits().max_attachment_bytes as usize + 1];
+        let mut invalid_crop = batch();
+        invalid_crop.captures[0].crop.x = 1;
+        let mut no_frame = batch();
+        no_frame.frame = None;
+        let mut empty_frame = batch();
+        empty_frame.captures.clear();
+        for batch in [
+            wrong_read,
+            wrong_frame,
+            wrong_region,
+            changed_observation,
+            wrong_units,
+            wrong_dimensions,
+            malformed,
+            truncated,
+            oversized,
+            invalid_crop,
+            no_frame,
+            empty_frame,
+        ] {
+            let capability = ScriptedCapture {
+                batch,
+                ..Default::default()
+            };
+            assert!(matches!(
+                capture_media(&capability, context(), plan(), limits()),
+                Err(PlatformError::InvalidResponse(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn png_header_pixel_and_aggregate_byte_limits_are_checked_before_publication() {
+        use image::ImageEncoder;
+        let mut oversized_header = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut oversized_header)
+            .write_image(&[0; 11 * 4], 11, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let mut invalid = batch();
+        invalid.captures[0].png = oversized_header;
+        let capability = ScriptedCapture {
+            batch: invalid,
+            ..Default::default()
+        };
+        assert!(matches!(
+            capture_media(&capability, context(), plan(), limits()),
+            Err(PlatformError::InvalidResponse(_))
+        ));
+        let mut native = batch();
+        let first_bytes = native.captures[0].png.len();
+        let mut second = native.captures[0].clone();
+        second.attachment_id = "media-2".into();
+        native.captures.push(second);
+        let capability = ScriptedCapture {
+            batch: native,
+            ..Default::default()
+        };
+        let mut requests = plan();
+        let mut second = requests.requests[0].clone();
+        second.id = "media-2".into();
+        requests.requests.push(second);
+        assert!(matches!(
+            capture_media(
+                &capability,
+                context(),
+                requests,
+                ImageCaptureLimits {
+                    max_total_bytes: (first_bytes * 2 - 1) as u32,
+                    ..limits()
+                }
+            ),
+            Err(PlatformError::InvalidResponse(_))
+        ));
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[0; 4], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        assert!(validate_png(
+            &png,
+            domain::geometry::PixelExtent {
+                width: 1,
+                height: 1
+            },
+            ImageCaptureLimits {
+                max_long_edge: 1,
+                max_pixels: 1,
+                ..limits()
+            }
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn missing_tree_units_omit_images_without_invoking_native_but_frame_fallback_needs_no_desktop_mapping(
+    ) {
+        let capability = ScriptedCapture::default();
+        let mut observation_missing = context();
+        observation_missing.desktop_observation = None;
+        let omitted = capture_media(&capability, observation_missing, plan(), limits()).unwrap();
+        assert!(capability.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            omitted.omissions[0].reason,
+            LensMediaOmissionReason::GeometryUnavailable
+        );
+        let mut native = batch();
+        native.frame.as_mut().unwrap().desktop_mapping =
+            port_platform::geometry::DesktopMapping::Unavailable {
+                reason: port_platform::geometry::GeometryUnavailableReason::UnverifiedConfiguration,
+            };
+        let capability = ScriptedCapture {
+            batch: native,
+            ..Default::default()
+        };
+        let mut fallback = plan();
+        fallback.requests[0].scope = LensMediaScope::WindowFallback;
+        fallback.requests[0].bounds = None;
+        let mut context = context();
+        context.desktop_observation = None;
+        let result = capture_media(&capability, context, fallback, limits()).unwrap();
+        assert_eq!(result.attachments.len(), 1);
+        assert!(
+            matches!(&result.attachments[0].geometry, LensMediaGeometry::Acquired { frame, .. }
+            if matches!(frame.desktop_mapping, domain::geometry::DesktopMapping::Unavailable { .. }))
         );
     }
 }

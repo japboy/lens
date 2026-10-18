@@ -989,7 +989,7 @@ fn delivery_coverage(content: &ContentBlock) -> Option<LensDeliveryCoverage> {
     if serde_json_canonicalizer::to_vec(&value).ok()?.len() > MAX_LENS_INPUT_BYTES {
         return None;
     }
-    if !matches!(value.get("schema_version")?.as_u64()?, 1 | 2)
+    if !matches!(value.get("schema_version")?.as_u64()?, 1..=3)
         || !value.get("media")?.as_array()?.is_empty()
         || !value.get("media_omissions")?.is_array()
         || !matches!(
@@ -1187,14 +1187,82 @@ mod tests {
             assert_accounting(&replay);
         }
     }
+
+    #[test]
+    fn archived_v2_media_replay_preserves_original_canonical_bytes_and_digest() {
+        use image::ImageEncoder;
+        let digest = |bytes: &[u8]| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let image_data = BASE64_STANDARD.encode(&png);
+        let old = serde_json::json!({"schema_version":2,"sources":[{"id":"source-0",
+            "provenance":{"application":"Fixture","window_title":"Archived","bundle_id":"test.fixture"},
+            "document":null,"quality":"unavailable","omissions":[]}],
+            "media":[{"id":"source-0/media-0","source_id":"source-0","uri":"lens://projection/source-0/media-0",
+                "scope":"window_fallback","source_bounds":{"x":0.0,"y":0.0,"width":1.0,"height":1.0},
+                "captured_bounds":{"x":0.0,"y":0.0,"width":1.0,"height":1.0},"coordinate_space":"window_relative_points",
+                "coverage":"full_region","mime_type":"image/png","pixel_width":1,"pixel_height":1,
+                "encoded_bytes":png.len(),"sha256":digest(&png)}],
+            "media_omissions":[],"quality":"partial"});
+        let canonical = serde_json_canonicalizer::to_string(&old).unwrap();
+        let stored_digest = digest(canonical.as_bytes());
+        let resource: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type":"resource","resource":{"uri":format!("lens://projection/1/{stored_digest}"),"mimeType":"application/json","text":canonical}
+        })).unwrap();
+        let image: ContentBlock = serde_json::from_value(
+            serde_json::json!({"type":"image","mimeType":"image/png","data":image_data}),
+        )
+        .unwrap();
+        let mut replay = SessionDocument::default();
+        for content in [resource, image] {
+            replay
+                .record_update(SessionUpdate::UserMessageChunk(ContentChunk::new(content)))
+                .unwrap();
+        }
+        let restored: SessionDocument =
+            serde_json::from_value(serde_json::to_value(&replay).unwrap()).unwrap();
+        let DocumentEntry::Message { blocks, .. } = &restored.entries[0] else {
+            panic!("archived user input")
+        };
+        assert_eq!(
+            blocks[0],
+            DocumentBlock::Markdown {
+                text: canonical.clone()
+            }
+        );
+        assert_eq!(digest(canonical.as_bytes()), stored_digest);
+        let DocumentBlock::Markdown { text } = &blocks[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap()["schema_version"],
+            2
+        );
+        assert_eq!(digest(text.as_bytes()), stored_digest);
+        assert_eq!(
+            blocks[1],
+            DocumentBlock::Image {
+                mime_type: "image/png".into(),
+                data: image_data
+            }
+        );
+        assert_eq!(restored.entries, replay.entries);
+    }
     #[test]
     fn coverage_rejects_malformed_future_or_unrelated_values_and_assistant_claims() {
-        for version in [1, 2] {
+        for version in [1, 2, 3] {
             let mut value = delivery_projection();
             value["schema_version"] = serde_json::json!(version);
             assert!(delivery_coverage(&text(&value.to_string())).is_some());
         }
-        for version in [0, 3, u64::MAX] {
+        for version in [0, 4, u64::MAX] {
             let mut value = delivery_projection();
             value["schema_version"] = serde_json::json!(version);
             assert!(delivery_coverage(&text(&value.to_string())).is_none());

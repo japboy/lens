@@ -13,7 +13,10 @@ use port_platform::{
 use screencapturekit::{content_sharing_picker::*, shareable_content::SCWindow};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
 };
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -33,6 +36,7 @@ pub(crate) fn on_main<T: Send>(action: impl FnOnce() -> T + Send) -> T {
 pub(crate) struct RetainedSource {
     pub(crate) selected: SelectedWindow,
     pub(crate) screen_window: SCWindow,
+    capture_cleanup: Arc<AtomicBool>,
 }
 
 struct PickerSession {
@@ -46,6 +50,9 @@ struct PickerSession {
 struct Registry {
     sources: HashMap<TargetAuthority, Arc<Mutex<RetainedSource>>>,
     picker: Option<PickerSession>,
+    // One latch per live operation, retained across individual target removals.
+    // Final operation release consumes it; there are no historical tombstones.
+    capture_cleanup: HashMap<Uuid, Arc<AtomicBool>>,
 }
 
 #[cfg(debug_assertions)]
@@ -55,6 +62,17 @@ static SOURCE_VALIDATION_METADATA: std::sync::atomic::AtomicBool =
 #[cfg(debug_assertions)]
 pub(crate) fn enable_source_validation_metadata() {
     SOURCE_VALIDATION_METADATA.store(true, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn capture_validation_metadata(value: serde_json::Value) {
+    if SOURCE_VALIDATION_METADATA.load(Ordering::Acquire) {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stdout(),
+            "LENS_SOURCE_LIFECYCLE_NATIVE_CAPTURE={value}"
+        );
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -122,49 +140,51 @@ fn revoke_operation<T>(sources: &mut HashMap<TargetAuthority, T>, operation_id: 
     sources.retain(|target, _| target.operation_id != operation_id);
 }
 
-pub(crate) fn retained_source(target: TargetAuthority) -> Option<Arc<Mutex<RetainedSource>>> {
+fn retained_source(target: TargetAuthority) -> Option<Arc<Mutex<RetainedSource>>> {
     lookup_receipt(&registry().lock().expect("source registry").sources, target)
 }
 
 fn resolved_source(target: TargetAuthority) -> Result<Arc<Mutex<RetainedSource>>, PlatformError> {
-    retained_source(target)
-        .ok_or_else(|| operation_error("The exact operation-scoped target receipt is unavailable."))
+    let source = retained_source(target).ok_or_else(|| {
+        operation_error("The exact operation-scoped target receipt is unavailable.")
+    })?;
+    ensure_native_acquisition_admitted(&source.lock().expect("retained source").capture_cleanup)?;
+    Ok(source)
 }
 
-pub(crate) fn current_capture_source(
+pub(crate) fn capture_source(
     target: TargetAuthority,
-) -> Result<(SCWindow, Bounds), PlatformError> {
-    // Both registries share main-thread registration/release. Snapshot identity and
-    // geometry in one transaction so a released/reselected key cannot mix sources.
+) -> Result<(SCWindow, Arc<AtomicBool>), PlatformError> {
+    // Clone only retained ownership. Current AX/window geometry cannot describe
+    // an image acquired later; geometry comes from that image's native sample.
     on_main(move || {
         let source = resolved_source(target)?;
-        let window_id = source
-            .lock()
-            .expect("retained source")
-            .selected
-            .identity
-            .window_id;
-        let window = source
-            .lock()
-            .expect("retained source")
-            .screen_window
-            .clone();
-        let bounds = match accessibility::current_bounds(target.operation_id, window_id)? {
-            Some(bounds) => bounds,
-            None => {
-                // The existing screenshot fallback precedes Accessibility permission.
-                // Once AX was promoted, the native result must be current or an error.
-                let frame = window.frame();
-                Bounds {
-                    x: frame.origin.x,
-                    y: frame.origin.y,
-                    width: frame.size.width,
-                    height: frame.size.height,
-                }
-            }
-        };
-        Ok((window, bounds))
+        let source = source.lock().expect("retained source");
+        Ok((
+            source.screen_window.clone(),
+            Arc::clone(&source.capture_cleanup),
+        ))
     })
+}
+
+fn ensure_native_acquisition_admitted(latch: &AtomicBool) -> Result<(), PlatformError> {
+    if latch.load(Ordering::Acquire) {
+        Err(PlatformError::CleanupUnconfirmed(
+            "operation already has unconfirmed native cleanup".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_operation_admitted(
+    ledger: &HashMap<Uuid, Arc<AtomicBool>>,
+    operation_id: Uuid,
+) -> Result<(), PlatformError> {
+    if let Some(latch) = ledger.get(&operation_id) {
+        ensure_native_acquisition_admitted(latch)?;
+    }
+    Ok(())
 }
 
 fn picker_ticket_matches(
@@ -224,13 +244,16 @@ fn accept_selection(
     operation_id: Uuid,
     window: SCWindow,
 ) -> Result<WindowPickerReply, PlatformError> {
+    let mut registry = registry().lock().expect("source registry");
+    // A latched operation cannot acquire a new AX source or revive/reuse an
+    // existing selection. Release deliberately bypasses these admission guards.
+    ensure_operation_admitted(&registry.capture_cleanup, operation_id)?;
     let selected = selected_window(&window)?;
     if selected.identity.window_id == 0 {
         return Err(operation_error(
             "The selected window has no window identity.",
         ));
     }
-    let mut registry = registry().lock().expect("source registry");
     // Multiple distinct windows may belong to an operation. Re-picking an
     // existing native ID must reuse its exact retained object or fail closed.
     if let Some((target, source)) = registry.sources.iter().find(|(target, source)| {
@@ -261,11 +284,18 @@ fn accept_selection(
         receipt: TargetReceipt::try_from(Uuid::new_v4()).expect("generated v4 UUID is non-nil"),
     };
     accessibility::register_target(operation_id, &selected)?;
+    let capture_cleanup = Arc::clone(
+        registry
+            .capture_cleanup
+            .entry(operation_id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(false))),
+    );
     registry.sources.insert(
         target,
         Arc::new(Mutex::new(RetainedSource {
             selected: selected.clone(),
             screen_window: window,
+            capture_cleanup,
         })),
     );
     Ok(WindowPickerReply::Selected {
@@ -397,20 +427,36 @@ fn release_registered_window(target: TargetAuthority) -> Result<(), PlatformErro
             .sources
             .remove(&target)
             .ok_or_else(|| operation_error("native target receipt is unavailable"))?;
-        let window_id = source
-            .lock()
-            .expect("retained source")
-            .selected
-            .identity
-            .window_id;
-        accessibility::release_registered_window(target.operation_id, window_id)
+        let (window_id, latch) = {
+            let source = source.lock().expect("retained source");
+            (
+                source.selected.identity.window_id,
+                Arc::clone(&source.capture_cleanup),
+            )
+        };
+        checked_teardown(&latch, || {
+            accessibility::release_registered_window(target.operation_id, window_id)
+        })
     })
+}
+
+fn checked_teardown(
+    latch: &AtomicBool,
+    teardown: impl FnOnce() -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    // Native teardown must run even after an earlier target/capture failed.
+    let result = teardown();
+    if result.is_err() {
+        latch.store(true, Ordering::Release);
+    }
+    result.map_err(|error| PlatformError::CleanupUnconfirmed(error.to_string()))?;
+    ensure_native_acquisition_admitted(latch)
 }
 
 fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
     on_main(move || {
-        let (picker_ticket, source_count) = {
-            let registry = registry().lock().expect("source registry");
+        let (picker_ticket, source_count, capture_cleanup) = {
+            let mut registry = registry().lock().expect("source registry");
             (
                 registry
                     .picker
@@ -422,12 +468,16 @@ fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
                     .keys()
                     .filter(|target| target.operation_id == operation_id)
                     .count(),
+                registry.capture_cleanup.remove(&operation_id),
             )
         };
         if let Some(ticket) = picker_ticket {
             finish_picker(operation_id, ticket, Ok(WindowPickerReply::Cancelled));
         }
-        if source_count > 0 {
+        let unconfirmed = capture_cleanup
+            .as_ref()
+            .is_some_and(|latch| latch.load(Ordering::Acquire));
+        if source_count > 0 || unconfirmed {
             revoke_operation(
                 &mut registry().lock().expect("source registry").sources,
                 operation_id,
@@ -453,11 +503,17 @@ fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
                     },
                 );
             }
-            native_result?;
+            if let Some(latch) = &capture_cleanup {
+                checked_teardown(latch, || native_result)?;
+            } else {
+                native_result?;
+            }
         } else {
             #[cfg(debug_assertions)]
             release_metadata(operation_id, 0, 0, NativeReleaseAck::NotAttempted);
         }
+        // A healthy, empty latch is not native ownership. Keep the existing
+        // explicit unavailable result for repeated/empty operation release.
         if picker_ticket.is_some() || source_count > 0 {
             Ok(())
         } else {
@@ -531,6 +587,64 @@ impl AccessibilityTrust for MacOsPlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validation_metadata_is_disabled_without_explicit_debug_opt_in() {
+        assert!(!SOURCE_VALIDATION_METADATA.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn removed_failed_target_cannot_be_masked_by_healthy_remaining_target_or_final_release() {
+        let operation = Uuid::from_u128(41);
+        let fresh_operation = Uuid::from_u128(42);
+        let mut ledger = HashMap::<Uuid, Arc<AtomicBool>>::new();
+        let failed_target = Arc::clone(ledger.entry(operation).or_default());
+        let remaining_target = Arc::clone(ledger.entry(operation).or_default());
+        assert!(checked_teardown(&failed_target, || Err(operation_error(
+            "native target release failed"
+        )))
+        .is_err());
+        assert!(matches!(
+            ensure_native_acquisition_admitted(&failed_target),
+            Err(PlatformError::CleanupUnconfirmed(_))
+        ));
+        drop(failed_target); // Removed source no longer owns its flag.
+        assert!(matches!(
+            ensure_operation_admitted(&ledger, operation),
+            Err(PlatformError::CleanupUnconfirmed(_))
+        ));
+        assert!(ensure_operation_admitted(&ledger, fresh_operation).is_ok());
+        let mut calls = 0;
+        assert!(checked_teardown(&remaining_target, || {
+            calls += 1;
+            Ok(())
+        })
+        .is_err());
+        let final_latch = ledger.remove(&operation).unwrap();
+        assert!(checked_teardown(&final_latch, || {
+            calls += 1;
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(calls, 2, "later AX teardown is always attempted");
+        assert!(
+            ledger.remove(&operation).is_none(),
+            "no historical tombstone remains"
+        );
+        let fresh = Arc::clone(ledger.entry(fresh_operation).or_default());
+        assert!(checked_teardown(&fresh, || Ok(())).is_ok());
+        assert!(!fresh.load(Ordering::Acquire));
+        assert!(ensure_operation_admitted(&ledger, fresh_operation).is_ok());
+    }
+
+    #[test]
+    fn healthy_target_and_operation_teardown_do_not_latch_failure() {
+        let latch = AtomicBool::new(false);
+        assert!(checked_teardown(&latch, || Ok(())).is_ok());
+        assert!(checked_teardown(&latch, || Ok(())).is_ok());
+        assert!(!latch.load(Ordering::Acquire));
+    }
 
     #[test]
     fn stale_picker_ticket_cannot_cancel_a_newer_operation() {

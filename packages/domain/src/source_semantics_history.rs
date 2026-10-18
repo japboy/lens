@@ -7,13 +7,10 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-fn version(value: &Value, old: u64, current: u64) -> Result<bool, String> {
+fn version(value: &Value, supported: &[u64]) -> Result<u64, String> {
     match value.get("schema_version").and_then(Value::as_u64) {
-        Some(v) if v == old => Ok(true),
-        Some(v) if v == current => Ok(false),
-        _ => Err(format!(
-            "unsupported source schema; expected {old} or {current}"
-        )),
+        Some(v) if supported.contains(&v) => Ok(v),
+        _ => Err(format!("unsupported source schema; expected {supported:?}")),
     }
 }
 
@@ -69,22 +66,111 @@ fn add_purpose(node: &mut Value) -> Result<(), String> {
 }
 
 fn migrate_document(value: &mut Value) -> Result<(), String> {
-    if !version(value, 2, 3)? {
-        return Ok(());
+    let generation = version(value, &[2, 3, 4])?;
+    if generation != 4 {
+        for node in value
+            .get("nodes")
+            .and_then(Value::as_object)
+            .ok_or("document nodes must be an object")?
+            .values()
+        {
+            if node
+                .get("coordinate_space")
+                .is_some_and(|space| !space.is_null() && space.as_str() != Some("screen_points"))
+            {
+                return Err("legacy document contains current coordinate units".into());
+            }
+        }
     }
-    if value.get("source_api").is_some() {
-        return Err("legacy document contains current provenance".into());
+    if generation == 2 {
+        if value.get("source_api").is_some() {
+            return Err("legacy document contains current provenance".into());
+        }
+        for node in value
+            .get_mut("nodes")
+            .and_then(Value::as_object_mut)
+            .ok_or("document nodes must be an object")?
+            .values_mut()
+        {
+            add_purpose(node)?;
+        }
+        value["source_api"] = json!("macos_ax");
     }
-    for node in value
-        .get_mut("nodes")
-        .and_then(Value::as_object_mut)
-        .ok_or("document nodes must be an object")?
-        .values_mut()
+    value["schema_version"] = json!(4);
+    Ok(())
+}
+
+/// Old captures have no acquired-frame evidence. Preserve their original facts,
+/// without manufacturing a frame, transform, or live read authority.
+fn migrate_media(value: &mut Value, historical: bool) -> Result<(), String> {
+    for media in value
+        .get_mut("media")
+        .and_then(Value::as_array_mut)
+        .ok_or("media must be an array")?
     {
-        add_purpose(node)?;
+        let media = media.as_object_mut().ok_or("media must be an object")?;
+        if !historical {
+            if ["source_bounds", "captured_bounds", "coordinate_space"]
+                .iter()
+                .any(|field| media.contains_key(*field))
+            {
+                return Err("current media contains legacy geometry fields".into());
+            }
+            continue;
+        }
+        if media.contains_key("geometry") {
+            return Err("legacy media contains current geometry".into());
+        }
+        let source_bounds = media
+            .remove("source_bounds")
+            .ok_or("legacy source bounds missing")?;
+        let captured_bounds = media
+            .remove("captured_bounds")
+            .ok_or("legacy captured bounds missing")?;
+        let coordinate_space = media
+            .remove("coordinate_space")
+            .ok_or("legacy coordinate space missing")?;
+        if coordinate_space.as_str() != Some("screen_points") {
+            return Err("legacy media contains unproven coordinate units".into());
+        }
+        media.insert(
+            "geometry".into(),
+            json!({
+                "provenance":"historical_unproven",
+                "source_bounds":source_bounds,"captured_bounds":captured_bounds,
+                "coordinate_space":coordinate_space
+            }),
+        );
     }
-    value["source_api"] = json!("macos_ax");
-    value["schema_version"] = json!(3);
+    Ok(())
+}
+
+fn validate_media(media: &[LensMediaAttachment]) -> Result<(), String> {
+    for image in media {
+        if let LensMediaGeometry::Acquired {
+            frame,
+            source_bounds,
+            captured_bounds,
+            crop,
+        } = &image.geometry
+        {
+            let encoded = crate::geometry::PixelExtent {
+                width: u32::try_from(image.pixel_width)
+                    .map_err(|_| "media encoded width exceeds u32")?,
+                height: u32::try_from(image.pixel_height)
+                    .map_err(|_| "media encoded height exceeds u32")?,
+            };
+            if !frame.validates_image(*source_bounds, *captured_bounds, *crop, encoded)
+                || (image.coverage == LensMediaCoverage::FullRegion)
+                    != (source_bounds == captured_bounds)
+                || image.pixel_width.max(image.pixel_height) > MAX_LENS_MEDIA_LONG_EDGE
+                || image.pixel_width.saturating_mul(image.pixel_height) > MAX_LENS_MEDIA_PIXELS
+                || image.encoded_bytes > MAX_LENS_MEDIA_ATTACHMENT_BYTES
+            {
+                return Err("acquired media contains invalid frame/crop/encoded geometry".into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -186,23 +272,35 @@ struct ContextWire {
 impl<'de> Deserialize<'de> for LensContext {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut value = Value::deserialize(deserializer)?;
-        let legacy = version(&value, 4, 5).map_err(D::Error::custom)?;
+        let generation = version(&value, &[4, 5, 6]).map_err(D::Error::custom)?;
+        let legacy = generation == 4;
         for source in value
             .get_mut("sources")
             .and_then(Value::as_array_mut)
             .ok_or_else(|| D::Error::custom("context sources must be an array"))?
         {
+            if generation != 6
+                && source
+                    .get("capture")
+                    .is_some_and(|capture| capture.get("bounds_space").is_some())
+            {
+                return Err(D::Error::custom(
+                    "legacy extraction contains current coordinate units",
+                ));
+            }
             if let Some(document) = source.get_mut("document").filter(|v| !v.is_null()) {
                 if document.get("schema_version").and_then(Value::as_u64)
-                    != Some(if legacy { 2 } else { 3 })
+                    != Some(match generation {
+                        4 => 2,
+                        5 => 3,
+                        _ => 4,
+                    })
                 {
                     return Err(D::Error::custom(
                         "context and document schema versions do not match",
                     ));
                 }
-                if legacy {
-                    migrate_document(document).map_err(D::Error::custom)?;
-                }
+                migrate_document(document).map_err(D::Error::custom)?;
             }
             if legacy {
                 let capture = source
@@ -234,8 +332,11 @@ impl<'de> Deserialize<'de> for LensContext {
                 capture["source_api"] = json!("macos_ax");
             }
         }
-        value["schema_version"] = json!(5);
-        ContextWire::deserialize(value).map_err(D::Error::custom)
+        migrate_media(&mut value, generation != 6).map_err(D::Error::custom)?;
+        value["schema_version"] = json!(6);
+        let context = ContextWire::deserialize(value).map_err(D::Error::custom)?;
+        validate_media(&context.media).map_err(D::Error::custom)?;
+        Ok(context)
     }
 }
 
@@ -254,7 +355,32 @@ struct InputWire {
 impl<'de> Deserialize<'de> for LensInput {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut value = Value::deserialize(deserializer)?;
-        if version(&value, 3, 4).map_err(D::Error::custom)? {
+        let generation = version(&value, &[3, 4, 5]).map_err(D::Error::custom)?;
+        if generation != 5 {
+            for source in value
+                .get("sources")
+                .and_then(Value::as_array)
+                .ok_or_else(|| D::Error::custom("input sources must be an array"))?
+            {
+                if let Some(nodes) = source
+                    .get("document")
+                    .filter(|v| !v.is_null())
+                    .and_then(|document| document.get("nodes"))
+                    .and_then(Value::as_array)
+                {
+                    for node in nodes {
+                        if node.get("coordinate_space").is_some_and(|space| {
+                            !space.is_null() && space.as_str() != Some("screen_points")
+                        }) {
+                            return Err(D::Error::custom(
+                                "legacy projection contains current coordinate units",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if generation == 3 {
             for source in value
                 .get_mut("sources")
                 .and_then(Value::as_array_mut)
@@ -265,9 +391,12 @@ impl<'de> Deserialize<'de> for LensInput {
                     migrate_projection(document, &omissions).map_err(D::Error::custom)?;
                 }
             }
-            value["schema_version"] = json!(4);
         }
-        InputWire::deserialize(value).map_err(D::Error::custom)
+        migrate_media(&mut value, generation != 5).map_err(D::Error::custom)?;
+        value["schema_version"] = json!(5);
+        let input = InputWire::deserialize(value).map_err(D::Error::custom)?;
+        validate_media(&input.media).map_err(D::Error::custom)?;
+        Ok(input)
     }
 }
 
@@ -285,14 +414,148 @@ mod tests {
         json!({"schema_version":4,"context_id":Uuid::from_u128(1),"revision":1,"sources":[{"source_id":"s","target_id":"t","revision":1,"source":source(),"capture":{"quality":"full","nodes":[{"id":"root","order":0,"depth":0,"role":"AXWindow","subrole":"UnknownNativeSubrole"}]},"document":document(),"quality":"full"}],"media":[],"media_omissions":[],"quality":"full","diagnostics":[]})
     }
 
+    fn legacy_media() -> Value {
+        json!({"id":"image","target_id":"t","uri":"lens://context/old/1/media/image",
+            "scope":"ax_element_region","source_node_id":"root",
+            "source_bounds":{"x":-20.0,"y":10.0,"width":30.0,"height":40.0},
+            "captured_bounds":{"x":-20.0,"y":10.0,"width":30.0,"height":40.0},
+            "coordinate_space":"screen_points","coverage":"full_region",
+            "mime_type":"image/png","pixel_width":1,"pixel_height":1,"encoded_bytes":70})
+    }
+
+    #[test]
+    fn previous_portable_schemas_keep_nonempty_media_explicitly_unproven() {
+        let mut old_document =
+            serde_json::to_value(serde_json::from_value::<LensDocument>(document()).unwrap())
+                .unwrap();
+        old_document["schema_version"] = json!(3);
+        old_document["nodes"]["root"]["coordinate_space"] = json!("screen_points");
+        old_document["nodes"]["root"]["bounds"] = legacy_media()["source_bounds"].clone();
+        let migrated: LensDocument = serde_json::from_value(old_document.clone()).unwrap();
+        assert_eq!(migrated.schema_version, 4);
+        assert_eq!(
+            migrated.nodes["root"].coordinate_space,
+            Some(LensCoordinateSpace::ScreenPoints)
+        );
+        let mut old_context =
+            serde_json::to_value(serde_json::from_value::<LensContext>(context()).unwrap())
+                .unwrap();
+        old_context["schema_version"] = json!(5);
+        old_context["sources"][0]["document"] = old_document;
+        old_context["sources"][0]["capture"]
+            .as_object_mut()
+            .unwrap()
+            .remove("bounds_space");
+        old_context["media"] = json!([legacy_media()]);
+        let migrated: LensContext = serde_json::from_value(old_context.clone()).unwrap();
+        assert_eq!(migrated.schema_version, 6);
+        assert_eq!(migrated.sources[0].capture.bounds_space, None);
+        assert!(matches!(
+            migrated.media[0].geometry,
+            LensMediaGeometry::HistoricalUnproven {
+                coordinate_space: LensCoordinateSpace::ScreenPoints,
+                ..
+            }
+        ));
+        let geometry = serde_json::to_value(&migrated.media[0].geometry).unwrap();
+        assert_eq!(geometry["source_bounds"], legacy_media()["source_bounds"]);
+        assert!(geometry.get("frame").is_none());
+        let mut old_input =
+            serde_json::to_value(LensInput::from_context(&migrated).unwrap()).unwrap();
+        old_input["schema_version"] = json!(4);
+        old_input["media"] = json!([legacy_media()]);
+        let input: LensInput = serde_json::from_value(old_input.clone()).unwrap();
+        assert_eq!(input.schema_version, 5);
+        assert_eq!(input.media[0].geometry, migrated.media[0].geometry);
+        for version in [3, 4] {
+            let mut invalid = old_input.clone();
+            invalid["schema_version"] = json!(version);
+            invalid["sources"][0]["document"]["nodes"][0]["coordinate_space"] =
+                json!("desktop_logical");
+            assert!(serde_json::from_value::<LensInput>(invalid).is_err());
+        }
+        assert_eq!(
+            serde_json::from_value::<LensContext>(serde_json::to_value(&migrated).unwrap())
+                .unwrap(),
+            migrated
+        );
+        for mutation in ["units", "capture", "media"] {
+            let mut invalid = old_context.clone();
+            match mutation {
+                "units" => {
+                    invalid["sources"][0]["document"]["nodes"]["root"]["coordinate_space"] =
+                        json!("desktop_logical")
+                }
+                "capture" => {
+                    invalid["sources"][0]["capture"]["bounds_space"] = json!("desktop_logical")
+                }
+                _ => invalid["media"][0]["coordinate_space"] = json!("desktop_logical"),
+            }
+            assert!(
+                serde_json::from_value::<LensContext>(invalid).is_err(),
+                "{mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn current_history_rejects_invalid_acquired_frames_and_mixed_geometry() {
+        let mut current =
+            serde_json::to_value(serde_json::from_value::<LensContext>(context()).unwrap())
+                .unwrap();
+        let mut media = legacy_media();
+        let object = media.as_object_mut().unwrap();
+        for field in ["source_bounds", "captured_bounds", "coordinate_space"] {
+            object.remove(field);
+        }
+        media["geometry"] = json!({"provenance":"acquired",
+            "frame":{"id":Uuid::from_u128(2),"extent":{"width":100,"height":80},
+                "content_bounds":{"x":0.0,"y":0.0,"width":100.0,"height":80.0},
+                "desktop_mapping":{"status":"unavailable","reason":"missing_metadata"}},
+            "source_bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},
+            "captured_bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},
+            "crop":{"x":1,"y":2,"width":3,"height":4}});
+        current["media"] = json!([media]);
+        let valid: LensContext = serde_json::from_value(current.clone()).unwrap();
+        let input = serde_json::to_value(LensInput::from_context(&valid).unwrap()).unwrap();
+        for pointer in [
+            "/media/0/geometry/frame/extent/width",
+            "/media/0/geometry/crop/width",
+            "/media/0/pixel_width",
+        ] {
+            let mut invalid = current.clone();
+            *invalid.pointer_mut(pointer).unwrap() = json!(0);
+            assert!(
+                serde_json::from_value::<LensContext>(invalid).is_err(),
+                "{pointer}"
+            );
+            let mut invalid = input.clone();
+            *invalid.pointer_mut(pointer).unwrap() = json!(0);
+            assert!(
+                serde_json::from_value::<LensInput>(invalid).is_err(),
+                "{pointer}"
+            );
+        }
+        let mut mixed = current.clone();
+        mixed["media"][0]["source_bounds"] = legacy_media()["source_bounds"].clone();
+        assert!(serde_json::from_value::<LensContext>(mixed).is_err());
+        current["schema_version"] = json!(5);
+        current["sources"][0]["document"]["schema_version"] = json!(3);
+        current["sources"][0]["capture"]
+            .as_object_mut()
+            .unwrap()
+            .remove("bounds_space");
+        assert!(serde_json::from_value::<LensContext>(current).is_err());
+    }
+
     #[test]
     fn legacy_document_and_context_migrate_once_with_raw_facts_unchanged() {
         let value: LensDocument = serde_json::from_value(document()).unwrap();
-        assert_eq!(value.schema_version, 3);
+        assert_eq!(value.schema_version, 4);
         assert_eq!(value.source_api, SourceApi::MacosAx);
         assert_eq!(value.nodes["root"].purpose, NodePurpose::WindowRoot);
         let value: LensContext = serde_json::from_value(context()).unwrap();
-        assert_eq!(value.schema_version, 5);
+        assert_eq!(value.schema_version, 6);
         assert_eq!(value.sources[0].capture.source_api, SourceApi::MacosAx);
         let node = &value.sources[0].capture.nodes[0];
         assert_eq!(node.semantic_role, SemanticRole::Region);
@@ -309,7 +572,7 @@ mod tests {
     fn legacy_input_projection_has_explicit_provenance_and_purpose() {
         let value = json!({"schema_version":3,"context_id":Uuid::from_u128(1),"context_revision":1,"sources":[{"source_id":"s","target_id":"t","source_revision":1,"source":source(),"document":{"nodes":[{"id":"text","kind":"control","role":"AXTextArea","value":"Editor"},{"id":"unknown","kind":"unknown","role":"CustomAXImageLike"}]},"quality":"full","omissions":[]}],"media":[],"media_omissions":[],"quality":"full"});
         let input: LensInput = serde_json::from_value(value).unwrap();
-        assert_eq!(input.schema_version, 4);
+        assert_eq!(input.schema_version, 5);
         let doc = input.sources[0].document.as_ref().unwrap();
         assert_eq!(doc.source_api, SourceApi::MacosAx);
         assert_eq!(doc.nodes[0].purpose, NodePurpose::TextEntry);
@@ -458,12 +721,12 @@ mod tests {
 
     #[test]
     fn unknown_versions_and_mixed_generations_are_rejected() {
-        for v in [0, 1, 3, 6, u64::MAX] {
+        for v in [0, 1, 3, 7, u64::MAX] {
             let mut invalid = context();
             invalid["schema_version"] = json!(v);
             assert!(serde_json::from_value::<LensContext>(invalid).is_err());
         }
-        for (parent, child) in [(4, 3), (5, 2)] {
+        for (parent, child) in [(4, 3), (5, 2), (6, 3)] {
             let mut invalid = context();
             invalid["schema_version"] = json!(parent);
             invalid["sources"][0]["document"]["schema_version"] = json!(child);
@@ -472,7 +735,7 @@ mod tests {
         let mut invalid = context();
         invalid["sources"][0]["capture"]["source_api"] = json!("macos_ax");
         assert!(serde_json::from_value::<LensContext>(invalid).is_err());
-        for v in [0, 1, 4, 99] {
+        for v in [0, 1, 5, 99] {
             let mut d = document();
             d["schema_version"] = json!(v);
             assert!(serde_json::from_value::<LensDocument>(d).is_err());

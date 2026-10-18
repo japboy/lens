@@ -11,6 +11,7 @@ agent-client-protocol-schema.workspace = true
 domain.workspace = true
 port-platform.workspace = true
 base64.workspace = true
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
 regex.workspace = true
 uuid.workspace = true
 serde = { workspace = true, features = ["rc"] }

@@ -1,3 +1,4 @@
+use crate::geometry::{AcquiredFrame, DesktopSpace, PixelRect};
 use crate::model::{
     Bounds, ExtractedNode, ExtractionMetrics, ExtractionQuality, ExtractionResult, NodePurpose,
     ResourceReference, SelectedWindow, SourceApi, WindowIdentity, WindowObservableFacts,
@@ -7,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 3;
+pub const LENS_DOCUMENT_SCHEMA_VERSION: u32 = 4;
 pub const LENS_TARGET_SET_SCHEMA_VERSION: u32 = 2;
-pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 5;
-pub const LENS_INPUT_SCHEMA_VERSION: u32 = 4;
+pub const LENS_CONTEXT_SCHEMA_VERSION: u32 = 6;
+pub const LENS_INPUT_SCHEMA_VERSION: u32 = 5;
 pub const MAX_LENS_TARGETS: usize = 4;
 pub const MAX_LENS_CONTEXT_NODES: usize = 60_000;
 pub const MAX_LENS_CONTEXT_TEXT_BYTES: usize = 2_000_000;
@@ -173,7 +174,10 @@ pub use crate::model::SemanticRole as LensNodeKind;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LensCoordinateSpace {
+    /// Historical read-only data, with no newly inferred desktop-unit claim.
     ScreenPoints,
+    DesktopLogical,
+    DesktopPhysicalPixels,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -265,7 +269,15 @@ impl LensDocument {
             if !orders.insert(extracted.order) {
                 return Err(LensDocumentError::DuplicateOrder(extracted.order));
             }
-            let node = LensNode::from(extracted);
+            let mut node = LensNode::from(extracted);
+            node.coordinate_space =
+                node.bounds
+                    .and(extraction.bounds_space.map(|space| match space {
+                        DesktopSpace::DesktopLogical => LensCoordinateSpace::DesktopLogical,
+                        DesktopSpace::DesktopPhysicalPixels => {
+                            LensCoordinateSpace::DesktopPhysicalPixels
+                        }
+                    }));
             if nodes.insert(node.id.clone(), node).is_some() {
                 return Err(LensDocumentError::DuplicateIdentity(extracted.id.clone()));
             }
@@ -482,8 +494,10 @@ impl From<&ExtractedNode> for LensNode {
             title: node.title.clone(),
             value: node.value.clone(),
             description: node.description.clone(),
-            bounds: node.bounds,
-            coordinate_space: node.bounds.map(|_| LensCoordinateSpace::ScreenPoints),
+            bounds: node
+                .bounds
+                .filter(|bounds| crate::geometry::valid_bounds(*bounds)),
+            coordinate_space: None,
             children: node.children.clone(),
             media_refs: Vec::new(),
             resource_refs: node.resource_refs.clone(),
@@ -532,14 +546,30 @@ pub struct LensMediaAttachment {
     pub scope: LensMediaScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_node_id: Option<String>,
-    pub source_bounds: Bounds,
-    pub captured_bounds: Bounds,
+    pub geometry: LensMediaGeometry,
     pub coverage: LensMediaCoverage,
-    pub coordinate_space: LensCoordinateSpace,
     pub mime_type: String,
     pub pixel_width: usize,
     pub pixel_height: usize,
     pub encoded_bytes: usize,
+}
+
+/// Persisted frame facts contain no live target receipt or registered read key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "provenance", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LensMediaGeometry {
+    Acquired {
+        frame: AcquiredFrame,
+        /// Both regions are frame_pixels; crop is the integer source-frame crop.
+        source_bounds: Bounds,
+        captured_bounds: Bounds,
+        crop: PixelRect,
+    },
+    HistoricalUnproven {
+        source_bounds: Bounds,
+        captured_bounds: Bounds,
+        coordinate_space: LensCoordinateSpace,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -559,6 +589,8 @@ pub enum LensMediaOmissionReason {
     AttachmentLimit,
     ByteBudget,
     CaptureFailed,
+    GeometryUnavailable,
+    ObservationChanged,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -726,7 +758,8 @@ fn planning_omission_detail(reason: LensMediaOmissionReason, count: usize) -> St
         LensMediaOmissionReason::AttachmentLimit => format!(
             "{count} Image regions were omitted after the versioned {MAX_LENS_MEDIA_ATTACHMENTS}-attachment limit."
         ),
-        LensMediaOmissionReason::ByteBudget | LensMediaOmissionReason::CaptureFailed => {
+        LensMediaOmissionReason::ByteBudget | LensMediaOmissionReason::CaptureFailed
+        | LensMediaOmissionReason::GeometryUnavailable | LensMediaOmissionReason::ObservationChanged => {
             unreachable!("native capture outcomes are not planning omissions")
         }
     }
@@ -742,16 +775,11 @@ fn bounds_intersect(left: Bounds, right: Bounds) -> bool {
 }
 
 fn valid_bounds(bounds: Bounds) -> bool {
-    [bounds.x, bounds.y, bounds.width, bounds.height]
-        .into_iter()
-        .all(f64::is_finite)
-        && bounds.width > 0.0
-        && bounds.height > 0.0
+    crate::geometry::valid_bounds(bounds)
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LensMediaCapture {
-    pub observed_window_frame: Option<Bounds>,
     pub attachments: Vec<LensMediaAttachment>,
     pub payloads: Vec<LensMediaPayload>,
     pub omissions: Vec<LensMediaOmission>,
@@ -1002,6 +1030,7 @@ impl LensContext {
 
     pub fn unavailable_accessibility(message: impl Into<String>) -> ExtractionResult {
         ExtractionResult {
+            bounds_space: None,
             source_api: SourceApi::Unknown,
             quality: ExtractionQuality::Unavailable,
             resolved_window: None,
@@ -1309,6 +1338,7 @@ mod tests {
 
     fn accessibility(quality: ExtractionQuality) -> ExtractionResult {
         ExtractionResult {
+            bounds_space: Some(DesktopSpace::DesktopLogical),
             source_api: crate::model::SourceApi::MacosAx,
             quality,
             resolved_window: None,
@@ -1384,20 +1414,30 @@ mod tests {
                 .into(),
             scope: LensMediaScope::AxElementRegion,
             source_node_id: Some("node-000002".into()),
-            source_bounds: Bounds {
-                x: 10.0,
-                y: 20.0,
-                width: 60.0,
-                height: 40.0,
-            },
-            captured_bounds: Bounds {
-                x: 10.0,
-                y: 20.0,
-                width: 60.0,
-                height: 40.0,
+            geometry: LensMediaGeometry::Acquired {
+                frame: AcquiredFrame {
+                    id: crate::geometry::FrameId::try_from(Uuid::from_u128(1)).unwrap(),
+                    extent: crate::geometry::PixelExtent { width: 100, height: 100 },
+                    content_bounds: Bounds { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+                    desktop_mapping: crate::geometry::DesktopMapping::Unavailable {
+                        reason: crate::geometry::GeometryUnavailableReason::UnverifiedConfiguration,
+                    },
+                },
+                source_bounds: Bounds {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 60.0,
+                    height: 40.0,
+                },
+                captured_bounds: Bounds {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 60.0,
+                    height: 40.0,
+                },
+                crop: PixelRect { x: 10, y: 20, width: 60, height: 40 },
             },
             coverage: LensMediaCoverage::FullRegion,
-            coordinate_space: LensCoordinateSpace::ScreenPoints,
             mime_type: "image/png".into(),
             pixel_width: 120,
             pixel_height: 80,
@@ -1865,9 +1905,39 @@ mod tests {
     }
 
     #[test]
+    fn invalid_optional_geometry_does_not_discard_text_or_infer_units() {
+        let mut extraction = accessibility(ExtractionQuality::Full);
+        extraction.nodes[1].bounds = Some(Bounds {
+            x: f64::MAX,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        });
+        extraction.bounds_space = None;
+        let document = LensDocument::from_accessibility(&lens_target(), &extraction)
+            .unwrap()
+            .unwrap();
+        let text = &document.nodes["node-000001"];
+        assert_eq!(text.value.as_deref(), Some("Repeated"));
+        assert_eq!(text.bounds, None);
+        assert_eq!(text.coordinate_space, None);
+        assert_eq!(document.nodes["node-000000"].coordinate_space, None);
+    }
+
+    #[test]
     fn visible_subregion_is_explicit_and_makes_the_context_partial() {
         let mut capture = captured_region();
-        capture.attachments[0].source_bounds = Bounds {
+        let LensMediaGeometry::Acquired {
+            frame,
+            source_bounds,
+            captured_bounds,
+            ..
+        } = &mut capture.attachments[0].geometry
+        else {
+            panic!("acquired fixture")
+        };
+        frame.content_bounds = *captured_bounds;
+        *source_bounds = Bounds {
             x: 0.0,
             y: 10.0,
             width: 80.0,
@@ -1880,7 +1950,15 @@ mod tests {
 
         assert_eq!(context.quality, ExtractionQuality::Partial);
         assert_eq!(input.media[0].coverage, LensMediaCoverage::VisibleSubregion);
-        assert_ne!(input.media[0].source_bounds, input.media[0].captured_bounds);
+        let LensMediaGeometry::Acquired {
+            source_bounds,
+            captured_bounds,
+            ..
+        } = input.media[0].geometry
+        else {
+            panic!("acquired fixture")
+        };
+        assert_ne!(source_bounds, captured_bounds);
         assert!(context
             .diagnostics
             .iter()
