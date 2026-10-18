@@ -31,3 +31,11 @@ pub fn configure_activation<R: tauri::Runtime>(app: &mut tauri::App<R>, foregrou
         tauri::ActivationPolicy::Accessory
     });
 }
+
+#[allow(
+    dead_code,
+    reason = "Stable native entry with a release no-op; only the debug composition invokes validation metadata"
+)]
+pub fn enable_source_validation() {
+    adapter_platform_macos::enable_source_validation_metadata();
+}

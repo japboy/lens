@@ -173,7 +173,27 @@ pub(crate) type HostFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
 
 /// Approved runtime acquisition and ACP transport, not session or output policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentExecutionPolicy {
+    Product,
+    #[cfg(debug_assertions)]
+    SourceLifecycleValidation,
+}
+
+impl AgentExecutionPolicy {
+    pub(crate) fn allows_target_selection(self, authenticated: bool) -> bool {
+        match self {
+            Self::Product => authenticated,
+            #[cfg(debug_assertions)]
+            Self::SourceLifecycleValidation => true,
+        }
+    }
+}
+
 pub(crate) trait AgentHost<R: tauri::Runtime>: Send + Sync {
+    fn execution_policy(&self) -> AgentExecutionPolicy {
+        AgentExecutionPolicy::Product
+    }
     fn resolve<'a>(
         &'a self,
         app: &'a AppHandle<R>,
@@ -1459,6 +1479,19 @@ async fn submit_current_projection<R: tauri::Runtime>(
                 .is_some_and(|live| live.lifecycle != LensMonitoringLifecycle::Watching)
         {
             return Err("Lens transformation authority was superseded before submission".into());
+        }
+        #[cfg(debug_assertions)]
+        if app.state::<AgentServices<R>>().0.execution_policy()
+            == AgentExecutionPolicy::SourceLifecycleValidation
+        {
+            println!(
+                "LENS_SOURCE_LIFECYCLE_AGENT=skipped {}",
+                serde_json::json!({
+                    "operation_id": input.operation_id, "context_revision": input.context_revision,
+                    "scope": "native_source_only_no_agent_execution", "admission": format!("{admission:?}")
+                })
+            );
+            return Ok(snapshot.lens.clone());
         }
         state.agent_control.submit_session(
             app.clone(),

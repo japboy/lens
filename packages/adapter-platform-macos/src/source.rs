@@ -3,15 +3,16 @@
 use crate::{accessibility, MacOsPlatform};
 use port_platform::{
     accessibility::{Accessibility, ExtractionTarget},
+    authority::{TargetAuthority, TargetReceipt},
     model::{Bounds, ExtractionResult, SelectedWindow, WindowIdentity, WindowObservableFacts},
     observation::{Observation, ObservationRequest, ObservationSession},
-    selection::{TargetSelection, WindowPickerReply},
+    selection::{RegisteredWindow, TargetSelection, WindowPickerReply},
     trust::AccessibilityTrust,
     ExtractionLimits, PlatformError, PlatformFuture,
 };
 use screencapturekit::{content_sharing_picker::*, shareable_content::SCWindow};
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
 };
 use tokio::sync::oneshot;
@@ -43,8 +44,55 @@ struct PickerSession {
 
 #[derive(Default)]
 struct Registry {
-    sources: BTreeMap<(Uuid, u32), Arc<Mutex<RetainedSource>>>,
+    sources: HashMap<TargetAuthority, Arc<Mutex<RetainedSource>>>,
     picker: Option<PickerSession>,
+}
+
+#[cfg(debug_assertions)]
+static SOURCE_VALIDATION_METADATA: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(debug_assertions)]
+pub(crate) fn enable_source_validation_metadata() {
+    SOURCE_VALIDATION_METADATA.store(true, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NativeReleaseAck {
+    Accepted,
+    Rejected,
+    NotAttempted,
+}
+
+#[cfg(debug_assertions)]
+fn release_metadata(
+    operation_id: Uuid,
+    before: usize,
+    after: usize,
+    native_ffi_ack: NativeReleaseAck,
+) {
+    if SOURCE_VALIDATION_METADATA.load(std::sync::atomic::Ordering::Acquire) {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stdout(),
+            "LENS_SOURCE_LIFECYCLE_NATIVE_RELEASE={}",
+            release_metadata_value(operation_id, before, after, native_ffi_ack)
+        );
+    }
+}
+
+#[cfg(debug_assertions)]
+fn release_metadata_value(
+    operation_id: Uuid,
+    before: usize,
+    after: usize,
+    native_ffi_ack: NativeReleaseAck,
+) -> serde_json::Value {
+    serde_json::json!({ "operation_id": operation_id, "rust_registry_before": before,
+        "rust_registry_after": after, "native_ffi_ack": native_ffi_ack,
+        "native_registry_count_observed": false })
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -56,61 +104,52 @@ fn operation_error(message: impl std::fmt::Display) -> PlatformError {
     PlatformError::Operation(message.to_string())
 }
 
-pub(crate) fn retained_source(
-    operation_id: Uuid,
-    window_id: u32,
-) -> Option<Arc<Mutex<RetainedSource>>> {
-    registry()
-        .lock()
-        .expect("source registry")
-        .sources
-        .get(&(operation_id, window_id))
-        .cloned()
+fn lookup_receipt<T: Clone>(
+    sources: &HashMap<TargetAuthority, T>,
+    target: TargetAuthority,
+) -> Option<T> {
+    sources.get(&target).cloned()
 }
 
-fn admit_identity(
-    retained: Option<&WindowIdentity>,
-    requested: &WindowIdentity,
-) -> Result<(), PlatformError> {
-    if retained.is_some_and(|identity| identity != requested) {
-        return Err(operation_error(
-            "The requested identity does not match the retained selected window.",
-        ));
-    }
-    // An absent source still reaches the native unavailable/error JSON contract.
-    Ok(())
+#[cfg(test)]
+fn has_operation<T>(sources: &HashMap<TargetAuthority, T>, operation_id: Uuid) -> bool {
+    sources
+        .keys()
+        .any(|target| target.operation_id == operation_id)
 }
 
-fn admit_retained_identity(
-    operation_id: Uuid,
-    requested: &WindowIdentity,
-) -> Result<(), PlatformError> {
-    let retained = retained_source(operation_id, requested.window_id);
-    let retained = retained
-        .as_ref()
-        .map(|source| source.lock().expect("retained source"));
-    admit_identity(
-        retained.as_ref().map(|source| &source.selected.identity),
-        requested,
-    )
+fn revoke_operation<T>(sources: &mut HashMap<TargetAuthority, T>, operation_id: Uuid) {
+    sources.retain(|target, _| target.operation_id != operation_id);
+}
+
+pub(crate) fn retained_source(target: TargetAuthority) -> Option<Arc<Mutex<RetainedSource>>> {
+    lookup_receipt(&registry().lock().expect("source registry").sources, target)
+}
+
+fn resolved_source(target: TargetAuthority) -> Result<Arc<Mutex<RetainedSource>>, PlatformError> {
+    retained_source(target)
+        .ok_or_else(|| operation_error("The exact operation-scoped target receipt is unavailable."))
 }
 
 pub(crate) fn current_capture_source(
-    operation_id: Uuid,
-    window_id: u32,
+    target: TargetAuthority,
 ) -> Result<(SCWindow, Bounds), PlatformError> {
     // Both registries share main-thread registration/release. Snapshot identity and
     // geometry in one transaction so a released/reselected key cannot mix sources.
     on_main(move || {
-        let source = retained_source(operation_id, window_id).ok_or_else(|| {
-            operation_error("The exact operation-scoped selected window is unavailable.")
-        })?;
+        let source = resolved_source(target)?;
+        let window_id = source
+            .lock()
+            .expect("retained source")
+            .selected
+            .identity
+            .window_id;
         let window = source
             .lock()
             .expect("retained source")
             .screen_window
             .clone();
-        let bounds = match accessibility::current_bounds(operation_id, window_id)? {
+        let bounds = match accessibility::current_bounds(target.operation_id, window_id)? {
             Some(bounds) => bounds,
             None => {
                 // The existing screenshot fallback precedes Accessibility permission.
@@ -192,25 +231,48 @@ fn accept_selection(
         ));
     }
     let mut registry = registry().lock().expect("source registry");
-    let key = (operation_id, selected.identity.window_id);
-    if let Some(existing) = registry.sources.get(&key) {
-        if existing.lock().expect("retained source").screen_window != window {
+    // Multiple distinct windows may belong to an operation. Re-picking an
+    // existing native ID must reuse its exact retained object or fail closed.
+    if let Some((target, source)) = registry.sources.iter().find(|(target, source)| {
+        target.operation_id == operation_id
+            && source
+                .lock()
+                .expect("retained source")
+                .selected
+                .identity
+                .window_id
+                == selected.identity.window_id
+    }) {
+        let source = source.lock().expect("retained source");
+        if source.screen_window != window {
             return Err(operation_error(
                 "A different retained window already owns this operation/window identity.",
             ));
         }
-    } else {
-        accessibility::register_target(operation_id, &selected)?;
-        registry.sources.insert(
-            key,
-            Arc::new(Mutex::new(RetainedSource {
-                selected: selected.clone(),
-                screen_window: window,
-            })),
-        );
+        return Ok(WindowPickerReply::Selected {
+            windows: vec![RegisteredWindow {
+                target: *target,
+                window: source.selected.clone(),
+            }],
+        });
     }
+    let target = TargetAuthority {
+        operation_id,
+        receipt: TargetReceipt::try_from(Uuid::new_v4()).expect("generated v4 UUID is non-nil"),
+    };
+    accessibility::register_target(operation_id, &selected)?;
+    registry.sources.insert(
+        target,
+        Arc::new(Mutex::new(RetainedSource {
+            selected: selected.clone(),
+            screen_window: window,
+        })),
+    );
     Ok(WindowPickerReply::Selected {
-        windows: vec![selected],
+        windows: vec![RegisteredWindow {
+            target,
+            window: selected,
+        }],
     })
 }
 
@@ -326,26 +388,28 @@ async fn present_window_picker_for_operation(
     result
 }
 
-fn release_registered_window(operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
+fn release_registered_window(target: TargetAuthority) -> Result<(), PlatformError> {
     on_main(move || {
-        if retained_source(operation_id, window_id).is_none() {
-            return Err(operation_error(
-                "native selected-window registration is unavailable",
-            ));
-        }
-        accessibility::release_registered_window(operation_id, window_id)?;
-        registry()
+        // Revoke lookup before teardown, including when teardown reports failure.
+        let source = registry()
             .lock()
             .expect("source registry")
             .sources
-            .remove(&(operation_id, window_id));
-        Ok(())
+            .remove(&target)
+            .ok_or_else(|| operation_error("native target receipt is unavailable"))?;
+        let window_id = source
+            .lock()
+            .expect("retained source")
+            .selected
+            .identity
+            .window_id;
+        accessibility::release_registered_window(target.operation_id, window_id)
     })
 }
 
 fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
     on_main(move || {
-        let (picker_ticket, has_sources) = {
+        let (picker_ticket, source_count) = {
             let registry = registry().lock().expect("source registry");
             (
                 registry
@@ -356,21 +420,45 @@ fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
                 registry
                     .sources
                     .keys()
-                    .any(|(operation, _)| *operation == operation_id),
+                    .filter(|target| target.operation_id == operation_id)
+                    .count(),
             )
         };
         if let Some(ticket) = picker_ticket {
             finish_picker(operation_id, ticket, Ok(WindowPickerReply::Cancelled));
         }
-        if has_sources {
-            accessibility::release_window_operation(operation_id)?;
-            registry()
-                .lock()
-                .expect("source registry")
-                .sources
-                .retain(|(operation, _), _| *operation != operation_id);
+        if source_count > 0 {
+            revoke_operation(
+                &mut registry().lock().expect("source registry").sources,
+                operation_id,
+            );
+            let native_result = accessibility::release_window_operation(operation_id);
+            #[cfg(debug_assertions)]
+            {
+                let remaining = registry()
+                    .lock()
+                    .expect("source registry")
+                    .sources
+                    .keys()
+                    .filter(|target| target.operation_id == operation_id)
+                    .count();
+                release_metadata(
+                    operation_id,
+                    source_count,
+                    remaining,
+                    if native_result.is_ok() {
+                        NativeReleaseAck::Accepted
+                    } else {
+                        NativeReleaseAck::Rejected
+                    },
+                );
+            }
+            native_result?;
+        } else {
+            #[cfg(debug_assertions)]
+            release_metadata(operation_id, 0, 0, NativeReleaseAck::NotAttempted);
         }
-        if picker_ticket.is_some() || has_sources {
+        if picker_ticket.is_some() || source_count > 0 {
             Ok(())
         } else {
             Err(operation_error(
@@ -387,8 +475,8 @@ impl TargetSelection for MacOsPlatform {
     ) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>> {
         Box::pin(present_window_picker_for_operation(operation_id))
     }
-    fn release_target(&self, operation_id: Uuid, window_id: u32) -> Result<(), PlatformError> {
-        release_registered_window(operation_id, window_id)
+    fn release_target(&self, target: TargetAuthority) -> Result<(), PlatformError> {
+        release_registered_window(target)
     }
     fn release_operation(&self, operation_id: Uuid) -> Result<(), PlatformError> {
         release_window_operation(operation_id)
@@ -401,14 +489,17 @@ impl Accessibility for MacOsPlatform {
         limits: ExtractionLimits,
     ) -> Result<ExtractionResult, PlatformError> {
         match target {
-            ExtractionTarget::Registered {
-                operation_id,
-                identity,
-            } => on_main(move || {
+            ExtractionTarget::Registered(key) => on_main(move || {
                 // Admission and the native effect share the registration/release actor.
                 // A released and reselected key cannot substitute a different identity.
-                admit_retained_identity(operation_id, &identity)?;
-                accessibility::extract_registered_window(operation_id, &identity, limits)
+                let source = resolved_source(key.target)?;
+                let identity = source
+                    .lock()
+                    .expect("retained source")
+                    .selected
+                    .identity
+                    .clone();
+                accessibility::extract_registered_window(key.target.operation_id, &identity, limits)
             }),
             ExtractionTarget::Legacy(window) => accessibility::extract_window(&window, limits),
         }
@@ -417,8 +508,14 @@ impl Accessibility for MacOsPlatform {
 impl Observation for MacOsPlatform {
     fn observe(&self, request: ObservationRequest) -> Result<ObservationSession, PlatformError> {
         on_main(move || {
-            admit_retained_identity(request.operation_id, &request.identity)?;
-            accessibility::observe(request)
+            let source = resolved_source(request.target)?;
+            let window_id = source
+                .lock()
+                .expect("retained source")
+                .selected
+                .identity
+                .window_id;
+            accessibility::observe(request, window_id)
         })
     }
 }
@@ -461,30 +558,50 @@ mod tests {
     }
 
     #[test]
-    fn registered_admission_rejects_every_identity_component_mismatch() {
-        let identity = WindowIdentity {
-            window_id: 1,
-            pid: 2,
-            bundle_id: "registered.app".into(),
+    fn registered_lookup_never_reauthorizes_reused_native_metadata() {
+        let operation_id = Uuid::from_u128(1);
+        let first = TargetAuthority {
+            operation_id,
+            receipt: TargetReceipt::try_from(Uuid::from_u128(2)).unwrap(),
         };
-        assert!(admit_identity(None, &identity).is_ok());
-        assert!(admit_identity(Some(&identity), &identity).is_ok());
-        let mismatches = [
-            WindowIdentity {
-                window_id: 3,
-                ..identity.clone()
-            },
-            WindowIdentity {
-                pid: 3,
-                ..identity.clone()
-            },
-            WindowIdentity {
-                bundle_id: "another.app".into(),
-                ..identity.clone()
-            },
-        ];
-        for requested in mismatches {
-            assert!(admit_identity(Some(&identity), &requested).is_err());
+        let second = TargetAuthority {
+            operation_id,
+            receipt: TargetReceipt::try_from(Uuid::from_u128(3)).unwrap(),
+        };
+        let wrong_operation = TargetAuthority {
+            operation_id: Uuid::from_u128(4),
+            ..first
+        };
+        let mut sources = HashMap::new();
+        sources.insert(first, 17_u32);
+        assert!(has_operation(&sources, operation_id));
+        assert_eq!(lookup_receipt(&sources, first), Some(17));
+        assert_eq!(lookup_receipt(&sources, second), None);
+        assert_eq!(lookup_receipt(&sources, wrong_operation), None);
+        sources.remove(&first);
+        sources.insert(second, 17); // Same native ID does not revive first receipt.
+        assert_eq!(lookup_receipt(&sources, first), None);
+        assert_eq!(lookup_receipt(&sources, second), Some(17));
+        revoke_operation(&mut sources, operation_id);
+        assert_eq!(lookup_receipt(&sources, second), None);
+        assert!(!has_operation(&sources, operation_id));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn release_validation_distinguishes_rust_counts_and_native_ack_without_claiming_native_counts()
+    {
+        for (ack, expected) in [
+            (NativeReleaseAck::Accepted, "accepted"),
+            (NativeReleaseAck::Rejected, "rejected"),
+            (NativeReleaseAck::NotAttempted, "not_attempted"),
+        ] {
+            let record = release_metadata_value(Uuid::from_u128(1), 2, 0, ack);
+            assert_eq!(record["rust_registry_before"], 2);
+            assert_eq!(record["rust_registry_after"], 0);
+            assert_eq!(record["native_ffi_ack"], expected);
+            assert_eq!(record["native_registry_count_observed"], false);
+            assert_eq!(record.as_object().unwrap().len(), 5);
         }
     }
 

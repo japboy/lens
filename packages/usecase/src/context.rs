@@ -13,6 +13,7 @@ use domain::lens::{
 };
 use port_platform::{
     accessibility::{Accessibility, ExtractionTarget},
+    authority::TargetReadKey,
     capture::{Capture, CaptureTarget},
     ExtractionLimits, ImageCaptureLimits, PlatformError,
 };
@@ -25,6 +26,7 @@ use uuid::Uuid;
 pub trait BlockingExecutor: Sync {
     fn run<T: Send + 'static>(
         &self,
+        read: Option<TargetReadKey>,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 }
@@ -44,9 +46,11 @@ struct SourceExtractionBudget {
     limits: ExtractionLimits,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowAccessMode {
-    Registered,
+    Registered {
+        reads: BTreeMap<String, TargetReadKey>,
+    },
     Legacy,
 }
 
@@ -81,6 +85,7 @@ pub struct BuiltContext {
     pub target_set: LensTargetSet,
     pub context: LensContext,
     pub payloads: Vec<LensMediaPayload>,
+    pub reads: Vec<TargetReadKey>,
 }
 
 pub async fn build_context(
@@ -96,6 +101,41 @@ pub async fn build_context(
         target_set,
         access_mode,
     } = request;
+    let reads = match &access_mode {
+        WindowAccessMode::Registered { reads } => {
+            if reads.len() != target_set.targets.len()
+                || target_set.targets.iter().any(|target| {
+                    reads
+                        .get(&target.id)
+                        .is_none_or(|key| key.target.operation_id != operation_id)
+                })
+                || reads
+                    .values()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != reads.len()
+                || reads
+                    .values()
+                    .map(|key| key.target)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != reads.len()
+                || reads
+                    .values()
+                    .map(|key| key.sequence)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != reads.len()
+            {
+                return Err(
+                    "Registered context requires one distinct issued read per selected target"
+                        .into(),
+                );
+            }
+            reads.values().copied().collect()
+        }
+        WindowAccessMode::Legacy => Vec::new(),
+    };
     let mut remaining_nodes = MAX_LENS_CONTEXT_NODES;
     let mut remaining_text_bytes = MAX_LENS_CONTEXT_TEXT_BYTES;
     let mut remaining_resource_refs = MAX_AX_RESOURCE_REFERENCES;
@@ -107,6 +147,10 @@ pub async fn build_context(
     let mut observed_facts = BTreeMap::new();
 
     for target in &target_set.targets {
+        let read = match &access_mode {
+            WindowAccessMode::Registered { reads } => Some(reads[&target.id]),
+            WindowAccessMode::Legacy => None,
+        };
         let extraction_budget = source_extraction_budget(
             remaining_nodes,
             remaining_text_bytes,
@@ -117,26 +161,23 @@ pub async fn build_context(
             let max_nodes = extraction_budget.max_nodes;
             let max_text_bytes = extraction_budget.max_text_bytes;
             let limits = extraction_budget.limits;
-            let extraction_target = match access_mode {
-                WindowAccessMode::Registered => ExtractionTarget::Registered {
-                    operation_id,
-                    identity: conversion::window_identity(&target.identity),
-                },
-                WindowAccessMode::Legacy => {
+            let extraction_target = match read {
+                Some(key) => ExtractionTarget::Registered(key),
+                None => {
                     ExtractionTarget::Legacy(conversion::selected_window(&target.selected_window()))
                 }
             };
             let service = accessibility_service.clone();
             let mut extraction = match executor
-                .run(move || {
+                .run(read, move || {
                     service
                         .extract(extraction_target, limits)
                         .map(conversion::extraction)
                 })
-                .await
+                .await?
             {
-                Ok(Ok(extraction)) => extraction,
-                Ok(Err(error)) => LensContext::unavailable_accessibility(error.to_string()),
+                Ok(extraction) => extraction,
+                Err(error @ PlatformError::InvalidResponse(_)) => return Err(error.to_string()),
                 Err(error) => LensContext::unavailable_accessibility(error.to_string()),
             };
             if extraction.metrics.truncated_nodes && max_nodes < MAX_LENS_SOURCE_NODES {
@@ -185,10 +226,10 @@ pub async fn build_context(
                 target: current_target.clone(),
                 plan,
                 remaining_total_bytes: remaining_media_bytes,
-                access_mode,
+                read,
             },
         )
-        .await;
+        .await?;
         if let Some(observed_frame) = media.observed_window_frame {
             current_target.facts.frame = observed_frame;
             observed_facts.insert(target.id.clone(), current_target.facts.clone());
@@ -224,6 +265,7 @@ pub async fn build_context(
         target_set: refreshed_target_set,
         context,
         payloads,
+        reads,
     })
 }
 
@@ -233,30 +275,30 @@ struct TargetCaptureRequest {
     target: LensTarget,
     plan: LensMediaPlan,
     remaining_total_bytes: usize,
-    access_mode: WindowAccessMode,
+    read: Option<TargetReadKey>,
 }
 
 async fn capture_target_media(
     executor: &impl BlockingExecutor,
     capture_service: Arc<dyn Capture>,
     request: TargetCaptureRequest,
-) -> LensMediaCapture {
+) -> Result<LensMediaCapture, String> {
     let TargetCaptureRequest {
         operation_id,
         context_revision,
         target,
         plan,
         remaining_total_bytes,
-        access_mode,
+        read,
     } = request;
     if plan.requests.is_empty() {
-        return LensMediaCapture {
+        return Ok(LensMediaCapture {
             omissions: plan.omissions,
             ..LensMediaCapture::default()
-        };
+        });
     }
     if remaining_total_bytes == 0 {
-        return byte_budget_media_capture(target.id, plan);
+        return Ok(byte_budget_media_capture(target.id, plan));
     }
 
     let target_id = target.id.clone();
@@ -272,13 +314,10 @@ async fn capture_target_media(
             .expect("versioned media total-byte budget fits u32"),
     };
     let mut result = match executor
-        .run(move || {
-            let (capture_target, capture_revision) = match access_mode {
-                WindowAccessMode::Registered => (
-                    CaptureTarget::Registered {
-                        operation_id,
-                        window_id: target.identity.window_id,
-                    },
+        .run(read, move || {
+            let (capture_target, capture_revision) = match read {
+                Some(key) => (
+                    CaptureTarget::Registered(key),
                     NonZeroU64::new(context_revision).ok_or_else(|| {
                         PlatformError::Operation(
                             "registered image capture context revision must be non-zero".into(),
@@ -286,7 +325,7 @@ async fn capture_target_media(
                     })?,
                 ),
                 // Preserve the explicit legacy validation path and its revision-one capture namespace.
-                WindowAccessMode::Legacy => (
+                None => (
                     CaptureTarget::Legacy {
                         window_id: target.identity.window_id,
                     },
@@ -305,10 +344,10 @@ async fn capture_target_media(
                 limits,
             )
         })
-        .await
+        .await?
     {
-        Ok(Ok(capture)) => capture,
-        Ok(Err(error)) => failed_media_capture(target_id, plan, error.to_string()),
+        Ok(capture) => capture,
+        Err(error @ PlatformError::InvalidResponse(_)) => return Err(error.to_string()),
         Err(error) => failed_media_capture(target_id, plan, error.to_string()),
     };
     if context_revision != 1 {
@@ -321,7 +360,7 @@ async fn capture_target_media(
             payload.uri = payload.uri.replacen(&prefix, &replacement, 1);
         }
     }
-    result
+    Ok(result)
 }
 
 fn byte_budget_media_capture(target_id: String, plan: LensMediaPlan) -> LensMediaCapture {
@@ -395,6 +434,8 @@ mod tests {
         calls: Mutex<Vec<Call>>,
         extractions: Mutex<VecDeque<Result<ExtractionResult, String>>>,
         capture_error: Option<String>,
+        invalid_extraction: bool,
+        invalid_capture: bool,
     }
 
     impl Accessibility for Sources {
@@ -407,6 +448,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(Call::Accessibility(target, limits));
+            if self.invalid_extraction {
+                return Err(PlatformError::InvalidResponse(
+                    "invalid extraction protocol".into(),
+                ));
+            }
             self.extractions
                 .lock()
                 .unwrap()
@@ -427,6 +473,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(Call::Capture(target, requests.to_vec(), limits));
+            if self.invalid_capture {
+                return Err(PlatformError::InvalidResponse(
+                    "invalid capture protocol".into(),
+                ));
+            }
             if let Some(message) = &self.capture_error {
                 return Err(PlatformError::Operation(message.clone()));
             }
@@ -459,6 +510,7 @@ mod tests {
     #[derive(Default)]
     struct Executor {
         calls: AtomicUsize,
+        keys: Mutex<Vec<Option<TargetReadKey>>>,
         fail_at: Option<usize>,
         pending_after: Option<usize>,
     }
@@ -466,8 +518,10 @@ mod tests {
     impl BlockingExecutor for Executor {
         fn run<T: Send + 'static>(
             &self,
+            read: Option<TargetReadKey>,
             work: impl FnOnce() -> T + Send + 'static,
         ) -> Pin<Box<dyn Future<Output = Result<T, String>> + Send>> {
+            self.keys.lock().unwrap().push(read);
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if self.fail_at == Some(call) {
                 return Box::pin(std::future::ready(Err("worker failed".into())));
@@ -557,6 +611,29 @@ mod tests {
         }
     }
 
+    fn registered(targets: &LensTargetSet) -> WindowAccessMode {
+        use port_platform::authority::TargetAuthority;
+        WindowAccessMode::Registered {
+            reads: targets
+                .targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    (
+                        target.id.clone(),
+                        TargetReadKey {
+                            target: TargetAuthority {
+                                operation_id: targets.selection_id,
+                                receipt: Uuid::from_u128(index as u128 + 2).try_into().unwrap(),
+                            },
+                            sequence: (index + 1).to_string().try_into().unwrap(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn context_build_runs_real_graph_media_and_facts_assembly_in_canonical_source_order() {
         let targets = targets(2);
@@ -564,14 +641,22 @@ mod tests {
             extractions: Mutex::new(VecDeque::from([Ok(extraction(true)), Ok(extraction(true))])),
             ..Sources::default()
         });
+        let executor = Executor::default();
         let built = ready(build_context(
-            &Executor::default(),
+            &executor,
             sources.clone(),
             sources.clone(),
-            request(&targets, WindowAccessMode::Registered, 3),
+            request(&targets, registered(&targets), 3),
         ))
         .unwrap();
         assert!(built.target_set.has_same_identity(&targets));
+        assert_eq!(built.reads.len(), 2);
+        let keys = executor.keys.lock().unwrap();
+        assert_eq!(keys.len(), 4);
+        assert_eq!(keys[0], keys[1]);
+        assert_eq!(keys[2], keys[3]);
+        assert_ne!(keys[0], keys[2]);
+        assert!(keys.iter().all(|key| built.reads.contains(&key.unwrap())));
         for target in &built.target_set.targets {
             assert_eq!(target.facts.title, "Observed title");
             assert_eq!(
@@ -602,18 +687,11 @@ mod tests {
         assert_eq!(calls.len(), 4);
         for (index, pair) in calls.as_chunks::<2>().0.iter().enumerate() {
             let id = u32::try_from(index + 1).unwrap();
-            let Call::Accessibility(
-                ExtractionTarget::Registered {
-                    operation_id,
-                    identity,
-                },
-                limits,
-            ) = &pair[0]
-            else {
+            let Call::Accessibility(ExtractionTarget::Registered(key), limits) = &pair[0] else {
                 panic!("registered AX precedes capture")
             };
-            assert_eq!(*operation_id, targets.selection_id);
-            assert_eq!(identity.window_id, id);
+            assert_eq!(key.target.operation_id, targets.selection_id);
+            assert_eq!(key.sequence.get(), u64::from(id));
             assert_eq!(limits.max_nodes, 30_000);
             assert_eq!(limits.max_resource_refs, 256 - index as u32 * 2);
             assert_eq!(
@@ -623,13 +701,7 @@ mod tests {
             let Call::Capture(target, requests, limits) = &pair[1] else {
                 panic!("capture follows AX")
             };
-            assert_eq!(
-                *target,
-                CaptureTarget::Registered {
-                    operation_id: targets.selection_id,
-                    window_id: id
-                }
-            );
+            assert_eq!(*target, CaptureTarget::Registered(*key));
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].scope, CaptureScope::AxElementRegion);
             assert_eq!(limits.max_total_bytes, 16_777_216 - index as u32 * 4);
@@ -662,6 +734,77 @@ mod tests {
             .uri
             .ends_with("/7/media/media-window-1-image"));
         assert_eq!(built.context.media[0].uri, built.payloads[0].uri);
+        assert!(built.reads.is_empty());
+    }
+
+    #[test]
+    fn invalid_registered_read_maps_fail_before_any_native_work() {
+        let targets = targets(2);
+        for case in 0..6 {
+            let WindowAccessMode::Registered { mut reads } = registered(&targets) else {
+                unreachable!()
+            };
+            let first = targets.targets[0].id.clone();
+            let second = targets.targets[1].id.clone();
+            match case {
+                0 => {
+                    reads.remove(&first);
+                }
+                1 => {
+                    reads.insert("extra".into(), reads[&first]);
+                }
+                2 => {
+                    reads.get_mut(&first).unwrap().target.operation_id = Uuid::from_u128(99);
+                }
+                3 => {
+                    reads.insert(second, reads[&first]);
+                }
+                4 => {
+                    let target = reads[&first].target;
+                    reads.get_mut(&second).unwrap().target = target;
+                }
+                5 => {
+                    let sequence = reads[&first].sequence;
+                    reads.get_mut(&second).unwrap().sequence = sequence;
+                }
+                _ => unreachable!(),
+            }
+            let executor = Executor::default();
+            let sources = Arc::new(Sources::default());
+            assert!(ready(build_context(
+                &executor,
+                sources.clone(),
+                sources.clone(),
+                request(&targets, WindowAccessMode::Registered { reads }, 1)
+            ))
+            .is_err());
+            assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+            assert!(sources.calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_native_protocol_never_becomes_publishable_partial_content() {
+        let targets = targets(1);
+        for invalid_extraction in [true, false] {
+            let sources = Arc::new(Sources {
+                extractions: Mutex::new(VecDeque::from([Ok(extraction(true))])),
+                invalid_extraction,
+                invalid_capture: !invalid_extraction,
+                ..Sources::default()
+            });
+            let result = ready(build_context(
+                &Executor::default(),
+                sources.clone(),
+                sources.clone(),
+                request(&targets, registered(&targets), 1),
+            ));
+            assert!(result.is_err_and(|error| error.contains("invalid native response")));
+            assert_eq!(
+                sources.calls.lock().unwrap().len(),
+                if invalid_extraction { 1 } else { 2 }
+            );
+        }
     }
 
     #[test]
@@ -681,9 +824,13 @@ mod tests {
                 &executor,
                 sources.clone(),
                 sources.clone(),
-                request(&targets, WindowAccessMode::Registered, 1),
-            ))
-            .unwrap();
+                request(&targets, registered(&targets), 1),
+            ));
+            if fail_at.is_some() {
+                assert!(built.is_err_and(|error| error.contains("worker failed")));
+                continue;
+            }
+            let built = built.unwrap();
             assert_eq!(
                 built.context.quality,
                 domain::model::ExtractionQuality::Unavailable
@@ -720,7 +867,7 @@ mod tests {
             &Executor::default(),
             sources.clone(),
             sources.clone(),
-            request(&targets, WindowAccessMode::Registered, 1),
+            request(&targets, registered(&targets), 1),
         ))
         .unwrap();
         assert_eq!(built.context.sources.len(), 3);
@@ -729,7 +876,7 @@ mod tests {
         assert!(matches!(calls[0], Call::Accessibility(_, _)));
         assert!(matches!(calls[1], Call::Accessibility(_, _)));
         assert!(
-            matches!(&calls[2], Call::Capture(CaptureTarget::Registered {window_id:3, ..}, requests, _) if requests[0].scope == CaptureScope::WindowFallback)
+            matches!(&calls[2], Call::Capture(CaptureTarget::Registered(key), requests, _) if key.sequence.get() == 3 && requests[0].scope == CaptureScope::WindowFallback)
         );
         assert!(serde_json::to_string(&built.context)
             .unwrap()
@@ -756,20 +903,19 @@ mod tests {
             &Executor::default(),
             sources.clone(),
             sources.clone(),
-            request(&targets, WindowAccessMode::Registered, 1),
+            request(&targets, registered(&targets), 1),
         ))
         .unwrap();
         let calls = sources.calls.lock().unwrap();
         assert_eq!(calls.len(), 4);
-        let Call::Accessibility(ExtractionTarget::Registered { identity, .. }, limits) = &calls[2]
-        else {
+        let Call::Accessibility(ExtractionTarget::Registered(key), limits) = &calls[2] else {
             panic!("third source AX remains scheduled");
         };
-        assert_eq!(identity.window_id, 3);
+        assert_eq!(key.sequence.get(), 3);
         assert_eq!(limits.max_text_bytes, 0);
         assert_eq!(limits.max_nodes, MAX_LENS_SOURCE_NODES as u32);
         assert!(
-            matches!(&calls[3], Call::Capture(CaptureTarget::Registered {window_id:3, ..}, requests, _) if requests[0].scope == CaptureScope::AxElementRegion)
+            matches!(&calls[3], Call::Capture(CaptureTarget::Registered(key), requests, _) if key.sequence.get() == 3 && requests[0].scope == CaptureScope::AxElementRegion)
         );
         assert_eq!(built.payloads.len(), 1);
         assert!(serde_json::to_string(&built.context)
@@ -801,9 +947,10 @@ mod tests {
                     target: targets.targets[0].clone(),
                     plan,
                     remaining_total_bytes: 0,
-                    access_mode: WindowAccessMode::Registered,
+                    read: None,
                 },
-            ));
+            ))
+            .unwrap();
             assert!(media.payloads.is_empty());
             assert_eq!(media.omissions.len(), usize::from(!empty));
             if !empty {
@@ -836,7 +983,7 @@ mod tests {
                 &executor,
                 sources.clone(),
                 sources.clone(),
-                request(&targets, WindowAccessMode::Registered, 1),
+                request(&targets, registered(&targets), 1),
             ));
             fn assert_send<T: Send>(_: &T) {}
             assert_send(&future);

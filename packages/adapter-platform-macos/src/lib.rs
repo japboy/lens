@@ -10,3 +10,9 @@ mod source;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MacOsPlatform;
+
+/// Enables metadata-only release diagnostics for the explicit debug validation composition.
+pub fn enable_source_validation_metadata() {
+    #[cfg(debug_assertions)]
+    source::enable_source_validation_metadata();
+}

@@ -1,4 +1,4 @@
-use crate::{model::SelectedWindow, PlatformError, PlatformFuture};
+use crate::{authority::TargetAuthority, model::SelectedWindow, PlatformError, PlatformFuture};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -6,9 +6,16 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WindowPickerReply {
-    Selected { windows: Vec<SelectedWindow> },
+    Selected { windows: Vec<RegisteredWindow> },
     Cancelled,
     Error { message: String },
+}
+
+/// Display facts are not lookup authority; the adapter owns the receipt binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RegisteredWindow {
+    pub target: TargetAuthority,
+    pub window: SelectedWindow,
 }
 
 pub trait TargetSelection: Send + Sync {
@@ -16,6 +23,6 @@ pub trait TargetSelection: Send + Sync {
         &self,
         operation_id: Uuid,
     ) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>>;
-    fn release_target(&self, operation_id: Uuid, window_id: u32) -> Result<(), PlatformError>;
+    fn release_target(&self, target: TargetAuthority) -> Result<(), PlatformError>;
     fn release_operation(&self, operation_id: Uuid) -> Result<(), PlatformError>;
 }

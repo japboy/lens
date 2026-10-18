@@ -2,6 +2,7 @@
 use crate::{app_state::AppState, model::AppConfig, platform, store::ConfigStore};
 use port_platform::{
     accessibility::{Accessibility, ExtractionTarget},
+    authority::TargetAuthority,
     capture::{Capture, CaptureBatch, CaptureRequest, CaptureTarget},
     model::ExtractionResult,
     observation::{Observation, ObservationRequest, ObservationSession},
@@ -36,7 +37,7 @@ impl TargetSelection for UnusedSources {
     fn pick(&self, _: Uuid) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>> {
         panic!("unexpected native picker")
     }
-    fn release_target(&self, _: Uuid, _: u32) -> Result<(), PlatformError> {
+    fn release_target(&self, _: TargetAuthority) -> Result<(), PlatformError> {
         panic!("unexpected target release")
     }
     fn release_operation(&self, _: Uuid) -> Result<(), PlatformError> {

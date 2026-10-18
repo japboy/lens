@@ -6,6 +6,7 @@ use crate::{
     model::{LensFreshness, LensMonitoringLifecycle, LensStage, LensState},
     platform::{WindowObservationReceiver, WindowObservationRegistration},
 };
+use port_platform::authority::TargetAuthority;
 use std::{collections::BTreeMap, num::NonZeroU64, sync::Mutex};
 use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
@@ -43,7 +44,8 @@ struct ActiveObservation {
 }
 
 impl ActiveObservation {
-    fn shutdown(mut self) {
+    fn shutdown(mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
         self.scheduler.abort();
         self.reconciler.abort();
         for forwarder in self.forwarders.drain(..) {
@@ -53,9 +55,15 @@ impl ActiveObservation {
         for registration in &mut self.registrations {
             if let Err(error) = registration.close() {
                 eprintln!("Lens observer close failed: {error}");
+                errors.push(error.to_string());
             }
         }
         self.registrations.clear();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
@@ -64,7 +72,7 @@ struct ObservationSchedulerContext {
     operation_id: Uuid,
     context_id: Uuid,
     observer_epoch: NonZeroU64,
-    source_window_authority: BTreeMap<Uuid, u32>,
+    source_window_authority: BTreeMap<Uuid, TargetAuthority>,
     coverage: ObservationCoverage,
     start: ObservationStart,
 }
@@ -153,7 +161,7 @@ impl LensLiveControl {
             operation.active.take()
         };
         if let Some(active) = active {
-            active.shutdown();
+            active.shutdown()?;
         }
         Ok(())
     }
@@ -173,7 +181,7 @@ impl LensLiveControl {
             inner.operation.take()
         };
         if let Some(active) = operation.and_then(|operation| operation.active) {
-            active.shutdown();
+            active.shutdown()?;
         }
         Ok(())
     }
@@ -236,6 +244,7 @@ pub fn pause<R: tauri::Runtime>(
     operation_id: Uuid,
 ) -> Result<LensState, String> {
     require_live_operation(app, operation_id, LensMonitoringLifecycle::Watching)?;
+    app.state::<AppState>().cancel_source_reads(operation_id)?;
     if !update_lens_state(app, operation_id, |lens| {
         let Some(live) = lens.live.as_mut() else {
             return;
@@ -351,16 +360,23 @@ fn build_observation<R: tauri::Runtime>(
     let mut failures = Vec::new();
 
     for target in &target_set.targets {
-        // Window IDs are unique inside LensTargetSet. Adding one avoids the nil UUID while keeping
-        // the registration identity deterministic across Pause/Resume epochs.
-        let source_registration_id = Uuid::from_u128(u128::from(target.identity.window_id) + 1);
+        let source = match app
+            .state::<AppState>()
+            .source_target(operation_id, &target.id)
+        {
+            Ok(source) => source,
+            Err(error) => {
+                failures.push(format!("{}: {error}", target.id));
+                continue;
+            }
+        };
+        let source_registration_id = Uuid::from(source.receipt);
         match app.state::<AppState>().platform.observation.observe(
             port_platform::observation::ObservationRequest {
-                operation_id,
+                target: source,
                 context_id,
                 source_registration_id,
                 observer_epoch,
-                identity: usecase::platform::window_identity(&target.identity),
             },
         ) {
             Ok(port_platform::observation::ObservationSession {
@@ -372,7 +388,7 @@ fn build_observation<R: tauri::Runtime>(
                 for diagnostic in start.diagnostics {
                     eprintln!("Lens observer diagnostic for {}: {diagnostic}", target.id);
                 }
-                authority.insert(source_registration_id, target.identity.window_id);
+                authority.insert(source_registration_id, source);
                 registrations.push(registration);
                 source_receivers.push(receiver);
             }

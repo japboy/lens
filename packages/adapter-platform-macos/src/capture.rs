@@ -119,10 +119,7 @@ fn capture_native(
         });
     }
     let (window, window_bounds) = match target {
-        CaptureTarget::Registered {
-            operation_id,
-            window_id,
-        } => crate::source::current_capture_source(operation_id, window_id)?,
+        CaptureTarget::Registered(key) => crate::source::current_capture_source(key.target)?,
         CaptureTarget::Legacy { window_id } => {
             let content = wait_for_capture(
                 AsyncSCShareableContent::get(),

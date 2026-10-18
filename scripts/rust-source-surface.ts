@@ -133,7 +133,8 @@ const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
   "apps/desktop/src-tauri/src/lib.rs": [
     '#[cfg(target_os = "macos")] mod native;',
     '#[cfg(target_os = "macos")] pub use native::run;',
-    '#[cfg(target_os = "macos")] native::configure_activation(app, validate_a11y);',
+    '#[cfg(target_os = "macos")] native::configure_activation(app, validate_a11y || source_validation.enabled());',
+    '#[cfg(target_os = "macos")] native::enable_source_validation();',
     // Startup recovery owns a foreground window before the normal runtime exists.
     '#[cfg(target_os = "macos")] native::configure_activation(app, true);',
   ],
