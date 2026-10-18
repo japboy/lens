@@ -196,6 +196,7 @@ export const MEMBERS: readonly Member[] = [
         "url",
         "sha2",
         "serde_json_canonicalizer",
+        "regex",
       ],
       dev: ["tokio"],
     },

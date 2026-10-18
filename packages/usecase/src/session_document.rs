@@ -117,6 +117,72 @@ struct ToolEvidence {
     output: Option<Value>,
     explicit_content: bool,
     tool_name: Option<String>,
+    identity: PublicationIdentity,
+}
+
+mod rich_result;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+enum PublicationIdentity {
+    #[default]
+    Unspecified,
+    RichHtml,
+    LegacyHtml,
+    Other,
+    Conflicting,
+}
+
+/// Provider metadata carries machine identity; ACP titles are presentation labels.
+fn publication_identity(meta: Option<&serde_json::Map<String, Value>>) -> PublicationIdentity {
+    let Some(meta) = meta else {
+        return PublicationIdentity::Unspecified;
+    };
+    let mut identities = Vec::new();
+    if let Some(goose) = meta.get("goose").and_then(|value| value.get("toolCall")) {
+        let identity = match (
+            goose.get("toolName").and_then(Value::as_str),
+            goose.get("extensionName").and_then(Value::as_str),
+        ) {
+            (Some("lens_rich_content__render_html"), None | Some("lens_rich_content")) => {
+                PublicationIdentity::RichHtml
+            }
+            (Some("lens_output__publish_html"), None | Some("lens_output")) => {
+                PublicationIdentity::LegacyHtml
+            }
+            (Some(_), _) => PublicationIdentity::Other,
+            _ => PublicationIdentity::Conflicting,
+        };
+        identities.push(identity);
+    }
+    if let Some(mcp) = meta.get("mcp") {
+        identities.push(
+            match (
+                mcp.get("server").and_then(Value::as_str),
+                mcp.get("tool").and_then(Value::as_str),
+            ) {
+                (Some("lens_rich_content"), Some("render_html")) => PublicationIdentity::RichHtml,
+                (Some("lens_output"), Some("publish_html")) => PublicationIdentity::LegacyHtml,
+                (Some(_), Some(_)) => PublicationIdentity::Other,
+                _ => PublicationIdentity::Conflicting,
+            },
+        );
+    }
+    identities
+        .into_iter()
+        .fold(PublicationIdentity::Unspecified, merge_publication_identity)
+}
+
+fn merge_publication_identity(
+    retained: PublicationIdentity,
+    incoming: PublicationIdentity,
+) -> PublicationIdentity {
+    match (retained, incoming) {
+        (value, PublicationIdentity::Unspecified) | (PublicationIdentity::Unspecified, value) => {
+            value
+        }
+        (left, right) if left == right => left,
+        _ => PublicationIdentity::Conflicting,
+    }
 }
 
 impl SessionDocument {
@@ -173,6 +239,7 @@ impl SessionDocument {
                 chunk.content,
             ),
             SessionUpdate::ToolCall(call) => {
+                let identity = publication_identity(call.meta.as_ref());
                 let mut fields = ToolCallUpdateFields::new()
                     .title(call.title)
                     .status(call.status)
@@ -183,10 +250,11 @@ impl SessionDocument {
                 if !call.content.is_empty() {
                     fields = fields.content(call.content);
                 }
-                self.tool(call.tool_call_id.to_string(), fields)
+                self.tool(call.tool_call_id.to_string(), fields, identity)
             }
             SessionUpdate::ToolCallUpdate(update) => {
-                self.tool(update.tool_call_id.to_string(), update.fields)
+                let identity = publication_identity(update.meta.as_ref());
+                self.tool(update.tool_call_id.to_string(), update.fields, identity)
             }
             // Thoughts and runtime control updates do not become conversation content.
             _ => Ok(()),
@@ -205,7 +273,7 @@ impl SessionDocument {
                     &self
                         .tools
                         .iter()
-                        .map(|(id, e)| (id, &e.input, &e.output))
+                        .map(|(id, e)| (id, &e.input, &e.output, e.identity))
                         .collect::<Vec<_>>(),
                 ),
             blocks: self.entries.iter().map(block_count).sum(),
@@ -310,7 +378,12 @@ impl SessionDocument {
         Ok(())
     }
 
-    fn tool(&mut self, id: String, fields: ToolCallUpdateFields) -> Result<(), String> {
+    fn tool(
+        &mut self,
+        id: String,
+        fields: ToolCallUpdateFields,
+        identity: PublicationIdentity,
+    ) -> Result<(), String> {
         self.ensure_accounting();
         let index = self.accounting.tool_indices.get(&id).copied();
         let mut candidate = Self::default();
@@ -320,16 +393,19 @@ impl SessionDocument {
         if let Some(evidence) = self.tools.get(&id) {
             candidate.tools.insert(id.clone(), evidence.clone());
         }
+        let evidence = candidate.tools.entry(id.clone()).or_default();
+        evidence.identity = merge_publication_identity(evidence.identity, identity);
         candidate.tool_unchecked(id.clone(), fields);
         let entry = candidate.entries.pop().expect("tool entry");
         let evidence = candidate.tools.remove(&id).expect("tool evidence");
         let old_entry_bytes = index.map_or(0, |i| wire_size(&self.entries[i]));
         let old_blocks = index.map_or(0, |i| block_count(&self.entries[i]));
         let old_evidence = self.tools.get(&id);
-        let old_evidence_bytes = old_evidence.map_or(0, |e| wire_size(&(&id, &e.input, &e.output)));
+        let old_evidence_bytes =
+            old_evidence.map_or(0, |e| wire_size(&(&id, &e.input, &e.output, e.identity)));
         let bytes = self.accounting.bytes - old_entry_bytes - old_evidence_bytes
             + wire_size(&entry)
-            + wire_size(&(&id, &evidence.input, &evidence.output))
+            + wire_size(&(&id, &evidence.input, &evidence.output, evidence.identity))
             + usize::from(index.is_none() && !self.entries.is_empty())
             + usize::from(old_evidence.is_none() && !self.tools.is_empty());
         let blocks = self.accounting.blocks - old_blocks + block_count(&entry);
@@ -465,7 +541,12 @@ impl SessionDocument {
                 }
             }
             *accepted_html = if *status == ToolCallStatus::Completed {
-                if rich_publication_source(evidence) {
+                if matches!(
+                    evidence.identity,
+                    PublicationIdentity::Other | PublicationIdentity::Conflicting
+                ) {
+                    None
+                } else if rich_publication_source(evidence) {
                     accepted_rich_publication(evidence, blocks)
                 } else {
                     accepted_publication(evidence, blocks)
@@ -492,6 +573,9 @@ impl SessionDocument {
 /// Saved App output is presentation evidence only; replay never recreates an
 /// MCP source, live Agent session or tool/message/context authority.
 fn rich_publication_source(evidence: &ToolEvidence) -> bool {
+    if evidence.identity != PublicationIdentity::Unspecified {
+        return evidence.identity == PublicationIdentity::RichHtml;
+    }
     evidence.tool_name.as_deref().is_some_and(|name| {
         matches!(
             name,
@@ -560,16 +644,28 @@ fn rich_arguments(evidence: &ToolEvidence) -> Option<&serde_json::Map<String, Va
         }
         input.get("arguments")?
     } else {
-        if !matches!(
-            evidence.tool_name.as_deref(),
-            Some("mcp__lens_rich_content__render_html" | "lens_rich_content__render_html")
-        ) {
-            return None;
-        }
-        if input.get("arguments").is_some()
-            && (input.get("html").is_some() || input.get("tool_input").is_some())
+        if evidence.identity != PublicationIdentity::RichHtml
+            && !matches!(
+                evidence.tool_name.as_deref(),
+                Some("mcp__lens_rich_content__render_html" | "lens_rich_content__render_html")
+            )
         {
             return None;
+        }
+        if let Some(arguments) = input.get("arguments") {
+            if input.get("tool_input").is_some() {
+                return None;
+            }
+            if input.get("html").is_some() || input.get("csp").is_some() {
+                if evidence.identity != PublicationIdentity::RichHtml {
+                    return None;
+                }
+                let mut flat = input.as_object()?.clone();
+                flat.remove("arguments");
+                if arguments.as_object() != Some(&flat) {
+                    return None;
+                }
+            }
         }
         input.get("arguments").unwrap_or(input)
     };
@@ -615,6 +711,22 @@ fn accepted_rich_publication(evidence: &ToolEvidence, blocks: &[DocumentBlock]) 
         )
     }) {
         return None;
+    }
+    // Only the explicit, source-checked typed MCP success envelope owns this
+    // flattened format. A malformed typed stream cannot borrow a content receipt.
+    if output.is_some_and(|value| value.get("type").and_then(Value::as_str) == Some("MCP")) {
+        if let Some(SuccessfulToolResult::Text(text)) = result.as_ref() {
+            if serde_json::from_str::<Value>(text).is_err() {
+                return rich_result::concatenated_publication(
+                    text,
+                    html,
+                    csp.as_ref(),
+                    &digest,
+                    csp_digest.as_deref(),
+                )
+                .then(|| html.to_owned());
+            }
+        }
     }
     let valid = |value: &Value| rich_receipt(value, &digest, csp_digest.as_deref());
     let accepted = result.as_ref().is_some_and(|result| match result {
@@ -1032,7 +1144,7 @@ mod tests {
                 } else {
                     fields = fields.raw_output(serde_json::json!({"content":[metadata]}));
                 }
-                document.tool("resource".into(), fields).unwrap();
+                document.tool("resource".into(), fields, PublicationIdentity::Unspecified).unwrap();
                 assert!(matches!(&document.entries[0], DocumentEntry::Tool { blocks, accepted_html:None, .. }
                     if blocks == &vec![DocumentBlock::Markdown { text: expected.into() }]));
                 assert_accounting(&document);
@@ -1271,6 +1383,359 @@ mod tests {
                 serde_json::json!({"result":{"content":[{"type":"text","text":receipt.to_string()}],"structuredContent":{"html":html,"publication":receipt}},"error":null}),
             ),
             ..Default::default()
+        }
+    }
+
+    fn replay_rich_tool(title: &str, meta: Value, input: Value, output: Value) -> SessionDocument {
+        let mut document = SessionDocument::default();
+        for update in [
+            serde_json::json!({"sessionUpdate":"tool_call","toolCallId":"restored",
+                "title":title,"status":"pending","rawInput":input,"_meta":meta}),
+            serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":"restored",
+                "status":"completed","rawOutput":output}),
+        ] {
+            document
+                .record_update(serde_json::from_value(update).unwrap())
+                .unwrap();
+        }
+        assert_accounting(&document);
+        document
+    }
+
+    #[test]
+    fn machine_tool_identity_restores_html_without_rewriting_display_title_or_raw_evidence() {
+        let evidence = rich_evidence("<p>Restored visual</p>");
+        let args = evidence.input.as_ref().unwrap()["arguments"].clone();
+        let result = evidence.output.as_ref().unwrap()["result"].clone();
+        for (title, meta, input) in [
+            (
+                "lens rich content: render html",
+                serde_json::json!({"goose":{"toolCall":{
+                "toolName":"lens_rich_content__render_html","extensionName":"lens_rich_content"}}}),
+                args.clone(),
+            ),
+            (
+                "lens_rich_content_render_html",
+                serde_json::json!({"mcp":{
+                "server":"lens_rich_content","tool":"render_html"}}),
+                serde_json::json!({"html":args["html"],"arguments":args}),
+            ),
+        ] {
+            let document = replay_rich_tool(title, meta, input.clone(), result.clone());
+            assert!(matches!(&document.entries[0], DocumentEntry::Tool {
+                title: retained, accepted_html: Some(html), accepted_html_mode: HtmlMode::Interactive, ..
+            } if retained == title && html == "<p>Restored visual</p>"));
+            assert_eq!(document.tools["restored"].input.as_ref(), Some(&input));
+            assert_eq!(document.tools["restored"].output.as_ref(), Some(&result));
+            let wire = serde_json::to_value(&document).unwrap();
+            assert!(!wire.to_string().contains("extensionName"));
+            assert!(wire.get("tools").is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_or_conflicting_machine_identity_cannot_borrow_a_publication_receipt() {
+        let evidence = rich_evidence("<p>Publisher body</p>");
+        let args = evidence.input.as_ref().unwrap()["arguments"].clone();
+        let result = evidence.output.as_ref().unwrap()["result"].clone();
+        for meta in [
+            serde_json::json!({"goose":{"toolCall":{"toolName":"unrelated__render_html"}}}),
+            serde_json::json!({"goose":{"toolCall":{"toolName":"lens_rich_content__render_html","extensionName":"other"}}}),
+            serde_json::json!({"mcp":{"server":"other","tool":"render_html"}}),
+            serde_json::json!({"mcp":{"server":"lens_rich_content"}}),
+            serde_json::json!({"mcp":{"server":"lens_rich_content","tool":"render_html"},
+                "goose":{"toolCall":{"toolName":"other__render_html"}}}),
+        ] {
+            let document = replay_rich_tool(
+                "lens_rich_content__render_html",
+                meta,
+                args.clone(),
+                result.clone(),
+            );
+            assert!(matches!(
+                &document.entries[0],
+                DocumentEntry::Tool {
+                    accepted_html: None,
+                    ..
+                }
+            ));
+        }
+        let mut document = replay_rich_tool(
+            "A label",
+            serde_json::json!({"mcp":{
+            "server":"lens_rich_content","tool":"render_html"}}),
+            args,
+            result,
+        );
+        document
+            .record_update(
+                serde_json::from_value(serde_json::json!({
+            "sessionUpdate":"tool_call_update","toolCallId":"restored","_meta":{
+                "mcp":{"server":"other","tool":"render_html"}}}))
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            &document.entries[0],
+            DocumentEntry::Tool {
+                accepted_html: None,
+                ..
+            }
+        ));
+        assert_accounting(&document);
+    }
+
+    #[test]
+    fn duplicated_publication_arguments_require_exact_html_and_policy_agreement() {
+        let mut evidence = rich_evidence("<p>Body</p>");
+        evidence.identity = PublicationIdentity::RichHtml;
+        let args = evidence.input.as_ref().unwrap()["arguments"].clone();
+        for input in [
+            serde_json::json!({"html":"different","arguments":args}),
+            serde_json::json!({"html":args["html"],"csp":{},"arguments":args}),
+            serde_json::json!({"html":args["html"],"unexpected":true,"arguments":args}),
+            serde_json::json!({"html":args["html"],"tool_input":args,"arguments":args}),
+        ] {
+            evidence.input = Some(input);
+            assert!(accepted_rich_publication(&evidence, &[]).is_none());
+        }
+        evidence.input = Some(serde_json::json!({"html":args["html"],"arguments":args}));
+        assert!(accepted_rich_publication(&evidence, &[]).is_some());
+        evidence.identity = PublicationIdentity::Unspecified;
+        evidence.tool_name = Some("lens_rich_content__render_html".into());
+        assert!(accepted_rich_publication(&evidence, &[]).is_none());
+    }
+
+    #[test]
+    fn legacy_publication_metadata_preserves_static_html_replay() {
+        for meta in [
+            serde_json::json!({"goose":{"toolCall":{"toolName":"lens_output__publish_html",
+                "extensionName":"lens_output"}}}),
+            serde_json::json!({"mcp":{"server":"lens_output","tool":"publish_html"}}),
+        ] {
+            let document = replay_rich_tool(
+                "Publish saved HTML",
+                meta,
+                serde_json::json!({"html":"<p>Legacy</p>","turn_id":uuid::Uuid::from_u128(1)}),
+                serde_json::json!({"accepted":true,"publication_id":uuid::Uuid::from_u128(2)}),
+            );
+            assert!(matches!(&document.entries[0], DocumentEntry::Tool {
+                accepted_html: Some(html), accepted_html_mode: HtmlMode::Static, ..
+            } if html == "<p>Legacy</p>"));
+        }
+    }
+
+    fn joined_rich_evidence(html: &str, policy: Option<Value>) -> (ToolEvidence, String) {
+        let mut evidence = rich_evidence(html);
+        let mut body = evidence.output.as_ref().unwrap()["result"]["structuredContent"].clone();
+        if let Some(policy) = policy {
+            let normalized = domain::mcp_app_csp::normalize_csp(&policy).unwrap();
+            evidence.input.as_mut().unwrap()["arguments"]["csp"] = policy;
+            body["csp"] = normalized.clone();
+            body["publication"]["schema_version"] = serde_json::json!(2);
+            body["publication"]["csp_sha256"] =
+                serde_json::json!(Sha256::digest(serde_json::to_vec(&normalized).unwrap())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>());
+        }
+        let text = format!("{}\n{}", body["publication"], body);
+        evidence.output = Some(
+            serde_json::json!({"type":"MCP","server_name":"lens_rich_content",
+            "tool_name":"render_html","output":{"OkayOutput":text}}),
+        );
+        (evidence, text)
+    }
+
+    fn with_joined_text(mut evidence: ToolEvidence, text: &str) -> ToolEvidence {
+        evidence.output.as_mut().unwrap()["output"]["OkayOutput"] = Value::String(text.into());
+        evidence
+    }
+
+    #[test]
+    fn typed_joined_publication_restores_complete_and_truncated_output_with_policy() {
+        let html = format!("<p>{}</p>", "a".repeat(8192));
+        for policy in [
+            None,
+            Some(serde_json::json!({"resourceDomains":["https://CDN.example/"]})),
+        ] {
+            let (evidence, text) = joined_rich_evidence(&html, policy);
+            assert_eq!(
+                accepted_rich_publication(&evidence, &[]).as_deref(),
+                Some(html.as_str())
+            );
+            let truncated = format!(
+                "{}\n\n[MCP output truncated: showing first 1.0 KB of {:.1} KB.]",
+                &text[..1024],
+                text.len() as f64 / 1024.0
+            );
+            assert_eq!(
+                accepted_rich_publication(&with_joined_text(evidence.clone(), &truncated), &[])
+                    .as_deref(),
+                Some(html.as_str())
+            );
+            let document = replay_rich_tool(
+                "MCP render",
+                serde_json::json!({"mcp":{"server":"lens_rich_content","tool":"render_html"}}),
+                evidence.input.unwrap(),
+                evidence.output.unwrap(),
+            );
+            assert!(matches!(&document.entries[0], DocumentEntry::Tool {
+                accepted_html: Some(body), accepted_html_mode: HtmlMode::Interactive, ..
+            } if body == &html));
+        }
+    }
+
+    #[test]
+    fn joined_publications_reject_ambiguous_failed_or_unbound_text() {
+        let html = format!("<p>{}</p>", "b".repeat(8192));
+        let (evidence, text) = joined_rich_evidence(&html, None);
+        let receipt = text.lines().next().unwrap();
+        let truncated = format!(
+            "{}\n\n[MCP output truncated: showing first 1.0 KB of {:.1} KB.]",
+            &text[..1024],
+            text.len() as f64 / 1024.0
+        );
+        for invalid in [
+            format!("{receipt}\n{receipt}"),
+            format!("{text}\n{receipt}"),
+            text.replacen("\n", " ", 1),
+            text.replacen("<p>", "<q>", 1),
+            format!("{receipt}\n{{\"html\":\"different\",\"publication\":{receipt}}}"),
+            truncated.replace("first 1.0 KB", "first 2.0 KB"),
+            truncated.replace(" KB.]", " KB.]\nextra"),
+            format!(
+                "{}\n\n[MCP output truncated: showing first 1.0 KB of 999.0 KB.]",
+                &text[..1024]
+            ),
+            format!(
+                "{}\n\n[MCP output truncated: showing first 1.0 KB of {:.1} KB.]",
+                text[..1024].replacen("<p>", "<q>", 1),
+                text.len() as f64 / 1024.0
+            ),
+        ] {
+            let changed = with_joined_text(evidence.clone(), &invalid);
+            let blocks = vec![DocumentBlock::Markdown {
+                text: receipt.into(),
+            }];
+            assert!(accepted_rich_publication(&changed, &blocks).is_none());
+        }
+        for output in [
+            Value::String(text.clone()),
+            serde_json::json!({"content":[{"type":"text","text":text}]}),
+            serde_json::json!({"type":"MCP","server_name":"other","tool_name":"render_html",
+                "output":{"OkayOutput":text}}),
+            serde_json::json!({"type":"MCP","server_name":"lens_rich_content","tool_name":"render_html",
+                "output":{"OkayOutput":text,"ErrorOutput":"failed"}}),
+        ] {
+            let changed = ToolEvidence {
+                output: Some(output),
+                ..evidence.clone()
+            };
+            assert!(accepted_rich_publication(&changed, &[]).is_none());
+        }
+        let (mut policy, policy_text) = joined_rich_evidence(
+            &html,
+            Some(serde_json::json!({"resourceDomains":["https://cdn.example"]})),
+        );
+        policy.input.as_mut().unwrap()["arguments"]["csp"] =
+            serde_json::json!({"resourceDomains":["https://other.example"]});
+        assert!(accepted_rich_publication(&with_joined_text(policy, &policy_text), &[]).is_none());
+    }
+
+    #[test]
+    fn joined_publication_inner_failure_cannot_be_overridden_by_a_matching_body() {
+        let html = format!("<p>{}</p>", "x".repeat(8192));
+        let (evidence, text) = joined_rich_evidence(&html, None);
+        let body: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+        for failure in [
+            serde_json::json!({"isError":true}),
+            serde_json::json!({"error":"failed"}),
+        ] {
+            let mut body = body.clone();
+            body["publication"]
+                .as_object_mut()
+                .unwrap()
+                .extend(failure.as_object().unwrap().clone());
+            let joined = format!("{}\n{}", body["publication"], body);
+            for output in [
+                joined.clone(),
+                format!(
+                    "{}\n\n[MCP output truncated: showing first 1.0 KB of {:.1} KB.]",
+                    &joined[..1024],
+                    joined.len() as f64 / 1024.0
+                ),
+            ] {
+                assert!(accepted_rich_publication(
+                    &with_joined_text(evidence.clone(), &output),
+                    &[]
+                )
+                .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn joined_image_echo_restores_original_html_and_keeps_hash_and_suffix_guards() {
+        let uri = format!("data:image/png;base64,{}", "A".repeat(1024));
+        let html = format!("<img src='{uri}'><p>{}</p>", "x".repeat(8192));
+        for policy in [
+            None,
+            Some(serde_json::json!({"resourceDomains":["https://cdn.example"]})),
+        ] {
+            let (evidence, raw) = joined_rich_evidence(&html, policy);
+            let echo = raw.replace(&uri, "[image content will be provided separately]");
+            let truncated = format!(
+                "{}\n\n[MCP output truncated: showing first 1.0 KB of {:.1} KB.]",
+                &echo[..1024],
+                echo.len() as f64 / 1024.0
+            );
+            for output in [&echo, &truncated] {
+                let replay = with_joined_text(evidence.clone(), output);
+                assert_eq!(
+                    accepted_rich_publication(&replay, &[]).as_deref(),
+                    Some(html.as_str())
+                );
+                let mut wrong_input = replay.clone();
+                wrong_input.input.as_mut().unwrap()["arguments"]["html"] =
+                    serde_json::json!(html.replace("<img", "<IMG"));
+                assert!(accepted_rich_publication(&wrong_input, &[]).is_none());
+            }
+            for invalid in [
+                format!("{echo}\nextra"),
+                echo.replace("provided separately", "omitted"),
+                truncated.replace(" KB.]", " KB.]\nextra"),
+            ] {
+                assert!(accepted_rich_publication(
+                    &with_joined_text(evidence.clone(), &invalid),
+                    &[]
+                )
+                .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn joined_truncation_preserves_utf8_boundary_and_rejects_modified_prefix() {
+        let html = format!("<p>{}🦀{}</p>", "x".repeat(2048), "y".repeat(8192));
+        let (evidence, text) = joined_rich_evidence(&html, None);
+        let boundary = text.find('🦀').unwrap();
+        for split_bytes in 0..4 {
+            let budget = boundary + split_bytes;
+            let truncated = format!(
+                "{}\n\n[MCP output truncated: showing first {:.1} KB of {:.1} KB. Full output written to: /unused/output]",
+                &text[..boundary], budget as f64 / 1024.0, text.len() as f64 / 1024.0
+            );
+            assert_eq!(
+                accepted_rich_publication(&with_joined_text(evidence.clone(), &truncated), &[])
+                    .as_deref(),
+                Some(html.as_str())
+            );
+            assert!(accepted_rich_publication(
+                &with_joined_text(evidence.clone(), &truncated.replacen("<p>", "<q>", 1)),
+                &[]
+            )
+            .is_none());
         }
     }
     #[test]
@@ -1984,7 +2449,7 @@ mod tests {
                 &document
                     .tools
                     .iter()
-                    .map(|(id, e)| (id, &e.input, &e.output))
+                    .map(|(id, e)| (id, &e.input, &e.output, e.identity))
                     .collect::<Vec<_>>(),
             );
         assert_eq!(document.accounting.bytes, actual);
