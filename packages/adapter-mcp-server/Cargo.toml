@@ -17,11 +17,11 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
-tokio = { version = "=1.53.2", features = ["net", "rt", "macros"] }
+tokio = { version = "=1.53.3", features = ["net", "rt", "macros"] }
 
 [dev-dependencies]
 reqwest.workspace = true
-tokio = { version = "=1.53.2", features = ["time", "io-util"] }
+tokio = { version = "=1.53.3", features = ["time", "io-util"] }
 
 [lints]
 workspace = true

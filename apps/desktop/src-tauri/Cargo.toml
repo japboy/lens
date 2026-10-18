@@ -64,7 +64,7 @@ tauri-plugin-dialog = "=2.8.2"
 tauri-plugin-opener = "=2.7.1"
 thiserror.workspace = true
 tokio-util = "=0.7.20"
-tokio = { version = "=1.53.2", features = [
+tokio = { version = "=1.53.3", features = [
   "fs",
   "io-util",
   "macros",
@@ -79,7 +79,7 @@ zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate
 
 [dev-dependencies]
 tokio-util = { version = "=0.7.20", features = ["compat"] }
-tokio = { version = "=1.53.2", features = ["test-util"] }
+tokio = { version = "=1.53.3", features = ["test-util"] }
 toml = "=1.1.6"
 pretty_assertions = "=1.4.1"
 tauri = { version = "=2.12.3", default-features = false, features = ["test"] }
