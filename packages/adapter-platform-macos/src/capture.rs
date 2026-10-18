@@ -257,20 +257,16 @@ fn desktop_mapping(info: &FrameInfo, before: &[Screen], after: &[Screen]) -> Des
     let Ok(content) = crate::capture_stream::required_content(info) else {
         return unknown(GeometryUnavailableReason::InvalidMetadata);
     };
-    if !valid_bounds(Bounds {
-        x: content.x,
-        y: content.y,
-        width: bounds.width * factor * scale,
-        height: bounds.height * factor * scale,
-    }) {
-        return unknown(GeometryUnavailableReason::InvalidMetadata);
-    }
-    DesktopMapping::Known {
+    let mapping = DesktopMapping::Known {
         space: DesktopSpace::DesktopLogical,
         desktop_bounds: bounds,
         scale_x: factor * scale,
         scale_y: factor * scale,
+    };
+    if !mapping.is_valid_for(content) {
+        return unknown(GeometryUnavailableReason::InvalidMetadata);
     }
+    mapping
 }
 
 fn request_source(
@@ -512,6 +508,67 @@ mod tests {
             source_failure(PlatformError::Operation("unavailable".into())),
             Failure::Unavailable(_)
         ));
+    }
+
+    #[test]
+    fn contradictory_optional_native_mapping_keeps_content_and_omits_desktop_region() {
+        use screencapturekit::cg::{CGPoint, CGRect, CGSize};
+        let rect = |width, height| CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize { width, height },
+        };
+        let info = FrameInfo {
+            screen_rect: Some(rect(100.0, 100.0)),
+            content_rect: Some(rect(50.0, 50.0)),
+            scale_factor: Some(1.0),
+            content_scale: Some(1.0),
+            ..Default::default()
+        };
+        let screens = [Screen {
+            bounds: bounds(0.0, 0.0, 3840.0, 2160.0),
+            scale: 1.0,
+        }];
+        let mapping = desktop_mapping(&info, &screens, &screens);
+        assert_eq!(
+            mapping,
+            DesktopMapping::Unavailable {
+                reason: GeometryUnavailableReason::InvalidMetadata
+            }
+        );
+        let frame = AcquiredFrame {
+            extent: PixelExtent {
+                width: 50,
+                height: 50,
+            },
+            content_bounds: crate::capture_stream::required_content(&info).unwrap(),
+            desktop_mapping: mapping,
+            ..frame()
+        };
+        let mut requests = requests();
+        requests.push(CaptureRequest {
+            id: "node".into(),
+            scope: CaptureScope::AxElementRegion,
+            region: CaptureRegion::DesktopRegion {
+                space: DesktopSpace::DesktopLogical,
+                bounds: bounds(10.0, 10.0, 5.0, 5.0),
+                observed_window_frame: bounds(0.0, 0.0, 100.0, 100.0),
+            },
+        });
+        let batch =
+            encode_frame(frame, &image::RgbaImage::new(50, 50), &requests, limits()).unwrap();
+        assert_eq!(batch.captures.len(), 1);
+        assert_eq!(batch.captures[0].attachment_id, "image");
+        assert_eq!(
+            batch.omissions[0].reason,
+            CaptureOmissionReason::GeometryUnavailable
+        );
+        validate_batch(
+            batch,
+            CaptureTarget::Legacy { window_id: 1 },
+            &requests,
+            limits(),
+        )
+        .unwrap();
     }
     #[test]
     fn desktop_mapping_is_optional_and_only_verified_configuration_is_known() {
@@ -798,6 +855,12 @@ mod tests {
                 height: 1,
             },
             content_bounds: bounds(0.0, 0.0, 1.0, 1.0),
+            desktop_mapping: DesktopMapping::Known {
+                space: DesktopSpace::DesktopLogical,
+                desktop_bounds: bounds(0.0, 0.0, 1.0, 1.0),
+                scale_x: 1.0,
+                scale_y: 1.0,
+            },
             ..frame()
         };
         let b = encode_frame(f, &image::RgbaImage::new(1, 1), &requests(), l).unwrap();

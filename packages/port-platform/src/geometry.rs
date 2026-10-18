@@ -130,6 +130,32 @@ pub enum DesktopMapping {
 }
 
 impl DesktopMapping {
+    /// A known transform must map the desktop window's full extent to the
+    /// acquired content extent; finite components alone do not establish it.
+    pub fn is_valid_for(&self, content: Bounds) -> bool {
+        valid_bounds(content)
+            && self.is_valid()
+            && match *self {
+                Self::Known {
+                    desktop_bounds,
+                    scale_x,
+                    scale_y,
+                    ..
+                } => {
+                    let mapped = Bounds {
+                        x: content.x,
+                        y: content.y,
+                        width: desktop_bounds.width * scale_x,
+                        height: desktop_bounds.height * scale_y,
+                    };
+                    valid_bounds(mapped)
+                        && same_dimension(mapped.width, content.width)
+                        && same_dimension(mapped.height, content.height)
+                }
+                Self::Unavailable { .. } => true,
+            }
+    }
+
     pub fn is_valid(&self) -> bool {
         match self {
             Self::Known {
@@ -164,21 +190,7 @@ pub struct AcquiredFrame {
 impl AcquiredFrame {
     pub fn is_valid(&self) -> bool {
         PixelRect::covering(self.content_bounds, self.extent).is_some()
-            && self.desktop_mapping.is_valid()
-            && match self.desktop_mapping {
-                DesktopMapping::Known {
-                    desktop_bounds,
-                    scale_x,
-                    scale_y,
-                    ..
-                } => valid_bounds(Bounds {
-                    x: self.content_bounds.x,
-                    y: self.content_bounds.y,
-                    width: desktop_bounds.width * scale_x,
-                    height: desktop_bounds.height * scale_y,
-                }),
-                DesktopMapping::Unavailable { .. } => true,
-            }
+            && self.desktop_mapping.is_valid_for(self.content_bounds)
     }
 
     pub fn desktop_to_frame(&self, space: DesktopSpace, bounds: Bounds) -> Option<Bounds> {
@@ -250,6 +262,13 @@ impl AcquiredFrame {
     }
 }
 
+// Allow only f64 arithmetic roundoff in the few products composing a transform,
+// not pixel/visual error. There is no absolute floor: for subnormal dimensions
+// the tolerance can underflow to zero, requiring exact equality.
+fn same_dimension(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 8.0 * f64::EPSILON * left.max(right)
+}
+
 pub fn valid_bounds(bounds: Bounds) -> bool {
     [bounds.x, bounds.y, bounds.width, bounds.height]
         .into_iter()
@@ -265,6 +284,94 @@ pub fn valid_bounds(bounds: Bounds) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_mapping_must_match_both_content_dimensions_with_only_numeric_roundoff() {
+        let mut frame = AcquiredFrame {
+            id: FrameId::try_from(Uuid::from_u128(1)).unwrap(),
+            target: CaptureTarget::Legacy { window_id: 1 },
+            extent: PixelExtent {
+                width: 1200,
+                height: 844,
+            },
+            content_bounds: Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1200.0000095367432,
+                height: 832.94118309021,
+            },
+            desktop_mapping: DesktopMapping::Known {
+                space: DesktopSpace::DesktopLogical,
+                desktop_bounds: Bounds {
+                    x: -12.0,
+                    y: 80.0,
+                    width: 680.0,
+                    height: 472.0,
+                },
+                scale_x: 1.7647058963775635,
+                scale_y: 1.7647058963775635,
+            },
+        };
+        // Recorded public-fixture content/scale values: fractional content may exceed
+        // the encoded extent, but agrees with the scaled desktop dimensions.
+        assert!(frame.is_valid());
+        frame.content_bounds = Bounds {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 300.0,
+        };
+        frame.desktop_mapping = DesktopMapping::Known {
+            space: DesktopSpace::DesktopLogical,
+            desktop_bounds: Bounds {
+                x: -12.0,
+                y: 80.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            scale_x: 2.0,
+            scale_y: 3.0,
+        };
+        assert!(frame.is_valid(), "independent axis scales are supported");
+        for axis in [0, 1] {
+            let mut inconsistent = frame.clone();
+            if let DesktopMapping::Known {
+                scale_x, scale_y, ..
+            } = &mut inconsistent.desktop_mapping
+            {
+                if axis == 0 {
+                    *scale_x += 0.001;
+                } else {
+                    *scale_y += 0.001;
+                }
+            }
+            assert!(!inconsistent.is_valid(), "axis {axis} contradiction");
+        }
+        let mut rounded = frame.clone();
+        rounded.content_bounds.width = 200.0 * (1.0 + f64::EPSILON);
+        assert!(rounded.is_valid());
+        rounded.content_bounds.width = 200.0 + 1e-9;
+        assert!(!rounded.is_valid(), "not a visual/pixel tolerance");
+        frame.content_bounds.width = 1e-310;
+        frame.content_bounds.height = 1e-310;
+        frame.desktop_mapping = DesktopMapping::Known {
+            space: DesktopSpace::DesktopLogical,
+            desktop_bounds: Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1e-310,
+                height: 1e-310,
+            },
+            scale_x: 1.0,
+            scale_y: 1.0,
+        };
+        assert!(frame.is_valid());
+        frame.content_bounds.width = 2e-310;
+        assert!(
+            !frame.is_valid(),
+            "tiny dimensions do not get an absolute tolerance floor"
+        );
+    }
     fn frame() -> AcquiredFrame {
         AcquiredFrame {
             id: FrameId::try_from(Uuid::from_u128(1)).unwrap(),

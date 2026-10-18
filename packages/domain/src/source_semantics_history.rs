@@ -518,6 +518,31 @@ mod tests {
         current["media"] = json!([media]);
         let valid: LensContext = serde_json::from_value(current.clone()).unwrap();
         let input = serde_json::to_value(LensInput::from_context(&valid).unwrap()).unwrap();
+        // A finite, positive mapping can still contradict its acquired content.
+        // Both persisted contexts and replay inputs must reject that geometry.
+        for (is_context, mut record) in [(true, current.clone()), (false, input.clone())] {
+            record["media"][0]["geometry"]["frame"]["desktop_mapping"] = json!({
+                "status":"known", "space":"desktop_logical",
+                "desktop_bounds":{"x":-20.0,"y":30.0,"width":50.0,"height":40.0},
+                "scale_x":2.0,"scale_y":2.0
+            });
+            // The same exact coherent mapping is legal before either axis is altered.
+            if is_context {
+                serde_json::from_value::<LensContext>(record.clone()).unwrap();
+            } else {
+                serde_json::from_value::<LensInput>(record.clone()).unwrap();
+            }
+            for axis in ["scale_x", "scale_y"] {
+                let mut contradictory = record.clone();
+                contradictory["media"][0]["geometry"]["frame"]["desktop_mapping"][axis] =
+                    json!(3.0);
+                if is_context {
+                    assert!(serde_json::from_value::<LensContext>(contradictory).is_err());
+                } else {
+                    assert!(serde_json::from_value::<LensInput>(contradictory).is_err());
+                }
+            }
+        }
         for pointer in [
             "/media/0/geometry/frame/extent/width",
             "/media/0/geometry/crop/width",

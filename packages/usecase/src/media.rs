@@ -751,6 +751,16 @@ mod tests {
         }
         let mut wrong_frame = batch();
         wrong_frame.captures[0].frame_id = Uuid::from_u128(99).try_into().unwrap();
+        let mut contradictory_scale = batch();
+        if let port_platform::geometry::DesktopMapping::Known { scale_x, .. } =
+            &mut contradictory_scale.frame.as_mut().unwrap().desktop_mapping
+        {
+            *scale_x = 2.0;
+        }
+        // Match the original request under the bogus transform, then clip to
+        // the real content/crop. Only full transform/content coherence rejects it.
+        contradictory_scale.captures[0].source_bounds.width = 6.0;
+        contradictory_scale.captures[0].coverage = CaptureCoverage::VisibleSubregion;
         let mut wrong_region = batch();
         wrong_region.captures[0].source_bounds.x = 0.5;
         wrong_region.captures[0].source_bounds.width = 2.0;
@@ -801,6 +811,7 @@ mod tests {
         for batch in [
             wrong_read,
             wrong_frame,
+            contradictory_scale,
             wrong_region,
             changed_observation,
             wrong_units,
