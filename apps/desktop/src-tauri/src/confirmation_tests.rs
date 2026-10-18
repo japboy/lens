@@ -2351,9 +2351,21 @@ fn restored_history_metadata_never_creates_live_host_source_authority() {
 
 #[test]
 fn repeated_confirmation_does_not_issue_a_second_source_read() {
-    let harness = setup(Scenario::Success);
-    let confirmed = invoke(&harness.window, "confirm_lens_targets");
-    assert_eq!(confirmed.stage, LensStage::Completed);
+    let harness = setup(Scenario::StopDuringExtraction);
+    let window = harness.window.clone();
+    let invocation = std::thread::spawn(move || invoke(&window, "confirm_lens_targets"));
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            harness.fixture.extraction_started.notified(),
+        )
+        .await
+        .unwrap();
+    });
+    // Hold the initial read so its post-confirmation live refresh cannot be
+    // mistaken for a source read caused by the repeated confirmation.
+    let extracting = harness.app.state::<AppState>().lens().unwrap();
+    assert_eq!(extracting.stage, LensStage::Extracting);
     let reads = harness.fixture.reads.lock().unwrap().clone();
     assert_eq!(reads.len(), 1);
     let repeated = crate::shell_tests::invoke(
@@ -2363,10 +2375,14 @@ fn repeated_confirmation_does_not_issue_a_second_source_read() {
     );
     assert!(repeated.is_err());
     assert_eq!(*harness.fixture.reads.lock().unwrap(), reads);
-    assert_eq!(
-        harness.app.state::<AppState>().lens().unwrap().context,
-        confirmed.context
-    );
+    assert_eq!(harness.app.state::<AppState>().lens().unwrap(), extracting);
+
+    let (lock, condition) = &harness.fixture.finish_extraction;
+    *lock.lock().unwrap() = true;
+    condition.notify_one();
+    let confirmed = invocation.join().unwrap();
+    assert_eq!(confirmed.stage, LensStage::Completed);
+    assert!(confirmed.context.is_some());
 }
 
 #[test]
