@@ -1,16 +1,12 @@
-use crate::{ImageCaptureLimits, PlatformError};
+use crate::{authority::TargetReadKey, ImageCaptureLimits, PlatformError};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub use crate::model::Bounds;
 
 /// Registered operations resolve only their retained target; they never re-enumerate it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureTarget {
-    Registered {
-        operation_id: Uuid,
-        window_id: u32,
-    },
+    Registered(TargetReadKey),
     /// Existing explicit one-shot validation path, never a registered-operation fallback.
     Legacy {
         window_id: u32,

@@ -224,10 +224,13 @@ mod tests {
 
     fn context() -> MediaCaptureContext {
         MediaCaptureContext {
-            target: CaptureTarget::Registered {
-                operation_id: Uuid::from_u128(11),
-                window_id: 17,
-            },
+            target: CaptureTarget::Registered(port_platform::authority::TargetReadKey {
+                target: port_platform::authority::TargetAuthority {
+                    operation_id: Uuid::from_u128(11),
+                    receipt: Uuid::from_u128(22).try_into().unwrap(),
+                },
+                sequence: port_platform::authority::ReadSequence::FIRST,
+            }),
             target_id: "window-17".into(),
             context_id: Uuid::from_u128(42),
             context_revision: NonZeroU64::new(7).unwrap(),

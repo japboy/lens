@@ -1,4 +1,4 @@
-use crate::{model::WindowIdentity, PlatformError};
+use crate::{authority::TargetAuthority, PlatformError};
 use serde::{Deserialize, Serialize};
 use std::{
     num::NonZeroU64,
@@ -18,11 +18,10 @@ pub enum WindowObservationNotification {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowObservationEvent {
-    pub operation_id: Uuid,
+    pub target: TargetAuthority,
     pub context_id: Uuid,
     pub source_registration_id: Uuid,
     pub observer_epoch: NonZeroU64,
-    pub window_id: u32,
     pub notification: WindowObservationNotification,
 }
 
@@ -34,11 +33,10 @@ pub struct WindowObservationStart {
 
 #[derive(Debug, Clone)]
 pub struct ObservationRequest {
-    pub operation_id: Uuid,
+    pub target: TargetAuthority,
     pub context_id: Uuid,
     pub source_registration_id: Uuid,
     pub observer_epoch: NonZeroU64,
-    pub identity: WindowIdentity,
 }
 
 /// Native callbacks/resources stay inside the implementation. Explicit close reports
@@ -72,8 +70,8 @@ mod tests {
     #[test]
     fn invalid_epoch_and_unknown_notification_are_independently_rejected() {
         let valid = serde_json::json!({
-            "operation_id":Uuid::from_u128(1),"context_id":Uuid::from_u128(2),
-            "source_registration_id":Uuid::from_u128(3),"observer_epoch":1,"window_id":17,
+            "target":{"operation_id":Uuid::from_u128(1),"receipt":Uuid::from_u128(4)},"context_id":Uuid::from_u128(2),
+            "source_registration_id":Uuid::from_u128(3),"observer_epoch":1,
             "notification":"window_destroyed"
         });
         let mut zero_epoch = valid.clone();
@@ -100,11 +98,10 @@ mod tests {
     fn observation_event_requires_closed_notification_and_nonzero_epoch() {
         let event: WindowObservationEvent = serde_json::from_str(
             r#"{
-                "operation_id":"00000000-0000-0000-0000-000000000001",
+                "target":{"operation_id":"00000000-0000-0000-0000-000000000001","receipt":"00000000-0000-0000-0000-000000000004"},
                 "context_id":"00000000-0000-0000-0000-000000000002",
                 "source_registration_id":"00000000-0000-0000-0000-000000000003",
                 "observer_epoch":4,
-                "window_id":17,
                 "notification":"window_title_changed"
             }"#,
         )
@@ -117,11 +114,10 @@ mod tests {
 
         let invalid = serde_json::from_str::<WindowObservationEvent>(
             r#"{
-                "operation_id":"00000000-0000-0000-0000-000000000001",
+                "target":{"operation_id":"00000000-0000-0000-0000-000000000001","receipt":"00000000-0000-0000-0000-000000000004"},
                 "context_id":"00000000-0000-0000-0000-000000000002",
                 "source_registration_id":"00000000-0000-0000-0000-000000000003",
                 "observer_epoch":0,
-                "window_id":17,
                 "notification":"unbounded_native_detail"
             }"#,
         );

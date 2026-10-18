@@ -13,6 +13,7 @@ mod configuration_writer;
 mod external_agent;
 mod publication;
 mod settings_recovery;
+mod source_lifecycle_validation;
 use usecase::confirm_targets;
 #[cfg(test)]
 mod contract_tests;
@@ -209,6 +210,16 @@ pub fn run_with_runtime<R: tauri::Runtime>(
     services: platform::Services,
     presentation: platform::Presentation<R>,
 ) {
+    let source_validation = source_lifecycle_validation::Mode::parse(
+        cfg!(debug_assertions),
+        &std::env::vars_os().collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|error| panic!("invalid validation composition: {error}"));
+    #[cfg(debug_assertions)]
+    if source_validation.enabled() {
+        #[cfg(target_os = "macos")]
+        native::enable_source_validation();
+    }
     let validate_interactions =
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
     let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();
@@ -245,7 +256,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         builder,
         presentation,
         ui::TrayPresentation(std::sync::Arc::new(ui::NativeTrayOutput)),
-        agent::AgentServices(std::sync::Arc::new(agent::DefaultAgentHost)),
+        source_lifecycle_validation::agent_services(source_validation),
     )
         .setup(move |app| {
             if cfg!(target_os = "macos") {
@@ -271,9 +282,9 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             }
             app.manage(state);
             #[cfg(target_os = "macos")]
-            native::configure_activation(app, validate_a11y);
+            native::configure_activation(app, validate_a11y || source_validation.enabled());
             ui::install_menu_bar(app)?;
-            release_availability::start(app.handle().clone());
+            if !source_validation.enabled() { release_availability::start(app.handle().clone()); }
             #[cfg(debug_assertions)]
             if std::env::var_os("LENS_VALIDATE_QUIT").is_some() {
                 quit_validation::start(app.handle()).map_err(std::io::Error::other)?;
@@ -296,7 +307,7 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                     }
                 });
             }
-            if std::env::var_os("LENS_VALIDATE_A11Y").is_none()
+            if !source_validation.enabled() && std::env::var_os("LENS_VALIDATE_A11Y").is_none()
                 && std::env::var_os("LENS_VALIDATE_ACP").is_none()
                 && std::env::var_os("LENS_VALIDATE_RUNTIME").is_none()
                 && std::env::var_os("LENS_VALIDATE_MCP_APPS").is_none()
@@ -338,6 +349,17 @@ pub fn run_with_runtime<R: tauri::Runtime>(
             // Ready handlers must not start agents or access absent runtime state.
             if app.try_state::<app_state::AppState>().is_none() { return; }
             match event {
+            #[cfg(debug_assertions)]
+            tauri::RunEvent::Ready if source_validation.enabled() => {
+                println!("LENS_SOURCE_LIFECYCLE_MODE=native_source_only_agent_disabled; Preparing Agent labels are not Agent activity; confirm the normal target preview");
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    match commands::select_lens_target(handle).await {
+                        Ok(state) => println!("LENS_SOURCE_LIFECYCLE_SELECTION={}", serde_json::json!({"operation_id":state.operation_id,"stage":state.stage})),
+                        Err(error) => eprintln!("LENS_SOURCE_LIFECYCLE_SELECTION=failed {error}"),
+                    }
+                });
+            }
             #[cfg(debug_assertions)]
             tauri::RunEvent::Ready if mcp_apps_validation::enabled() => {
                 let handle = app.clone();

@@ -23,11 +23,13 @@ use crate::{
     prompt_template::AgentPromptTemplate,
     ui,
 };
+use port_platform::authority::TargetReadKey;
 use std::{collections::BTreeMap, num::NonZeroU64, path::PathBuf};
 use tauri::{AppHandle, Manager, State};
 use usecase::context::{
     build_context, BlockingExecutor, BuiltContext, ContextBuildRequest, WindowAccessMode,
 };
+use usecase::read_admission::OperationTerminalReason;
 use usecase::state::ContextReadAuthority;
 use uuid::Uuid;
 
@@ -36,9 +38,57 @@ struct DesktopBlockingExecutor<R: tauri::Runtime> {
     authority: ContextReadAuthority,
 }
 
+/// Dropping orchestration revokes its outstanding results, not a running native call.
+struct SourceReadLease<R: tauri::Runtime> {
+    app: AppHandle<R>,
+    operation_id: Uuid,
+    reads: Vec<TargetReadKey>,
+}
+
+struct SourceWorkerLease(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl SourceWorkerLease {
+    fn new<R: tauri::Runtime>(app: &AppHandle<R>) -> Self {
+        let count = app.state::<AppState>().source_workers.clone();
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self(count)
+    }
+}
+
+impl Drop for SourceWorkerLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+impl<R: tauri::Runtime> Drop for SourceReadLease<R> {
+    fn drop(&mut self) {
+        if let Err(error) = self
+            .app
+            .state::<AppState>()
+            .abandon_source_reads(self.operation_id, &self.reads)
+        {
+            eprintln!("Unable to revoke abandoned source reads: {error}");
+        }
+    }
+}
+
 impl<R: tauri::Runtime> DesktopBlockingExecutor<R> {
-    fn admit(&self) -> Result<(), String> {
-        if self.authority.admits(&self.app.state::<AppState>().lens()?) {
+    fn admit(&self, read: Option<TargetReadKey>) -> Result<(), String> {
+        let operation_id = match self.authority {
+            ContextReadAuthority::Initial { operation_id }
+            | ContextReadAuthority::Refresh { operation_id, .. } => operation_id,
+        };
+        if self.authority.admits(&self.app.state::<AppState>().lens()?)
+            && self
+                .app
+                .state::<AppState>()
+                .source_operation_is_active(operation_id)?
+            && read
+                .map(|key| self.app.state::<AppState>().source_read_is_current(key))
+                .transpose()?
+                .unwrap_or(true)
+        {
             Ok(())
         } else {
             Err("Lens source read authority was revoked".into())
@@ -49,19 +99,25 @@ impl<R: tauri::Runtime> DesktopBlockingExecutor<R> {
 impl<R: tauri::Runtime> BlockingExecutor for DesktopBlockingExecutor<R> {
     fn run<T: Send + 'static>(
         &self,
+        read: Option<TargetReadKey>,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send>> {
-        if let Err(error) = self.admit() {
+        if let Err(error) = self.admit(read) {
             return Box::pin(async move { Err(error) });
         }
         let executor = Self {
             app: self.app.clone(),
             authority: self.authority,
         };
+        let worker = SourceWorkerLease::new(&self.app);
         let task = tauri::async_runtime::spawn_blocking(move || {
+            let _worker = worker;
             // A worker queued before Pause/Stop must recheck when it actually starts.
-            executor.admit()?;
-            Ok(work())
+            executor.admit(read)?;
+            let result = work();
+            // Native work may finish after Stop; its return is not publication authority.
+            executor.admit(read)?;
+            Ok(result)
         });
         Box::pin(async move { task.await.map_err(|error| error.to_string())? })
     }
@@ -135,6 +191,11 @@ pub async fn update_managed_agent<R: tauri::Runtime>(
     app: AppHandle<R>,
     agent: AgentKind,
 ) -> Result<crate::model::AgentRuntimeState, String> {
+    if app.state::<agent::AgentServices<R>>().0.execution_policy()
+        != agent::AgentExecutionPolicy::Product
+    {
+        return Err("Native source validation cannot install or update an Agent runtime".into());
+    }
     crate::agent_runtime::update_managed(&app, agent).await
 }
 
@@ -534,6 +595,12 @@ async fn select_single_window<R: tauri::Runtime>(
         return Ok(None);
     };
     let reply = reply.map_err(|error| error.to_string())?;
+    let registration = match &reply {
+        port_platform::selection::WindowPickerReply::Selected { windows } if windows.len() == 1 => {
+            Some(windows[0].target)
+        }
+        _ => None,
+    };
     let Some(mut windows) = usecase::platform::picker_reply(reply).into_selected()? else {
         return Ok(None);
     };
@@ -543,7 +610,28 @@ async fn select_single_window<R: tauri::Runtime>(
             windows.len()
         ));
     }
-    Ok(windows.pop())
+    let window = windows.pop().expect("single picker window");
+    state.register_source_target(
+        operation_id,
+        target_id(&window),
+        registration.ok_or("picker did not return a live target registration")?,
+    )?;
+    Ok(Some(window))
+}
+
+fn registered_access<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    generation: u64,
+    targets: &LensTargetSet,
+) -> Result<WindowAccessMode, String> {
+    Ok(WindowAccessMode::Registered {
+        reads: app.state::<AppState>().issue_source_reads(
+            operation_id,
+            generation,
+            targets.targets.iter().map(|target| target.id.clone()),
+        )?,
+    })
 }
 
 fn validation_window_count() -> usize {
@@ -563,6 +651,7 @@ pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
     let operation_id = Uuid::new_v4();
     let mut picker_lease = state.picker_control.try_begin(operation_id)?;
     state.lens_media.begin(operation_id)?;
+    state.begin_source_operation(operation_id)?;
     publish_lens_state(
         &app,
         LensState {
@@ -621,8 +710,8 @@ pub async fn select_and_extract<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
     if !replace_operation_state(&app, operation_id, extracting)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
-    extract_target_set_for_operation(app, operation_id, target_set, WindowAccessMode::Registered)
-        .await
+    let access = registered_access(&app, operation_id, 1, &target_set)?;
+    extract_target_set_for_operation(app, operation_id, target_set, access).await
 }
 
 pub async fn extract_target<R: tauri::Runtime>(
@@ -635,6 +724,7 @@ pub async fn extract_target<R: tauri::Runtime>(
     let target_set =
         LensTargetSet::try_new(operation_id, vec![target]).map_err(|error| error.to_string())?;
     state.lens_media.begin(operation_id)?;
+    state.begin_source_operation(operation_id)?;
     publish_lens_state(
         &app,
         LensState {
@@ -654,6 +744,16 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
     access_mode: WindowAccessMode,
 ) -> Result<LensState, String> {
     let context_revision = 1;
+    let registered = matches!(access_mode, WindowAccessMode::Registered { .. });
+    let issued_reads = match &access_mode {
+        WindowAccessMode::Registered { reads } => reads.values().copied().collect::<Vec<_>>(),
+        WindowAccessMode::Legacy => Vec::new(),
+    };
+    let _read_lease = SourceReadLease {
+        app: app.clone(),
+        operation_id,
+        reads: issued_reads.clone(),
+    };
     let source_revisions = target_set
         .targets
         .iter()
@@ -663,6 +763,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         target_set: refreshed_target_set,
         context,
         payloads,
+        reads,
     } = match build_context(
         &DesktopBlockingExecutor {
             app: app.clone(),
@@ -682,6 +783,12 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
     {
         Ok(context) => context,
         Err(message) => {
+            if !app
+                .state::<AppState>()
+                .abort_source_reads(operation_id, &issued_reads)?
+            {
+                return Err(message);
+            }
             replace_operation_state(
                 &app,
                 operation_id,
@@ -706,8 +813,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
     let projection_ref = projection.as_ref().map(|projection| {
         projection.projection_ref(NonZeroU64::new(1).expect("initial revision is non-zero"))
     });
-    let has_input = input.is_some();
-    let live = (access_mode == WindowAccessMode::Registered).then_some(LensLiveState {
+    let live = registered.then_some(LensLiveState {
         lifecycle: LensMonitoringLifecycle::Watching,
         health: source_health(context.quality),
         freshness: LensFreshness::None,
@@ -743,16 +849,7 @@ async fn extract_target_set_for_operation<R: tauri::Runtime>(
         agent: None,
         error,
     };
-    if has_input {
-        if !commit_initial_lens_context(&app, operation_id, next.clone(), payloads)? {
-            return Err(OPERATION_SUPERSEDED.into());
-        }
-    } else if !app.state::<AppState>().lens_media.replace_context(
-        operation_id,
-        context_revision,
-        payloads,
-    )? || !replace_operation_state(&app, operation_id, next.clone())?
-    {
+    if !commit_initial_lens_context(&app, operation_id, next.clone(), payloads, reads)? {
         return Err(OPERATION_SUPERSEDED.into());
     }
     if let Err(error) = ui::show_lens_window(&app, &refreshed_target_set) {
@@ -823,10 +920,21 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
         return Err("Lens context refresh was superseded before extraction".into());
     }
 
+    let access_mode = registered_access(&app, operation_id, next_context_revision, &target_set)?;
+    let issued_reads = match &access_mode {
+        WindowAccessMode::Registered { reads } => reads.values().copied().collect::<Vec<_>>(),
+        WindowAccessMode::Legacy => unreachable!("refresh is registered"),
+    };
+    let _read_lease = SourceReadLease {
+        app: app.clone(),
+        operation_id,
+        reads: issued_reads.clone(),
+    };
     let BuiltContext {
         target_set: next_target_set,
         context: next_context,
         payloads,
+        reads,
     } = match build_context(
         &DesktopBlockingExecutor {
             app: app.clone(),
@@ -843,13 +951,19 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
             context_revision: next_context_revision,
             source_revisions,
             target_set: &target_set,
-            access_mode: WindowAccessMode::Registered,
+            access_mode,
         },
     )
     .await
     {
         Ok(built) => built,
         Err(error) => {
+            if !app
+                .state::<AppState>()
+                .abort_source_reads(operation_id, &issued_reads)?
+            {
+                return Err(error);
+            }
             mark_refresh_failed(
                 &app,
                 operation_id,
@@ -861,6 +975,12 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
         }
     };
     let Some(next_input) = LensInput::from_context(&next_context) else {
+        if !app
+            .state::<AppState>()
+            .abort_source_reads(operation_id, &reads)?
+        {
+            return Err(OPERATION_SUPERSEDED.into());
+        }
         let error = if next_context.diagnostics.is_empty() {
             "Selected-window refresh did not yield usable structured content or media.".into()
         } else {
@@ -880,6 +1000,12 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
         Ok(candidate) => candidate,
         Err(error) => {
             let error = error.to_string();
+            if !app
+                .state::<AppState>()
+                .abort_source_reads(operation_id, &reads)?
+            {
+                return Err(error);
+            }
             mark_refresh_failed(
                 &app,
                 operation_id,
@@ -927,6 +1053,7 @@ pub(crate) async fn refresh_lens_context<R: tauri::Runtime>(
             outcome,
         },
         payloads,
+        reads,
     )? {
         return Err("Lens context refresh was superseded before canonical commit".into());
     }
@@ -977,12 +1104,23 @@ fn source_health(quality: ExtractionQuality) -> LensSourceHealth {
     }
 }
 
-async fn build_target_selection_item(
-    capture_service: std::sync::Arc<dyn port_platform::capture::Capture>,
+async fn build_target_selection_item<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     operation_id: Uuid,
     window: SelectedWindow,
-) -> (LensTargetSelectionItem, Option<LensMediaPayload>) {
+) -> Result<LensTargetSelectionItem, String> {
     let id = target_id(&window);
+    let read = *app
+        .state::<AppState>()
+        .issue_source_reads(operation_id, 1, [id.clone()])?
+        .get(&id)
+        .expect("issued preview read");
+    let _read_lease = SourceReadLease {
+        app: app.clone(),
+        operation_id,
+        reads: vec![read],
+    };
+    let capture_service = app.state::<AppState>().platform.capture.clone();
     let attachment_id = format!("selection-preview-window-{}", window.identity.window_id);
     let plan = LensMediaPlan {
         requests: vec![LensMediaRequest {
@@ -993,16 +1131,21 @@ async fn build_target_selection_item(
         }],
         omissions: Vec::new(),
     };
-    let capture_window = window.clone();
     let capture_target_id = id.clone();
+    let worker_app = app.clone();
+    let worker = SourceWorkerLease::new(app);
     let capture = tauri::async_runtime::spawn_blocking(move || {
-        usecase::media::capture_media(
+        let _worker = worker;
+        if !worker_app
+            .state::<AppState>()
+            .source_read_is_current(read)?
+        {
+            return Err(OPERATION_SUPERSEDED.to_string());
+        }
+        let captured = usecase::media::capture_media(
             capture_service.as_ref(),
             usecase::media::MediaCaptureContext {
-                target: port_platform::capture::CaptureTarget::Registered {
-                    operation_id,
-                    window_id: capture_window.identity.window_id,
-                },
+                target: port_platform::capture::CaptureTarget::Registered(read),
                 target_id: capture_target_id,
                 context_id: operation_id,
                 context_revision: NonZeroU64::MIN,
@@ -1015,8 +1158,19 @@ async fn build_target_selection_item(
                 max_total_bytes: MAX_SELECTION_PREVIEW_BYTES,
             },
         )
+        .map_err(|error| error.to_string());
+        if !worker_app
+            .state::<AppState>()
+            .source_read_is_current(read)?
+        {
+            return Err(OPERATION_SUPERSEDED.to_string());
+        }
+        captured
     })
     .await;
+    if !app.state::<AppState>().source_read_is_current(read)? {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
 
     let (preview_uri, preview_error, payload) = match capture {
         Ok(Ok(mut capture)) if capture.payloads.len() == 1 => {
@@ -1051,15 +1205,13 @@ async fn build_target_selection_item(
         Err(error) => (None, Some(error.to_string()), None),
     };
 
-    (
-        LensTargetSelectionItem {
-            id,
-            window,
-            preview_uri,
-            preview_error,
-        },
-        payload,
-    )
+    store_target_selection_payload(app, operation_id, payload, read)?;
+    Ok(LensTargetSelectionItem {
+        id,
+        window,
+        preview_uri,
+        preview_error,
+    })
 }
 
 fn target_selection_for_operation<R: tauri::Runtime>(
@@ -1123,13 +1275,34 @@ fn store_target_selection_payload<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation_id: Uuid,
     payload: Option<LensMediaPayload>,
+    read: TargetReadKey,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
+    let snapshot = state
+        .runtime
+        .read()
+        .map_err(|_| "application state lock is poisoned")?;
+    if snapshot.lens.operation_id != Some(operation_id)
+        || snapshot.lens.stage != LensStage::Selecting
+    {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    let mut read_admission = state
+        .read_admission
+        .lock()
+        .map_err(|_| "source admission lock is poisoned")?;
+    let active = read_admission
+        .as_mut()
+        .filter(|active| active.operation_id() == operation_id && active.admits(read))
+        .ok_or(OPERATION_SUPERSEDED)?;
     let mut payloads = state.lens_media.payloads(operation_id)?;
     if let Some(payload) = payload {
         payloads.push(payload);
     }
     if !state.lens_media.replace(operation_id, payloads)? {
+        return Err(OPERATION_SUPERSEDED.into());
+    }
+    if !active.accept_all(&[read]) {
         return Err(OPERATION_SUPERSEDED.into());
     }
     Ok(())
@@ -1147,7 +1320,12 @@ pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
             .map_err(|_| "Session admission is unavailable")?;
         state.session_view.ensure_not_loading()?;
         let agent_selection = state.agent_selection()?;
-        if !agent_selection.can_select_lens_target() {
+        if !app
+            .state::<agent::AgentServices<R>>()
+            .0
+            .execution_policy()
+            .allows_target_selection(agent_selection.can_select_lens_target())
+        {
             return Err(
                 "select and authenticate an AI Agent before selecting a Lens Target".into(),
             );
@@ -1157,6 +1335,7 @@ pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
         }
         let _ = state.agent_control.cancel_active()?;
         state.lens_media.begin(operation_id)?;
+        state.begin_source_operation(operation_id)?;
         state.session_view.clear()?;
         let initial_selection = LensTargetSelection {
             selection_id: operation_id,
@@ -1202,13 +1381,7 @@ pub async fn select_lens_target<R: tauri::Runtime>(app: AppHandle<R>) -> Result<
         }
     };
     let anchor = window.facts.frame;
-    let (item, payload) = build_target_selection_item(
-        app.state::<AppState>().platform.capture.clone(),
-        operation_id,
-        window,
-    )
-    .await;
-    store_target_selection_payload(&app, operation_id, payload)?;
+    let item = build_target_selection_item(&app, operation_id, window).await?;
     publish_target_selection(
         &app,
         operation_id,
@@ -1267,13 +1440,7 @@ pub async fn add_lens_target<R: tauri::Runtime>(
                 selection.notice = Some("That window is already selected.".into());
                 return publish_target_selection(&app, operation_id, selection).await;
             }
-            let (item, payload) = build_target_selection_item(
-                app.state::<AppState>().platform.capture.clone(),
-                operation_id,
-                window,
-            )
-            .await;
-            store_target_selection_payload(&app, operation_id, payload)?;
+            let item = build_target_selection_item(&app, operation_id, window).await?;
             selection.items.push(item);
             selection.stage = LensTargetSelectionStage::Reviewing;
             selection.notice = None;
@@ -1296,14 +1463,17 @@ pub async fn remove_lens_target<R: tauri::Runtime>(
         .iter()
         .position(|item| item.id == target_id)
         .ok_or_else(|| "Lens target selection item is unavailable".to_string())?;
-    let window_id = selection.items[index].window.identity.window_id;
-    // Release native ownership before mutating the authoritative Rust media/state snapshot. A
-    // native teardown failure therefore leaves the reviewed item intact and retryable.
-    app.state::<AppState>()
-        .platform
-        .selection
-        .release_target(operation_id, window_id)
-        .map_err(|error| error.to_string())?;
+    let state = app.state::<AppState>();
+    let target = state.source_target(operation_id, &target_id)?;
+    // Close read admission before releasing native resources. Failed cleanup cannot revive it.
+    state
+        .read_admission
+        .lock()
+        .map_err(|_| "source admission lock is poisoned")?
+        .as_mut()
+        .ok_or(OPERATION_SUPERSEDED)?
+        .remove(&target_id)?;
+    let cleanup_error = state.platform.selection.release_target(target).err();
     let removed = selection.items.remove(index);
     let state = app.state::<AppState>();
     let payloads = state
@@ -1329,7 +1499,9 @@ pub async fn remove_lens_target<R: tauri::Runtime>(
         }
         return Err(OPERATION_SUPERSEDED.into());
     }
-    selection.notice = None;
+    selection.notice = cleanup_error.map(|error| {
+        format!("The target was removed, but native cleanup was not confirmed: {error}")
+    });
     publish_target_selection(&app, operation_id, selection).await
 }
 
@@ -1364,13 +1536,8 @@ impl<R: tauri::Runtime> ConfirmationHost for DesktopConfirmation<R> {
         operation: Uuid,
         targets: LensTargetSet,
     ) -> Result<LensState, String> {
-        extract_target_set_for_operation(
-            self.app.clone(),
-            operation,
-            targets,
-            WindowAccessMode::Registered,
-        )
-        .await
+        let access = registered_access(&self.app, operation, 1, &targets)?;
+        extract_target_set_for_operation(self.app.clone(), operation, targets, access).await
     }
 
     fn start_observation(&self, operation: Uuid) -> Result<(), String> {
@@ -1433,6 +1600,8 @@ pub fn stop_lens<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<LensState, String> {
+    #[cfg(debug_assertions)]
+    let mut stop_probe = crate::source_lifecycle_validation::StopProbe::new(&app, operation_id);
     let state = app.state::<AppState>();
     let _history_admission = state
         .session_view
@@ -1443,6 +1612,14 @@ pub fn stop_lens<R: tauri::Runtime>(
     if current.operation_id != Some(operation_id) {
         return Err("Lens operation was superseded".into());
     }
+    state.terminate_source_operation(operation_id, OperationTerminalReason::Cancelled)?;
+    state.begin_source_cleanup(operation_id)?;
+    #[cfg(debug_assertions)]
+    stop_probe.record(
+        &app,
+        crate::source_lifecycle_validation::StopPhase::AdmissionClosed,
+        crate::source_lifecycle_validation::StopResult::Observed,
+    );
     state.picker_control.cancel(operation_id)?;
     update_lens_state(&app, operation_id, |lens| {
         if let Some(live) = lens.live.as_mut() {
@@ -1451,20 +1628,57 @@ pub fn stop_lens<R: tauri::Runtime>(
         }
         lens.pending_representation = None;
     })?;
-    live_runtime::stop(&app, operation_id)?;
-    if current.live.is_some() || current.selection.is_some() {
-        if let Err(error) = app
-            .state::<AppState>()
-            .platform
-            .selection
-            .release_operation(operation_id)
-        {
-            eprintln!("Unable to release the stopped native Lens operation: {error}");
-        }
+    let observation_cleanup = live_runtime::stop(&app, operation_id);
+    #[cfg(debug_assertions)]
+    stop_probe.record(
+        &app,
+        crate::source_lifecycle_validation::StopPhase::ObserversClosed,
+        if observation_cleanup.is_ok() {
+            crate::source_lifecycle_validation::StopResult::Ok
+        } else {
+            crate::source_lifecycle_validation::StopResult::Error
+        },
+    );
+    if let Err(error) = &observation_cleanup {
+        eprintln!("Unable to confirm stopped observer cleanup: {error}");
     }
+    let released = app
+        .state::<AppState>()
+        .platform
+        .selection
+        .release_operation(operation_id);
+    #[cfg(debug_assertions)]
+    stop_probe.record(
+        &app,
+        crate::source_lifecycle_validation::StopPhase::NativeReleaseReturned,
+        if released.is_ok() {
+            crate::source_lifecycle_validation::StopResult::Ok
+        } else {
+            crate::source_lifecycle_validation::StopResult::Error
+        },
+    );
+    if let Err(error) = &released {
+        eprintln!("Unable to release the stopped native Lens operation: {error}");
+    }
+    state.finish_source_cleanup(
+        operation_id,
+        released.is_ok() && observation_cleanup.is_ok(),
+    )?;
+    #[cfg(debug_assertions)]
+    stop_probe.record(
+        &app,
+        crate::source_lifecycle_validation::StopPhase::CleanupRecorded,
+        crate::source_lifecycle_validation::StopResult::Observed,
+    );
     if !clear_lens_operation(&app, operation_id)? {
         return Err("Lens operation was superseded before it stopped".into());
     }
+    #[cfg(debug_assertions)]
+    stop_probe.record(
+        &app,
+        crate::source_lifecycle_validation::StopPhase::StateCleared,
+        crate::source_lifecycle_validation::StopResult::Ok,
+    );
     app.state::<AppState>().session_view.clear()?;
     crate::session_view::emit(&app)?;
     let history_app = app.clone();
@@ -1473,7 +1687,10 @@ pub fn stop_lens<R: tauri::Runtime>(
             eprintln!("Unable to refresh session history: {error}");
         }
     });
-    app.state::<AppState>().lens()
+    let result = app.state::<AppState>().lens();
+    #[cfg(debug_assertions)]
+    stop_probe.finish(&app, result.is_ok());
+    result
 }
 
 pub async fn authenticate_agent<R: tauri::Runtime>(
@@ -1540,7 +1757,7 @@ fn replace_operation_state<R: tauri::Runtime>(
     operation_id: Uuid,
     next: LensState,
 ) -> Result<bool, String> {
-    update_lens_state(app, operation_id, |state| *state = next)
+    crate::app_state::replace_active_source_state(app, operation_id, next)
 }
 
 /// Resolve model-dependent settings without persisting a draft or touching the live actor.

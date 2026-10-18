@@ -8,6 +8,7 @@ use agent_client_protocol::{
 };
 use port_platform::{
     accessibility::{Accessibility, ExtractionTarget},
+    authority::{TargetAuthority, TargetReadKey, TargetReceipt},
     capture::{
         Capture, CaptureBatch, CaptureCoverage, CaptureRequest, CaptureTarget, CapturedImage,
     },
@@ -29,6 +30,13 @@ use tauri::{test::MockRuntime, Listener, Manager};
 use uuid::Uuid;
 
 const OPERATION: Uuid = Uuid::from_u128(7);
+
+fn fixture_target() -> TargetAuthority {
+    TargetAuthority {
+        operation_id: OPERATION,
+        receipt: TargetReceipt::try_from(Uuid::from_u128(0xabc)).unwrap(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
@@ -54,6 +62,8 @@ enum Scenario {
     ConfigTimeoutDuringPrompt,
     ConfigTransportFailureDuringPrompt,
     StopDuringExtraction,
+    StopDuringCapture,
+    ReleaseUnavailable,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -79,6 +89,8 @@ enum Effect {
 struct Fixture {
     scenario: Scenario,
     effects: Mutex<Vec<Effect>>,
+    reads: Mutex<Vec<TargetReadKey>>,
+    release_probe: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     prompt_started: tokio::sync::Notify,
     finish_prompt: tokio::sync::Notify,
     release_started: tokio::sync::Notify,
@@ -108,9 +120,11 @@ impl Accessibility for Fixture {
         target: ExtractionTarget,
         limits: ExtractionLimits,
     ) -> Result<port_platform::model::ExtractionResult, PlatformError> {
-        assert!(
-            matches!(target, ExtractionTarget::Registered { operation_id: OPERATION, ref identity } if identity.window_id == 7)
-        );
+        let ExtractionTarget::Registered(read) = target else {
+            panic!("confirmation must use the registered read key");
+        };
+        assert_eq!(read.target, fixture_target());
+        self.reads.lock().unwrap().push(read);
         assert_eq!(limits.max_nodes, 30_000);
         self.record(Effect::Extract);
         if self.scenario == Scenario::StopDuringExtraction {
@@ -164,14 +178,27 @@ impl Capture for Fixture {
         requests: &[CaptureRequest],
         _: ImageCaptureLimits,
     ) -> Result<CaptureBatch, PlatformError> {
-        assert_eq!(
-            target,
-            CaptureTarget::Registered {
-                operation_id: OPERATION,
-                window_id: 7
-            }
-        );
+        let CaptureTarget::Registered(read) = target else {
+            panic!("confirmation capture must use the registered read key");
+        };
+        assert_eq!(read.target, fixture_target());
+        assert_eq!(self.reads.lock().unwrap().last(), Some(&read));
         self.record(Effect::Capture);
+        if self.scenario == Scenario::StopDuringCapture {
+            self.extraction_started.notify_one();
+            let (lock, condition) = &self.finish_extraction;
+            let (released, timeout) = condition
+                .wait_timeout_while(
+                    lock.lock().unwrap(),
+                    std::time::Duration::from_secs(5),
+                    |released| !*released,
+                )
+                .unwrap();
+            assert!(
+                *released && !timeout.timed_out(),
+                "controlled capture was not released"
+            );
+        }
         if self.scenario == Scenario::NativeUnavailable {
             return Err(PlatformError::Operation(
                 "fixture capture unavailable".into(),
@@ -198,12 +225,20 @@ impl TargetSelection for Fixture {
     fn pick(&self, _: Uuid) -> PlatformFuture<'_, Result<WindowPickerReply, PlatformError>> {
         panic!("confirmation must reuse the selected target")
     }
-    fn release_target(&self, _: Uuid, _: u32) -> Result<(), PlatformError> {
+    fn release_target(&self, _: TargetAuthority) -> Result<(), PlatformError> {
         panic!("confirmation must not replace an individual target")
     }
     fn release_operation(&self, operation: Uuid) -> Result<(), PlatformError> {
         assert_eq!(operation, OPERATION);
+        if let Some(probe) = self.release_probe.lock().unwrap().take() {
+            probe();
+        }
         self.record(Effect::Released);
+        if self.scenario == Scenario::ReleaseUnavailable {
+            return Err(PlatformError::Operation(
+                "fixture native release unavailable".into(),
+            ));
+        }
         if self.scenario == Scenario::StopDuringPrompt {
             self.release_started.notify_one();
             let (lock, condition) = &self.finish_release;
@@ -258,9 +293,8 @@ impl ObservationEvents for PendingEvents {
 struct Observer(Arc<Fixture>);
 impl Observation for Observer {
     fn observe(&self, request: ObservationRequest) -> Result<ObservationSession, PlatformError> {
-        assert_eq!(request.operation_id, OPERATION);
+        assert_eq!(request.target, fixture_target());
         assert_eq!(request.context_id, OPERATION);
-        assert_eq!(request.identity.window_id, 7);
         self.0.record(Effect::Observe);
         if self.0.scenario == Scenario::ObserverUnavailable {
             return Err(PlatformError::Operation(
@@ -744,9 +778,15 @@ impl Drop for Harness {
 }
 
 fn setup(scenario: Scenario) -> Harness {
+    setup_with_source_policy(scenario, false)
+}
+
+fn setup_with_source_policy(scenario: Scenario, source_only: bool) -> Harness {
     let fixture = Arc::new(Fixture {
         scenario,
         effects: Mutex::new(vec![]),
+        reads: Mutex::new(vec![]),
+        release_probe: Mutex::new(None),
         prompt_started: tokio::sync::Notify::new(),
         finish_prompt: tokio::sync::Notify::new(),
         release_started: tokio::sync::Notify::new(),
@@ -769,6 +809,14 @@ fn setup(scenario: Scenario) -> Harness {
         AppConfig::new("/fixture".into()),
     );
     state.lens_media.begin(OPERATION).unwrap();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(
+            OPERATION,
+            "macos:example.fixture:7".into(),
+            fixture_target(),
+        )
+        .unwrap();
     let selected: SelectedWindow = serde_json::from_value(json!({"window_id":7,"bundle_id":"example.fixture","pid":42,
         "title":"Selected document","application_name":"Fixture","frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}})).unwrap();
     {
@@ -823,7 +871,13 @@ fn setup(scenario: Scenario) -> Harness {
         tauri::test::mock_builder().manage(state),
         platform::Presentation(fixture.clone()),
         ui::TrayPresentation(fixture.clone()),
-        agent::AgentServices(Arc::new(AgentFixture(fixture.clone()))),
+        if source_only {
+            crate::source_lifecycle_validation::agent_services(
+                crate::source_lifecycle_validation::Mode::SourceLifecycle,
+            )
+        } else {
+            agent::AgentServices(Arc::new(AgentFixture(fixture.clone())))
+        },
     )
     .build(crate::product_context())
     .unwrap();
@@ -1837,7 +1891,19 @@ fn stop_during_agent_prompt_revokes_publication_and_releases_observation() {
 
 #[test]
 fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
-    let harness = setup(Scenario::StopDuringExtraction);
+    verify_stop_during_source_work(Scenario::StopDuringExtraction);
+}
+
+#[test]
+fn late_capture_after_stop_does_not_publish_media_or_context() {
+    verify_stop_during_source_work(Scenario::StopDuringCapture);
+}
+
+fn verify_stop_during_source_work(scenario: Scenario) {
+    use usecase::read_admission::{
+        OperationAdmission, OperationTerminalReason, ReadOutcome, ReadState,
+    };
+    let harness = setup(scenario);
     let invocation_window = harness.window.clone();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let invocation = std::thread::spawn(move || {
@@ -1857,7 +1923,27 @@ fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
         .await
         .unwrap();
     });
+    let read = *harness.fixture.reads.lock().unwrap().last().unwrap();
+    let release_app = harness.app.handle().clone();
+    let revoked_before_release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = revoked_before_release.clone();
+    *harness.fixture.release_probe.lock().unwrap() = Some(Box::new(move || {
+        let state = release_app.state::<AppState>();
+        assert!(!state.source_read_is_current(read).unwrap());
+        let admission = state.read_admission.lock().unwrap();
+        let admission = admission.as_ref().unwrap();
+        assert_eq!(
+            admission.operation_state(),
+            OperationAdmission::Terminal(OperationTerminalReason::Cancelled)
+        );
+        assert_eq!(
+            admission.read_state(read),
+            Some(ReadState::Terminal(ReadOutcome::Cancelled))
+        );
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }));
     invoke(&harness.window, "stop_lens");
+    assert!(revoked_before_release.load(std::sync::atomic::Ordering::SeqCst));
     let (lock, condition) = &harness.fixture.finish_extraction;
     *lock.lock().unwrap() = true;
     condition.notify_one();
@@ -1882,7 +1968,8 @@ fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
         .lock()
         .unwrap()
         .iter()
-        .any(|e| matches!(e, Effect::Capture | Effect::Observe | Effect::Resolve)));
+        .any(|e| matches!(e, Effect::Observe | Effect::Resolve)
+            || (scenario == Scenario::StopDuringExtraction && matches!(e, Effect::Capture))));
 }
 
 #[test]
@@ -2129,4 +2216,341 @@ fn image_only_text_agent_never_receives_a_prompt() {
         .unwrap()
         .iter()
         .any(|effect| matches!(effect, Effect::Prompt(_))));
+}
+
+#[test]
+fn host_source_admission_rejects_foreign_operations_and_same_operation_reset() {
+    let state = crate::test_support::state();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(OPERATION, "a".into(), fixture_target())
+        .unwrap();
+    let read = state
+        .issue_source_reads(OPERATION, 1, ["a".into()])
+        .unwrap()["a"];
+    let foreign = Uuid::from_u128(8);
+    assert!(state.source_target(foreign, "a").is_err());
+    assert!(state.issue_source_reads(foreign, 1, ["a".into()]).is_err());
+    assert!(state
+        .register_source_target(foreign, "a".into(), fixture_target())
+        .is_err());
+    assert!(state.begin_source_operation(OPERATION).is_err());
+    assert!(state.source_read_is_current(read).unwrap());
+    let next = state
+        .issue_source_reads(OPERATION, 2, ["a".into()])
+        .unwrap()["a"];
+    assert_eq!(next.sequence.get(), read.sequence.get() + 1);
+    assert!(!state.source_read_is_current(read).unwrap());
+}
+
+#[test]
+fn abandoning_old_host_batch_cancels_only_its_still_current_members() {
+    use usecase::read_admission::{ReadOutcome, ReadState};
+    let state = crate::test_support::state();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(OPERATION, "a".into(), fixture_target())
+        .unwrap();
+    state
+        .register_source_target(
+            OPERATION,
+            "b".into(),
+            TargetAuthority {
+                operation_id: OPERATION,
+                receipt: Uuid::from_u128(0xdef).try_into().unwrap(),
+            },
+        )
+        .unwrap();
+    let old = state
+        .issue_source_reads(OPERATION, 1, ["a".into(), "b".into()])
+        .unwrap();
+    let next = state
+        .issue_source_reads(OPERATION, 2, ["a".into()])
+        .unwrap()["a"];
+    assert!(!state
+        .abort_source_reads(OPERATION, &[old["a"], old["b"]])
+        .unwrap());
+    assert!(state.source_read_is_current(old["b"]).unwrap());
+    state
+        .abandon_source_reads(OPERATION, &[old["a"], old["b"]])
+        .unwrap();
+    assert!(state.source_read_is_current(next).unwrap());
+    assert!(!state.source_read_is_current(old["b"]).unwrap());
+    assert_eq!(
+        state
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .read_state(old["b"]),
+        Some(ReadState::Terminal(ReadOutcome::Cancelled))
+    );
+    state
+        .abandon_source_reads(OPERATION, &[old["a"], old["b"]])
+        .unwrap();
+    assert!(state.source_read_is_current(next).unwrap());
+}
+
+#[test]
+fn failed_host_cleanup_cannot_restore_stopped_source_admission() {
+    use usecase::read_admission::{
+        CleanupOutcome, CleanupState, OperationAdmission, OperationTerminalReason,
+    };
+    let state = crate::test_support::state();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(OPERATION, "a".into(), fixture_target())
+        .unwrap();
+    let read = state
+        .issue_source_reads(OPERATION, 1, ["a".into()])
+        .unwrap()["a"];
+    state
+        .terminate_source_operation(OPERATION, OperationTerminalReason::Cancelled)
+        .unwrap();
+    state.begin_source_cleanup(OPERATION).unwrap();
+    state.finish_source_cleanup(OPERATION, false).unwrap();
+    state.finish_source_cleanup(OPERATION, true).unwrap();
+    assert!(!state.source_read_is_current(read).unwrap());
+    assert!(state.source_target(OPERATION, "a").is_err());
+    assert!(state
+        .issue_source_reads(OPERATION, 2, ["a".into()])
+        .is_err());
+    assert!(state.begin_source_operation(OPERATION).is_err());
+    let admission = state.read_admission.lock().unwrap();
+    let admission = admission.as_ref().unwrap();
+    assert_eq!(
+        admission.operation_state(),
+        OperationAdmission::Terminal(OperationTerminalReason::Cancelled)
+    );
+    assert_eq!(
+        admission.cleanup_state(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
+}
+
+#[test]
+fn restored_history_metadata_never_creates_live_host_source_authority() {
+    let state = crate::test_support::state();
+    let window: SelectedWindow = serde_json::from_value(json!({"window_id":7,"bundle_id":"example.fixture","pid":42,
+        "title":"Saved document","application_name":"Fixture","frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}})).unwrap();
+    let target_set = crate::lens::LensTargetSet::try_new(OPERATION, vec![window]).unwrap();
+    let id = target_set.targets[0].id.clone();
+    let saved = serde_json::to_value(LensState {
+        operation_id: Some(OPERATION),
+        target_set: Some(target_set),
+        ..LensState::default()
+    })
+    .unwrap();
+    state.runtime.write().unwrap().lens = serde_json::from_value(saved).unwrap();
+    assert!(state.source_target(OPERATION, &id).is_err());
+    state.begin_source_operation(OPERATION).unwrap();
+    assert!(state.source_target(OPERATION, &id).is_err());
+    assert!(state.issue_source_reads(OPERATION, 1, [id]).is_err());
+}
+
+#[test]
+fn repeated_confirmation_does_not_issue_a_second_source_read() {
+    let harness = setup(Scenario::Success);
+    let confirmed = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(confirmed.stage, LensStage::Completed);
+    let reads = harness.fixture.reads.lock().unwrap().clone();
+    assert_eq!(reads.len(), 1);
+    let repeated = crate::shell_tests::invoke(
+        &harness.window,
+        "confirm_lens_targets",
+        json!({"operationId": OPERATION}),
+    );
+    assert!(repeated.is_err());
+    assert_eq!(*harness.fixture.reads.lock().unwrap(), reads);
+    assert_eq!(
+        harness.app.state::<AppState>().lens().unwrap().context,
+        confirmed.context
+    );
+}
+
+#[test]
+fn native_worker_outliving_release_keeps_host_cleanup_unconfirmed() {
+    use std::sync::atomic::Ordering;
+    use usecase::read_admission::{CleanupOutcome, CleanupState, OperationTerminalReason};
+    let state = crate::test_support::state();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(OPERATION, "a".into(), fixture_target())
+        .unwrap();
+    let read = state
+        .issue_source_reads(OPERATION, 1, ["a".into()])
+        .unwrap()["a"];
+    state.source_workers.fetch_add(1, Ordering::SeqCst);
+    state
+        .terminate_source_operation(OPERATION, OperationTerminalReason::Cancelled)
+        .unwrap();
+    state.begin_source_cleanup(OPERATION).unwrap();
+    state.finish_source_cleanup(OPERATION, true).unwrap();
+    assert!(!state.source_read_is_current(read).unwrap());
+    assert_eq!(
+        state
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cleanup_state(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
+    state.source_workers.fetch_sub(1, Ordering::SeqCst);
+    state.finish_source_cleanup(OPERATION, true).unwrap();
+    assert!(!state.source_read_is_current(read).unwrap());
+    assert_eq!(
+        state
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cleanup_state(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
+    assert!(state
+        .issue_source_reads(OPERATION, 2, ["a".into()])
+        .is_err());
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn source_lifecycle_policy_reuses_confirmation_and_pause_resume_without_an_agent() {
+    let harness = setup_with_source_policy(Scenario::Success, true);
+    let initial = invoke(&harness.window, "confirm_lens_targets");
+    assert_eq!(initial.stage, LensStage::Ready);
+    assert!(initial.context.is_some());
+    assert!(initial.agent.is_none());
+    assert!(initial.representation.is_none());
+    assert!(initial.response_history.responses.is_empty());
+    assert!(
+        tauri::async_runtime::block_on(crate::commands::update_managed_agent(
+            harness.app.handle().clone(),
+            AgentKind::Codex
+        ))
+        .is_err()
+    );
+    let services = harness.app.state::<agent::AgentServices<MockRuntime>>();
+    let host = &services.0;
+    assert!(
+        tauri::async_runtime::block_on(host.resolve(harness.app.handle(), AgentKind::Codex))
+            .is_err()
+    );
+    assert!(tauri::async_runtime::block_on(
+        host.resolve_installed(harness.app.handle(), AgentKind::Codex)
+    )
+    .is_err());
+    assert!(tauri::async_runtime::block_on(agent::transform_current(
+        harness.app.handle().clone(),
+        Uuid::from_u128(99)
+    ))
+    .is_err());
+    let paused = invoke(&harness.window, "pause_lens");
+    assert_eq!(
+        paused.live.as_ref().unwrap().lifecycle,
+        LensMonitoringLifecycle::Paused
+    );
+    assert!(
+        tauri::async_runtime::block_on(agent::transform_live_projection(
+            harness.app.handle().clone(),
+            OPERATION
+        ))
+        .is_err()
+    );
+    let previous_revision = paused.context.as_ref().unwrap().revision;
+    let resumed = invoke(&harness.window, "resume_lens");
+    assert_eq!(
+        resumed.live.as_ref().unwrap().lifecycle,
+        LensMonitoringLifecycle::Watching
+    );
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let lens = harness.app.state::<AppState>().lens().unwrap();
+                if lens
+                    .context
+                    .as_ref()
+                    .is_some_and(|context| context.revision > previous_revision)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    let effects = harness.fixture.effects.lock().unwrap().clone();
+    assert!(effects.contains(&Effect::Extract));
+    assert!(effects.contains(&Effect::Capture));
+    assert!(effects.contains(&Effect::Observe));
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::Resolve | Effect::ResolveForSession | Effect::Connect | Effect::Prompt(_)
+    )));
+    let stopped = invoke(&harness.window, "stop_lens");
+    assert_eq!(stopped, LensState::default());
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn source_lifecycle_stop_initial_selection_records_real_host_cleanup_outcomes() {
+    use std::sync::atomic::Ordering;
+    use usecase::read_admission::{
+        CleanupOutcome, CleanupState, OperationAdmission, OperationTerminalReason,
+    };
+    for (release_fails, worker_pending) in [(false, false), (true, false), (false, true)] {
+        let harness = setup_with_source_policy(
+            if release_fails {
+                Scenario::ReleaseUnavailable
+            } else {
+                Scenario::Success
+            },
+            true,
+        );
+        let state = harness.app.state::<AppState>();
+        assert!(state.lens().unwrap().live.is_none());
+        assert!(
+            crate::commands::stop_lens(harness.app.handle().clone(), Uuid::from_u128(99)).is_err()
+        );
+        assert!(state.source_operation_is_active(OPERATION).unwrap());
+        if worker_pending {
+            state.source_workers.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(invoke(&harness.window, "stop_lens"), LensState::default());
+        let admission = state.read_admission.lock().unwrap();
+        let admission = admission.as_ref().unwrap();
+        assert_eq!(
+            admission.operation_state(),
+            OperationAdmission::Terminal(OperationTerminalReason::Cancelled)
+        );
+        assert_eq!(
+            admission.cleanup_state(),
+            CleanupState::Finished(if release_fails || worker_pending {
+                CleanupOutcome::UnconfirmedTermination
+            } else {
+                CleanupOutcome::ConfirmedClosed
+            })
+        );
+        if worker_pending {
+            state.source_workers.fetch_sub(1, Ordering::SeqCst);
+        }
+        assert!(!harness
+            .fixture
+            .effects
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                Effect::Extract
+                    | Effect::Capture
+                    | Effect::Observe
+                    | Effect::Resolve
+                    | Effect::Connect
+            )));
+    }
 }

@@ -3,6 +3,7 @@ use crate::{
     model::{LensFreshness, LensMonitoringLifecycle, LensSourceHealth, LensState},
     state::LensContextRefreshOutcome,
 };
+use port_platform::authority::TargetAuthority;
 use port_platform::observation::WindowObservationEvent;
 use std::{collections::BTreeMap, num::NonZeroU64, time::Duration};
 use uuid::Uuid;
@@ -84,15 +85,15 @@ pub fn valid_signal(
     operation_id: Uuid,
     context_id: Uuid,
     observer_epoch: NonZeroU64,
-    authority: &BTreeMap<Uuid, u32>,
+    authority: &BTreeMap<Uuid, TargetAuthority>,
 ) -> bool {
     match signal {
         LiveSignal::ImmediateRefresh | LiveSignal::PeriodicReconciliation => true,
         LiveSignal::Invalidation(event) => {
-            event.operation_id == operation_id
+            event.target.operation_id == operation_id
                 && event.context_id == context_id
                 && event.observer_epoch == observer_epoch
-                && authority.get(&event.source_registration_id) == Some(&event.window_id)
+                && authority.get(&event.source_registration_id) == Some(&event.target)
         }
     }
 }
@@ -141,18 +142,20 @@ mod tests {
     fn invalidation_requires_every_source_authority_axis() {
         use port_platform::observation::WindowObservationNotification;
         let event = WindowObservationEvent {
-            operation_id: Uuid::from_u128(1),
+            target: TargetAuthority {
+                operation_id: Uuid::from_u128(1),
+                receipt: Uuid::from_u128(4).try_into().unwrap(),
+            },
             context_id: Uuid::from_u128(2),
             source_registration_id: Uuid::from_u128(3),
             observer_epoch: NonZeroU64::new(1).unwrap(),
-            window_id: 42,
             notification: WindowObservationNotification::WindowTitleChanged,
         };
-        let authority = BTreeMap::from([(event.source_registration_id, event.window_id)]);
+        let authority = BTreeMap::from([(event.source_registration_id, event.target)]);
         let admits = |signal: &LiveSignal| {
             valid_signal(
                 signal,
-                event.operation_id,
+                event.target.operation_id,
                 event.context_id,
                 event.observer_epoch,
                 &authority,
@@ -170,11 +173,11 @@ mod tests {
         for axis in 0..5 {
             let mut stale = event.clone();
             match axis {
-                0 => stale.operation_id = Uuid::from_u128(4),
+                0 => stale.target.operation_id = Uuid::from_u128(4),
                 1 => stale.context_id = Uuid::from_u128(4),
                 2 => stale.source_registration_id = Uuid::from_u128(4),
                 3 => stale.observer_epoch = NonZeroU64::new(2).unwrap(),
-                4 => stale.window_id = 43,
+                4 => stale.target.receipt = Uuid::from_u128(5).try_into().unwrap(),
                 _ => unreachable!(),
             }
             assert!(!admits(&LiveSignal::Invalidation(stale)));

@@ -30,7 +30,7 @@ pub fn picker_reply(reply: selection::WindowPickerReply) -> WindowPickerReply {
         selection::WindowPickerReply::Selected { windows } => WindowPickerReply::Selected {
             windows: windows
                 .into_iter()
-                .map(selected_window_from_platform)
+                .map(|registered| selected_window_from_platform(registered.window))
                 .collect(),
         },
         selection::WindowPickerReply::Cancelled => WindowPickerReply::Cancelled,
@@ -171,8 +171,17 @@ mod tests {
             json!({"status":"cancelled"}),
             json!({"status":"error","message":"picker failed"}),
         ] {
+            let mut native_value = value.clone();
+            if let Some(windows) = native_value
+                .get_mut("windows")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for window in windows {
+                    *window = json!({ "target": { "operation_id": "00000000-0000-0000-0000-000000000001", "receipt": "00000000-0000-0000-0000-000000000002" }, "window": window.clone() });
+                }
+            }
             let native: selection::WindowPickerReply =
-                serde_json::from_value(value.clone()).unwrap();
+                serde_json::from_value(native_value).unwrap();
             assert_eq!(serde_json::to_value(picker_reply(native)).unwrap(), value);
         }
         assert_eq!(

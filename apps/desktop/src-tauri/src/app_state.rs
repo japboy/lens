@@ -7,6 +7,7 @@ use crate::{
     },
     store::ConfigStore,
 };
+use port_platform::authority::{TargetAuthority, TargetReadKey};
 use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,6 +15,9 @@ use std::sync::{
 };
 use tauri::{AppHandle, Manager};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, Notify};
+use usecase::read_admission::{
+    CleanupOutcome, OperationAdmission, OperationTerminalReason, ReadAdmission, ReadOutcome,
+};
 pub use usecase::state::{
     advance_revision, next_revision, AgentRunKey, LensContextRefreshCommit,
     LensContextRefreshOutcome,
@@ -669,6 +673,10 @@ pub struct AppState {
     pub live_control: crate::live_runtime::LensLiveControl,
     pub lens_media: LensMediaStore,
     pub picker_control: PickerControl,
+    /// Live registrations and read admission are never restored from saved source metadata.
+    pub read_admission: Mutex<Option<ReadAdmission>>,
+    /// Conservative count of queued/running source workers, independent of result admission.
+    pub source_workers: Arc<AtomicUsize>,
     pub store: ConfigStore,
 }
 
@@ -703,6 +711,8 @@ impl AppState {
             live_control: crate::live_runtime::LensLiveControl::default(),
             lens_media: LensMediaStore::default(),
             picker_control: PickerControl::default(),
+            read_admission: Mutex::new(None),
+            source_workers: Arc::new(AtomicUsize::new(0)),
             store,
         }
     }
@@ -712,6 +722,228 @@ impl AppState {
             .read()
             .map(|snapshot| snapshot.clone())
             .map_err(|_| "application state lock is poisoned".to_string())
+    }
+
+    pub fn begin_source_operation(&self, operation_id: Uuid) -> Result<(), String> {
+        let previous = {
+            let mut admission = self
+                .read_admission
+                .lock()
+                .map_err(|_| "source admission lock is poisoned")?;
+            if admission
+                .as_ref()
+                .is_some_and(|active| active.operation_id() == operation_id)
+            {
+                return Err("a source operation cannot restart or rewind its read sequence".into());
+            }
+            let previous = admission.as_mut().map(|active| {
+                active.terminate(OperationTerminalReason::Cancelled);
+                active.operation_id()
+            });
+            *admission = Some(ReadAdmission::new(operation_id));
+            previous
+        };
+        if let Some(previous) = previous.filter(|previous| *previous != operation_id) {
+            // Revocation precedes native effects; failed cleanup cannot restore an old registry.
+            if let Err(error) = self.platform.selection.release_operation(previous) {
+                eprintln!("Unable to release the previous native source operation: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn register_source_target(
+        &self,
+        operation_id: Uuid,
+        id: String,
+        target: TargetAuthority,
+    ) -> Result<(), String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        let active = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+            .ok_or("source operation was superseded")?;
+        if active.target(&id).ok() == Some(target) {
+            return Ok(());
+        }
+        active.register(id, target)
+    }
+
+    pub fn source_target(&self, operation_id: Uuid, id: &str) -> Result<TargetAuthority, String> {
+        let admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        admission
+            .as_ref()
+            .filter(|active| active.operation_id() == operation_id)
+            .ok_or("source operation was superseded")?
+            .target(id)
+    }
+
+    pub fn issue_source_reads(
+        &self,
+        operation_id: Uuid,
+        generation: u64,
+        ids: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, TargetReadKey>, String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        let active = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+            .ok_or("source operation was superseded")?;
+        let ids = ids.into_iter().collect::<Vec<_>>();
+        if ids.is_empty()
+            || ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len()
+        {
+            return Err("source read targets must be nonempty and unique".into());
+        }
+        for id in &ids {
+            active.target(id)?;
+        }
+        let mut reads = BTreeMap::new();
+        for id in ids {
+            let key = active.issue(&id, generation)?;
+            if !active.start(key) {
+                return Err("source read could not start".into());
+            }
+            reads.insert(id, key);
+        }
+        Ok(reads)
+    }
+
+    pub fn terminate_source_operation(
+        &self,
+        operation_id: Uuid,
+        reason: OperationTerminalReason,
+    ) -> Result<(), String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        {
+            active.terminate(reason);
+        }
+        Ok(())
+    }
+
+    pub fn source_read_is_current(&self, key: TargetReadKey) -> Result<bool, String> {
+        Ok(self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?
+            .as_ref()
+            .is_some_and(|active| active.admits(key)))
+    }
+
+    pub fn source_operation_is_active(&self, operation_id: Uuid) -> Result<bool, String> {
+        Ok(self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?
+            .as_ref()
+            .is_some_and(|active| {
+                active.operation_id() == operation_id
+                    && active.operation_state() == OperationAdmission::Active
+            }))
+    }
+
+    pub fn cancel_source_reads(&self, operation_id: Uuid) -> Result<(), String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        {
+            active.cancel_reads();
+        }
+        Ok(())
+    }
+
+    pub fn abort_source_reads(
+        &self,
+        operation_id: Uuid,
+        reads: &[TargetReadKey],
+    ) -> Result<bool, String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        else {
+            return Ok(false);
+        };
+        if reads.is_empty() {
+            return Ok(active.operation_state() == OperationAdmission::Active);
+        }
+        Ok(active.finish_all(reads, ReadOutcome::Cancelled))
+    }
+
+    pub fn abandon_source_reads(
+        &self,
+        operation_id: Uuid,
+        reads: &[TargetReadKey],
+    ) -> Result<(), String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        {
+            for read in reads {
+                active.finish_all(&[*read], ReadOutcome::Cancelled);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn begin_source_cleanup(&self, operation_id: Uuid) -> Result<(), String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        {
+            active.begin_cleanup();
+        }
+        Ok(())
+    }
+
+    pub fn finish_source_cleanup(&self, operation_id: Uuid, confirmed: bool) -> Result<(), String> {
+        let mut admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        {
+            active.finish_cleanup(
+                if confirmed && self.source_workers.load(Ordering::Acquire) == 0 {
+                    CleanupOutcome::ConfirmedClosed
+                } else {
+                    CleanupOutcome::UnconfirmedTermination
+                },
+            );
+        }
+        Ok(())
     }
 
     pub fn config(&self) -> Result<AppConfig, String> {
@@ -891,21 +1123,113 @@ pub fn publish_lens_state<R: tauri::Runtime>(
     emit_app_snapshot(app, snapshot, sync_tray)
 }
 
+/// Publication from a native selection/read cannot reopen a revoked operation.
+pub(crate) fn replace_active_source_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    operation_id: Uuid,
+    next: LensState,
+) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let cancelled = next.stage == LensStage::Cancelled;
+    let (snapshot, sync_tray) = {
+        let mut snapshot = state
+            .runtime
+            .write()
+            .map_err(|_| "application state lock is poisoned")?;
+        if snapshot.lens.operation_id != Some(operation_id) {
+            return Ok(false);
+        }
+        let mut admission = state
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if !admission.as_ref().is_some_and(|active| {
+            active.operation_id() == operation_id
+                && active.operation_state() == OperationAdmission::Active
+        }) {
+            return Ok(false);
+        }
+        if cancelled {
+            admission
+                .as_mut()
+                .expect("validated source operation")
+                .terminate(OperationTerminalReason::Cancelled);
+        }
+        let sync_tray =
+            (snapshot.lens.stage == LensStage::Selecting) != (next.stage == LensStage::Selecting);
+        advance_revision(&mut snapshot)?;
+        snapshot.lens = next;
+        (snapshot.clone(), sync_tray)
+    };
+    emit_app_snapshot(app, snapshot, sync_tray)?;
+    if cancelled {
+        state.begin_source_cleanup(operation_id)?;
+        let released = state.platform.selection.release_operation(operation_id);
+        state.finish_source_cleanup(operation_id, released.is_ok())?;
+        if let Err(error) = released {
+            eprintln!("Unable to confirm cancelled source cleanup: {error}");
+        }
+    }
+    Ok(true)
+}
+
 /// Atomically commits the first canonical context and its exact private media payload revision.
 pub fn commit_initial_lens_context<R: tauri::Runtime>(
     app: &AppHandle<R>,
     operation_id: Uuid,
     next: LensState,
     payloads: Vec<LensMediaPayload>,
+    reads: Vec<TargetReadKey>,
 ) -> Result<bool, String> {
-    validate_context_state(operation_id, &next)?;
+    if next.input.is_some() {
+        validate_context_state(operation_id, &next)?;
+    } else if next.operation_id != Some(operation_id)
+        || next.stage != LensStage::Failed
+        || next
+            .context
+            .as_ref()
+            .is_none_or(|context| context.revision == 0)
+        || next
+            .target_set
+            .as_ref()
+            .is_none_or(|targets| targets.selection_id != operation_id)
+        || next.projection.is_some()
+    {
+        return Err("failed source result has inconsistent context identity".into());
+    }
     let state = app.state::<AppState>();
     let (snapshot, sync_tray) = {
         let mut snapshot = state
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
-        if snapshot.lens.operation_id != Some(operation_id) || snapshot.lens.context.is_some() {
+        if snapshot.lens.operation_id != Some(operation_id)
+            || snapshot.lens.context.is_some()
+            || snapshot.lens.stage != LensStage::Extracting
+        {
+            return Ok(false);
+        }
+        let mut read_admission = state
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        let Some(admission) = read_admission.as_mut().filter(|active| {
+            active.operation_id() == operation_id
+                && active.operation_state() == OperationAdmission::Active
+        }) else {
+            return Ok(false);
+        };
+        if next.live.is_some() {
+            if reads.len()
+                != next
+                    .target_set
+                    .as_ref()
+                    .map_or(0, |targets| targets.targets.len())
+                || !admission.allows_all(&reads)
+            {
+                return Ok(false);
+            }
+        } else if !reads.is_empty() {
             return Ok(false);
         }
         let context_revision = next
@@ -924,6 +1248,9 @@ pub fn commit_initial_lens_context<R: tauri::Runtime>(
         }
         let sync_tray = snapshot.lens.live.is_some() != next.live.is_some();
         let revision = next_revision(&snapshot)?;
+        if !reads.is_empty() && !admission.accept_all(&reads) {
+            return Ok(false);
+        }
         active.context_revision = Some(context_revision);
         active.payloads = next_payloads;
         snapshot.revision = revision;
@@ -942,6 +1269,7 @@ pub(crate) fn commit_lens_context_refresh<R: tauri::Runtime>(
     expected_previous_context_revision: u64,
     refresh: LensContextRefreshCommit,
     payloads: Vec<LensMediaPayload>,
+    reads: Vec<TargetReadKey>,
 ) -> Result<bool, String> {
     validate_refresh_identity(
         operation_id,
@@ -965,6 +1293,25 @@ pub(crate) fn commit_lens_context_refresh<R: tauri::Runtime>(
         else {
             return Ok(false);
         };
+        let mut read_admission = state
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        let Some(admission) = read_admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        else {
+            return Ok(false);
+        };
+        if reads.len()
+            != next
+                .target_set
+                .as_ref()
+                .map_or(0, |targets| targets.targets.len())
+            || !admission.allows_all(&reads)
+        {
+            return Ok(false);
+        }
         let context_revision = next
             .context
             .as_ref()
@@ -980,6 +1327,9 @@ pub(crate) fn commit_lens_context_refresh<R: tauri::Runtime>(
             return Ok(false);
         }
         let revision = next_revision(&snapshot)?;
+        if !admission.accept_all(&reads) {
+            return Ok(false);
+        }
         active.context_revision = Some(context_revision);
         active.payloads = next_payloads;
         snapshot.revision = revision;
@@ -1003,6 +1353,16 @@ pub fn clear_lens_operation<R: tauri::Runtime>(
             .map_err(|_| "application state lock is poisoned".to_string())?;
         if snapshot.lens.operation_id != Some(operation_id) {
             return Ok(false);
+        }
+        let mut admission = state
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if let Some(active) = admission
+            .as_mut()
+            .filter(|active| active.operation_id() == operation_id)
+        {
+            active.terminate(OperationTerminalReason::Cancelled);
         }
         let mut active = state
             .lens_media

@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 use port_platform::{
+    authority::TargetAuthority,
     model::{Bounds, ExtractionResult, SelectedWindow, WindowIdentity},
     observation::{
         ObservationEvents, ObservationRegistration, ObservationRequest, ObservationSession,
@@ -333,6 +334,7 @@ enum NativeObservationStartReply {
 }
 
 struct CallbackContext {
+    target: TargetAuthority,
     operation_id: Uuid,
     context_id: Uuid,
     source_registration_id: Uuid,
@@ -341,8 +343,32 @@ struct CallbackContext {
     sender: mpsc::Sender<WindowObservationEvent>,
 }
 
+/// Native IDs are transport validation only. Receipt authority comes from the
+/// retained registration context, never from a native echo of portable fields.
+#[derive(Debug, Clone, serde::Serialize, Deserialize, PartialEq, Eq)]
+struct NativeObservationEvent {
+    operation_id: Uuid,
+    context_id: Uuid,
+    source_registration_id: Uuid,
+    observer_epoch: NonZeroU64,
+    window_id: u32,
+    notification: WindowObservationNotification,
+}
+
+impl NativeObservationEvent {
+    fn with_target(self, target: TargetAuthority) -> WindowObservationEvent {
+        WindowObservationEvent {
+            target,
+            context_id: self.context_id,
+            source_registration_id: self.source_registration_id,
+            observer_epoch: self.observer_epoch,
+            notification: self.notification,
+        }
+    }
+}
+
 fn dispatch_event(json: &str, context: &CallbackContext) {
-    let Ok(event) = serde_json::from_str::<WindowObservationEvent>(json) else {
+    let Ok(event) = serde_json::from_str::<NativeObservationEvent>(json) else {
         return;
     };
     if event.operation_id != context.operation_id
@@ -354,7 +380,7 @@ fn dispatch_event(json: &str, context: &CallbackContext) {
         return;
     }
     // Capacity one deliberately coalesces invalidations while preserving authority.
-    let _ = context.sender.try_send(event);
+    let _ = context.sender.try_send(event.with_target(context.target));
 }
 
 /// Deliver a borrowed native AX invalidation to its registration.
@@ -488,24 +514,31 @@ impl ObservationEvents for NativeObservationEvents {
     }
 }
 
-pub(crate) fn observe(request: ObservationRequest) -> Result<ObservationSession, PlatformError> {
+pub(crate) fn observe(
+    request: ObservationRequest,
+    window_id: u32,
+) -> Result<ObservationSession, PlatformError> {
     // Native start performs lookup, promotion and observer installation. Keep
     // every step in one transaction with source registration/release so release
     // cannot be followed by installation on an already-detached retained source.
-    crate::source::on_main(move || start_observation(request))
+    crate::source::on_main(move || start_observation(request, window_id))
 }
 
-fn start_observation(request: ObservationRequest) -> Result<ObservationSession, PlatformError> {
-    let operation = uuid_text(request.operation_id);
+fn start_observation(
+    request: ObservationRequest,
+    window_id: u32,
+) -> Result<ObservationSession, PlatformError> {
+    let operation = uuid_text(request.target.operation_id);
     let context = uuid_text(request.context_id);
     let source = uuid_text(request.source_registration_id);
     let (sender, receiver) = mpsc::channel(1);
     let callback_context = Arc::new(CallbackContext {
-        operation_id: request.operation_id,
+        target: request.target,
+        operation_id: request.target.operation_id,
         context_id: request.context_id,
         source_registration_id: request.source_registration_id,
         observer_epoch: request.observer_epoch,
-        window_id: request.identity.window_id,
+        window_id,
         sender,
     });
     // The callback only reads Context and uses Sender's internal synchronization.
@@ -526,7 +559,7 @@ fn start_observation(request: ObservationRequest) -> Result<ObservationSession, 
                 context.as_ptr(),
                 source.as_ptr(),
                 request.observer_epoch.get(),
-                request.identity.window_id,
+                window_id,
                 observation_callback,
                 raw_context,
                 &mut started,
@@ -554,7 +587,7 @@ fn finish_observation_start(
     // Establish cleanup ownership before response decoding: even a null or
     // malformed response after native installation must synchronously stop.
     let registration = NativeObservationRegistration {
-        operation_id: request.operation_id,
+        operation_id: request.target.operation_id,
         source_registration_id: request.source_registration_id,
         callback_context: started.then_some(callback_context),
         stop_effect,
@@ -738,15 +771,10 @@ mod tests {
     ) -> ModeledStart {
         let expected = event();
         let request = ObservationRequest {
-            operation_id: expected.operation_id,
+            target: test_target(),
             context_id: expected.context_id,
             source_registration_id: expected.source_registration_id,
             observer_epoch: expected.observer_epoch,
-            identity: WindowIdentity {
-                window_id: expected.window_id,
-                pid: 7,
-                bundle_id: "test.application".into(),
-            },
         };
         let (sender, receiver) = mpsc::channel(1);
         let weak_sender = sender.downgrade();
@@ -759,6 +787,7 @@ mod tests {
             })
         });
         let context = Arc::new(CallbackContext {
+            target: test_target(),
             operation_id: expected.operation_id,
             context_id: expected.context_id,
             source_registration_id: expected.source_registration_id,
@@ -790,6 +819,7 @@ mod tests {
         let expected = event();
         let (sender, mut receiver) = mpsc::channel(1);
         let context = Arc::new(CallbackContext {
+            target: test_target(),
             operation_id: expected.operation_id,
             context_id: expected.context_id,
             source_registration_id: expected.source_registration_id,
@@ -799,7 +829,7 @@ mod tests {
         });
         let pointer = Arc::as_ptr(&context).cast_mut().cast();
         let valid = CString::new(serde_json::to_string(&expected).unwrap()).unwrap();
-        let stale = WindowObservationEvent {
+        let stale = NativeObservationEvent {
             observer_epoch: NonZeroU64::new(2).unwrap(),
             ..expected.clone()
         };
@@ -821,7 +851,10 @@ mod tests {
             observation_callback(std::ptr::null(), pointer);
             observation_callback(valid.as_ptr(), std::ptr::null_mut());
         }
-        assert_eq!(receiver.try_recv().unwrap(), expected);
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            expected.clone().with_target(test_target())
+        );
         assert!(matches!(
             receiver.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
@@ -853,7 +886,7 @@ mod tests {
         let mut task = std::task::Context::from_waker(std::task::Waker::noop());
         assert_eq!(
             session.events.poll_next(&mut task),
-            std::task::Poll::Ready(Some(expected))
+            std::task::Poll::Ready(Some(expected.with_target(test_target())))
         );
         session.registration.close().unwrap();
         drop(session);
@@ -1011,8 +1044,15 @@ mod tests {
         assert_eq!(releases.get(), 1);
     }
 
-    fn event() -> WindowObservationEvent {
-        WindowObservationEvent {
+    fn test_target() -> TargetAuthority {
+        TargetAuthority {
+            operation_id: Uuid::from_u128(1),
+            receipt: port_platform::authority::TargetReceipt::try_from(Uuid::from_u128(4)).unwrap(),
+        }
+    }
+
+    fn event() -> NativeObservationEvent {
+        NativeObservationEvent {
             operation_id: Uuid::from_u128(1),
             context_id: Uuid::from_u128(2),
             source_registration_id: Uuid::from_u128(3),
@@ -1027,6 +1067,7 @@ mod tests {
         let expected = event();
         let (sender, mut receiver) = mpsc::channel(1);
         let context = CallbackContext {
+            target: test_target(),
             operation_id: expected.operation_id,
             context_id: expected.context_id,
             source_registration_id: expected.source_registration_id,
@@ -1035,23 +1076,23 @@ mod tests {
             sender,
         };
         for stale in [
-            WindowObservationEvent {
+            NativeObservationEvent {
                 operation_id: Uuid::from_u128(99),
                 ..expected.clone()
             },
-            WindowObservationEvent {
+            NativeObservationEvent {
                 context_id: Uuid::from_u128(99),
                 ..expected.clone()
             },
-            WindowObservationEvent {
+            NativeObservationEvent {
                 source_registration_id: Uuid::from_u128(99),
                 ..expected.clone()
             },
-            WindowObservationEvent {
+            NativeObservationEvent {
                 observer_epoch: NonZeroU64::new(2).unwrap(),
                 ..expected.clone()
             },
-            WindowObservationEvent {
+            NativeObservationEvent {
                 window_id: 18,
                 ..expected.clone()
             },
@@ -1068,12 +1109,15 @@ mod tests {
             Err(mpsc::error::TryRecvError::Empty)
         ));
         dispatch_event(&serde_json::to_string(&expected).unwrap(), &context);
-        let later = WindowObservationEvent {
+        let later = NativeObservationEvent {
             notification: WindowObservationNotification::WindowResized,
             ..expected.clone()
         };
         dispatch_event(&serde_json::to_string(&later).unwrap(), &context);
-        assert_eq!(receiver.try_recv().unwrap(), expected);
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            expected.with_target(test_target())
+        );
         assert!(matches!(
             receiver.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
@@ -1086,10 +1130,10 @@ mod tests {
         let mut events = NativeObservationEvents(receiver);
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(events.poll_next(&mut context).is_pending());
-        sender.try_send(event()).unwrap();
+        sender.try_send(event().with_target(test_target())).unwrap();
         assert_eq!(
             events.poll_next(&mut context),
-            std::task::Poll::Ready(Some(event()))
+            std::task::Poll::Ready(Some(event().with_target(test_target())))
         );
         assert!(events.poll_next(&mut context).is_pending());
         drop(sender);
