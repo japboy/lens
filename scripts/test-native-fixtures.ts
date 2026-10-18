@@ -12,6 +12,7 @@ const fixtures = [
   { source: "LensPickerLifecycleTests.m", binary: "picker-lifecycle-tests" },
   { source: "LensWindowResolverTests.m", binary: "window-resolver-tests" },
   { source: "LensTextFragmentTests.m", binary: "text-fragments-tests" },
+  { source: "LensGeometrySerializationTests.m", binary: "geometry-serialization-tests" },
 ] as const;
 
 function run(command: string, args: readonly string[], timeout: number): number {
