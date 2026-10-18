@@ -9,16 +9,12 @@
 extern "C" {
 #endif
 
-typedef void (*LensPickerCallback)(const char *json, void *context);
 typedef void (*LensWindowTransitionCallback)(bool completed, void *context);
 typedef void (*LensWindowObservationCallback)(const char *json, void *context);
 
 /* Main-thread borrowed root NSMenu. Validates all rows before setting images/tooltips. */
 bool lens_set_menu_presentation(void *rootMenuPointer, size_t submenuIndex,
                             const char *submenuTitle, const char *itemsJSON);
-
-bool lens_accessibility_is_trusted(void);
-bool lens_accessibility_request_trust(void);
 
 /* Localized short date/time; release the returned string with lens_free_string. */
 char *lens_format_short_datetime(double unix_seconds);
@@ -73,38 +69,19 @@ bool lens_transition_window_frame(
     void *context
 );
 
-/* Legacy one-shot picker. It serializes metadata and owns no selected source. */
-bool lens_present_window_picker(LensPickerCallback callback, void *context);
-
-/*
- * Operation-scoped picker. A successful callback stores the exact picker-returned
- * SCWindow under (operationID, windowID) until an explicit window/operation release.
- */
-bool lens_present_window_picker_for_operation(
-    const char *operationID,
-    LensPickerCallback callback,
-    void *context
+/* Safe Rust owns the selected SCWindow. Native owns only immutable selection metadata,
+ * the promoted AXWindow and its observer under the same operation/window identity. */
+bool lens_register_ax_window_for_operation(
+    const char *operationID, uint32_t windowID, int32_t pid,
+    const char *title, const char *applicationName,
+    double x, double y, double width, double height
 );
-
-/* Legacy one-shot capture, retained for non-picker validation inputs. */
-char *lens_capture_window_regions_json(
-    uint32_t windowID,
-    const char *requestsJSON,
-    uint32_t maxLongEdge,
-    uint32_t maxPixels,
-    uint32_t maxAttachmentBytes,
-    uint32_t maxTotalBytes
-);
-
-/* Captures only the exact SCWindow retained by the operation registry. */
-char *lens_capture_registered_window_regions_json(
-    const char *operationID,
-    uint32_t windowID,
-    const char *requestsJSON,
-    uint32_t maxLongEdge,
-    uint32_t maxPixels,
-    uint32_t maxAttachmentBytes,
-    uint32_t maxTotalBytes
+/* 1: finite current promoted AX frame; 0: never promoted, retained SC metadata is
+ * the screenshot fallback; -1: absent authority or invalid promoted frame.
+ * Outputs are initialized only when the result is 1. */
+int32_t lens_registered_ax_window_frame(
+    const char *operationID, uint32_t windowID,
+    double *x, double *y, double *width, double *height
 );
 
 /* Legacy heuristic extraction, retained for explicit validation targets. */
@@ -124,7 +101,7 @@ char *lens_extract_window_json(
 );
 
 /*
- * Resolves the operation's retained SCWindow to one AXWindow at most once, then
+ * Resolves the operation's immutable selection metadata to one AXWindow at most once, then
  * traverses only that retained AXUIElement for every subsequent refresh.
  */
 char *lens_extract_registered_window_json(
@@ -156,28 +133,25 @@ char *lens_start_window_observation_json(
 
 /*
  * Stops callbacks and releases AX/run-loop objects. The operation-scoped exact
- * SCWindow remains retained so the same fixed target can resume observation.
+ * selection metadata remains retained so the same fixed target can resume observation.
+ * Safe Rust independently retains its selected SCWindow.
  */
 bool lens_stop_window_observation(
     const char *operationID,
-    const char *sourceRegistrationID
+    const char *sourceRegistrationID,
+    const void *expectedCallbackContext
 );
 
-/* Releases one picker entry, its observer/AX objects, and its retained SCWindow. */
+/* Releases one metadata entry and its observer/AX objects; Rust releases SCWindow separately. */
 bool lens_release_registered_window(const char *operationID, uint32_t windowID);
 
 /* Releases every retained picker/source object owned by an operation. */
 bool lens_release_window_operation(const char *operationID);
-/* Cancels only a pending picker for this operation; already selected targets remain retained.
- * A matching callback completes synchronously exactly once. False means no pending match. */
-bool lens_cancel_window_picker_for_operation(const char *operationID);
+
 
 void lens_free_string(char *value);
 
-#if defined(LENS_NATIVE_TESTING)
-/* Probe-only injection into the same registry path used by picker completion. */
-bool lens_test_store_picker_window(const char *operationID, void *screenCaptureWindow);
-#endif
+
 
 #ifdef __cplusplus
 }

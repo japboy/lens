@@ -45,6 +45,43 @@ it("runs the actual release bootstrap CLI without node_modules", () => {
   }
 }, 30_000);
 
+it("imports the actual Linux compiler variant graph without node_modules", () => {
+  const root = mkdtempSync(join(tmpdir(), "lens-rust-bootstrap-"));
+  try {
+    for (const directory of ["scripts", "mise-tasks"])
+      cpSync(directory, join(root, directory), { recursive: true });
+    writeFileSync(join(root, "package.json"), '{"type":"module"}');
+    const probe = join(root, "rust-variant-probe.mjs");
+    writeFileSync(
+      probe,
+      `import { selectVariant } from "./scripts/run-workspace-variant.ts";
+       import { inspectWorkspace } from "./mise-tasks/check/boundaries.ts";
+       const target = selectVariant("linux-common-check").target;
+       let parserRequired = false;
+       try { inspectWorkspace(new URL(".", import.meta.url).pathname); }
+       catch (error) {
+         parserRequired = error.code === "MODULE_NOT_FOUND" && error.message.includes("@iarna/toml");
+       }
+       console.log(JSON.stringify({ target, parserRequired }));`,
+    );
+    const result = spawnSync(process.execPath, [probe], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { PATH: process.env.PATH },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      target: "x86_64-unknown-linux-gnu",
+      parserRequired: true,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("runs the macOS contract CLI with its pinned source parser installed", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "lens-macos-bootstrap-")));
   try {

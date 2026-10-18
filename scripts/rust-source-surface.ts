@@ -196,7 +196,11 @@ export function nativeCompositionViolations(source: string): string[] {
       else {
         const end = groupEnd(tokens, index + 1);
         const actual = JSON.stringify(tokens.slice(index, end + 1).map((entry) => entry.text));
-        if (actual !== tokensOf("#[cfg_attr(mobile, tauri::mobile_entry_point)]"))
+        // Compiler lint attributes belong to rustc/Clippy, not the architecture grammar.
+        const compilerLint = ["allow", "expect", "warn", "deny", "forbid"].includes(
+          tokens[index + 2]?.text ?? "",
+        );
+        if (actual !== tokensOf("#[cfg_attr(mobile, tauri::mobile_entry_point)]") && !compilerLint)
           violations.push("Unreviewed native composition attribute");
       }
     }

@@ -3,6 +3,7 @@
 //MISE dir = "{{config_root}}"
 
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,7 @@ import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
   portableSourceViolations,
   sourceInclusionViolations,
+  workspaceLintInheritanceViolations,
 } from "../../scripts/rust-source-boundaries.ts";
 import {
   commonShellConditionalViolations,
@@ -322,6 +324,11 @@ export function validateInventory(
 }
 
 export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: string[] } {
+  // Rust-only feature analysis imports repositoryPath without installing pnpm packages.
+  // The full workspace inspection owns the TOML parser dependency, not module loading.
+  const { parse: parseToml } = createRequire(import.meta.url)(
+    "@iarna/toml",
+  ) as typeof import("@iarna/toml");
   const paths = [
     ...new Set(
       execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
@@ -358,6 +365,12 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
       JSON.parse(readFileSync(resolve(member.path, "package.json"), "utf8")) as PnpmManifest,
     ]),
   );
+  for (const { manifest_path: path } of cargo.packages) {
+    const violations = workspaceLintInheritanceViolations(
+      parseToml(readFileSync(resolve(root, path), "utf8")),
+    );
+    assert(violations.length === 0, `${path}: ${violations.join("; ")}`);
+  }
   validateInventory(root, cargo, pnpm, manifests, paths);
   const sharedPackages = MEMBERS.filter(
     (member) => member.ecosystem === "pnpm" && member.directory.startsWith("packages/"),

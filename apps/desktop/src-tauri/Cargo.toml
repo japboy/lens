@@ -39,6 +39,7 @@ chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 dirs = "=7.0.0"
 flate2 = "=1.1.10"
 libc = "=0.2.190"
+nix = { version = "=0.31.3", features = ["feature", "fs", "poll", "process", "signal", "term"] }
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"
@@ -73,6 +74,7 @@ tokio = { version = "=1.53.2", features = [
   "time",
 ] }
 uuid.workspace = true
+uzers = { version = "=0.12.2", default-features = false }
 zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
@@ -85,3 +87,6 @@ tauri = { version = "=2.12.3", default-features = false, features = ["test"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 adapter-platform-macos.workspace = true
 tauri = { version = "=2.12.3", features = ["macos-private-api"] }
+
+[lints]
+workspace = true

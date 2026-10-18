@@ -143,6 +143,14 @@ const PORTABLE_ATTRIBUTES = new Set([
   "tokio::test",
 ]);
 
+// Cargo makes inheritance opt-in; repository policy requires it for every member.
+export function workspaceLintInheritanceViolations(manifest: unknown): string[] {
+  const document = manifest as { lints?: Record<string, unknown> };
+  return document.lints?.workspace === true && Object.keys(document.lints).length === 1
+    ? []
+    : ["Cargo members must inherit workspace lints without overrides"];
+}
+
 export function portableSourceViolations(source: string): string[] {
   const tokens = rustTokens(source);
   const violations: string[] = [];

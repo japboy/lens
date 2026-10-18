@@ -9,7 +9,7 @@ const nativeRoot = join(repositoryRoot, "packages/adapter-platform-macos/native"
 const temporaryRoot = mkdtempSync(join(tmpdir(), "lens-native-fixtures-"));
 const fixtures = [
   { source: "LensMenuPresentationProbe.m", binary: "menu-presentation-tests" },
-  { source: "LensPickerLifecycleTests.m", binary: "picker-lifecycle-tests" },
+  { source: "LensAXSourceLifecycleTests.m", binary: "ax-source-lifecycle-tests" },
   { source: "LensWindowResolverTests.m", binary: "window-resolver-tests" },
   { source: "LensTextFragmentTests.m", binary: "text-fragments-tests" },
   { source: "LensGeometrySerializationTests.m", binary: "geometry-serialization-tests" },

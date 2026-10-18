@@ -6,7 +6,7 @@ use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
     io::{Read, Write},
-    os::fd::AsRawFd,
+    os::fd::AsFd,
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
         fs::{DirBuilderExt, MetadataExt},
@@ -100,8 +100,10 @@ impl LaunchPlan {
                 .sum::<usize>();
         let pointer_bytes =
             (self.args.len() + self.environment.len() + 3) * std::mem::size_of::<usize>();
-        // SAFETY: sysconf has no pointer arguments or side effects on Rust memory.
-        let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) };
+        let arg_max = nix::unistd::sysconf(nix::unistd::SysconfVar::ARG_MAX)
+            .ok()
+            .flatten()
+            .ok_or("agent launch environment too large")?;
         if arg_max <= 0
             || string_bytes
                 .saturating_add(pointer_bytes)
@@ -413,29 +415,23 @@ fn read_before_deadline(
         if remaining.is_zero() {
             return Err("agent launch handshake timed out");
         }
-        // SO_RCVTIMEO fails with EINVAL in the macOS helper on
-        // supported runtime builds. poll uses a millisecond deadline and keeps
-        // this control read independent of platform timeval representation.
+        // SO_RCVTIMEO fails with EINVAL in supported macOS runtime builds.
+        // Keep the same finite millisecond deadline without a raw pollfd.
         stream
             .set_nonblocking(true)
             .map_err(|_| "agent launch handshake failed")?;
-        let mut descriptor = libc::pollfd {
-            fd: stream.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut descriptors = [nix::poll::PollFd::new(
+            stream.as_fd(),
+            nix::poll::PollFlags::POLLIN,
+        )];
         let timeout_ms = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
-        // SAFETY: descriptor points to one initialized pollfd for the duration
-        // of the syscall, and its stream remains owned and open here.
-        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
-        if ready == 0 {
-            return Err("agent launch handshake timed out");
-        }
-        if ready < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err("agent launch handshake failed");
+        let timeout = nix::poll::PollTimeout::try_from(timeout_ms)
+            .map_err(|_| "agent launch handshake failed")?;
+        match nix::poll::poll(&mut descriptors, timeout) {
+            Ok(0) => return Err("agent launch handshake timed out"),
+            Ok(_) => {}
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(_) => return Err("agent launch handshake failed"),
         }
         let length = match stream.read(buffer) {
             Ok(length) => length,
@@ -769,8 +765,8 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if processes.iter().all(|pid| {
-                    // SAFETY: signal 0 observes a process; no pointers are used.
-                    unsafe { libc::kill(*pid, 0) != 0 }
+                    nix::sys::signal::kill(nix::unistd::Pid::from_raw(*pid), None)
+                        == Err(nix::errno::Errno::ESRCH)
                 }) {
                     break;
                 }

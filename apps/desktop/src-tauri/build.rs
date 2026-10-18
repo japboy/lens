@@ -62,6 +62,11 @@ fn main() {
     }
     tauri_build::build();
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if target == "macos" {
+        // ScreenCaptureKit uses the OS Swift runtime. Dependency link arguments
+        // do not propagate to this final executable or its test targets.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
     let platform_path = format!("tauri.{target}.conf.json");
     println!("cargo:rerun-if-changed={platform_path}");
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");

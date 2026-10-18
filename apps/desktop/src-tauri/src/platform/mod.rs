@@ -1,4 +1,7 @@
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The platform facade preserves shared observation types across native and portable builds"
+)]
 pub use port_platform::observation::{
     WindowObservationEvent, WindowObservationNotification, WindowObservationReceiver,
     WindowObservationRegistration, WindowObservationStart,

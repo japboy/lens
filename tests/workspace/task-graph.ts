@@ -80,7 +80,7 @@ describe("repository task ownership", () => {
   it("owns commands only in mise and keeps verification free of freshness skips", () => {
     const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     expect(manifest.scripts).toBeUndefined();
-    expect(tasks).toHaveLength(51);
+    expect(tasks).toHaveLength(52);
     expect(new Set(tasks.map((task) => task.name)).size).toBe(tasks.length);
     for (const task of tasks) {
       expect(task.source).toBe(
@@ -99,6 +99,7 @@ describe("repository task ownership", () => {
       expect(task.sources).toEqual([]);
       expect(task.outputs).toEqual([]);
       expect(task.depends_post).toEqual([]);
+      expect(task.depends).not.toContain("check:miri-boundaries");
     }
     const fileTasks = tasks.filter((task) => task.file);
     expect(fileTasks).toHaveLength(13);

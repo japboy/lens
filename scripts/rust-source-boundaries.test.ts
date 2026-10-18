@@ -3,8 +3,24 @@ import {
   portableSourceViolations,
   rustTokens,
   sourceInclusionViolations,
+  workspaceLintInheritanceViolations,
 } from "./rust-source-boundaries.ts";
 const root = "/workspace";
+
+describe("Cargo workspace lint inheritance", () => {
+  it("requires opt-in inheritance without member-specific lint tables", () => {
+    expect(workspaceLintInheritanceViolations({ lints: { workspace: true } })).toEqual([]);
+    for (const manifest of [
+      {},
+      { lints: { workspace: false } },
+      { lints: { rust: { unsafe_code: "allow" } } },
+      { lints: { workspace: true, clippy: {} } },
+      { package: { metadata: "[lints]\nworkspace = true" } },
+    ]) {
+      expect(workspaceLintInheritanceViolations(manifest)).not.toEqual([]);
+    }
+  });
+});
 
 describe("portable source escape restrictions", () => {
   it.each([
