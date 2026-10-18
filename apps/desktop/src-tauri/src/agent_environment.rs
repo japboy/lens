@@ -58,10 +58,7 @@ pub fn bind_directory(
     cwd: &Path,
     identity: (u64, u64),
 ) -> Result<(), EnvironmentError> {
-    use std::os::{
-        fd::AsRawFd,
-        unix::{fs::MetadataExt, process::CommandExt},
-    };
+    use std::os::unix::{fs::MetadataExt, process::CommandExt};
     let directory = std::fs::File::open(cwd).map_err(|_| EnvironmentError::Directory)?;
     let metadata = directory
         .metadata()
@@ -71,14 +68,13 @@ pub fn bind_directory(
     }
     // SAFETY: the owned File keeps the descriptor alive through spawn/exec.
     // fchdir is async-signal-safe; no allocation or locking occurs on success.
+    // A path-only current_dir would reopen a replaceable path after validation.
+    #[allow(
+        unsafe_code,
+        reason = "[boundary:process-cwd] pre_exec binds the verified directory descriptor without a path replacement race; stable Command has no descriptor cwd API"
+    )]
     unsafe {
-        command.pre_exec(move || {
-            if libc::fchdir(directory.as_raw_fd()) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
+        command.pre_exec(move || nix::unistd::fchdir(&directory).map_err(std::io::Error::from));
     }
     Ok(())
 }
@@ -206,44 +202,34 @@ fn account() -> Result<Account, EnvironmentError> {
     if !cfg!(target_os = "macos") {
         return Err(EnvironmentError::UnsupportedPlatform);
     }
-    use std::{ffi::CStr, os::unix::ffi::OsStringExt};
-    // getpwuid_r returns pointers into the retained scratch buffer; copy before dropping it.
-    let mut buffer = vec![0u8; 65536];
-    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut found = std::ptr::null_mut();
-    let status = unsafe {
-        libc::getpwuid_r(
-            libc::getuid(),
-            entry.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &mut found,
-        )
-    };
-    if status != 0 || found.is_null() {
-        return Err(EnvironmentError::Account);
-    }
-    let entry = unsafe { entry.assume_init() };
-    let copy = |ptr: *const libc::c_char| -> Result<OsString, EnvironmentError> {
-        if ptr.is_null() {
-            return Err(EnvironmentError::Account);
-        }
-        Ok(OsString::from_vec(
-            unsafe { CStr::from_ptr(ptr) }.to_bytes().to_vec(),
-        ))
-    };
-    let home = PathBuf::from(copy(entry.pw_dir)?);
-    let shell = PathBuf::from(copy(entry.pw_shell)?);
+    use std::os::unix::ffi::OsStringExt;
+    use uzers::os::unix::UserExt;
+    // Unlike nix::User, uzers preserves the username as OsStr as well as the
+    // home and shell paths. No caller environment or lossy UTF-8 conversion.
+    let entry =
+        uzers::get_user_by_uid(uzers::get_current_uid()).ok_or(EnvironmentError::Account)?;
+    let home = entry.home_dir().to_path_buf();
+    let shell = entry.shell().to_path_buf();
     if !home.is_absolute() || !shell.is_absolute() {
         return Err(EnvironmentError::Account);
     }
     let mut temp = vec![0u8; 4096];
-    let len = unsafe {
-        libc::confstr(
-            DARWIN_USER_TEMP_DIRECTORY,
-            temp.as_mut_ptr().cast(),
-            temp.len(),
-        )
+    // SAFETY: confstr writes at most the allocated buffer length. The macOS
+    // selector is used only after the platform check, and length is validated
+    // before removing its terminating NUL. temp_dir would trust caller TMPDIR;
+    // getconf would add a child process and cancellation/reaping to this lookup.
+    let len = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:process-account-temp] read the OS account temp directory independently of ambient TMPDIR without adding a subprocess lifecycle"
+        )]
+        unsafe {
+            libc::confstr(
+                DARWIN_USER_TEMP_DIRECTORY,
+                temp.as_mut_ptr().cast(),
+                temp.len(),
+            )
+        }
     };
     if len == 0 || len > temp.len() {
         return Err(EnvironmentError::Account);
@@ -252,7 +238,7 @@ fn account() -> Result<Account, EnvironmentError> {
     Ok(Account {
         home,
         shell,
-        name: copy(entry.pw_name)?,
+        name: entry.name().to_os_string(),
         temp: OsString::from_vec(temp),
     })
 }
@@ -283,9 +269,10 @@ struct ShellGroup {
 impl Drop for ShellGroup {
     fn drop(&mut self) {
         // The child owns a fresh group. This also cancels startup-script descendants.
-        unsafe {
-            libc::kill(-self.group, libc::SIGKILL);
-        }
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(self.group),
+            nix::sys::signal::Signal::SIGKILL,
+        );
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
             // Reap explicitly after cancellation while the runtime remains available.
@@ -388,13 +375,15 @@ exec "$2" --lens-internal-capture-environment "$3""#
     // interactive shell can then stop on SIGTTOU before running startup scripts.
     // A new session also creates the owned group, with no controlling terminal.
     // SAFETY: setsid is async-signal-safe; this closure does not allocate or lock.
+    #[allow(
+        unsafe_code,
+        reason = "[boundary:process-session] stable Command has no setsid option; a process group alone retains the controlling terminal and can stop the shell on SIGTTOU"
+    )]
     unsafe {
         command.as_std_mut().pre_exec(|| {
-            if libc::setsid() == -1 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
         });
     }
     let process = command.spawn().map_err(|_| EnvironmentError::Spawn)?;
@@ -462,9 +451,10 @@ exec "$2" --lens-internal-capture-environment "$3""#
         Ok(value) => value,
         Err(_) => {
             if let Some(id) = child.child.as_ref().expect("owned child").id() {
-                unsafe {
-                    libc::kill(-(id as i32), libc::SIGKILL);
-                }
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(id as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
             }
             let _ = child.child.as_mut().expect("owned child").kill().await;
             Err(EnvironmentError::Timeout)
@@ -525,34 +515,15 @@ mod tests {
         if !cfg!(target_os = "macos") {
             return;
         }
-        use std::{
-            os::fd::{AsRawFd, FromRawFd, OwnedFd},
-            os::unix::process::CommandExt,
-            process::Stdio,
-        };
+        use std::{os::fd::AsRawFd, os::unix::process::CommandExt, process::Stdio};
 
-        let (mut master, mut slave) = (-1, -1);
-        // SAFETY: openpty initializes both descriptors; optional outputs are null.
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
-            },
-            0
-        );
-        // SAFETY: successful openpty returns two unique owned descriptors.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let nix::pty::OpenptyResult { master, slave } = nix::pty::openpty(None, None).unwrap();
         for descriptor in [&master, &slave] {
-            assert_eq!(
-                unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
-                0
-            );
+            nix::fcntl::fcntl(
+                descriptor,
+                nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+            )
+            .unwrap();
         }
         let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
         // Reuse the full acquisition contract, in a finite child test invocation.
@@ -569,6 +540,10 @@ mod tests {
             .kill_on_drop(true);
         // SAFETY: only direct OS operations run between fork and exec. The owned
         // slave descriptor remains valid through spawn and closes during exec.
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:process-terminal-test] the regression fixture must acquire a controlling terminal before exec to verify terminal-independent shell acquisition"
+        )]
         unsafe {
             command.as_std_mut().pre_exec(move || {
                 if libc::setsid() == -1
@@ -812,8 +787,12 @@ PROMPT_COMMAND=('unset STALE; export PROMPT_FIRST=present' 'export PATH=/fixture
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         tokio::time::timeout(Duration::from_secs(3), async {
-            while unsafe { libc::kill(pid, 0) } == 0 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            loop {
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+                    Err(nix::errno::Errno::ESRCH) => break,
+                    Err(error) => panic!("cannot observe resolver child: {error}"),
+                    Ok(()) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
             }
         })
         .await
@@ -875,10 +854,9 @@ PROMPT_COMMAND=('unset STALE; export PROMPT_FIRST=present' 'export PATH=/fixture
             .trim()
             .parse()
             .unwrap();
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
         assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
         );
     }
 }

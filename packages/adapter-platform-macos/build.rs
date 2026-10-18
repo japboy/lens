@@ -2,6 +2,10 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
+    // The safe ScreenCaptureKit dependency statically links its Swift bridge.
+    // Cargo does not propagate a dependency\'s rustc-link-arg to this test binary.
+    // Resolve Swift libraries from the OS dyld cache, never a developer toolchain.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     cc::Build::new()
         .file("native/LensNative.m")
         .file("native/LensControlPalette.m")

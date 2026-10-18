@@ -3,6 +3,7 @@
 //MISE dir = "{{config_root}}"
 
 import { execFileSync } from "node:child_process";
+import { parse as parseToml } from "@iarna/toml";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,9 @@ import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
   portableSourceViolations,
   sourceInclusionViolations,
+  unsafeExceptionViolations,
+  unsafeManifestViolations,
+  miriExclusionViolations,
 } from "../../scripts/rust-source-boundaries.ts";
 import {
   commonShellConditionalViolations,
@@ -358,6 +362,13 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
       JSON.parse(readFileSync(resolve(member.path, "package.json"), "utf8")) as PnpmManifest,
     ]),
   );
+  for (const path of ["Cargo.toml", ...cargo.packages.map((member) => member.manifest_path)]) {
+    const violations = unsafeManifestViolations(
+      parseToml(readFileSync(resolve(root, path), "utf8")),
+      path === "Cargo.toml",
+    );
+    assert(violations.length === 0, `${path}: ${violations.join("; ")}`);
+  }
   validateInventory(root, cargo, pnpm, manifests, paths);
   const sharedPackages = MEMBERS.filter(
     (member) => member.ecosystem === "pnpm" && member.directory.startsWith("packages/"),
@@ -396,7 +407,11 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
     assert(member, `Unclassified Rust source: ${path}`);
     const source = readFileSync(resolve(root, path), "utf8");
     const owner = member.role === "application" ? "apps/desktop" : member.directory;
-    const violations = sourceInclusionViolations(root, path, source, owner);
+    const violations = [
+      ...sourceInclusionViolations(root, path, source, owner),
+      ...unsafeExceptionViolations(source, path),
+      ...miriExclusionViolations(source, path),
+    ];
     if (member.implementation === "portable") {
       violations.push(...portableSourceViolations(source));
       rustDeclarationSurface(source);

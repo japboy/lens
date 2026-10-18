@@ -472,9 +472,10 @@ impl IdentityProcess {
     fn terminate_group(&mut self) {
         if let Some(group) = self.group.take() {
             // The verifier owns this fresh process group, including startup descendants.
-            unsafe {
-                libc::kill(-group, libc::SIGKILL);
-            }
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(group),
+                nix::sys::signal::Signal::SIGKILL,
+            );
         }
     }
 }
@@ -996,15 +997,15 @@ mod tests {
         .unwrap();
         let descendant: i32 = line.trim().parse().unwrap();
         assert_eq!(
-            unsafe { libc::kill(descendant, 0) },
-            0,
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(descendant), None),
+            Ok(()),
             "fixture descendant must start alive"
         );
         drop(guard);
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if unsafe { libc::kill(descendant, 0) } == -1
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                if nix::sys::signal::kill(nix::unistd::Pid::from_raw(descendant), None)
+                    == Err(nix::errno::Errno::ESRCH)
                 {
                     break;
                 }

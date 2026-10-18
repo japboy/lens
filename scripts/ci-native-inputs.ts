@@ -21,7 +21,7 @@ export const NATIVE_CODE_INPUTS = new Set([
 // This is intentionally a bounded inventory, not a claim to interpret arbitrary Rust.
 export const NATIVE_BUILD_INPUTS = {
   "apps/desktop/src-tauri/build.rs": {
-    digest: "489aa0cb408518084b1931dc0fb7254a79fb69476e0ed554dd9e199f18eda853",
+    digest: "512e2266595a5b8fa4210f4cf1d2b8ff030e9b86979f14c8d826541911023959",
     inputs: [
       "LICENSE",
       "NOTICE",
@@ -48,7 +48,7 @@ export const NATIVE_BUILD_INPUTS = {
     inputs: ["apps/desktop/src-tauri/agent-runtime/node-history.toml"],
   },
   "packages/adapter-platform-macos/build.rs": {
-    digest: "7369b195aa7d5debc2b35b6919db9f5364bd19b0ba5eb5f4cc9de3d49e83ed59",
+    digest: "f2d324ad17c094735bb8e34a95e132f2783bd412c6e84a7b9dc76ef882295ad3",
     inputs: [
       "packages/adapter-platform-macos/native/LensNative.m",
       "packages/adapter-platform-macos/native/LensControlPalette.m",

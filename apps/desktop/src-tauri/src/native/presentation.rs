@@ -51,13 +51,19 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
             // SAFETY: Tauri has initialized NSApplication and dispatches to AppKit.
-            let result = unsafe {
-                presentation::confirm_destructive_action(
-                    &title,
-                    &message,
-                    &confirm_label,
-                    &cancel_label,
-                )
+            let result = {
+                #[allow(
+                    unsafe_code,
+                    reason = "[boundary:appkit-presentation] Tauri has initialized NSApplication and dispatches to AppKit."
+                )]
+                unsafe {
+                    presentation::confirm_destructive_action(
+                        &title,
+                        &message,
+                        &confirm_label,
+                        &cancel_label,
+                    )
+                }
             };
             let _ = sender.send(result);
         })
@@ -96,7 +102,9 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                 let title = history.text().map_err(error)?;
                 // SAFETY: The owned Tauri root keeps the borrowed NSMenu alive through
                 // this synchronous main-thread call. No pointer crosses the channel.
-                unsafe {
+                {
+#[allow(unsafe_code, reason = "[boundary:appkit-presentation] The owned Tauri root keeps the borrowed NSMenu alive through this synchronous main-thread call. No pointer crosses the channel.")]
+unsafe {
                     presentation::set_menu_presentation(
                         native_context_menu_ptr(&root),
                         index,
@@ -104,6 +112,7 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                         &expected,
                     )
                 }
+}
             })();
             let _ = sender.send(result);
         })
@@ -120,7 +129,10 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
             // SAFETY: Tauri has initialized NSApplication and dispatches this closure to AppKit.
-            let result = unsafe { presentation::window_background_rgba() }
+            let result = {
+#[allow(unsafe_code, reason = "[boundary:appkit-presentation] Tauri has initialized NSApplication and dispatches this closure to AppKit.")]
+unsafe { presentation::window_background_rgba() }
+}
                 .map(|[r, g, b, a]| tauri::utils::config::Color(r, g, b, a));
             let _ = sender.send(result);
         })
@@ -139,23 +151,30 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
             // SAFETY: Tauri initialized NSApplication and dispatches on AppKit's thread.
-            let palette = unsafe { presentation::control_palette() }.map(|palette| {
-                crate::platform::ControlPalette {
-                    colors: palette
-                        .colors_available
-                        .then_some(crate::platform::ControlColors {
-                            control_surface: palette.control_surface,
-                            window_surface: palette.window_surface,
-                            button_fill: palette.button_fill,
-                            button_pressed_fill: palette.button_pressed_fill,
-                            separator: palette.separator,
-                            primary_button_fill: palette.primary_button_fill,
-                            primary_button_foreground: palette.primary_button_foreground,
-                        }),
-                    increase_contrast: palette.increase_contrast,
-                    reduce_transparency: palette.reduce_transparency,
-                    window_active: palette.window_active,
+            let palette = {
+                #[allow(
+                    unsafe_code,
+                    reason = "[boundary:appkit-presentation] Tauri initialized NSApplication and dispatches on AppKit's thread."
+                )]
+                unsafe {
+                    presentation::control_palette()
                 }
+            }
+            .map(|palette| crate::platform::ControlPalette {
+                colors: palette
+                    .colors_available
+                    .then_some(crate::platform::ControlColors {
+                        control_surface: palette.control_surface,
+                        window_surface: palette.window_surface,
+                        button_fill: palette.button_fill,
+                        button_pressed_fill: palette.button_pressed_fill,
+                        separator: palette.separator,
+                        primary_button_fill: palette.primary_button_fill,
+                        primary_button_foreground: palette.primary_button_foreground,
+                    }),
+                increase_contrast: palette.increase_contrast,
+                reduce_transparency: palette.reduce_transparency,
+                window_active: palette.window_active,
             });
             let _ = sender.send(palette);
         })
@@ -177,9 +196,12 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                     .map_err(|error| PlatformError::Operation(error.to_string()))
                     .and_then(|native_window| {
                         // SAFETY: Live window and its WKWebView are borrowed on AppKit's thread.
-                        unsafe {
+                        {
+#[allow(unsafe_code, reason = "[boundary:appkit-presentation] Live window and its WKWebView are borrowed on AppKit's thread.")]
+unsafe {
                             presentation::observe_control_palette(native_window, webview.inner())
                         }
+}
                     });
                 let _ = sender.send(result);
             })
@@ -199,7 +221,15 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                 PlatformError::Operation(format!("unable to resolve floating window: {error}"))
             })?;
             // SAFETY: The window is live and borrowed on the AppKit main thread.
-            unsafe { presentation::configure_floating_window_radius(native_window, radius) }
+            {
+                #[allow(
+                    unsafe_code,
+                    reason = "[boundary:appkit-presentation] The window is live and borrowed on the AppKit main thread."
+                )]
+                unsafe {
+                    presentation::configure_floating_window_radius(native_window, radius)
+                }
+            }
         })
     }
 
@@ -212,7 +242,15 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
             })?;
             // SAFETY: Acquisition and synchronous native use share the AppKit main thread
             // and this live Tauri window. No raw handle crosses the channel.
-            unsafe { presentation::present_window_from_screen_right(native_window) }
+            {
+                #[allow(
+                    unsafe_code,
+                    reason = "[boundary:appkit-transition] Acquisition and synchronous native use share the AppKit main thread and this live Tauri window. No raw handle crosses the channel."
+                )]
+                unsafe {
+                    presentation::present_window_from_screen_right(native_window)
+                }
+            }
         })
     }
 
@@ -229,7 +267,15 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                 })?;
                 // SAFETY: Native code establishes strong retention on the main thread
                 // before this live borrowed window leaves the closure.
-                Ok(unsafe { presentation::dismiss_window_to_screen_right(native_window) })
+                Ok({
+                    #[allow(
+                        unsafe_code,
+                        reason = "[boundary:appkit-transition] Native code establishes strong retention on the main thread before this live borrowed window leaves the closure."
+                    )]
+                    unsafe {
+                        presentation::dismiss_window_to_screen_right(native_window)
+                    }
+                })
             })?;
             transition.wait().await
         })
@@ -265,14 +311,20 @@ impl<R: tauri::Runtime> crate::platform::WindowPresentation<R> for MacOsPresenta
                     .to_logical::<f64>(scale_factor);
                 // SAFETY: Main-thread start retains the live borrowed window before returning.
                 // Native owns geometry validation, callback context and terminal cleanup.
-                Ok(unsafe {
-                    presentation::transition_window_frame(
-                        native_window,
-                        x - current_position.x,
-                        y - current_position.y,
-                        width,
-                        height,
-                    )
+                Ok({
+                    #[allow(
+                        unsafe_code,
+                        reason = "[boundary:appkit-transition] Main-thread start retains the live borrowed window before returning. Native owns geometry validation, callback context and terminal cleanup."
+                    )]
+                    unsafe {
+                        presentation::transition_window_frame(
+                            native_window,
+                            x - current_position.x,
+                            y - current_position.y,
+                            width,
+                            height,
+                        )
+                    }
                 })
             })?;
             transition.wait().await

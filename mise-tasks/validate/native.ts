@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-//MISE description = "Run bounded on-device native probes"
+//MISE description = "Run the bounded on-device Accessibility observation probe"
 //MISE dir = "{{config_root}}"
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -31,19 +31,6 @@ const probes: readonly Probe[] = [
     binary: "lens-ax-observer-probe",
     prefix: "LENS_AX_OBSERVER_PROBE=",
     frameworks: ["AppKit", "ApplicationServices"],
-  },
-  {
-    sources: ["LensWindowCaptureProbe.m"],
-    binary: "lens-retained-window-capture-probe",
-    prefix: "LENS_SCWINDOW_PROBE=",
-    frameworks: ["AppKit", "CoreGraphics", "ScreenCaptureKit"],
-  },
-  {
-    sources: ["LensNativeIntegrationProbe.m", "LensNative.m"],
-    binary: "lens-native-integration-probe",
-    prefix: "LENS_NATIVE_INTEGRATION_PROBE=",
-    frameworks: ["AppKit", "ApplicationServices", "CoreGraphics", "ScreenCaptureKit"],
-    definitions: ["LENS_NATIVE_TESTING=1"],
   },
 ];
 

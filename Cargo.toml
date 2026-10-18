@@ -15,6 +15,10 @@ edition = "2021"
 rust-version = "1.90"
 publish = false
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
 [workspace.dependencies]
 agent-client-protocol-schema = { version = "=1.11.0", features = ["tracing"] }
 domain = { path = "packages/domain" }

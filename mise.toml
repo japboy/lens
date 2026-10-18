@@ -146,6 +146,7 @@ depends = ["rust:clippy"]
 run = [
   "node scripts/test-native-fixtures.ts",
   "node scripts/run-workspace-variant.ts macos-test",
+  "cargo test --locked -p adapter-platform-macos --test native_boundary_lifecycle --target aarch64-apple-darwin",
   "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
   "cargo test --locked --workspace --doc --target aarch64-apple-darwin",
 ]
@@ -193,6 +194,11 @@ depends = ["verify:portable", "check:rust:native-features", "check:dependencies"
 description = "Verify shared Rust and native feature compatibility after source verification"
 dir = "{{config_root}}"
 depends = ["check:rust:native-features", "check:dependencies"]
+
+[tasks."check:miri-boundaries"]
+description = "Run the explicitly pinned, measured production ownership Miri pilot"
+dir = "{{config_root}}"
+run = "node scripts/run-miri-boundaries.ts"
 
 [tasks."check:dependencies"]
 description = "Audit the locked Linux and macOS dependency graphs"

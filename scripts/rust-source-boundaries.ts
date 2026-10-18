@@ -1,4 +1,5 @@
 import { dirname, resolve } from "node:path";
+import { RUST_SAFETY_BOUNDARIES, MIRI_EXCLUSIONS } from "./rust-safety-boundaries.ts";
 
 type Token = { text: string; literal: boolean; offset: number };
 
@@ -76,6 +77,25 @@ export function rustTokens(source: string): Token[] {
   return tokens;
 }
 
+export const RUST_GROUP_CLOSING = new Map([
+  ["(", ")"],
+  ["[", "]"],
+  ["{", "}"],
+]);
+
+export function groupEnd(tokens: readonly Token[], start: number): number {
+  const expected = RUST_GROUP_CLOSING.get(tokens[start]?.text ?? "");
+  if (!expected) throw new Error("Expected a Rust token group");
+  for (let index = start + 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.literal) continue;
+    if (token.text === expected) return index;
+    if (RUST_GROUP_CLOSING.has(token.text)) index = groupEnd(tokens, index);
+    else if ([")", "]", "}"].includes(token.text)) throw new Error("Mismatched Rust token group");
+  }
+  throw new Error("Incomplete Rust token group");
+}
+
 const PORTABLE_FORBIDDEN = new Set([
   "unsafe",
   "extern",
@@ -142,6 +162,161 @@ const PORTABLE_ATTRIBUTES = new Set([
   "test",
   "tokio::test",
 ]);
+
+// Lint attributes are checked lexically in every authored Rust target, including
+// tests and build scripts. Rustc remains responsible for expanded Rust semantics.
+export function unsafeManifestViolations(manifest: unknown, workspaceRoot = false): string[] {
+  const document = manifest as {
+    workspace?: { lints?: { rust?: Record<string, unknown> } };
+    lints?: Record<string, unknown>;
+  };
+  if (workspaceRoot) {
+    return ["unsafe_code", "unsafe_op_in_unsafe_fn"]
+      .filter((lint) => document.workspace?.lints?.rust?.[lint] !== "deny")
+      .map((lint) => `Workspace must deny ${lint}`);
+  }
+  return document.lints?.workspace === true && Object.keys(document.lints).length === 1
+    ? []
+    : ["Cargo targets must inherit workspace Rust safety lints without overrides"];
+}
+
+export function miriExclusionViolations(source: string, owner: string): string[] {
+  const tokens = rustTokens(source);
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (
+      !tokens[index]?.literal &&
+      tokens[index]?.text === "cfg" &&
+      tokens[index + 1]?.text === "!"
+    ) {
+      const end = groupEnd(tokens, index + 2);
+      if (tokens.slice(index, end).some((token) => !token.literal && token.text === "miri"))
+        return ["Miri-specific execution branches must not omit production processing"];
+    }
+  }
+  const selectedOwner = Object.values(RUST_SAFETY_BOUNDARIES).some(
+    (boundary) =>
+      boundary.miriGroups.length > 0 && (boundary.owners as readonly string[]).includes(owner),
+  );
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index]?.text !== "#") continue;
+    const start = index + (tokens[index + 1]?.text === "!" ? 2 : 1);
+    const end = groupEnd(tokens, start);
+    const attribute = tokens.slice(index, end);
+    if (
+      !attribute.some(
+        (token) =>
+          !token.literal && (token.text === "miri" || (selectedOwner && token.text === "ignore")),
+      )
+    )
+      continue;
+    let declaration = end + 1;
+    while (tokens[declaration]?.text === "#" && tokens[declaration + 1]?.text === "[") {
+      declaration = groupEnd(tokens, declaration + 1) + 1;
+    }
+    const test = tokens[declaration]?.text === "fn" ? tokens[declaration + 1]?.text : undefined;
+    if (
+      !MIRI_EXCLUSIONS.some(
+        (entry) =>
+          entry.owner === owner && test && entry.test.endsWith(`::${test}`) && entry.reason.trim(),
+      )
+    )
+      return [
+        "Miri exclusions or ignored boundary tests require an exact declared test and justification",
+      ];
+  }
+  return [];
+}
+
+export function unsafeExceptionViolations(source: string, owner?: string): string[] {
+  const tokens = rustTokens(source);
+  const violations: string[] = [];
+  const allowedTargets = new Set<number>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index]?.text !== "#") continue;
+    const inner = tokens[index + 1]?.text === "!";
+    const start = index + (inner ? 2 : 1);
+    if (tokens[start]?.text !== "[") continue;
+    let end = start + 1;
+    let depth = 1;
+    while (end < tokens.length && depth) {
+      if (tokens[end]?.text === "[") depth += 1;
+      if (tokens[end]?.text === "]") depth -= 1;
+      end += 1;
+    }
+    const attribute = tokens.slice(start + 1, end - 1);
+    const texts = attribute.map((token) => token.text);
+    if (!texts.some((text) => text === "unsafe_code" || text === "unsafe_op_in_unsafe_fn"))
+      continue;
+    if (!texts.some((text) => ["allow", "warn", "expect"].includes(text))) continue;
+    // The reason value follows '='; accept Rust string literals, but not empty reasons.
+    const value = attribute[6];
+    const documented =
+      !inner &&
+      texts[0] === "allow" &&
+      texts[1] === "(" &&
+      texts[2] === "unsafe_code" &&
+      texts[3] === "," &&
+      texts[4] === "reason" &&
+      texts[5] === "=" &&
+      value?.literal &&
+      value.text
+        .replace(/^(?:r#*|b)?"/u, "")
+        .replace(/"#*$/u, "")
+        .trim().length > 0 &&
+      texts.slice(7).join("").replace(",", "") === ")";
+    if (!documented) {
+      violations.push('Unsafe exceptions require one outer allow(unsafe_code, reason = "...")');
+      continue;
+    }
+    let reason: string;
+    try {
+      reason = JSON.parse(value!.text) as string;
+    } catch {
+      violations.push("Boundary reasons require an explicit ordinary quoted string");
+      continue;
+    }
+    const category = /^\[boundary:([a-z-]+)\] (.+)$/su.exec(reason);
+    const boundary = category
+      ? RUST_SAFETY_BOUNDARIES[category[1] as keyof typeof RUST_SAFETY_BOUNDARIES]
+      : undefined;
+    if (!boundary || !category?.[2]?.trim())
+      violations.push("Unsafe exception requires a declared boundary category and detailed reason");
+    else if (owner && !(boundary.owners as readonly string[]).includes(owner))
+      violations.push(`Unsafe boundary ${category![1]} cannot be used by ${owner}`);
+    let target = end;
+    // Other outer attributes can precede the actual unsafe operation.
+    while (tokens[target]?.text === "#" && tokens[target + 1]?.text === "[") {
+      target += 2;
+      let nesting = 1;
+      while (target < tokens.length && nesting) {
+        if (tokens[target]?.text === "[") nesting += 1;
+        if (tokens[target]?.text === "]") nesting -= 1;
+        target += 1;
+      }
+    }
+    if (tokens[target]?.text === "pub") {
+      target += 1;
+      if (tokens[target]?.text === "(") {
+        while (target < tokens.length && tokens[target]?.text !== ")") target += 1;
+        target += 1;
+      }
+    }
+    if (tokens[target]?.text !== "unsafe")
+      violations.push("Unsafe exceptions must attach directly to an unsafe block or declaration");
+    else allowedTargets.add(target);
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (
+      tokens[index]?.text === "unsafe" &&
+      tokens[index + 1]?.text === "{" &&
+      !allowedTargets.has(index)
+    )
+      violations.push(
+        `Unsafe block at ${tokens[index]!.offset} requires its own documented exception`,
+      );
+  }
+  return violations;
+}
 
 export function portableSourceViolations(source: string): string[] {
   const tokens = rustTokens(source);

@@ -5779,26 +5779,22 @@ mod claude_authentication_tests {
         timeout(Duration::from_secs(3), async {
             loop {
                 // kill(0) does not reap: a zombie remains visible until wait runs.
-                if unsafe { libc::kill(pid as i32, 0) } == -1 {
-                    assert_eq!(
-                        std::io::Error::last_os_error().raw_os_error(),
-                        Some(libc::ESRCH)
-                    );
-                    break;
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None) {
+                    Err(nix::errno::Errno::ESRCH) => break,
+                    Err(error) => panic!("cannot observe authentication child: {error}"),
+                    Ok(()) => {}
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
         .expect("direct child must terminate and be reaped");
-        let mut status = 0;
         assert_eq!(
-            unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
-            -1
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ECHILD)
+            nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(pid as i32),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG)
+            ),
+            Err(nix::errno::Errno::ECHILD)
         );
     }
 

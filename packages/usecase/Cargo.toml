@@ -21,3 +21,6 @@ url.workspace = true
 
 [dev-dependencies]
 tokio = { version = "=1.53.2", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

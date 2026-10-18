@@ -5,23 +5,44 @@ use tokio::sync::oneshot;
 
 /// Format an instant using the current macOS short date and time preferences.
 pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError> {
+    #[allow(
+        unsafe_code,
+        reason = "[boundary:appkit-presentation] macOS user date and time formatting preferences require the native formatter ABI"
+    )]
     unsafe extern "C" {
         fn lens_format_short_datetime(unix_seconds: f64) -> *mut std::ffi::c_char;
         fn lens_free_string(value: *mut std::ffi::c_char);
     }
     // SAFETY: The bridge accepts a scalar and returns an owned NUL-terminated UTF-8 string.
-    let raw = unsafe { lens_format_short_datetime(unix_seconds) };
+    let raw = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:native-json] Native formatter returns an owned allocation for the user-selected macOS format"
+        )]
+        unsafe {
+            lens_format_short_datetime(unix_seconds)
+        }
+    };
     if raw.is_null() {
         return Err(PlatformError::Operation(
             "unable to format session timestamp".into(),
         ));
     }
     // SAFETY: The non-null allocation remains valid until released below.
-    let value = unsafe { std::ffi::CStr::from_ptr(raw) }
+    let value = {
+        #[allow(unsafe_code, reason = "[boundary:native-json] Native formatter guarantees a non-null NUL-terminated buffer alive until the matching free")]
+        unsafe { std::ffi::CStr::from_ptr(raw) }
+    }
         .to_string_lossy()
         .into_owned();
     // SAFETY: Release exactly once using the bridge allocator's matching deallocator.
-    unsafe { lens_free_string(raw) };
+    #[allow(
+        unsafe_code,
+        reason = "[boundary:native-json] Native allocated formatter memory must be released exactly once by its matching allocator"
+    )]
+    unsafe {
+        lens_free_string(raw)
+    };
     Ok(value)
 }
 
@@ -31,6 +52,10 @@ pub fn format_short_datetime(unix_seconds: f64) -> Result<String, PlatformError>
 ///
 /// # Safety
 /// Call on the AppKit main thread with a live root NSMenu borrowed for this call.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Tauri menu APIs lack positional template image and tooltip updates; caller supplies a live NSMenu on AppKit"
+)]
 pub unsafe fn set_menu_presentation(
     root_menu: *mut c_void,
     submenu_index: usize,
@@ -55,9 +80,16 @@ pub unsafe fn set_menu_presentation(
     )
     .map_err(invalid)?;
     // SAFETY: Strings live through the synchronous call; caller guarantees handle/thread affinity.
-    if unsafe {
-        lens_set_menu_presentation(root_menu, submenu_index, title.as_ptr(), json.as_ptr())
-    } {
+    let native_result = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-presentation] Strings live through the synchronous call; caller guarantees handle/thread affinity."
+        )]
+        unsafe {
+            lens_set_menu_presentation(root_menu, submenu_index, title.as_ptr(), json.as_ptr())
+        }
+    };
+    if native_result {
         Ok(())
     } else {
         Err(PlatformError::Operation(
@@ -70,6 +102,10 @@ pub unsafe fn set_menu_presentation(
 ///
 /// # Safety
 /// Call on the AppKit main thread after NSApplication initialization, without holding app locks.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Dialog plugin button mapping cannot preserve destructive result and safe default semantics; synchronous AppKit alert is required"
+)]
 pub unsafe fn confirm_destructive_action(
     title: &str,
     message: &str,
@@ -95,14 +131,21 @@ pub unsafe fn confirm_destructive_action(
         text(cancel_label)?,
     );
     // SAFETY: UTF-8 strings remain valid for the synchronous main-thread modal call.
-    match unsafe {
-        lens_confirm_destructive_action(
-            title.as_ptr(),
-            message.as_ptr(),
-            confirm_label.as_ptr(),
-            cancel_label.as_ptr(),
-        )
-    } {
+    let native_result = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-presentation] UTF-8 strings remain valid for the synchronous main-thread modal call."
+        )]
+        unsafe {
+            lens_confirm_destructive_action(
+                title.as_ptr(),
+                message.as_ptr(),
+                confirm_label.as_ptr(),
+                cancel_label.as_ptr(),
+            )
+        }
+    };
+    match native_result {
         1 => Ok(true),
         0 => Ok(false),
         _ => Err(PlatformError::Operation(
@@ -138,6 +181,10 @@ fn menu_presentation_json(
 
 type WindowTransitionCallback = unsafe extern "C" fn(bool, *mut c_void);
 
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Native presentation ABI preserves appearance and animation contracts unavailable in Tauri"
+)]
 unsafe extern "C" {
     fn lens_window_background_rgba(rgba: *mut u8) -> bool;
     fn lens_dismiss_window_to_screen_right(
@@ -161,10 +208,23 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// Call on the AppKit main thread after NSApplication initialization.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Tauri exposes no current AppKit appearance color resolver; caller establishes NSApplication main-thread affinity"
+)]
 pub unsafe fn window_background_rgba() -> Result<[u8; 4], PlatformError> {
     let mut rgba = [0; 4];
     // SAFETY: The caller guarantees AppKit affinity; the bridge writes exactly four bytes.
-    if unsafe { lens_window_background_rgba(rgba.as_mut_ptr()) } {
+    let native_result = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-presentation] The caller guarantees AppKit affinity; the bridge writes exactly four bytes."
+        )]
+        unsafe {
+            lens_window_background_rgba(rgba.as_mut_ptr())
+        }
+    };
+    if native_result {
         Ok(rgba)
     } else {
         Err(PlatformError::Operation(
@@ -195,13 +255,26 @@ pub struct ControlPalette {
 ///
 /// # Safety
 /// Call on the AppKit main thread after NSApplication initialization.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Native semantic control colors and accessibility appearance are unavailable through Tauri safe APIs"
+)]
 pub unsafe fn control_palette() -> Option<ControlPalette> {
     unsafe extern "C" {
         fn lens_control_palette(window: *mut c_void, palette: *mut ControlPalette) -> bool;
     }
     let mut palette = ControlPalette::default();
     // SAFETY: Null selects application appearance; the output matches the C layout.
-    unsafe { lens_control_palette(std::ptr::null_mut(), &mut palette) }.then_some(palette)
+    {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-presentation] Null selects application appearance; the output matches the C layout."
+        )]
+        unsafe {
+            lens_control_palette(std::ptr::null_mut(), &mut palette)
+        }
+    }
+    .then_some(palette)
 }
 
 /// Attach native appearance/accessibility observation for the window's lifetime.
@@ -209,6 +282,10 @@ pub unsafe fn control_palette() -> Option<ControlPalette> {
 /// # Safety
 /// Borrow a live NSWindow and its WKWebView on the AppKit main thread.
 /// Native retains the observer on the window and only weak references to those views.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Tauri has no WKWebView lifetime appearance observer; caller provides live AppKit-confined handles"
+)]
 pub unsafe fn observe_control_palette(
     window: *mut c_void,
     webview: *mut c_void,
@@ -217,7 +294,16 @@ pub unsafe fn observe_control_palette(
         fn lens_observe_control_palette(window: *mut c_void, webview: *mut c_void) -> bool;
     }
     // SAFETY: Caller guarantees handle type, lifetime and AppKit affinity.
-    if unsafe { lens_observe_control_palette(window, webview) } {
+    let native_result = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-presentation] Caller guarantees handle type, lifetime and AppKit affinity."
+        )]
+        unsafe {
+            lens_observe_control_palette(window, webview)
+        }
+    };
+    if native_result {
         Ok(())
     } else {
         Err(PlatformError::Operation(
@@ -230,6 +316,10 @@ pub unsafe fn observe_control_palette(
 ///
 /// # Safety
 /// Borrow a live NSWindow on the AppKit main thread.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-presentation] Tauri corner radius does not clip the native content parent and WebView descendants"
+)]
 pub unsafe fn configure_floating_window_radius(
     window: *mut c_void,
     radius: f64,
@@ -238,7 +328,16 @@ pub unsafe fn configure_floating_window_radius(
         fn lens_configure_floating_window_radius(window: *mut c_void, radius: f64) -> bool;
     }
     // SAFETY: Caller guarantees the native handle lifetime and main-thread affinity.
-    if unsafe { lens_configure_floating_window_radius(window, radius) } {
+    let native_result = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-presentation] Caller guarantees the native handle lifetime and main-thread affinity."
+        )]
+        unsafe {
+            lens_configure_floating_window_radius(window, radius)
+        }
+    };
+    if native_result {
         Ok(())
     } else {
         Err(PlatformError::Operation(
@@ -251,13 +350,25 @@ struct WindowTransitionContext {
     sender: Option<oneshot::Sender<bool>>,
 }
 
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-transition] C completion transfers the allocated context exactly once; no safe callback ownership API exists"
+)]
 unsafe extern "C" fn window_transition_callback(completed: bool, context: *mut c_void) {
     if context.is_null() {
         return;
     }
     // SAFETY: `context` is created immediately before a native frame transition begins. The native
     // bridge invokes this callback exactly once after reaching the terminal Preview frame.
-    let mut context = unsafe { Box::from_raw(context.cast::<WindowTransitionContext>()) };
+    let mut context = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-transition] `context` is created immediately before a native frame transition begins. The native bridge invokes this callback exactly once after reaching the terminal Preview frame."
+        )]
+        unsafe {
+            Box::from_raw(context.cast::<WindowTransitionContext>())
+        }
+    };
     if let Some(sender) = context.sender.take() {
         let _ = sender.send(completed);
     }
@@ -310,7 +421,13 @@ impl WindowTransition {
         } else {
             // SAFETY: Synchronous refusal guarantees the bridge neither retained nor called
             // the callback. Rust still exclusively owns this allocation.
-            unsafe { drop(Box::from_raw(context.cast::<WindowTransitionContext>())) };
+            #[allow(
+                unsafe_code,
+                reason = "[boundary:appkit-transition] Synchronous refusal returns exclusive ownership of the never-delivered callback context"
+            )]
+            unsafe {
+                drop(Box::from_raw(context.cast::<WindowTransitionContext>()))
+            };
             Err(PlatformError::Operation(kind.refused().into()))
         };
         Self { receiver, kind }
@@ -334,9 +451,22 @@ impl WindowTransition {
 /// # Safety
 /// Call on the AppKit main thread with a valid, live NSWindow borrowed for this call.
 /// The bridge uses it synchronously; Rust never takes ownership of the window.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-transition] Tauri safe window APIs do not preserve the native screen-edge presentation animation"
+)]
 pub unsafe fn present_window_from_screen_right(window: *mut c_void) -> Result<(), PlatformError> {
     // SAFETY: The caller supplies a live NSWindow on its owning thread.
-    if unsafe { lens_present_window_from_screen_right(window) } {
+    let native_result = {
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-transition] The caller supplies a live NSWindow on its owning thread."
+        )]
+        unsafe {
+            lens_present_window_from_screen_right(window)
+        }
+    };
+    if native_result {
         Ok(())
     } else {
         Err(PlatformError::Operation(
@@ -351,11 +481,23 @@ pub unsafe fn present_window_from_screen_right(window: *mut c_void) -> Result<()
 /// Call on the AppKit main thread with a valid, live NSWindow borrowed for this call.
 /// Native code establishes a strong reference before returning; its animation completion
 /// block retains that reference. Never enqueue an unretained pointer from another thread.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-transition] Native animation must retain NSWindow and complete one callback after its terminal frame"
+)]
 pub unsafe fn dismiss_window_to_screen_right(window: *mut c_void) -> WindowTransition {
     WindowTransition::start(TransitionKind::Dismissal, |context| {
         // SAFETY: Main-thread entry establishes retention synchronously. Acceptance transfers
         // context ownership to exactly one callback, including immediate completion.
-        unsafe { lens_dismiss_window_to_screen_right(window, window_transition_callback, context) }
+        {
+            #[allow(
+                unsafe_code,
+                reason = "[boundary:appkit-transition] Main-thread entry establishes retention synchronously. Acceptance transfers context ownership to exactly one callback, including immediate completion."
+            )]
+            unsafe {
+                lens_dismiss_window_to_screen_right(window, window_transition_callback, context)
+            }
+        }
     })
 }
 
@@ -364,6 +506,10 @@ pub unsafe fn dismiss_window_to_screen_right(window: *mut c_void) -> WindowTrans
 /// # Safety
 /// The same main-thread, live borrowed NSWindow contract as dismissal applies. The bridge
 /// retains the window through completion; the returned receipt contains no native handle.
+#[allow(
+    unsafe_code,
+    reason = "[boundary:appkit-transition] Native frame animation owns validated geometry, NSWindow retention and exactly-once completion"
+)]
 pub unsafe fn transition_window_frame(
     window: *mut c_void,
     top_left_delta_x: f64,
@@ -374,16 +520,22 @@ pub unsafe fn transition_window_frame(
     WindowTransition::start(TransitionKind::Frame, |context| {
         // SAFETY: The caller guarantees the window contract. Native code validates geometry
         // before accepting the exclusively owned callback context.
-        unsafe {
-            lens_transition_window_frame(
-                window,
-                top_left_delta_x,
-                top_left_delta_y,
-                content_width,
-                content_height,
-                window_transition_callback,
-                context,
-            )
+        {
+            #[allow(
+                unsafe_code,
+                reason = "[boundary:appkit-transition] The caller guarantees the window contract. Native code validates geometry before accepting the exclusively owned callback context."
+            )]
+            unsafe {
+                lens_transition_window_frame(
+                    window,
+                    top_left_delta_x,
+                    top_left_delta_y,
+                    content_width,
+                    content_height,
+                    window_transition_callback,
+                    context,
+                )
+            }
         }
     })
 }
@@ -455,7 +607,13 @@ mod tests {
             for kind in [TransitionKind::Dismissal, TransitionKind::Frame] {
                 let transition = WindowTransition::start(kind, |context| {
                     // SAFETY: This fixture accepts ownership and invokes the sole callback.
-                    unsafe { window_transition_callback(completed, context) };
+                    #[allow(
+                        unsafe_code,
+                        reason = "[boundary:appkit-transition] Owned fixture buffers exercise the exact native callback ownership and null contract"
+                    )]
+                    unsafe {
+                        window_transition_callback(completed, context)
+                    };
                     true
                 });
                 match ready(transition) {
@@ -489,13 +647,25 @@ mod tests {
         });
         drop(transition);
         // SAFETY: Accepted context remains callback-owned after receiver cancellation.
-        unsafe { window_transition_callback(true, callback_context) };
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-transition] Owned fixture buffers exercise the exact native callback ownership and null contract"
+        )]
+        unsafe {
+            window_transition_callback(true, callback_context)
+        };
     }
 
     #[test]
     fn null_callback_context_is_ignored() {
         // SAFETY: The callback explicitly accepts null as a no-op.
-        unsafe { window_transition_callback(false, std::ptr::null_mut()) };
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-transition] Owned fixture buffers exercise the exact native callback ownership and null contract"
+        )]
+        unsafe {
+            window_transition_callback(false, std::ptr::null_mut())
+        };
     }
 
     #[test]
@@ -524,7 +694,13 @@ mod tests {
         let mut context = Context::from_waker(Waker::noop());
         assert!(future.as_mut().poll(&mut context).is_pending());
         // SAFETY: This fixture delivers the single accepted callback.
-        unsafe { window_transition_callback(true, callback_context) };
+        #[allow(
+            unsafe_code,
+            reason = "[boundary:appkit-transition] Owned fixture buffers exercise the exact native callback ownership and null contract"
+        )]
+        unsafe {
+            window_transition_callback(true, callback_context)
+        };
         assert!(matches!(
             future.as_mut().poll(&mut context),
             Poll::Ready(Ok(()))
