@@ -1,6 +1,6 @@
 {
   "name": "adapter-lit-prerenderer",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "private": true,
   "description": "Node-only sealed Lit prerender generations and immutable development serving",
   "type": "module",

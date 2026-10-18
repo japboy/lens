@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/japboy/lens/compare/v0.10.1...v0.11.0) (2026-10-18)
+
+
+### Features
+
+* add session history management in Settings ([#221](https://github.com/japboy/lens/issues/221)) ([8dbdbc8](https://github.com/japboy/lens/commit/8dbdbc89fd01fddbaa089cc63a563444d6252ce3))
+* **macos:** enforce target read admission ([#220](https://github.com/japboy/lens/issues/220)) ([c5ef7c3](https://github.com/japboy/lens/commit/c5ef7c3f277e0cbc4e52c7c50681f85b7574bb45)), refs [#213](https://github.com/japboy/lens/issues/213)
+* **platform:** add portable target read keys ([#218](https://github.com/japboy/lens/issues/218)) ([f6f57cb](https://github.com/japboy/lens/commit/f6f57cb754f5286d0534bafa29c541f34eeec763)), refs [#214](https://github.com/japboy/lens/issues/214)
+* **platform:** normalize source semantics ([#222](https://github.com/japboy/lens/issues/222)) ([464036c](https://github.com/japboy/lens/commit/464036cd9695c06570e65a0ecd065ff9f60cf732))
+
+
+### Bug Fixes
+
+* **history:** restore HTML from provider replays ([#223](https://github.com/japboy/lens/issues/223)) ([3000c76](https://github.com/japboy/lens/commit/3000c76a0e325e1aab947cb89bd9d0458c47ed93))
+
 ## [0.10.1](https://github.com/japboy/lens/compare/v0.10.0...v0.10.1) (2026-10-18)
 
 
