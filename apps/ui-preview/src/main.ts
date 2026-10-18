@@ -3,6 +3,7 @@ import "ui/styles/icon-fonts.css";
 import "ui/styles/math-fonts.css";
 import { previewDocumentLoader } from "./services";
 import { PREVIEW_SCENARIOS, PREVIEW_VIEWS } from "./scenarios";
+import { historyFixture } from "./history-fixture";
 import { DESKTOP_PLATFORMS } from "ui/contracts/context";
 import type { LensState } from "ui/contracts/lens";
 function finiteValue<const T extends readonly string[]>(value: string, allowed: T): T[number] {
@@ -13,6 +14,7 @@ import "ui/entries/about";
 import "ui/entries/settings";
 import "ui/entries/settings-defaults";
 import "ui/entries/settings-prompts";
+import "ui/entries/settings-history";
 import "ui/entries/target-selection";
 import "ui/entries/overlay-output";
 import "ui/entries/overlay-session";
@@ -140,6 +142,10 @@ export function show() {
   }
   if (view instanceof LensSettingsView) {
     view.active = true;
+    if (scenario.startsWith("history-")) {
+      view.destination = "session-history";
+      view.history = historyFixture(scenario);
+    }
     view.mcpToolCatalogs = [
       {
         server: null,

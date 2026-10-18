@@ -829,13 +829,11 @@ pub fn install_menu_bar<R: tauri::Runtime>(app: &mut App<R>) -> tauri::Result<()
             }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "refresh_session_history" => {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = crate::session_view::refresh(app).await {
-                        eprintln!("Unable to refresh history: {error}");
-                    }
-                });
+            id if history_settings_destination(id).is_some() => {
+                if let Err(error) = show_settings_destination(app, history_settings_destination(id))
+                {
+                    eprintln!("Unable to show session history settings: {error}");
+                }
             }
             id if id.starts_with("session_history:") => {
                 let mut parts = id.split(':').skip(1);
@@ -1215,8 +1213,8 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
             menu.append(
                 &MenuItem::with_id(
                     app,
-                    "refresh_session_history",
-                    "Reload Saved Sessions",
+                    "show_all_sessions",
+                    "Show All Sessions…",
                     true,
                     None::<&str>,
                 )
@@ -1499,6 +1497,7 @@ fn show_prompt_settings<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<
 enum SettingsDestination {
     Connection,
     PromptPresets,
+    SessionHistory,
 }
 
 impl SettingsDestination {
@@ -1506,7 +1505,28 @@ impl SettingsDestination {
         match self {
             Self::Connection => "connection",
             Self::PromptPresets => "prompt-presets",
+            Self::SessionHistory => "session-history",
         }
+    }
+}
+
+fn history_settings_destination(menu_id: &str) -> Option<SettingsDestination> {
+    match menu_id {
+        "show_all_sessions" => Some(SettingsDestination::SessionHistory),
+        _ => None,
+    }
+}
+
+fn settings_destination_url(destination: Option<SettingsDestination>) -> WebviewUrl {
+    match destination {
+        Some(destination) => WebviewUrl::App(
+            format!(
+                "settings.html?platform={DESKTOP_PLATFORM}&destination={}",
+                destination.id()
+            )
+            .into(),
+        ),
+        None => webview_url(WebviewView::Settings),
     }
 }
 
@@ -1531,17 +1551,7 @@ fn show_settings_destination<R: tauri::Runtime>(
         .unwrap_or(SETTINGS_WINDOW_SIZE_POLICY.preferred);
 
     let background = settings_background(app)?;
-    let url = if let Some(destination) = destination {
-        WebviewUrl::App(
-            format!(
-                "settings.html?platform={DESKTOP_PLATFORM}&destination={}",
-                destination.id()
-            )
-            .into(),
-        )
-    } else {
-        webview_url(WebviewView::Settings)
-    };
+    let url = settings_destination_url(destination);
     let window = build_lens_webview(
         app,
         WebviewWindowBuilder::new(app, SETTINGS_LABEL, url)
@@ -1788,6 +1798,54 @@ mod tests {
             std::path::PathBuf::from(format!("target-selection.html?platform={DESKTOP_PLATFORM}"))
         );
         assert!(matches!(DESKTOP_PLATFORM, "macos" | "windows" | "linux"));
+    }
+
+    #[test]
+    fn recent_sessions_all_history_action_targets_settings_history() {
+        let destination = history_settings_destination("show_all_sessions").unwrap();
+        assert_eq!(destination.id(), "session-history");
+        let WebviewUrl::App(path) = settings_destination_url(Some(destination)) else {
+            panic!("Expected app URL");
+        };
+        assert_eq!(
+            path,
+            std::path::PathBuf::from(format!(
+                "settings.html?platform={DESKTOP_PLATFORM}&destination=session-history"
+            ))
+        );
+        assert!(history_settings_destination("refresh_session_history").is_none());
+        assert!(history_settings_destination("session_history:stale:0").is_none());
+    }
+
+    #[test]
+    fn history_settings_navigation_reuses_open_window_and_emits_destination() {
+        use tauri::Listener;
+        let app = crate::configure_shell(
+            tauri::test::mock_builder().manage(crate::test_support::state()),
+            crate::platform::Presentation(std::sync::Arc::new(
+                crate::test_support::UnusedPresentation,
+            )),
+            crate::ui::TrayPresentation(std::sync::Arc::new(crate::test_support::UnusedTray)),
+            crate::agent::AgentServices(std::sync::Arc::new(crate::test_support::UnusedAgent)),
+        )
+        .build(crate::product_context())
+        .unwrap();
+        let window =
+            WebviewWindowBuilder::new(&app, SETTINGS_LABEL, webview_url(WebviewView::Settings))
+                .build()
+                .unwrap();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = received.clone();
+        window.listen("settings-destination", move |event| {
+            sink.lock().unwrap().push(event.payload().to_owned())
+        });
+        show_settings_destination(
+            app.handle(),
+            history_settings_destination("show_all_sessions"),
+        )
+        .unwrap();
+        assert_eq!(*received.lock().unwrap(), vec!["\"session-history\""]);
+        assert_eq!(app.webview_windows().len(), 1);
     }
 
     #[test]
@@ -2307,14 +2365,14 @@ mod history_tooltip_tests {
             vec![
                 ("Session".into(), true),
                 ("".into(), false),
-                ("Reload Saved Sessions".into(), true),
+                ("Show All Sessions…".into(), true),
             ],
             vec!["date · agent".into()],
         )
         .unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].1.as_deref(), Some("date · agent"));
-        assert_eq!(rows[2].0, "Reload Saved Sessions");
+        assert_eq!(rows[2].0, "Show All Sessions…");
         assert!(rows[1..].iter().all(|(_, tooltip)| tooltip.is_none()));
     }
 

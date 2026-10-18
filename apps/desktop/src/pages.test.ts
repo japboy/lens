@@ -233,6 +233,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         representation: snapshot.lens.representation,
       };
     if (command === "get_session_view") return { revision: 0, phase: "idle" };
+    if (command === "list_history") return { revision: 1, total: 0, entries: [] };
     if (command === "accessibility_permission") return true;
     return undefined;
   }),
@@ -275,9 +276,13 @@ interface TestPage extends HTMLElement {
   readonly updateComplete: Promise<boolean>;
 }
 
-async function createPage(view: AppView): Promise<TestPage> {
-  window.history.replaceState({}, "", `/${view}.html?platform=macos`);
-  installGeneratedPage(view);
+async function createPage(view: AppView, destination?: string): Promise<TestPage> {
+  window.history.replaceState(
+    {},
+    "",
+    `/${view}.html?platform=macos${destination ? `&destination=${destination}` : ""}`,
+  );
+  installGeneratedPage(view, window.location.search);
   const loaders = {
     about: () => import("./pages/about-page"),
     settings: () => import("./pages/settings-page"),
@@ -1839,6 +1844,7 @@ describe("Lens Settings", () => {
     expect(items.map((item) => item.textContent?.trim())).toEqual([
       "Connection",
       "Session Defaults",
+      "Session History",
       "Prompt Presets",
       "Privacy & Security",
     ]);
@@ -1850,7 +1856,10 @@ describe("Lens Settings", () => {
         ),
       })),
     ).toEqual([
-      { heading: "Agent", destinations: ["Connection", "Session Defaults", "Prompt Presets"] },
+      {
+        heading: "Agent",
+        destinations: ["Connection", "Session Defaults", "Session History", "Prompt Presets"],
+      },
       { heading: "General", destinations: ["Privacy & Security"] },
     ]);
     expect(items[0]?.getAttribute("aria-current")).toBe("page");
@@ -2338,3 +2347,158 @@ it.each(["cancel", "success", "failure"] as const)(
     }
   },
 );
+
+describe("Settings Session History", () => {
+  const savedHistory = {
+    revision: 32,
+    total: 51,
+    entries: [
+      {
+        id: "opaque/source/session",
+        title: "Saved source",
+        agent: "ChatGPT Codex",
+        cwd: "/other/workspace",
+        updated_at: null,
+        state: "local_only",
+        available: true,
+      },
+    ],
+  };
+
+  it("opens the history URL and reads the global cache before an AppSnapshot is available", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "get_window_snapshot"
+        ? new Promise(() => undefined)
+        : command === "list_history"
+          ? Promise.resolve(savedHistory)
+          : original(command),
+    );
+    try {
+      const page = await createPage("settings", "session-history");
+      const root = viewRoot(page, "lens-settings-view")!;
+      await vi.waitFor(() =>
+        expect(root.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent).toBe(
+          "Session History",
+        ),
+      );
+      const history = root.querySelector("lens-session-history")!;
+      await vi.waitFor(() => expect(history.shadowRoot?.textContent).toContain("/other/workspace"));
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_history", { offset: 0, limit: 50 });
+      expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("sync_history");
+      expect(history.shadowRoot?.textContent).toContain("51 saved sessions");
+    } finally {
+      vi.mocked(invoke).mockImplementation(original);
+    }
+  });
+
+  it("accepts the existing-window destination event and keeps unsaved Prompt Preset drafts", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "list_history" ? Promise.resolve(savedHistory) : original(command),
+    );
+    try {
+      const page = await createPage("settings");
+      const root = viewRoot(page, "lens-settings-view")!;
+      root.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+        if (button.textContent?.trim() === "Prompt Presets") button.click();
+      });
+      let editor!: HTMLTextAreaElement;
+      await vi.waitFor(() => {
+        editor = root.querySelector("lens-prompt-settings textarea")!;
+        expect(editor).not.toBeNull();
+      });
+      editor.value = "Keep this unsaved draft\n{turn_instruction}";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      const listener = vi
+        .mocked(listen)
+        .mock.calls.find(([event]) => event === "settings-destination")?.[1];
+      expect(listener).toBeDefined();
+      listener?.({ event: "settings-destination", id: 1, payload: "session-history" });
+      await vi.waitFor(() =>
+        expect(root.querySelector(".settings-detail-panel:not([hidden]) h1")?.textContent).toBe(
+          "Session History",
+        ),
+      );
+      expect(root.querySelector("lens-prompt-settings textarea")).toBe(editor);
+      expect(editor.value).toContain("Keep this unsaved draft");
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_history", { offset: 0, limit: 50 });
+    } finally {
+      vi.mocked(invoke).mockImplementation(original);
+    }
+  });
+
+  it("routes history actions with the admitted revision and keeps structured partial sync failures", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    const partial = {
+      succeeded: 2,
+      failed: 1,
+      purged: 3,
+      errors: ["Temporary Agent connection failure; saved history retained"],
+    };
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "list_history"
+        ? Promise.resolve(savedHistory)
+        : command === "sync_history" ||
+            command === "delete_history" ||
+            command === "delete_all_history"
+          ? Promise.resolve(partial)
+          : original(command),
+    );
+    vi.mocked(confirm).mockResolvedValue(true);
+    try {
+      const page = await createPage("settings", "session-history");
+      const root = viewRoot(page, "lens-settings-view")!;
+      const history = root.querySelector("lens-session-history")!;
+      const button = (text: string) =>
+        Array.from(history.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+          (button) => button.textContent?.trim() === text,
+        )!;
+      await vi.waitFor(() => expect(button("Open")?.disabled).toBe(false));
+      button("Open").click();
+      await vi.waitFor(() =>
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_history", {
+          id: "opaque/source/session",
+          revision: 32,
+        }),
+      );
+      await vi.waitFor(() => expect(button("Delete…")?.disabled).toBe(false));
+      button("Delete…").click();
+      await vi.waitFor(() =>
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_history", {
+          id: "opaque/source/session",
+          revision: 32,
+        }),
+      );
+      expect(vi.mocked(confirm)).toHaveBeenCalledWith(
+        expect.stringContaining("Saved source"),
+        expect.objectContaining({ title: "Delete Session History?" }),
+      );
+      await vi.waitFor(() => expect(button("Sync with Agents")?.disabled).toBe(false));
+      button("Sync with Agents").click();
+      await vi.waitFor(() =>
+        expect(history.shadowRoot?.textContent).toContain(
+          "2 Agent/workspace combinations refreshed",
+        ),
+      );
+      expect(history.shadowRoot?.textContent).toContain("3 removed from Lens");
+      expect(history.shadowRoot?.textContent).toContain(partial.errors[0]);
+      await vi.waitFor(() => expect(button("Delete All…")?.disabled).toBe(false));
+      button("Delete All…").click();
+      await vi.waitFor(() =>
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_all_history", { revision: 32 }),
+      );
+      expect(vi.mocked(confirm)).toHaveBeenCalledWith(
+        expect.stringContaining("every page, Agent and working directory"),
+        expect.objectContaining({ title: "Delete All Session History?" }),
+      );
+    } finally {
+      vi.mocked(invoke).mockImplementation(original);
+    }
+  });
+});

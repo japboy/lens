@@ -23,6 +23,41 @@ export type SettingsFeedback =
 
 export type SettingsFeedbackMessage = Exclude<SettingsFeedback, { stage: "none" }>;
 
+export interface HistoryEntry {
+  id: string;
+  title: string;
+  agent: string;
+  cwd: string;
+  updated_at: string | null;
+  state: "listed" | "local_only" | "not_seen";
+  /** Matching current source identity, not runtime reachability or load capability. */
+  available: boolean;
+}
+
+export interface HistoryPage {
+  revision: number;
+  total: number;
+  entries: HistoryEntry[];
+}
+
+/** Sync counts Agent/directory targets; deletion counts sessions. Purged counts cache rows. */
+export interface HistoryResult {
+  succeeded: number;
+  failed: number;
+  purged: number;
+  errors: string[];
+}
+
+export interface HistoryPresentation {
+  stage: "inactive" | "loading" | "ready" | "failed";
+  offset: number;
+  page?: HistoryPage;
+  error?: string;
+  readError?: string;
+  operation: "idle" | "confirming" | "opening" | "deleting" | "synchronizing";
+  outcome?: { kind: "sync" | "delete"; result: HistoryResult };
+}
+
 export interface SettingsViewModel {
   platform: DesktopPlatform;
   config?: AppConfig;

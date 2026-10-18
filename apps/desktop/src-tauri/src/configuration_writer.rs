@@ -167,6 +167,13 @@ impl ConfigurationTransaction<'_> {
                 .runtime
                 .write()
                 .map_err(|_| "Application state is unavailable")?;
+            if state
+                .session_view
+                .management_active
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err("Session history management started while saving settings".into());
+            }
             if latest.config != *previous {
                 return Err("Settings changed before the saved change could be applied".into());
             }
@@ -349,6 +356,55 @@ mod tests {
         let latest = state.snapshot().unwrap();
         assert_eq!(latest.agent_selection.operation_id, Some(current_id));
         assert_eq!(latest.revision, 4);
+    }
+
+    #[test]
+    fn history_management_during_storage_rejects_all_commits_and_restores_disk() {
+        for admitted in [false, true] {
+            let state = crate::test_support::state();
+            let transaction = state.store.writer.begin().unwrap();
+            let (original, authority) = if admitted {
+                let (snapshot, authority) = transaction.prepare_admitted(&state, false).unwrap();
+                (snapshot, Some(authority))
+            } else {
+                (state.snapshot().unwrap(), None)
+            };
+            let mut next = original.config.clone();
+            next.working_directory = "/new-directory".into();
+            let mut writes = 0;
+            let result: Result<(AppSnapshot, (), Option<std::sync::MutexGuard<'_, ()>>), String> =
+                transaction.commit_impl(
+                    &state,
+                    &original.config,
+                    next,
+                    authority,
+                    |config| {
+                        state
+                            .store
+                            .save(config)
+                            .map_err(|error| error.to_string())?;
+                        writes += 1;
+                        if writes == 1 {
+                            let _admission = state.session_view.admission.try_lock().unwrap();
+                            let _runtime = state.runtime.write().unwrap();
+                            state
+                                .session_view
+                                .management_active
+                                .store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        Ok(())
+                    },
+                    |_| panic!("history management must reject before applying settings"),
+                );
+            state
+                .session_view
+                .management_active
+                .store(false, std::sync::atomic::Ordering::Release);
+            assert!(result.unwrap_err().contains("history management started"));
+            assert_eq!(writes, 2, "the saved change must be rolled back");
+            assert_eq!(state.store.try_load().unwrap(), original.config);
+            assert_eq!(state.snapshot().unwrap(), original);
+        }
     }
 
     #[test]

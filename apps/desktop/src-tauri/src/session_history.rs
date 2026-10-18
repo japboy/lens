@@ -111,7 +111,6 @@ fn validate_admission<R: tauri::Runtime>(
     Ok(())
 }
 
-#[cfg(test)]
 async fn list_transport(
     transport: DynConnectTo<Client>,
     agent: AgentKind,
@@ -232,6 +231,85 @@ pub struct SyncedHistory {
     pub listing: ProviderHistoryListing,
     pub patch: InfoPatch,
     pub document: Result<SessionDocument, String>,
+}
+
+pub(crate) async fn list_provider<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    agent: AgentKind,
+    config: &crate::model::AppConfig,
+    cwd: &str,
+) -> Result<ProviderHistoryListing, String> {
+    validate_admission(app, agent, config)?;
+    let (_descriptor, transport) =
+        crate::agent::history_transport(app, agent, config, PathBuf::from(cwd)).await?;
+    validate_admission(app, agent, config)?;
+    list_transport(transport, agent, PathBuf::from(cwd))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn delete_provider<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    agent: AgentKind,
+    config: &crate::model::AppConfig,
+    cwd: &str,
+    ids: Vec<String>,
+) -> Result<Vec<(String, Result<(), String>)>, String> {
+    validate_admission(app, agent, config)?;
+    let (_descriptor, transport) =
+        crate::agent::history_transport(app, agent, config, PathBuf::from(cwd)).await?;
+    validate_admission(app, agent, config)?;
+    delete_transport(transport, ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn delete_transport(
+    transport: DynConnectTo<Client>,
+    ids: Vec<String>,
+) -> Result<Vec<(String, Result<(), String>)>, Error> {
+    Client
+        .builder()
+        .name("lens-history")
+        .on_receive_dispatch(
+            deny_client_requests,
+            agent_client_protocol::on_receive_dispatch!(),
+        )
+        .connect_with(
+            transport,
+            move |connection: ConnectionTo<Agent>| async move {
+                let initialized = initialize(&connection).await?;
+                if initialized
+                    .agent_capabilities
+                    .session_capabilities
+                    .delete
+                    .is_none()
+                {
+                    return Err(error("Agent does not support ACP session/delete"));
+                }
+                let mut results = Vec::with_capacity(ids.len());
+                for id in ids {
+                    let result = tokio::time::timeout(
+                        REQUEST_TIMEOUT,
+                        connection
+                            .send_request(
+                                agent_client_protocol::schema::v1::DeleteSessionRequest::new(
+                                    id.clone(),
+                                ),
+                            )
+                            .block_task(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        "Session deletion timed out; deletion was not confirmed".to_string()
+                    })
+                    .and_then(|result| result.map(|_| ()).map_err(|e| e.to_string()));
+                    results.push((id, result));
+                }
+                Ok(results)
+            },
+        )
+        .await
 }
 
 pub async fn load_synced_provider<R: tauri::Runtime>(
@@ -451,6 +529,66 @@ mod tests {
             "authMethods": []
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_requires_fresh_capability_and_preserves_per_session_failures() {
+        use agent_client_protocol::schema::v1::{
+            DeleteSessionRequest, DeleteSessionResponse, SessionDeleteCapabilities,
+        };
+        let unsupported = Agent.builder().on_receive_request(
+            async |_: InitializeRequest,
+                   responder: Responder<InitializeResponse>,
+                   _: ConnectionTo<Client>| {
+                responder.respond(initialized(false, false))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        assert!(
+            delete_transport(DynConnectTo::new(unsupported), vec!["history".into()])
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("does not support ACP session/delete")
+        );
+        let agent = Agent
+            .builder()
+            .on_receive_request(
+                async |_: InitializeRequest,
+                       responder: Responder<InitializeResponse>,
+                       _: ConnectionTo<Client>| {
+                    let mut response = initialized(false, false);
+                    response.agent_capabilities.session_capabilities.delete =
+                        Some(SessionDeleteCapabilities::new());
+                    responder.respond(response)
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async |request: DeleteSessionRequest,
+                       responder: Responder<DeleteSessionResponse>,
+                       _: ConnectionTo<Client>| {
+                    if request.session_id.to_string() == "fails" {
+                        responder.respond_with_error(error("Synthetic delete failure"))
+                    } else {
+                        responder.respond(DeleteSessionResponse::new())
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+        let results = delete_transport(
+            DynConnectTo::new(agent),
+            vec!["first".into(), "fails".into(), "last".into()],
+        )
+        .await
+        .unwrap();
+        assert!(results[0].1.is_ok());
+        assert!(results[1]
+            .1
+            .as_ref()
+            .unwrap_err()
+            .contains("Synthetic delete failure"));
+        assert!(results[2].1.is_ok());
     }
 
     fn message(id: &str, text: &str) -> SessionNotification {

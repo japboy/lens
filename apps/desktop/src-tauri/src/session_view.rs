@@ -78,6 +78,8 @@ pub(crate) struct HistoryCatalog {
 pub(crate) struct SessionViewStore {
     /// Lock order: admission -> app runtime -> view -> display. Never held over an await.
     pub admission: Mutex<()>,
+    pub history_gate: tokio::sync::Mutex<()>,
+    pub management_active: std::sync::atomic::AtomicBool,
     inner: Mutex<SessionView>,
     catalog: Mutex<HistoryCatalog>,
     display: Mutex<DisplayNotifications>,
@@ -183,6 +185,15 @@ impl SessionViewStore {
             .map(|view| view.clone())
             .map_err(lock_error)
     }
+
+    #[cfg(test)]
+    pub(crate) fn poison_history_refresh_notice_for_test(&self) {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _notice = self.storage_notice.lock().unwrap();
+            panic!("Synthetic history display failure");
+        }))
+        .is_err());
+    }
     pub fn catalog(&self) -> Result<HistoryCatalog, String> {
         self.catalog
             .lock()
@@ -208,7 +219,11 @@ impl SessionViewStore {
     }
 
     pub fn ensure_not_loading(&self) -> Result<(), String> {
-        if self.phase()? == ViewPhase::Loading {
+        if self
+            .management_active
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self.phase()? == ViewPhase::Loading
+        {
             return Err("Wait for the session history to finish loading or close it".into());
         }
         Ok(())
@@ -220,6 +235,28 @@ impl SessionViewStore {
             ..Default::default()
         };
         Ok(())
+    }
+
+    pub(crate) fn clear_history(
+        &self,
+        source: &HistorySource,
+        cwd: &str,
+        ids: Option<&[String]>,
+    ) -> Result<bool, String> {
+        let mut view = self.inner.lock().map_err(lock_error)?;
+        let matches = view
+            .history_context
+            .as_ref()
+            .is_some_and(|(current, directory)| current == source && directory == cwd)
+            && view.phase != ViewPhase::Live
+            && ids.is_none_or(|ids| view.session_id.as_ref().is_some_and(|id| ids.contains(id)));
+        if matches {
+            *view = SessionView {
+                revision: view.revision + 1,
+                ..Default::default()
+            };
+        }
+        Ok(matches)
     }
 }
 
@@ -857,6 +894,25 @@ pub(crate) async fn open<R: Runtime>(
     catalog_generation: Uuid,
     index: usize,
 ) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _history_guard = state.session_view.history_gate.lock().await;
+    open_admitted(app.clone(), catalog_generation, index, None).await
+}
+
+/// Caller holds history_gate, so manager opens and recent-menu loads share one lane.
+pub(crate) async fn open_record<R: Runtime>(
+    app: AppHandle<R>,
+    entry: HistoryEntry,
+) -> Result<(), String> {
+    open_admitted(app, Uuid::nil(), 0, Some(entry)).await
+}
+
+async fn open_admitted<R: Runtime>(
+    app: AppHandle<R>,
+    catalog_generation: Uuid,
+    index: usize,
+    selected: Option<HistoryEntry>,
+) -> Result<(), String> {
     flush_history_writes(&app).await?;
     let admission = (|| {
         let state = app.state::<AppState>();
@@ -865,17 +921,18 @@ pub(crate) async fn open<R: Runtime>(
             return Err("End the active session before opening history".into());
         }
         let catalog = state.session_view.catalog()?;
-        if catalog.generation != catalog_generation {
+        if selected.is_none() && catalog.generation != catalog_generation {
             return Err("Session history changed; reopen the menu".into());
         }
-        let entry = catalog
-            .entries
-            .get(index)
-            .cloned()
+        let entry = selected
+            .clone()
+            .or_else(|| catalog.entries.get(index).cloned())
             .ok_or("Session history entry is unavailable")?;
         let config = state.config()?;
         let effective_cwd = crate::store::effective_working_directory(&config);
-        if catalog.cwd != effective_cwd || Path::new(&entry.cwd) != effective_cwd {
+        if selected.is_none()
+            && (catalog.cwd != effective_cwd || Path::new(&entry.cwd) != effective_cwd)
+        {
             return Err("Working Directory changed; refresh session history".into());
         }
         let source = history_catalog::source(&config, entry.agent)?;
@@ -894,6 +951,7 @@ pub(crate) async fn open<R: Runtime>(
             agent: Some(entry.agent),
             session_id: Some(entry.session_id.clone()),
             title: Some(entry.title.clone()),
+            history_context: Some((source.clone(), entry.cwd.clone())),
             generation,
             ..Default::default()
         };
@@ -934,7 +992,9 @@ pub(crate) async fn open<R: Runtime>(
         if active_session(&snapshot.lens)
             || !snapshot.config.same_execution_config(&config)
             || !history_catalog::same_source(&snapshot.config, &source)
-            || crate::store::effective_working_directory(&snapshot.config) != Path::new(&entry.cwd)
+            || (selected.is_none()
+                && crate::store::effective_working_directory(&snapshot.config)
+                    != Path::new(&entry.cwd))
         {
             return Err("Session loading was superseded".to_string());
         }
