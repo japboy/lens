@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/japboy/lens/compare/v0.10.0...v0.10.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **macos:** reject non-finite AX geometry ([#200](https://github.com/japboy/lens/issues/200)) ([ce915cc](https://github.com/japboy/lens/commit/ce915cc8e07f4eb27c213e672ea371f6f784ad50))
+
 ## [0.10.0](https://github.com/japboy/lens/compare/v0.9.0...v0.10.0) (2026-10-17)
 
 
