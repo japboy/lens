@@ -147,7 +147,10 @@ pub(crate) async fn list_history<R: Runtime>(
             };
             Ok(HistoryRow {
                 id,
-                title: entry.title.unwrap_or_else(|| "Untitled session".into()),
+                title: entry
+                    .title
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| "Untitled session".into()),
                 agent,
                 cwd: entry.cwd,
                 updated_at,
@@ -633,6 +636,44 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_history_falls_back_for_missing_or_blank_titles() {
+        let (app, visits) = fixture();
+        let state = app.state::<AppState>();
+        let store = history_catalog::store(&state).unwrap();
+        let source = history_catalog::source(&state.config().unwrap(), AgentKind::Codex).unwrap();
+        let cases = [
+            (None, "Untitled session"),
+            (Some(""), "Untitled session"),
+            (Some(" \t\n\u{3000}"), "Untitled session"),
+            (Some("  Saved session  "), "  Saved session  "),
+        ];
+        for (index, (title, _)) in cases.iter().enumerate() {
+            store
+                .record_local(
+                    &source,
+                    &StoredEntry {
+                        session_id: format!("title-{index}"),
+                        cwd: "/work".into(),
+                        title: title.map(str::to_owned),
+                        provider_updated_at: None,
+                        local_activity_at: None,
+                        state: EntryState::LocalOnly,
+                        can_load: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let page = list_history(app.handle().clone(), 0, 100).await.unwrap();
+
+        assert_eq!(page.entries.len(), cases.len());
+        for (row, (_, expected)) in page.entries.iter().zip(cases) {
+            assert_eq!(row.title, expected);
+        }
+        assert!(visits.lock().unwrap().is_empty());
     }
 
     fn fail_history_refresh(app: &tauri::App<MockRuntime>) {
