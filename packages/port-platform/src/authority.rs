@@ -13,22 +13,11 @@ use std::num::NonZeroU64;
 use uuid::Uuid;
 
 /// An opaque, non-nil receipt, independent of native addresses and display facts.
+///
+/// The adapter issues a fresh UUID; this portable value only validates it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(try_from = "Uuid", into = "Uuid")]
 pub struct TargetReceipt(Uuid);
-
-impl TargetReceipt {
-    /// Creates a fresh receipt for registration in one operation's live registry.
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for TargetReceipt {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl TryFrom<Uuid> for TargetReceipt {
     type Error = &'static str;
@@ -120,12 +109,10 @@ mod tests {
     }
 
     #[test]
-    fn receipts_generate_non_nil_uuid_values() {
-        for receipt in [TargetReceipt::new(), TargetReceipt::default()] {
-            let uuid = Uuid::from(receipt);
-            assert!(!uuid.is_nil());
-            assert_eq!(uuid.get_version(), Some(uuid::Version::Random));
-            assert_eq!(TargetReceipt::try_from(uuid).unwrap(), receipt);
+    fn receipts_validate_externally_issued_non_nil_uuid_values() {
+        for uuid in [Uuid::from_u128(1), Uuid::from_u128(u128::MAX)] {
+            let receipt = TargetReceipt::try_from(uuid).unwrap();
+            assert_eq!(Uuid::from(receipt), uuid);
         }
     }
 
