@@ -66,13 +66,13 @@ pub fn bind_directory(
     if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != identity {
         return Err(EnvironmentError::Directory);
     }
-    // SAFETY: the owned File keeps the descriptor alive through spawn/exec.
-    // fchdir is async-signal-safe; no allocation or locking occurs on success.
-    // A path-only current_dir would reopen a replaceable path after validation.
     #[allow(
         unsafe_code,
         reason = "[boundary:process-cwd] pre_exec binds the verified directory descriptor without a path replacement race; stable Command has no descriptor cwd API"
     )]
+    // SAFETY: the owned File keeps the descriptor alive through spawn/exec.
+    // fchdir is async-signal-safe; no allocation or locking occurs on success.
+    // A path-only current_dir would reopen a replaceable path after validation.
     unsafe {
         command.pre_exec(move || nix::unistd::fchdir(&directory).map_err(std::io::Error::from));
     }
@@ -214,15 +214,15 @@ fn account() -> Result<Account, EnvironmentError> {
         return Err(EnvironmentError::Account);
     }
     let mut temp = vec![0u8; 4096];
-    // SAFETY: confstr writes at most the allocated buffer length. The macOS
-    // selector is used only after the platform check, and length is validated
-    // before removing its terminating NUL. temp_dir would trust caller TMPDIR;
-    // getconf would add a child process and cancellation/reaping to this lookup.
     let len = {
         #[allow(
             unsafe_code,
             reason = "[boundary:process-account-temp] read the OS account temp directory independently of ambient TMPDIR without adding a subprocess lifecycle"
         )]
+        // SAFETY: confstr writes at most the allocated buffer length. The macOS
+        // selector is used only after the platform check, and length is validated
+        // before removing its terminating NUL. temp_dir would trust caller TMPDIR;
+        // getconf would add a child process and cancellation/reaping to this lookup.
         unsafe {
             libc::confstr(
                 DARWIN_USER_TEMP_DIRECTORY,
@@ -374,11 +374,11 @@ exec "$2" --lens-internal-capture-environment "$3""#
     // A separate process group alone retains Lens's controlling terminal. An
     // interactive shell can then stop on SIGTTOU before running startup scripts.
     // A new session also creates the owned group, with no controlling terminal.
-    // SAFETY: setsid is async-signal-safe; this closure does not allocate or lock.
     #[allow(
         unsafe_code,
         reason = "[boundary:process-session] stable Command has no setsid option; a process group alone retains the controlling terminal and can stop the shell on SIGTTOU"
     )]
+    // SAFETY: setsid is async-signal-safe; this closure does not allocate or lock.
     unsafe {
         command.as_std_mut().pre_exec(|| {
             nix::unistd::setsid()
@@ -538,12 +538,12 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // SAFETY: only direct OS operations run between fork and exec. The owned
-        // slave descriptor remains valid through spawn and closes during exec.
         #[allow(
             unsafe_code,
             reason = "[boundary:process-terminal-test] the regression fixture must acquire a controlling terminal before exec to verify terminal-independent shell acquisition"
         )]
+        // SAFETY: only direct OS operations run between fork and exec. The owned
+        // slave descriptor remains valid through spawn and closes during exec.
         unsafe {
             command.as_std_mut().pre_exec(move || {
                 if libc::setsid() == -1

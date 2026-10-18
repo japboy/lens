@@ -196,9 +196,10 @@ dir = "{{config_root}}"
 depends = ["check:rust:native-features", "check:dependencies"]
 
 [tasks."check:miri-boundaries"]
-description = "Run the explicitly pinned, measured production ownership Miri pilot"
+description = "Run the pinned production ownership tests with Miri"
 dir = "{{config_root}}"
-run = "node scripts/run-miri-boundaries.ts"
+env = { MIRIFLAGS = "-Zmiri-seed=1", CARGO_TARGET_DIR = "{{config_root}}/target/miri" }
+run = "cargo +nightly-2026-10-17 miri test --locked -p adapter-platform-macos --lib --target aarch64-apple-darwin -- --test-threads=1 presentation::tests:: accessibility::tests::miri_boundary_"
 
 [tasks."check:dependencies"]
 description = "Audit the locked Linux and macOS dependency graphs"

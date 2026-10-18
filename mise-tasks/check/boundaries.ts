@@ -17,9 +17,7 @@ import type { DependencyKind, Member } from "../../scripts/workspace-policy.ts";
 import {
   portableSourceViolations,
   sourceInclusionViolations,
-  unsafeExceptionViolations,
-  unsafeManifestViolations,
-  miriExclusionViolations,
+  workspaceLintInheritanceViolations,
 } from "../../scripts/rust-source-boundaries.ts";
 import {
   commonShellConditionalViolations,
@@ -367,10 +365,9 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
       JSON.parse(readFileSync(resolve(member.path, "package.json"), "utf8")) as PnpmManifest,
     ]),
   );
-  for (const path of ["Cargo.toml", ...cargo.packages.map((member) => member.manifest_path)]) {
-    const violations = unsafeManifestViolations(
+  for (const { manifest_path: path } of cargo.packages) {
+    const violations = workspaceLintInheritanceViolations(
       parseToml(readFileSync(resolve(root, path), "utf8")),
-      path === "Cargo.toml",
     );
     assert(violations.length === 0, `${path}: ${violations.join("; ")}`);
   }
@@ -412,11 +409,7 @@ export function inspectWorkspace(root: string): { cargo: CargoInventory; paths: 
     assert(member, `Unclassified Rust source: ${path}`);
     const source = readFileSync(resolve(root, path), "utf8");
     const owner = member.role === "application" ? "apps/desktop" : member.directory;
-    const violations = [
-      ...sourceInclusionViolations(root, path, source, owner),
-      ...unsafeExceptionViolations(source, path),
-      ...miriExclusionViolations(source, path),
-    ];
+    const violations = sourceInclusionViolations(root, path, source, owner);
     if (member.implementation === "portable") {
       violations.push(...portableSourceViolations(source));
       rustDeclarationSurface(source);

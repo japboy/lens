@@ -1,0 +1,2 @@
+# Private native callbacks have the same safety documentation contract as public APIs.
+check-private-items = true

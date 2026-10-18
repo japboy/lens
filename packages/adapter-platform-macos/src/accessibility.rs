@@ -134,12 +134,16 @@ impl NativeJson {
     }
 
     fn parse<T: DeserializeOwned>(&self) -> Result<T, PlatformError> {
-        // SAFETY: NativeJson owns one live, NUL-terminated native response. The
-        // borrow ends before Drop invokes the allocator's matching free function.
         let json = {
-            #[allow(unsafe_code, reason = "[boundary:native-json] decode the owned NUL-terminated response from the retained native AX subsystem")]
+            #[allow(
+                unsafe_code,
+                reason = "[boundary:native-json] decode the owned NUL-terminated response from the retained native AX subsystem"
+            )]
+            // SAFETY: NativeJson owns one live, NUL-terminated native response. The
+            // borrow ends before Drop invokes the allocator's matching free function.
             unsafe { CStr::from_ptr(self.pointer.as_ptr()) }
-        }.to_string_lossy();
+        }
+        .to_string_lossy();
         serde_json::from_str(&json)
             .map_err(|error| PlatformError::InvalidResponse(format!("{error}; response={json}")))
     }
@@ -152,12 +156,12 @@ impl Drop for NativeJson {
 }
 
 fn release_native_json(pointer: NonNull<c_char>) {
-    // SAFETY: Production NativeJson values uniquely own a LensCopyJSONString
-    // allocation; Drop invokes this matching allocator exactly once.
     #[allow(
         unsafe_code,
         reason = "[boundary:native-json] release the owned native AX JSON buffer with its matching allocator"
     )]
+    // SAFETY: Production NativeJson values uniquely own a LensCopyJSONString
+    // allocation; Drop invokes this matching allocator exactly once.
     unsafe {
         lens_free_string(pointer.as_ptr())
     };
@@ -176,13 +180,13 @@ pub(crate) fn register_target(
     let title = target_text(&target.facts.title, "window title")?;
     let application = target_text(&target.facts.application_name, "application name")?;
     let bounds = &target.facts.frame;
-    // SAFETY: Strings remain alive until native synchronously copies their
-    // metadata on main; no SCWindow or AX pointer crosses this boundary.
     let registered = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-ffi] register picker metadata with the exact native AX owner without reconstructing handles or weakening object identity"
         )]
+        // SAFETY: Strings remain alive until native synchronously copies their
+        // metadata on main; no SCWindow or AX pointer crosses this boundary.
         unsafe {
             lens_register_ax_window_for_operation(
                 operation.as_ptr(),
@@ -217,13 +221,13 @@ pub(crate) fn current_bounds(
         width: 0.0,
         height: 0.0,
     };
-    // SAFETY: Four distinct initialized outputs and the UUID remain valid until
-    // native finishes reading the exact retained AXWindow's current geometry.
     let found = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] read current geometry from the same promoted AXWindow used by extraction and observation"
         )]
+        // SAFETY: Four distinct initialized outputs and the UUID remain valid until
+        // native finishes reading the exact retained AXWindow's current geometry.
         unsafe {
             lens_registered_ax_window_frame(
                 operation.as_ptr(),
@@ -261,13 +265,13 @@ pub(crate) fn extract_window(
     let title = target_text(&target.facts.title, "window title")?;
     let application = target_text(&target.facts.application_name, "application name")?;
     let bounds = &target.facts.frame;
-    // SAFETY: Strings live through this synchronous call; finite scalar metadata
-    // and explicit limits are copied, and native returns an owned JSON buffer.
     let raw = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-ffi] bounded native AX extraction preserves CFEqual graph deduplication and typed attributed-text/URI reads unavailable together in safe crates"
         )]
+        // SAFETY: Strings live through this synchronous call; finite scalar metadata
+        // and explicit limits are copied, and native returns an owned JSON buffer.
         unsafe {
             lens_extract_window_json(
                 target.identity.pid,
@@ -294,13 +298,13 @@ pub(crate) fn extract_registered_window(
     limits: ExtractionLimits,
 ) -> Result<ExtractionResult, PlatformError> {
     let operation = uuid_text(operation_id);
-    // SAFETY: UUID storage remains alive during the blocking call. Native uses
-    // its retained operation/window object and returns a unique owned response.
     let raw = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-ffi] extract from the exact promoted AXWindow rather than heuristically resolving a replacement through a separate safe wrapper"
         )]
+        // SAFETY: UUID storage remains alive during the blocking call. Native uses
+        // its retained operation/window object and returns a unique owned response.
         unsafe {
             lens_extract_registered_window_json(
                 operation.as_ptr(),
@@ -353,6 +357,13 @@ fn dispatch_event(json: &str, context: &CallbackContext) {
     let _ = context.sender.try_send(event);
 }
 
+/// Deliver a borrowed native AX invalidation to its registration.
+///
+/// # Safety
+/// Non-null `json` must point to a NUL-terminated buffer valid for this call.
+/// Non-null `context` must borrow the registration's live `Arc<CallbackContext>`
+/// allocation. Call on the main run loop before synchronous native stop clears
+/// the callback and refcon; never invoke this callback after the owner is dropped.
 #[allow(
     unsafe_code,
     reason = "[boundary:ax-observer] C AXObserver callback receives borrowed JSON and a registration-owned context whose lifetime ends only after synchronous stop"
@@ -361,23 +372,23 @@ unsafe extern "C" fn observation_callback(json: *const c_char, context: *mut c_v
     if json.is_null() || context.is_null() {
         return;
     }
-    // SAFETY: Native borrows this shared Arc allocation until stop removes the run-loop
-    // observer and clears its callback/refcon synchronously on main.
     let context = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] borrow the registration-owned AXObserver callback context while native guarantees it remains live"
         )]
+        // SAFETY: Native borrows this shared Arc allocation until stop removes the run-loop
+        // observer and clears its callback/refcon synchronously on main.
         unsafe {
             &*context.cast::<CallbackContext>()
         }
     };
-    // SAFETY: The bridge retains the NUL-terminated buffer throughout callback.
     let borrowed_json = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] borrow native callback JSON only for the duration of its synchronous delivery"
         )]
+        // SAFETY: The bridge retains the NUL-terminated buffer throughout callback.
         unsafe {
             CStr::from_ptr(json)
         }
@@ -434,11 +445,14 @@ fn stop_native_observation(
                 Arc::as_ptr(context).cast_mut().cast()
             });
         registration.stop_with(|| {
+            #[allow(
+                unsafe_code,
+                reason = "[boundary:ax-observer] stop only the native observer borrowing this exact live Arc context before releasing its owner"
+            )]
             // SAFETY: UUIDs and the shared Arc remain alive through synchronous teardown.
             // Native compares this receipt before touching the current registration, so
             // an older session cannot stop a new owner that reused its public IDs.
             // Shared stop_with drops this Arc only after the native effect returns.
-            #[allow(unsafe_code, reason = "[boundary:ax-observer] stop only the native observer borrowing this exact live Arc context before releasing its owner")]
             unsafe {
                 lens_stop_window_observation(
                     operation.as_ptr(),
@@ -499,13 +513,13 @@ fn start_observation(request: ObservationRequest) -> Result<ObservationSession, 
     // Box would invalidate the borrowed pointer when the unique owner moves.
     let raw_context = Arc::as_ptr(&callback_context).cast_mut().cast();
     let mut started = false;
-    // SAFETY: The Arc allocation has shared provenance and remains Rust-owned. Native installs
-    // all observers before returning and writes whether it retained the refcon.
     let raw = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] install observation on the same retained AXWindow used for extraction with an explicit callback ownership handshake"
         )]
+        // SAFETY: The Arc allocation has shared provenance and remains Rust-owned. Native installs
+        // all observers before returning and writes whether it retained the refcon.
         unsafe {
             lens_start_window_observation_json(
                 operation.as_ptr(),
@@ -575,13 +589,13 @@ pub(crate) fn release_registered_window(
     window_id: u32,
 ) -> Result<(), PlatformError> {
     let operation = uuid_text(operation_id);
-    // SAFETY: UUID lives through this synchronous main-thread registry removal,
-    // which also stops observation before dropping retained AX objects.
     let released = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] release the exact native AX registration and synchronously remove its observer before discarding ownership"
         )]
+        // SAFETY: UUID lives through this synchronous main-thread registry removal,
+        // which also stops observation before dropping retained AX objects.
         unsafe {
             lens_release_registered_window(operation.as_ptr(), window_id)
         }
@@ -597,13 +611,13 @@ pub(crate) fn release_registered_window(
 
 pub(crate) fn release_window_operation(operation_id: Uuid) -> Result<(), PlatformError> {
     let operation = uuid_text(operation_id);
-    // SAFETY: UUID is valid until native removes this operation's AX observers
-    // and exact retained objects synchronously on the main run loop.
     let released = {
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] end the native AX operation and its observers as one ownership boundary"
         )]
+        // SAFETY: UUID is valid until native removes this operation's AX observers
+        // and exact retained objects synchronously on the main run loop.
         unsafe {
             lens_release_window_operation(operation.as_ptr())
         }
@@ -792,12 +806,12 @@ mod tests {
         let stale = CString::new(serde_json::to_string(&stale).unwrap()).unwrap();
         let malformed = CString::new("invalid JSON").unwrap();
         let invalid_utf8 = CString::new(vec![255]).unwrap();
-        // SAFETY: The real callback only borrows each owned CString and stable
-        // shared context during these synchronous calls; both outlive all calls.
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] exercise the production raw callback with live Rust-owned JSON and context allocations, including its explicit null-input cases"
         )]
+        // SAFETY: The real callback only borrows each owned CString and stable
+        // shared context during these synchronous calls; both outlive all calls.
         unsafe {
             observation_callback(valid.as_ptr(), pointer);
             observation_callback(valid.as_ptr(), pointer);
@@ -827,12 +841,12 @@ mod tests {
             context_pointer: pointer,
         } = modeled_start(true, response, true);
         let mut session = session.unwrap();
-        // SAFETY: The successful production adoption now owns the exact context
-        // whose address was borrowed before adoption; close has not run yet.
         #[allow(
             unsafe_code,
             reason = "[boundary:ax-observer] exercise the actual callback after production ownership adoption and before safe session close"
         )]
+        // SAFETY: The successful production adoption now owns the exact context
+        // whose address was borrowed before adoption; close has not run yet.
         unsafe {
             observation_callback(valid.as_ptr(), pointer)
         };

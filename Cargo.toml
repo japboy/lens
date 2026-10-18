@@ -17,7 +17,12 @@ publish = false
 
 [workspace.lints.rust]
 unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+missing_safety_doc = "deny"
 
 [workspace.dependencies]
 agent-client-protocol-schema = { version = "=1.11.0", features = ["tracing"] }

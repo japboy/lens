@@ -103,6 +103,17 @@ describe("separately compiled native consumers", () => {
     expect(nativeCompositionViolations(source)).toEqual([]);
   });
 
+  it.each(["allow", "expect", "warn", "deny", "forbid"])(
+    "delegates standard %s lint attributes to the compiler",
+    (level) => {
+      expect(
+        nativeCompositionViolations(
+          `#[${level}(unsafe_code, reason = r#"FFI contract"#)] unsafe {}`,
+        ),
+      ).toEqual([]);
+    },
+  );
+
   it.each([
     '#[cfg(target_os = "macos")] fn hidden() { usecase::value(); }',
     '#[cfg(feature = "native")] fn hidden() {}',

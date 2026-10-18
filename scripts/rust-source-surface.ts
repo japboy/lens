@@ -1,12 +1,24 @@
-import {
-  rustTokens,
-  unsafeExceptionViolations,
-  groupEnd,
-  RUST_GROUP_CLOSING as CLOSING,
-} from "./rust-source-boundaries.ts";
-export { groupEnd } from "./rust-source-boundaries.ts";
+import { rustTokens } from "./rust-source-boundaries.ts";
 
 type Token = ReturnType<typeof rustTokens>[number];
+const CLOSING = new Map([
+  ["(", ")"],
+  ["[", "]"],
+  ["{", "}"],
+]);
+
+export function groupEnd(tokens: readonly Token[], start: number): number {
+  const expected = CLOSING.get(tokens[start]?.text ?? "");
+  if (!expected) throw new Error("Expected a Rust token group");
+  for (let index = start + 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.literal) continue;
+    if (token.text === expected) return index;
+    if (CLOSING.has(token.text)) index = groupEnd(tokens, index);
+    else if ([")", "]", "}"].includes(token.text)) throw new Error("Mismatched Rust token group");
+  }
+  throw new Error("Incomplete Rust token group");
+}
 
 function statementEnd(tokens: readonly Token[], start: number): number {
   for (let index = start; index < tokens.length; index += 1) {
@@ -173,7 +185,6 @@ const PLATFORM_TYPES = new Set([
 ]);
 export function nativeCompositionViolations(source: string): string[] {
   const tokens = rustTokens(source);
-  const reviewedUnsafeExceptions = unsafeExceptionViolations(source).length === 0;
   const violations: string[] = [];
   for (const [index, token] of tokens.entries()) {
     if (token.literal) continue;
@@ -185,11 +196,11 @@ export function nativeCompositionViolations(source: string): string[] {
       else {
         const end = groupEnd(tokens, index + 1);
         const actual = JSON.stringify(tokens.slice(index, end + 1).map((entry) => entry.text));
-        const scopedUnsafe =
-          reviewedUnsafeExceptions &&
-          tokens[index + 2]?.text === "allow" &&
-          tokens[index + 4]?.text === "unsafe_code";
-        if (actual !== tokensOf("#[cfg_attr(mobile, tauri::mobile_entry_point)]") && !scopedUnsafe)
+        // Compiler lint attributes belong to rustc/Clippy, not the architecture grammar.
+        const compilerLint = ["allow", "expect", "warn", "deny", "forbid"].includes(
+          tokens[index + 2]?.text ?? "",
+        );
+        if (actual !== tokensOf("#[cfg_attr(mobile, tauri::mobile_entry_point)]") && !compilerLint)
           violations.push("Unreviewed native composition attribute");
       }
     }
