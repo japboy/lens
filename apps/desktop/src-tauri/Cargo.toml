@@ -26,7 +26,7 @@ required-features = ["native-webview-lifecycle-test"]
 
 [build-dependencies]
 serde_json.workspace = true
-toml = "=1.1.6"
+toml = "=1.1.8"
 tauri-build = { version = "=2.7.3", features = [] }
 
 [dependencies]
@@ -80,7 +80,7 @@ zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate
 [dev-dependencies]
 tokio-util = { version = "=0.7.20", features = ["compat"] }
 tokio = { version = "=1.53.3", features = ["test-util"] }
-toml = "=1.1.6"
+toml = "=1.1.8"
 pretty_assertions = "=1.4.1"
 tauri = { version = "=2.12.4", default-features = false, features = ["test"] }
 
