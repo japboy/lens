@@ -309,28 +309,29 @@ export class LensMcpAppSettings extends LitElement {
                     ? html`<span>No tools</span>`
                     : html`<ul class="mcp-tool-list">
                         ${catalog.tools.map(
-                          (tool) => html`<li>
-                            <div class="mcp-tool-heading">
-                              <code>${tool.name}</code>
-                              <span class="mcp-tool-audiences" aria-label="Available to">
-                                ${
-                                  tool.visibility.includes("model")
-                                    ? html`<span class="mcp-tool-audience">Agent</span>`
-                                    : nothing
-                                }
-                                ${
-                                  tool.visibility.includes("app")
-                                    ? html`<span class="mcp-tool-audience">App</span>`
-                                    : nothing
-                                }
-                              </span>
-                            </div>
-                            ${
-                              tool.description
-                                ? html`<p class="mcp-tool-description">${tool.description}</p>`
-                                : nothing
-                            }
-                          </li>`,
+                          (tool) =>
+                            html`<li>
+                              <div class="mcp-tool-heading">
+                                <code>${tool.name}</code>
+                                <span class="mcp-tool-audiences" aria-label="Available to">
+                                  ${
+                                    tool.visibility.includes("model")
+                                      ? html`<span class="mcp-tool-audience">Agent</span>`
+                                      : nothing
+                                  }
+                                  ${
+                                    tool.visibility.includes("app")
+                                      ? html`<span class="mcp-tool-audience">App</span>`
+                                      : nothing
+                                  }
+                                </span>
+                              </div>
+                              ${
+                                tool.description
+                                  ? html`<p class="mcp-tool-description">${tool.description}</p>`
+                                  : nothing
+                              }
+                            </li>`,
                         )}
                       </ul>`
             }

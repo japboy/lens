@@ -50,18 +50,19 @@ export function renderResponseInputDiagnostics(history: ResponseHistoryPresentat
           ? repeat(
               affected,
               (response) => response.id,
-              (response) => html`<details
-                class="lens-response-coverage"
-                aria-label=${`Response ${response.sequence} input coverage`}
-              >
-                <summary>
-                  Response ${response.sequence} · Agent input:
-                  ${inputCoverage(response.delivery, "unknown").toUpperCase()}
-                </summary>
-                ${renderResponseDeliveryNotice(response.delivery)}
-                ${response.delivery?.projection_has_loss === true ? html`<p>Text, resource, or document content was omitted when preparing this response.</p>` : nothing}
-                ${inputCoverage(response.delivery, "unknown") === "unknown" ? html`<p>Preparation information is unavailable for this response.</p>` : nothing}
-              </details>`,
+              (response) =>
+                html`<details
+                  class="lens-response-coverage"
+                  aria-label=${`Response ${response.sequence} input coverage`}
+                >
+                  <summary>
+                    Response ${response.sequence} · Agent input:
+                    ${inputCoverage(response.delivery, "unknown").toUpperCase()}
+                  </summary>
+                  ${renderResponseDeliveryNotice(response.delivery)}
+                  ${response.delivery?.projection_has_loss === true ? html`<p>Text, resource, or document content was omitted when preparing this response.</p>` : nothing}
+                  ${inputCoverage(response.delivery, "unknown") === "unknown" ? html`<p>Preparation information is unavailable for this response.</p>` : nothing}
+                </details>`,
             )
           : html`<p>
               ${history.responses.length ? "All recorded responses have complete prepared input." : "No response input diagnostics are available."}
