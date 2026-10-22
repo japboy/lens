@@ -167,7 +167,7 @@ fn acquire(
         .with_should_be_opaque(true)
         .map_err(unavailable)?;
     let before = screen_configuration();
-    let sample = crate::capture_stream::acquire(&filter, &configuration, latch)?;
+    let sample = crate::capture_stream::acquire(&filter, &configuration, latch, target)?;
     let after = screen_configuration();
     let content_bounds = crate::capture_stream::required_content(&sample.info)?;
     let frame = AcquiredFrame {

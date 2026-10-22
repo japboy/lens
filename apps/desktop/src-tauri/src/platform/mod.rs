@@ -23,6 +23,21 @@ pub struct Services {
     pub trust: Arc<dyn AccessibilityTrust>,
 }
 
+/// Purpose-bound diagnostic effects supplied only by the native composition root.
+/// Reported failures are injected only after real native cleanup completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceValidationCapture {
+    HoldBeforeStop,
+    ReportInvalid,
+    ReportCleanupUnconfirmed,
+}
+
+#[derive(Clone, Copy)]
+pub struct SourceValidationHooks {
+    pub configure: fn(Option<SourceValidationCapture>),
+    pub arm_after_watching: fn(uuid::Uuid),
+}
+
 /// Opaque reference surfaces and raw semantic fill/border RGBA, each composed once.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct ControlColors {

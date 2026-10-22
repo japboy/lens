@@ -226,7 +226,10 @@ pub fn run_with_runtime<R: tauri::Runtime>(
     #[cfg(debug_assertions)]
     if source_validation.enabled() {
         #[cfg(target_os = "macos")]
-        native::enable_source_validation();
+        source_lifecycle_validation::configure_native(
+            source_validation,
+            native::source_validation_hooks(),
+        );
     }
     let validate_interactions =
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
