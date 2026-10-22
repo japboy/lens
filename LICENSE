@@ -46583,9 +46583,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-Rust: rustls-webpki 0.103.15
+Rust: rustls-webpki 0.103.16
 Declared license: ISC
-Source: https://static.crates.io/crates/rustls-webpki/rustls-webpki-0.103.15.crate
+Source: https://static.crates.io/crates/rustls-webpki/rustls-webpki-0.103.16.crate
 ===============================================================================
 
 --- LICENSE ---
