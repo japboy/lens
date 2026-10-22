@@ -7,6 +7,9 @@ pub(crate) const FLAG: &str = "LENS_VALIDATE_SOURCE_LIFECYCLE";
 pub(crate) enum Mode {
     Standard,
     SourceLifecycle,
+    StopOverlap,
+    InvalidAfterStop,
+    CleanupUnconfirmedAfterStop,
 }
 
 impl Mode {
@@ -14,9 +17,18 @@ impl Mode {
         let Some((_, value)) = environment.iter().find(|(key, _)| key == FLAG) else {
             return Ok(Self::Standard);
         };
-        if !debug || value != OsStr::new("1") {
-            return Err(format!("{FLAG}=1 requires a debug build"));
+        if !debug {
+            return Err(format!("{FLAG} requires a debug build"));
         }
+        let mode = match value.as_os_str() {
+            value if value == OsStr::new("1") => Self::SourceLifecycle,
+            value if value == OsStr::new("stop-overlap") => Self::StopOverlap,
+            value if value == OsStr::new("invalid-after-stop") => Self::InvalidAfterStop,
+            value if value == OsStr::new("cleanup-unconfirmed-after-stop") => {
+                Self::CleanupUnconfirmedAfterStop
+            }
+            _ => return Err(format!("{FLAG} has an unsupported debug validation mode")),
+        };
         if environment.iter().any(|(key, _)| {
             key != FLAG
                 && (key.to_string_lossy().starts_with("LENS_VALIDATE_")
@@ -26,16 +38,47 @@ impl Mode {
                 "{FLAG} cannot be combined with other validation flags or explicit targets"
             ));
         }
-        Ok(Self::SourceLifecycle)
+        Ok(mode)
     }
     pub(crate) fn enabled(self) -> bool {
-        self == Self::SourceLifecycle
+        self != Self::Standard
+    }
+
+    #[cfg(debug_assertions)]
+    fn capture_action(self) -> Option<crate::platform::SourceValidationCapture> {
+        use crate::platform::SourceValidationCapture;
+        match self {
+            Self::Standard | Self::SourceLifecycle => None,
+            Self::StopOverlap => Some(SourceValidationCapture::HoldBeforeStop),
+            Self::InvalidAfterStop => Some(SourceValidationCapture::ReportInvalid),
+            Self::CleanupUnconfirmedAfterStop => {
+                Some(SourceValidationCapture::ReportCleanupUnconfirmed)
+            }
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+static NATIVE_CAPTURE_ARM: std::sync::OnceLock<fn(uuid::Uuid)> = std::sync::OnceLock::new();
+
+#[cfg(debug_assertions)]
+pub(crate) fn configure_native(mode: Mode, hooks: crate::platform::SourceValidationHooks) {
+    if mode.enabled() {
+        (hooks.configure)(mode.capture_action());
+        let _ = NATIVE_CAPTURE_ARM.set(hooks.arm_after_watching);
+    }
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn arm_source_validation_capture(operation: uuid::Uuid) {
+    if let Some(arm) = NATIVE_CAPTURE_ARM.get() {
+        arm(operation);
     }
 }
 
 pub(crate) fn agent_services<R: tauri::Runtime>(mode: Mode) -> crate::agent::AgentServices<R> {
     #[cfg(debug_assertions)]
-    if mode == Mode::SourceLifecycle {
+    if mode.enabled() {
         return crate::agent::AgentServices(std::sync::Arc::new(SourceOnlyAgentHost));
     }
     if mode != Mode::Standard {
@@ -401,11 +444,45 @@ mod tests {
     #[test]
     fn dedicated_mode_is_debug_only_exact_and_exclusive() {
         assert_eq!(Mode::parse(true, &[]).unwrap(), Mode::Standard);
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(Mode::Standard.capture_action(), None);
+            assert_eq!(Mode::SourceLifecycle.capture_action(), None);
+        }
         assert_eq!(
             Mode::parse(true, &environment(&[(FLAG, "1")])).unwrap(),
             Mode::SourceLifecycle
         );
         assert!(Mode::parse(false, &environment(&[(FLAG, "1")])).is_err());
+        for (value, expected) in [
+            ("stop-overlap", Mode::StopOverlap),
+            ("invalid-after-stop", Mode::InvalidAfterStop),
+            (
+                "cleanup-unconfirmed-after-stop",
+                Mode::CleanupUnconfirmedAfterStop,
+            ),
+        ] {
+            assert_eq!(
+                Mode::parse(true, &environment(&[(FLAG, value)])).unwrap(),
+                expected
+            );
+            assert!(expected.enabled());
+            #[cfg(debug_assertions)]
+            assert!(expected.capture_action().is_some());
+            assert!(Mode::parse(false, &environment(&[(FLAG, value)])).is_err());
+            assert!(Mode::parse(
+                true,
+                &environment(&[(FLAG, value), ("LENS_VALIDATE_A11Y", "1")])
+            )
+            .is_err());
+            #[cfg(debug_assertions)]
+            assert_eq!(
+                agent_services::<tauri::test::MockRuntime>(expected)
+                    .0
+                    .execution_policy(),
+                crate::agent::AgentExecutionPolicy::SourceLifecycleValidation
+            );
+        }
         for value in ["", "0", "true", " 1"] {
             assert!(Mode::parse(true, &environment(&[(FLAG, value)])).is_err());
         }
