@@ -361,29 +361,27 @@ export class LensSelect extends LitElement {
           aria-multiselectable=${String(this.multiple)}
         >
           ${this.options.map(
-            (
-              option,
-              index,
-            ) => html`${option.group && option.group !== this.options[index - 1]?.group ? html`<div class="lens-select-group" aria-hidden="true">${option.group}</div>` : nothing}
-              <div
-                role="option"
-                aria-label=${option.group ? `${option.group}: ${option.label}` : nothing}
-                title=${option.description ?? nothing}
-                id=${this.listId ? `${this.listId}-${index}` : nothing}
-                data-index=${index}
-                aria-selected=${String(this.selected(option))}
-                aria-disabled=${String(Boolean(option.disabled))}
-                class=${index === this.active ? "active" : ""}
-                @pointermove=${() => {
-                  if (this.enabled(index)) this.active = index;
-                }}
-                @click=${() => this.commit(index)}
-              >
-                ${this.icon(option.icon)}<span class="lens-select-label">${option.label}</span>
-                <span class="lens-select-check" aria-hidden="true"
-                  >${this.selected(option) ? "✓" : ""}</span
+            (option, index) =>
+              html`${option.group && option.group !== this.options[index - 1]?.group ? html`<div class="lens-select-group" aria-hidden="true">${option.group}</div>` : nothing}
+                <div
+                  role="option"
+                  aria-label=${option.group ? `${option.group}: ${option.label}` : nothing}
+                  title=${option.description ?? nothing}
+                  id=${this.listId ? `${this.listId}-${index}` : nothing}
+                  data-index=${index}
+                  aria-selected=${String(this.selected(option))}
+                  aria-disabled=${String(Boolean(option.disabled))}
+                  class=${index === this.active ? "active" : ""}
+                  @pointermove=${() => {
+                    if (this.enabled(index)) this.active = index;
+                  }}
+                  @click=${() => this.commit(index)}
                 >
-              </div>`,
+                  ${this.icon(option.icon)}<span class="lens-select-label">${option.label}</span>
+                  <span class="lens-select-check" aria-hidden="true"
+                    >${this.selected(option) ? "✓" : ""}</span
+                  >
+                </div>`,
           )}
         </div>
         ${
