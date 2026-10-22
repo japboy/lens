@@ -13,7 +13,7 @@ it("separates capture omissions from Agent image omissions and keeps pending cov
     "lens-extraction-diagnostics",
   ) as LensExtractionDiagnostics;
   const context: LensContext = {
-    schema_version: 1,
+    schema_version: 6,
     context_id: "context",
     revision: 1,
     sources: [],
@@ -60,7 +60,7 @@ it("separates capture omissions from Agent image omissions and keeps pending cov
   expect(pendingProjection.textContent).not.toContain("Details unavailable");
 
   element.input = {
-    schema_version: 3,
+    schema_version: 5,
     context_id: "context",
     context_revision: 1,
     sources: [

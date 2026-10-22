@@ -26,7 +26,7 @@ import {
 
 function lensInput(text: string): NonNullable<LensState["input"]> {
   return {
-    schema_version: 3,
+    schema_version: 5,
     context_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
     context_revision: 1,
     sources: [
@@ -228,7 +228,7 @@ describe("Lens view model", () => {
       response_history: { responses: [], retained_bytes: 0, capacity_reached: false },
       output_blocks: [],
       context: {
-        schema_version: 4,
+        schema_version: 6,
         context_id: "0198e6de-d046-7bf2-b8b2-d84cfaba7e2d",
         revision: 1,
         sources: [
@@ -287,10 +287,13 @@ describe("Lens view model", () => {
       uri: `lens://context/${input.context_id}/${input.context_revision}/media/media-node-000001`,
       scope: "ax_element_region",
       source_node_id: "node-000001",
-      source_bounds: { x: 10, y: 20, width: 30, height: 40 },
-      captured_bounds: { x: 10, y: 20, width: 30, height: 40 },
+      geometry: {
+        provenance: "historical_unproven",
+        source_bounds: { x: 10, y: 20, width: 30, height: 40 },
+        captured_bounds: { x: 10, y: 20, width: 30, height: 40 },
+        coordinate_space: "screen_points",
+      },
       coverage: "full_region",
-      coordinate_space: "screen_points",
       mime_type: "image/png",
       pixel_width: 300,
       pixel_height: 400,

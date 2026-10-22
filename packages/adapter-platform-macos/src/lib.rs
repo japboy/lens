@@ -5,6 +5,7 @@ compile_error!("adapter-platform-macos requires a macOS target");
 
 mod accessibility;
 mod capture;
+mod capture_stream;
 pub mod presentation;
 mod source;
 

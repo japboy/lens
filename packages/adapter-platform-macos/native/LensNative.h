@@ -76,13 +76,6 @@ bool lens_register_ax_window_for_operation(
     const char *title, const char *applicationName,
     double x, double y, double width, double height
 );
-/* 1: finite current promoted AX frame; 0: never promoted, retained SC metadata is
- * the screenshot fallback; -1: absent authority or invalid promoted frame.
- * Outputs are initialized only when the result is 1. */
-int32_t lens_registered_ax_window_frame(
-    const char *operationID, uint32_t windowID,
-    double *x, double *y, double *width, double *height
-);
 
 /* Legacy heuristic extraction, retained for explicit validation targets. */
 char *lens_extract_window_json(

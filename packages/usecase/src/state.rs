@@ -643,6 +643,7 @@ mod tests {
         use domain::{lens::LensTargetCapture, model::ExtractedNode};
         let targets = target_set(Uuid::from_u128(1), "Current");
         let capture = ExtractionResult {
+            bounds_space: None,
             source_api: domain::model::SourceApi::MacosAx,
             quality: ExtractionQuality::Full,
             resolved_window: None,

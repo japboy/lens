@@ -748,20 +748,23 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
         uri: first_media_uri.clone(),
         scope: lens::LensMediaScope::AxElementRegion,
         source_node_id: Some("node-000001".into()),
-        source_bounds: model::Bounds {
-            x: 240.0,
-            y: 180.0,
-            width: 256.0,
-            height: 256.0,
-        },
-        captured_bounds: model::Bounds {
-            x: 240.0,
-            y: 180.0,
-            width: 256.0,
-            height: 256.0,
+        // Synthetic validation media has no acquired native frame attestation.
+        geometry: lens::LensMediaGeometry::HistoricalUnproven {
+            source_bounds: model::Bounds {
+                x: 240.0,
+                y: 180.0,
+                width: 256.0,
+                height: 256.0,
+            },
+            captured_bounds: model::Bounds {
+                x: 240.0,
+                y: 180.0,
+                width: 256.0,
+                height: 256.0,
+            },
+            coordinate_space: lens::LensCoordinateSpace::ScreenPoints,
         },
         coverage: lens::LensMediaCoverage::FullRegion,
-        coordinate_space: lens::LensCoordinateSpace::ScreenPoints,
         mime_type: "image/png".into(),
         pixel_width: 256,
         pixel_height: 256,
@@ -775,20 +778,22 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
         uri: second_media_uri.clone(),
         scope: lens::LensMediaScope::AxElementRegion,
         source_node_id: Some("node-000002".into()),
-        source_bounds: model::Bounds {
-            x: 540.0,
-            y: 140.0,
-            width: 256.0,
-            height: 192.0,
-        },
-        captured_bounds: model::Bounds {
-            x: 540.0,
-            y: 180.0,
-            width: 128.0,
-            height: 128.0,
+        geometry: lens::LensMediaGeometry::HistoricalUnproven {
+            source_bounds: model::Bounds {
+                x: 540.0,
+                y: 140.0,
+                width: 256.0,
+                height: 192.0,
+            },
+            captured_bounds: model::Bounds {
+                x: 540.0,
+                y: 180.0,
+                width: 128.0,
+                height: 128.0,
+            },
+            coordinate_space: lens::LensCoordinateSpace::ScreenPoints,
         },
         coverage: lens::LensMediaCoverage::VisibleSubregion,
-        coordinate_space: lens::LensCoordinateSpace::ScreenPoints,
         mime_type: "image/png".into(),
         pixel_width: 128,
         pixel_height: 128,
@@ -808,6 +813,7 @@ fn show_rich_output_validation<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> R
             revision: 1,
             source: source.clone(),
             capture: model::ExtractionResult {
+                bounds_space: None,
                 source_api: model::SourceApi::Unknown,
                 quality: model::ExtractionQuality::Full,
                 resolved_window: None,

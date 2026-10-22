@@ -177,7 +177,10 @@ pub async fn build_context(
                 .await?
             {
                 Ok(extraction) => extraction,
-                Err(error @ PlatformError::InvalidResponse(_)) => return Err(error.to_string()),
+                Err(
+                    error @ (PlatformError::InvalidResponse(_)
+                    | PlatformError::CleanupUnconfirmed(_)),
+                ) => return Err(error.to_string()),
                 Err(error) => LensContext::unavailable_accessibility(error.to_string()),
             };
             if extraction.metrics.truncated_nodes && max_nodes < MAX_LENS_SOURCE_NODES {
@@ -227,13 +230,16 @@ pub async fn build_context(
                 plan,
                 remaining_total_bytes: remaining_media_bytes,
                 read,
+                desktop_observation: accessibility
+                    .bounds_space
+                    .zip(accessibility.resolved_window.as_ref())
+                    .map(|(space, window)| crate::media::DesktopObservation {
+                        space,
+                        window_frame: window.facts.frame,
+                    }),
             },
         )
         .await?;
-        if let Some(observed_frame) = media.observed_window_frame {
-            current_target.facts.frame = observed_frame;
-            observed_facts.insert(target.id.clone(), current_target.facts.clone());
-        }
         remaining_media_attachments =
             remaining_media_attachments.saturating_sub(media.attachments.len());
         remaining_media_bytes = remaining_media_bytes.saturating_sub(
@@ -276,6 +282,7 @@ struct TargetCaptureRequest {
     plan: LensMediaPlan,
     remaining_total_bytes: usize,
     read: Option<TargetReadKey>,
+    desktop_observation: Option<crate::media::DesktopObservation>,
 }
 
 async fn capture_target_media(
@@ -290,6 +297,7 @@ async fn capture_target_media(
         plan,
         remaining_total_bytes,
         read,
+        desktop_observation,
     } = request;
     if plan.requests.is_empty() {
         return Ok(LensMediaCapture {
@@ -339,6 +347,7 @@ async fn capture_target_media(
                     target_id: target.id,
                     context_id: operation_id,
                     context_revision: capture_revision,
+                    desktop_observation,
                 },
                 capture_plan,
                 limits,
@@ -347,7 +356,9 @@ async fn capture_target_media(
         .await?
     {
         Ok(capture) => capture,
-        Err(error @ PlatformError::InvalidResponse(_)) => return Err(error.to_string()),
+        Err(error @ (PlatformError::InvalidResponse(_) | PlatformError::CleanupUnconfirmed(_))) => {
+            return Err(error.to_string())
+        }
         Err(error) => failed_media_capture(target_id, plan, error.to_string()),
     };
     if context_revision != 1 {
@@ -410,7 +421,10 @@ mod tests {
     use super::*;
     use domain::{lens::LensInput, model::SelectedWindow};
     use port_platform::{
-        capture::{CaptureBatch, CaptureCoverage, CaptureRequest, CaptureScope, CapturedImage},
+        capture::{
+            CaptureBatch, CaptureCoverage, CaptureRegion, CaptureRequest, CaptureScope,
+            CapturedImage,
+        },
         model::{self as facts, ExtractionResult},
     };
     use serde_json::json;
@@ -436,6 +450,7 @@ mod tests {
         capture_error: Option<String>,
         invalid_extraction: bool,
         invalid_capture: bool,
+        cleanup_failure_at: Option<usize>,
     }
 
     impl Accessibility for Sources {
@@ -444,10 +459,16 @@ mod tests {
             target: ExtractionTarget,
             limits: ExtractionLimits,
         ) -> Result<ExtractionResult, PlatformError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(Call::Accessibility(target, limits));
+            let call_count = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(Call::Accessibility(target, limits));
+                calls.len()
+            };
+            if self.cleanup_failure_at == Some(call_count) {
+                return Err(PlatformError::CleanupUnconfirmed(
+                    "native stop acknowledgement missing".into(),
+                ));
+            }
             if self.invalid_extraction {
                 return Err(PlatformError::InvalidResponse(
                     "invalid extraction protocol".into(),
@@ -469,10 +490,16 @@ mod tests {
             requests: &[CaptureRequest],
             limits: ImageCaptureLimits,
         ) -> Result<CaptureBatch, PlatformError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(Call::Capture(target, requests.to_vec(), limits));
+            let call_count = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(Call::Capture(target, requests.to_vec(), limits));
+                calls.len()
+            };
+            if self.cleanup_failure_at == Some(call_count) {
+                return Err(PlatformError::CleanupUnconfirmed(
+                    "native stop acknowledgement missing".into(),
+                ));
+            }
             if self.invalid_capture {
                 return Err(PlatformError::InvalidResponse(
                     "invalid capture protocol".into(),
@@ -481,25 +508,74 @@ mod tests {
             if let Some(message) = &self.capture_error {
                 return Err(PlatformError::Operation(message.clone()));
             }
-            let bounds = facts::Bounds {
+            let fallback_bounds = facts::Bounds {
                 x: 12.0,
                 y: 24.0,
                 width: 200.0,
                 height: 100.0,
             };
+            let bounds = requests
+                .iter()
+                .find_map(|request| match request.region {
+                    CaptureRegion::DesktopRegion {
+                        observed_window_frame,
+                        ..
+                    } => Some(observed_window_frame),
+                    CaptureRegion::FrameContent => None,
+                })
+                .unwrap_or(fallback_bounds);
+            let frame = port_platform::geometry::AcquiredFrame {
+                id: Uuid::from_u128(900).try_into().unwrap(),
+                target,
+                extent: port_platform::geometry::PixelExtent {
+                    width: 200,
+                    height: 100,
+                },
+                content_bounds: facts::Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 100.0,
+                },
+                desktop_mapping: port_platform::geometry::DesktopMapping::Known {
+                    space: port_platform::geometry::DesktopSpace::DesktopLogical,
+                    desktop_bounds: bounds,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                },
+            };
+            use image::ImageEncoder;
+            let mut png = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut png)
+                .write_image(&[0; 4], 1, 1, image::ExtendedColorType::Rgba8)
+                .unwrap();
             Ok(CaptureBatch {
-                window_bounds: Some(bounds),
+                frame: Some(frame.clone()),
                 captures: requests
                     .iter()
-                    .map(|request| CapturedImage {
-                        attachment_id: request.id.clone(),
-                        source_bounds: request.bounds.unwrap_or(bounds),
-                        captured_bounds: request.bounds.unwrap_or(bounds),
-                        coverage: CaptureCoverage::FullRegion,
-                        pixel_width: 1,
-                        pixel_height: 1,
-                        // Opaque decoded payload: PNG validation belongs to the adapter, not this test service.
-                        png: vec![137, 80, 78, 71],
+                    .map(|request| {
+                        let source = match request.region {
+                            CaptureRegion::FrameContent => frame.content_bounds,
+                            CaptureRegion::DesktopRegion { space, bounds, .. } => {
+                                frame.desktop_to_frame(space, bounds).unwrap()
+                            }
+                        };
+                        let captured = frame.clip(source).unwrap();
+                        CapturedImage {
+                            attachment_id: request.id.clone(),
+                            frame_id: frame.id,
+                            source_bounds: source,
+                            captured_bounds: captured,
+                            crop: port_platform::geometry::PixelRect::covering(
+                                captured,
+                                frame.extent,
+                            )
+                            .unwrap(),
+                            coverage: CaptureCoverage::FullRegion,
+                            pixel_width: 1,
+                            pixel_height: 1,
+                            png: png.clone(),
+                        }
                     })
                     .collect(),
                 ..CaptureBatch::default()
@@ -578,7 +654,7 @@ mod tests {
             }));
         }
         serde_json::from_value(json!({
-            "source_api":"macos_ax","quality":"full",
+            "source_api":"macos_ax","bounds_space":"desktop_logical","quality":"full",
             "resolved_window":{
                 "facts":{"title":"Observed title","application_name":"Fixture",
                     "frame":{"x":10.0,"y":20.0,"width":200.0,"height":100.0}},
@@ -660,8 +736,8 @@ mod tests {
         for target in &built.target_set.targets {
             assert_eq!(target.facts.title, "Observed title");
             assert_eq!(
-                target.facts.frame.x, 12.0,
-                "capture frame supersedes the AX frame"
+                target.facts.frame.x, 10.0,
+                "capture geometry never overwrites the earlier AX observation"
             );
             assert_eq!(target.facts_revision, 3);
         }
@@ -704,7 +780,10 @@ mod tests {
             assert_eq!(*target, CaptureTarget::Registered(*key));
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].scope, CaptureScope::AxElementRegion);
-            assert_eq!(limits.max_total_bytes, 16_777_216 - index as u32 * 4);
+            assert_eq!(
+                limits.max_total_bytes,
+                16_777_216 - index as u32 * built.context.media[0].encoded_bytes as u32
+            );
         }
     }
 
@@ -804,6 +883,36 @@ mod tests {
                 sources.calls.lock().unwrap().len(),
                 if invalid_extraction { 1 } else { 2 }
             );
+        }
+    }
+
+    #[test]
+    fn unconfirmed_native_cleanup_aborts_the_entire_context_without_later_native_work() {
+        let targets = targets(3);
+        // Cover extraction and capture before and after a complete first source.
+        // Previously, capture cleanup failures became publishable partial media.
+        for fail_at in 1..=4 {
+            let sources = Arc::new(Sources {
+                extractions: Mutex::new(VecDeque::from([
+                    Ok(extraction(true)),
+                    Ok(extraction(true)),
+                    Ok(extraction(true)),
+                ])),
+                cleanup_failure_at: Some(fail_at),
+                ..Sources::default()
+            });
+            let result = ready(build_context(
+                &Executor::default(),
+                sources.clone(),
+                sources.clone(),
+                request(&targets, registered(&targets), 1),
+            ));
+            assert!(
+                result
+                    .is_err_and(|message| message.contains("native stop acknowledgement missing")),
+                "native call {fail_at}"
+            );
+            assert_eq!(sources.calls.lock().unwrap().len(), fail_at);
         }
     }
 
@@ -948,6 +1057,7 @@ mod tests {
                     plan,
                     remaining_total_bytes: 0,
                     read: None,
+                    desktop_observation: None,
                 },
             ))
             .unwrap();

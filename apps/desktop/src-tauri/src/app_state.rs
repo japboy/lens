@@ -11,7 +11,7 @@ use port_platform::authority::{TargetAuthority, TargetReadKey};
 use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex, RwLock,
+    Arc, Condvar, Mutex, RwLock,
 };
 use tauri::{AppHandle, Manager};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, Notify};
@@ -658,6 +658,49 @@ impl LensMediaStore {
     }
 }
 
+/// Counts queued and executing native workers, not their async publication tasks.
+/// Waiting releases this mutex; worker completion never needs session admission.
+#[derive(Default)]
+pub struct SourceWorkers {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+impl SourceWorkers {
+    pub fn start(&self) {
+        *self.count.lock().unwrap_or_else(|error| error.into_inner()) += 1;
+    }
+
+    pub fn finish(&self) {
+        let mut count = self.count.lock().unwrap_or_else(|error| error.into_inner());
+        *count -= 1;
+        if *count == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.count.lock().map(|count| *count).unwrap_or(usize::MAX)
+    }
+
+    pub fn try_count(&self) -> Option<usize> {
+        self.count.try_lock().ok().map(|count| *count)
+    }
+
+    pub fn wait_until_idle(&self, timeout: std::time::Duration) -> bool {
+        let Ok(count) = self.count.lock() else {
+            return false;
+        };
+        let Ok((count, _)) = self
+            .idle
+            .wait_timeout_while(count, timeout, |count| *count != 0)
+        else {
+            return false;
+        };
+        *count == 0
+    }
+}
+
 pub struct AppState {
     pub(crate) publication: crate::publication::PublicationStore,
     pub(crate) mcp_apps: Arc<crate::mcp_apps::McpAppsStore>,
@@ -676,7 +719,7 @@ pub struct AppState {
     /// Live registrations and read admission are never restored from saved source metadata.
     pub read_admission: Mutex<Option<ReadAdmission>>,
     /// Conservative count of queued/running source workers, independent of result admission.
-    pub source_workers: Arc<AtomicUsize>,
+    pub source_workers: Arc<SourceWorkers>,
     pub store: ConfigStore,
 }
 
@@ -712,7 +755,7 @@ impl AppState {
             lens_media: LensMediaStore::default(),
             picker_control: PickerControl::default(),
             read_admission: Mutex::new(None),
-            source_workers: Arc::new(AtomicUsize::new(0)),
+            source_workers: Arc::new(SourceWorkers::default()),
             store,
         }
     }
@@ -845,6 +888,28 @@ impl AppState {
             .is_some_and(|active| active.admits(key)))
     }
 
+    /// Linearizes worker registration with Stop's admission closure. A queued
+    /// worker is counted before Stop can observe closed admission and drain.
+    pub fn register_source_worker(
+        &self,
+        operation_id: Uuid,
+        read: Option<TargetReadKey>,
+    ) -> Result<Arc<SourceWorkers>, String> {
+        let admission = self
+            .read_admission
+            .lock()
+            .map_err(|_| "source admission lock is poisoned")?;
+        if !admission.as_ref().is_some_and(|active| {
+            active.operation_id() == operation_id
+                && active.operation_state() == OperationAdmission::Active
+                && read.is_none_or(|key| active.admits(key))
+        }) {
+            return Err("Lens source read authority was revoked".into());
+        }
+        self.source_workers.start();
+        Ok(self.source_workers.clone())
+    }
+
     pub fn source_operation_is_active(&self, operation_id: Uuid) -> Result<bool, String> {
         Ok(self
             .read_admission
@@ -912,7 +977,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn begin_source_cleanup(&self, operation_id: Uuid) -> Result<(), String> {
+    pub fn begin_source_cleanup(&self, operation_id: Uuid) -> Result<bool, String> {
         let mut admission = self
             .read_admission
             .lock()
@@ -923,7 +988,10 @@ impl AppState {
         {
             active.begin_cleanup();
         }
-        Ok(())
+        // Sample after closing admission, before native release. A worker which
+        // finishes between release and finish_cleanup cannot retroactively prove
+        // that the native release covered its later cleanup effects.
+        Ok(self.source_workers.count() == 0)
     }
 
     pub fn finish_source_cleanup(&self, operation_id: Uuid, confirmed: bool) -> Result<(), String> {
@@ -935,13 +1003,11 @@ impl AppState {
             .as_mut()
             .filter(|active| active.operation_id() == operation_id)
         {
-            active.finish_cleanup(
-                if confirmed && self.source_workers.load(Ordering::Acquire) == 0 {
-                    CleanupOutcome::ConfirmedClosed
-                } else {
-                    CleanupOutcome::UnconfirmedTermination
-                },
-            );
+            active.finish_cleanup(if confirmed && self.source_workers.count() == 0 {
+                CleanupOutcome::ConfirmedClosed
+            } else {
+                CleanupOutcome::UnconfirmedTermination
+            });
         }
         Ok(())
     }
@@ -1171,9 +1237,9 @@ pub(crate) fn replace_active_source_state<R: tauri::Runtime>(
     };
     emit_app_snapshot(app, snapshot, sync_tray)?;
     if cancelled {
-        state.begin_source_cleanup(operation_id)?;
+        let quiescent = state.begin_source_cleanup(operation_id)?;
         let released = state.platform.selection.release_operation(operation_id);
-        state.finish_source_cleanup(operation_id, released.is_ok())?;
+        state.finish_source_cleanup(operation_id, quiescent && released.is_ok())?;
         if let Err(error) = released {
             eprintln!("Unable to confirm cancelled source cleanup: {error}");
         }
@@ -1531,6 +1597,24 @@ fn update_lens_state_if<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poisoned_worker_count_cannot_confirm_cleanup() {
+        let workers = Arc::new(SourceWorkers::default());
+        let poisoning = workers.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoning.count.lock().unwrap();
+            panic!("fixture poisoned worker counter");
+        })
+        .join()
+        .is_err());
+        assert_eq!(workers.count(), usize::MAX);
+        assert_eq!(workers.try_count(), None);
+        assert!(!workers.wait_until_idle(std::time::Duration::ZERO));
+        workers.start();
+        workers.finish();
+        assert!(!workers.wait_until_idle(std::time::Duration::ZERO));
+    }
 
     fn preset_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
         tauri::test::mock_builder()

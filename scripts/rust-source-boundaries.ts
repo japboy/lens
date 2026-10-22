@@ -157,7 +157,15 @@ export function portableSourceViolations(source: string): string[] {
   for (const [index, token] of tokens.entries()) {
     if (token.literal) continue;
     const at = (distance: number) => tokens[index + distance]?.text;
-    if (PORTABLE_FORBIDDEN.has(token.text))
+    // Cursor is an in-memory buffer, not an operating-system I/O capability.
+    // Admit only its fully qualified path; the io module and other items stay closed.
+    const memoryCursor =
+      token.text === "io" &&
+      at(-2) === "std" &&
+      at(-1) === "::" &&
+      at(1) === "::" &&
+      at(2) === "Cursor";
+    if (PORTABLE_FORBIDDEN.has(token.text) && !memoryCursor)
       violations.push(`Forbidden portable token ${token.text} at ${token.offset}`);
     if (token.text === "windows" && at(1) === "::")
       violations.push(`Native API path at ${token.offset}`);

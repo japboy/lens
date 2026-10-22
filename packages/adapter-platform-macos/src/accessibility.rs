@@ -43,14 +43,6 @@ unsafe extern "C" {
         width: f64,
         height: f64,
     ) -> bool;
-    fn lens_registered_ax_window_frame(
-        operation_id: *const c_char,
-        window_id: u32,
-        x: *mut f64,
-        y: *mut f64,
-        width: *mut f64,
-        height: *mut f64,
-    ) -> i32;
     fn lens_extract_window_json(
         pid: i32,
         selected_title: *const c_char,
@@ -107,6 +99,16 @@ fn finite_bounds(bounds: &Bounds) -> bool {
     [bounds.x, bounds.y, bounds.width, bounds.height]
         .into_iter()
         .all(f64::is_finite)
+}
+
+fn valid_node_bounds(bounds: &Bounds) -> bool {
+    finite_bounds(bounds)
+        && bounds.width > 0.0
+        && bounds.height > 0.0
+        && (bounds.x + bounds.width).is_finite()
+        && (bounds.y + bounds.height).is_finite()
+        && bounds.x + bounds.width > bounds.x
+        && bounds.y + bounds.height > bounds.y
 }
 
 // Constructed only from malloc-owned responses returned by the declarations above.
@@ -224,6 +226,7 @@ impl From<NativeExtraction> for ExtractionResult {
     fn from(raw: NativeExtraction) -> Self {
         Self {
             source_api: port_platform::model::SourceApi::MacosAx,
+            bounds_space: Some(port_platform::geometry::DesktopSpace::DesktopLogical),
             quality: raw.quality,
             resolved_window: raw.resolved_window,
             nodes: raw
@@ -243,7 +246,7 @@ impl From<NativeExtraction> for ExtractionResult {
                         title: node.title,
                         value: node.value,
                         description: node.description,
-                        bounds: node.bounds,
+                        bounds: node.bounds.filter(valid_node_bounds),
                         resource_refs: node.resource_refs,
                         children: node.children,
                     }
@@ -308,49 +311,6 @@ pub(crate) fn register_target(
         Err(PlatformError::Operation(
             "native selected-window registration is unavailable".into(),
         ))
-    }
-}
-
-pub(crate) fn current_bounds(
-    operation_id: Uuid,
-    window_id: u32,
-) -> Result<Option<Bounds>, PlatformError> {
-    let operation = uuid_text(operation_id);
-    let mut bounds = Bounds {
-        x: 0.0,
-        y: 0.0,
-        width: 0.0,
-        height: 0.0,
-    };
-    let found = {
-        #[allow(
-            unsafe_code,
-            reason = "[boundary:ax-observer] read current geometry from the same promoted AXWindow used by extraction and observation"
-        )]
-        // SAFETY: Four distinct initialized outputs and the UUID remain valid until
-        // native finishes reading the exact retained AXWindow's current geometry.
-        unsafe {
-            lens_registered_ax_window_frame(
-                operation.as_ptr(),
-                window_id,
-                &mut bounds.x,
-                &mut bounds.y,
-                &mut bounds.width,
-                &mut bounds.height,
-            )
-        }
-    };
-    current_bounds_reply(found, bounds)
-}
-
-fn current_bounds_reply(status: i32, bounds: Bounds) -> Result<Option<Bounds>, PlatformError> {
-    match status {
-        // Only a never-promoted source may use its retained SCWindow frame.
-        0 => Ok(None),
-        1 if finite_bounds(&bounds) => Ok(Some(bounds)),
-        _ => Err(PlatformError::Operation(
-            "the promoted AXWindow did not expose finite current bounds".into(),
-        )),
     }
 }
 
@@ -1328,32 +1288,69 @@ mod tests {
     }
 
     #[test]
+    fn invalid_optional_node_bounds_preserve_text_and_semantics() {
+        let valid = Bounds {
+            x: -20.0,
+            y: -10.0,
+            width: 40.0,
+            height: 30.0,
+        };
+        for bounds in [
+            valid,
+            Bounds {
+                width: 0.0,
+                ..valid
+            },
+            Bounds {
+                height: -1.0,
+                ..valid
+            },
+            Bounds {
+                x: f64::MAX,
+                width: f64::MAX,
+                ..valid
+            },
+            Bounds {
+                x: f64::MAX,
+                width: 1.0,
+                ..valid
+            },
+            Bounds {
+                y: f64::NAN,
+                ..valid
+            },
+            Bounds {
+                width: f64::INFINITY,
+                ..valid
+            },
+        ] {
+            let mut raw: NativeExtraction = serde_json::from_value(serde_json::json!({
+                "quality":"full", "text":"retained text", "nodes":[{
+                    "id":"text", "order":0, "depth":0, "role":"AXStaticText", "value":"retained text"
+                }]
+            })).unwrap();
+            // Direct construction also exercises non-finite values JSON cannot encode.
+            raw.nodes[0].bounds = Some(bounds);
+            let result = ExtractionResult::from(raw);
+            assert_eq!(result.nodes[0].bounds, (bounds == valid).then_some(valid));
+            assert_eq!(result.nodes[0].value.as_deref(), Some("retained text"));
+            assert_eq!(
+                result.nodes[0].semantic_role,
+                port_platform::model::SemanticRole::Text
+            );
+            assert_eq!(result.text, "retained text");
+            assert_eq!(
+                result.quality,
+                port_platform::model::ExtractionQuality::Full
+            );
+        }
+    }
+
+    #[test]
     fn observation_registration_and_events_are_send() {
         fn assert_send<T: Send>() {}
         assert_send::<NativeObservationRegistration>();
         assert_send::<NativeObservationEvents>();
         assert_send::<ObservationSession>();
-    }
-
-    #[test]
-    fn current_frame_fallback_is_limited_to_never_promoted_sources() {
-        let valid = Bounds {
-            x: 1.0,
-            y: 2.0,
-            width: 30.0,
-            height: 40.0,
-        };
-        assert_eq!(current_bounds_reply(1, valid).unwrap(), Some(valid));
-        assert_eq!(current_bounds_reply(0, valid).unwrap(), None);
-        assert!(current_bounds_reply(-1, valid).is_err());
-        assert!(current_bounds_reply(2, valid).is_err());
-        assert!(current_bounds_reply(
-            1,
-            Bounds {
-                x: f64::NAN,
-                ..valid
-            }
-        )
-        .is_err());
     }
 }

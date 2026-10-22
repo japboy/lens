@@ -1,15 +1,27 @@
 #![forbid(unsafe_code)]
 
-use base64::prelude::*;
+use image::ImageEncoder;
 use port_platform::{
     capture::{
         Bounds, Capture, CaptureBatch, CaptureCoverage, CaptureOmission, CaptureOmissionReason,
-        CaptureRequest, CaptureTarget, CapturedImage,
+        CaptureRegion, CaptureRequest, CaptureScope, CaptureTarget, CapturedImage,
+    },
+    geometry::{
+        valid_bounds, AcquiredFrame, DesktopMapping, DesktopSpace, FrameId,
+        GeometryUnavailableReason, PixelExtent, PixelRect,
     },
     ImageCaptureLimits, PlatformError,
 };
-use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use screencapturekit::{
+    async_api::AsyncSCShareableContent,
+    cm::FrameInfo,
+    stream::{configuration::SCStreamConfiguration, content_filter::SCContentFilter},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
+};
 
 impl Capture for crate::MacOsPlatform {
     fn capture(
@@ -18,85 +30,36 @@ impl Capture for crate::MacOsPlatform {
         requests: &[CaptureRequest],
         limits: ImageCaptureLimits,
     ) -> Result<CaptureBatch, PlatformError> {
+        request_index(requests)?;
+        validate_limits(limits)?;
         if requests.is_empty() {
             return Ok(CaptureBatch::default());
         }
-        request_index(requests)?;
-        let native = match capture_native(target, requests, limits) {
-            Ok(native) => native,
-            // Preserve the capability's existing unavailable-capture shape.
-            // Malformed requests and invalid returned metadata remain errors.
-            Err(PlatformError::Operation(message)) => {
-                return Ok(CaptureBatch {
-                    diagnostics: vec![message],
-                    ..CaptureBatch::default()
-                });
-            }
-            Err(error) => return Err(error),
+        let batch = match acquire(target, requests, limits) {
+            Ok(batch) => batch,
+            Err(crate::capture_stream::CaptureFailure::Unavailable(message)) => CaptureBatch {
+                omissions: requests
+                    .iter()
+                    .map(|request| CaptureOmission {
+                        attachment_id: request.id.clone(),
+                        reason: CaptureOmissionReason::CaptureFailed,
+                        detail: message.clone(),
+                    })
+                    .collect(),
+                diagnostics: vec![message],
+                ..CaptureBatch::default()
+            },
+            Err(error) => return Err(error.into_platform()),
         };
-        validate_native(native, requests, limits)
+        validate_batch(batch, target, requests, limits)
     }
 }
 
-fn request_index(
-    requests: &[CaptureRequest],
-) -> Result<BTreeMap<&str, &CaptureRequest>, PlatformError> {
-    let index = requests
-        .iter()
-        .map(|request| (request.id.as_str(), request))
-        .collect::<BTreeMap<_, _>>();
-    if index.len() != requests.len() {
-        return Err(PlatformError::Operation(
-            "image capture request identities must be unique".into(),
-        ));
-    }
-    Ok(index)
+fn invalid(message: impl Into<String>) -> PlatformError {
+    PlatformError::InvalidResponse(message.into())
 }
 
-#[derive(Debug, Deserialize)]
-struct NativeImageCaptureBatch {
-    #[serde(default)]
-    window_bounds: Option<Bounds>,
-    #[serde(default)]
-    captures: Vec<NativeImageCapture>,
-    #[serde(default)]
-    omissions: Vec<NativeImageOmission>,
-    #[serde(default)]
-    diagnostics: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NativeImageCapture {
-    attachment_id: String,
-    source_bounds: Bounds,
-    captured_bounds: Bounds,
-    window_bounds: Bounds,
-    coverage: CaptureCoverage,
-    mime_type: String,
-    pixel_width: usize,
-    pixel_height: usize,
-    encoded_bytes: usize,
-    data: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct NativeImageOmission {
-    attachment_id: String,
-    reason: CaptureOmissionReason,
-    detail: String,
-}
-
-fn capture_native(
-    target: CaptureTarget,
-    requests: &[CaptureRequest],
-    limits: ImageCaptureLimits,
-) -> Result<NativeImageCaptureBatch, PlatformError> {
-    use image::ImageEncoder;
-    use screencapturekit::{
-        async_api::{AsyncSCScreenshotManager, AsyncSCShareableContent},
-        screenshot_manager::CGImageExt,
-        stream::{configuration::SCStreamConfiguration, content_filter::SCContentFilter},
-    };
+fn validate_limits(limits: ImageCaptureLimits) -> Result<(), PlatformError> {
     if [
         limits.max_long_edge,
         limits.max_pixels,
@@ -106,255 +69,402 @@ fn capture_native(
     .contains(&0)
     {
         return Err(PlatformError::Operation(
-            "Image capture limits must be greater than zero.".into(),
+            "image capture limits must be greater than zero".into(),
         ));
     }
-    request_index(requests)?;
-    if requests.is_empty() {
-        return Ok(NativeImageCaptureBatch {
-            window_bounds: None,
-            captures: Vec::new(),
-            omissions: Vec::new(),
-            diagnostics: Vec::new(),
-        });
+    Ok(())
+}
+
+fn request_index(
+    requests: &[CaptureRequest],
+) -> Result<BTreeMap<&str, &CaptureRequest>, PlatformError> {
+    let mut index = BTreeMap::new();
+    for request in requests {
+        if request.id.is_empty() || index.insert(request.id.as_str(), request).is_some() {
+            return Err(PlatformError::Operation(
+                "image capture request identities must be nonempty and unique".into(),
+            ));
+        }
+        if !matches!(
+            (&request.scope, &request.region),
+            (CaptureScope::WindowFallback, CaptureRegion::FrameContent)
+                | (
+                    CaptureScope::AxElementRegion,
+                    CaptureRegion::DesktopRegion { .. }
+                )
+        ) {
+            return Err(PlatformError::Operation(
+                "image capture scope and coordinate region disagree".into(),
+            ));
+        }
     }
-    let (window, window_bounds) = match target {
-        CaptureTarget::Registered(key) => crate::source::current_capture_source(key.target)?,
+    Ok(index)
+}
+
+type Failure = crate::capture_stream::CaptureFailure;
+fn unavailable(error: impl std::fmt::Display) -> Failure {
+    Failure::Unavailable(error.to_string())
+}
+
+fn acquire(
+    target: CaptureTarget,
+    requests: &[CaptureRequest],
+    limits: ImageCaptureLimits,
+) -> Result<CaptureBatch, Failure> {
+    let (window, latch): (_, Option<Arc<AtomicBool>>) = match target {
+        CaptureTarget::Registered(key) => {
+            let (window, latch) =
+                crate::source::capture_source(key.target).map_err(source_failure)?;
+            (window, Some(latch))
+        }
         CaptureTarget::Legacy { window_id } => {
-            let content = wait_for_capture(
+            let content = crate::capture_stream::wait(
                 AsyncSCShareableContent::get(),
-                std::time::Duration::from_secs(15),
-            )?
-            .map_err(capture_error)?;
+                Duration::from_secs(15),
+                "selected window lookup",
+            )
+            .map_err(unavailable)?
+            .map_err(unavailable)?;
             let window = content
                 .windows()
                 .into_iter()
                 .find(|window| window.window_id() == window_id)
-                .ok_or_else(|| capture_error("The explicit selected window is unavailable."))?;
-            let frame = window.frame();
-            let bounds = Bounds {
-                x: frame.origin.x,
-                y: frame.origin.y,
-                width: frame.size.width,
-                height: frame.size.height,
-            };
-            (window, bounds)
+                .ok_or_else(|| unavailable("the explicit selected window is unavailable"))?;
+            (window, None)
         }
     };
-    if !finite_bounds(window_bounds) {
-        return Err(capture_error(
-            "The exact selected window did not expose finite current capture geometry.",
-        ));
-    }
     let filter = SCContentFilter::create()
         .with_window(&window)
         .build()
-        .map_err(capture_error)?;
-    let scale = 2.0_f64
-        .min(4096.0 / window_bounds.width)
-        .min(4096.0 / window_bounds.height);
-    let configuration = SCStreamConfiguration::new()
-        .with_width((window_bounds.width * scale).floor().max(1.0) as u32)
-        .with_height((window_bounds.height * scale).floor().max(1.0) as u32)
-        .with_scales_to_fit(true)
-        .with_preserves_aspect_ratio(true)
-        .map_err(capture_error)?
-        .with_shows_cursor(false)
-        .with_ignores_shadows_single_window(true)
-        .map_err(capture_error)?
-        .with_should_be_opaque(true)
-        .map_err(capture_error)?;
-    let image = wait_for_capture(
-        AsyncSCScreenshotManager::capture_image(&filter, &configuration),
-        std::time::Duration::from_secs(15),
-    )?
-    .map_err(capture_error)?;
-    let (width, height) = (image.width(), image.height());
-    if width == 0 || height == 0 || width > 4096 || height > 4096 {
-        return Err(capture_error(
-            "ScreenCaptureKit returned invalid or unbounded pixel dimensions.",
+        .map_err(unavailable)?;
+    // Filter geometry configures a bounded output, but never establishes the
+    // acquired frame's desktop origin, scale, or content placement.
+    let hint = filter.content_rect();
+    let hint = Bounds {
+        x: hint.origin.x,
+        y: hint.origin.y,
+        width: hint.size.width,
+        height: hint.size.height,
+    };
+    if !valid_bounds(hint) {
+        return Err(Failure::Invalid(
+            "selected filter has invalid output sizing geometry".into(),
         ));
     }
-    // The dependency renders tightly packed premultiplied RGBA, independent of the
-    // CGImage's native channel order and padded row stride. PNG stores straight alpha.
-    let mut pixels = image.rgba_data().map_err(capture_error)?;
-    unpremultiply_rgba(&mut pixels);
-    let bitmap = image::RgbaImage::from_raw(width as u32, height as u32, pixels)
-        .ok_or_else(|| capture_error("ScreenCaptureKit returned an invalid RGBA buffer."))?;
-    let mut batch = NativeImageCaptureBatch {
-        window_bounds: Some(window_bounds),
-        captures: Vec::new(),
-        omissions: Vec::new(),
-        diagnostics: Vec::new(),
+    let scale = 2.0_f64.min(4096.0 / hint.width).min(4096.0 / hint.height);
+    let configuration = SCStreamConfiguration::new()
+        .with_captures_audio(false)
+        .with_captures_microphone(false)
+        .map_err(unavailable)?
+        .with_width((hint.width * scale).floor().max(1.0) as u32)
+        .with_height((hint.height * scale).floor().max(1.0) as u32)
+        .with_scales_to_fit(true)
+        .with_preserves_aspect_ratio(true)
+        .map_err(unavailable)?
+        .with_shows_cursor(false)
+        .with_ignores_shadows_single_window(true)
+        .map_err(unavailable)?
+        .with_should_be_opaque(true)
+        .map_err(unavailable)?;
+    let before = screen_configuration();
+    let sample = crate::capture_stream::acquire(&filter, &configuration, latch)?;
+    let after = screen_configuration();
+    let content_bounds = crate::capture_stream::required_content(&sample.info)?;
+    let frame = AcquiredFrame {
+        id: FrameId::try_from(uuid::Uuid::new_v4()).expect("new UUID is nonnil"),
+        target,
+        extent: PixelExtent {
+            width: sample.bitmap.width(),
+            height: sample.bitmap.height(),
+        },
+        content_bounds,
+        desktop_mapping: desktop_mapping(&sample.info, &before, &after),
     };
+    encode_frame(frame, &sample.bitmap, requests, limits)
+}
+
+fn source_failure(error: PlatformError) -> Failure {
+    match error {
+        PlatformError::CleanupUnconfirmed(message) => Failure::CleanupUnconfirmed(message),
+        error => unavailable(error),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Screen {
+    bounds: Bounds,
+    scale: f64,
+}
+
+fn screen_configuration() -> Vec<Screen> {
+    crate::source::on_main(|| {
+        let marker =
+            objc2::MainThreadMarker::new().expect("screen inventory executes on main thread");
+        objc2_app_kit::NSScreen::screens(marker)
+            .iter()
+            .map(|screen| {
+                let frame = screen.frame();
+                Screen {
+                    bounds: Bounds {
+                        x: frame.origin.x,
+                        y: frame.origin.y,
+                        width: frame.size.width,
+                        height: frame.size.height,
+                    },
+                    scale: screen.backingScaleFactor(),
+                }
+            })
+            .collect()
+    })
+}
+
+fn desktop_mapping(info: &FrameInfo, before: &[Screen], after: &[Screen]) -> DesktopMapping {
+    let unknown = |reason| DesktopMapping::Unavailable { reason };
+    // Evidence currently covers one zero-origin, 1x display only. Reading its
+    // metadata does not prove the same units on Retina or multiple displays.
+    if before != after
+        || before.len() != 1
+        || before[0].scale != 1.0
+        || before[0].bounds.x != 0.0
+        || before[0].bounds.y != 0.0
+        || !valid_bounds(before[0].bounds)
+    {
+        return unknown(GeometryUnavailableReason::UnverifiedConfiguration);
+    }
+    let (Some(rect), Some(factor), Some(scale)) =
+        (info.screen_rect, info.scale_factor, info.content_scale)
+    else {
+        return unknown(GeometryUnavailableReason::MissingMetadata);
+    };
+    let bounds = Bounds {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        width: rect.size.width,
+        height: rect.size.height,
+    };
+    if !valid_bounds(bounds)
+        || !factor.is_finite()
+        || factor <= 0.0
+        || !scale.is_finite()
+        || scale <= 0.0
+        || !(factor * scale).is_finite()
+    {
+        return unknown(GeometryUnavailableReason::InvalidMetadata);
+    }
+    if factor != 1.0 {
+        return unknown(GeometryUnavailableReason::UnverifiedConfiguration);
+    }
+    let Ok(content) = crate::capture_stream::required_content(info) else {
+        return unknown(GeometryUnavailableReason::InvalidMetadata);
+    };
+    let mapping = DesktopMapping::Known {
+        space: DesktopSpace::DesktopLogical,
+        desktop_bounds: bounds,
+        scale_x: factor * scale,
+        scale_y: factor * scale,
+    };
+    if !mapping.is_valid_for(content) {
+        return unknown(GeometryUnavailableReason::InvalidMetadata);
+    }
+    mapping
+}
+
+fn request_source(
+    frame: &AcquiredFrame,
+    request: &CaptureRequest,
+) -> Result<Bounds, CaptureOmissionReason> {
+    match request.region {
+        CaptureRegion::FrameContent => Ok(frame.content_bounds),
+        CaptureRegion::DesktopRegion {
+            space,
+            bounds,
+            observed_window_frame,
+        } => {
+            if !valid_bounds(bounds) || !valid_bounds(observed_window_frame) {
+                return Err(CaptureOmissionReason::InvalidBounds);
+            }
+            let DesktopMapping::Known {
+                space: actual_space,
+                desktop_bounds,
+                ..
+            } = frame.desktop_mapping
+            else {
+                return Err(CaptureOmissionReason::GeometryUnavailable);
+            };
+            if actual_space != space {
+                return Err(CaptureOmissionReason::GeometryUnavailable);
+            }
+            if desktop_bounds != observed_window_frame {
+                return Err(CaptureOmissionReason::ObservationChanged);
+            }
+            frame
+                .desktop_to_frame(space, bounds)
+                .ok_or(CaptureOmissionReason::InvalidBounds)
+        }
+    }
+}
+
+fn encode_frame(
+    frame: AcquiredFrame,
+    bitmap: &image::RgbaImage,
+    requests: &[CaptureRequest],
+    limits: ImageCaptureLimits,
+) -> Result<CaptureBatch, Failure> {
+    if !frame.is_valid()
+        || frame.extent.width != bitmap.width()
+        || frame.extent.height != bitmap.height()
+    {
+        return Err(Failure::Invalid(
+            "native sample violates required frame geometry".into(),
+        ));
+    }
+    let mut batch = CaptureBatch::default();
     let mut total_bytes = 0usize;
     for request in requests {
-        let source_bounds = match request.scope {
-            port_platform::capture::CaptureScope::WindowFallback => window_bounds,
-            port_platform::capture::CaptureScope::AxElementRegion => match request.bounds {
-                Some(bounds) if finite_bounds(bounds) => bounds,
-                Some(_) => {
-                    omit(
-                        &mut batch,
-                        request,
-                        CaptureOmissionReason::InvalidBounds,
-                        "AX image-region request has invalid bounds.",
-                    );
-                    continue;
-                }
-                None => {
-                    omit(
-                        &mut batch,
-                        request,
-                        CaptureOmissionReason::MissingBounds,
-                        "AX image-region request has no bounds.",
-                    );
-                    continue;
-                }
-            },
+        let source = match request_source(&frame, request) {
+            Ok(source) => source,
+            Err(reason) => {
+                omit(&mut batch, request, reason);
+                continue;
+            }
         };
-        let Some(captured_bounds) = intersection(window_bounds, source_bounds) else {
-            omit(
-                &mut batch,
-                request,
-                CaptureOmissionReason::OutsideWindow,
-                "AX image region does not intersect the current selected-window frame.",
-            );
+        let Some(captured) = frame.clip(source) else {
+            omit(&mut batch, request, CaptureOmissionReason::OutsideWindow);
             continue;
         };
-        let Some((x, y, crop_width, crop_height)) =
-            pixel_region(window_bounds, captured_bounds, width as u32, height as u32)
-        else {
-            omit(
-                &mut batch,
-                request,
-                CaptureOmissionReason::OutsideWindow,
-                "AX image region produced an empty pixel intersection.",
-            );
-            continue;
+        let Some(crop) = PixelRect::covering(captured, frame.extent) else {
+            return Err(Failure::Invalid(
+                "native content produced invalid integer crop".into(),
+            ));
         };
-        let cropped = image::imageops::crop_imm(&bitmap, x, y, crop_width, crop_height).to_image();
-        let (target_width, target_height) = bounded_dimensions(crop_width, crop_height, limits);
-        let bounded = if (target_width, target_height) == (crop_width, crop_height) {
+        let cropped =
+            image::imageops::crop_imm(bitmap, crop.x, crop.y, crop.width, crop.height).to_image();
+        let (width, height) = bounded_dimensions(crop.width, crop.height, limits);
+        let image = if (width, height) == (crop.width, crop.height) {
             cropped
         } else {
             image::imageops::resize(
                 &cropped,
-                target_width,
-                target_height,
+                width,
+                height,
                 image::imageops::FilterType::Lanczos3,
             )
         };
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(
-                bounded.as_raw(),
-                target_width,
-                target_height,
+                image.as_raw(),
+                width,
+                height,
                 image::ExtendedColorType::Rgba8,
             )
-            .map_err(capture_error)?;
+            .map_err(|error| Failure::Invalid(error.to_string()))?;
         if png.len() > limits.max_attachment_bytes as usize
             || png.len() > (limits.max_total_bytes as usize).saturating_sub(total_bytes)
         {
-            omit(
-                &mut batch,
-                request,
-                CaptureOmissionReason::ByteBudget,
-                "Encoded PNG exceeded the versioned per-attachment or total media byte budget.",
-            );
+            omit(&mut batch, request, CaptureOmissionReason::ByteBudget);
             continue;
         }
         total_bytes += png.len();
-        batch.captures.push(NativeImageCapture {
+        batch.captures.push(CapturedImage {
             attachment_id: request.id.clone(),
-            source_bounds,
-            captured_bounds,
-            window_bounds,
-            coverage: if valid_capture_bounds(
-                source_bounds,
-                captured_bounds,
-                CaptureCoverage::FullRegion,
-                window_bounds,
-            ) {
+            frame_id: frame.id,
+            source_bounds: source,
+            captured_bounds: captured,
+            crop,
+            coverage: if source == captured {
                 CaptureCoverage::FullRegion
             } else {
                 CaptureCoverage::VisibleSubregion
             },
-            mime_type: "image/png".into(),
-            pixel_width: target_width as usize,
-            pixel_height: target_height as usize,
-            encoded_bytes: png.len(),
-            data: BASE64_STANDARD.encode(png),
+            pixel_width: width as usize,
+            pixel_height: height as usize,
+            png,
         });
+    }
+    if !batch.captures.is_empty() {
+        batch.frame = Some(frame);
     }
     Ok(batch)
 }
 
-fn capture_error(error: impl std::fmt::Display) -> PlatformError {
-    PlatformError::Operation(error.to_string())
+fn omit(batch: &mut CaptureBatch, request: &CaptureRequest, reason: CaptureOmissionReason) {
+    batch.omissions.push(CaptureOmission {
+        attachment_id: request.id.clone(),
+        reason,
+        detail: format!("image region omitted: {reason:?}"),
+    });
 }
 
-fn finite_bounds(bounds: Bounds) -> bool {
-    [bounds.x, bounds.y, bounds.width, bounds.height]
-        .into_iter()
-        .all(f64::is_finite)
-        && bounds.width > 0.0
-        && bounds.height > 0.0
-        && (bounds.x + bounds.width).is_finite()
-        && (bounds.y + bounds.height).is_finite()
-}
-
-fn intersection(left: Bounds, right: Bounds) -> Option<Bounds> {
-    if !finite_bounds(left) || !finite_bounds(right) {
-        return None;
-    }
-    // Preserve an entirely contained request verbatim. Reconstructing width by
-    // subtracting endpoints introduces rounding that would mislabel full coverage.
-    if right.x >= left.x
-        && right.y >= left.y
-        && right.x + right.width <= left.x + left.width
-        && right.y + right.height <= left.y + left.height
+fn validate_batch(
+    batch: CaptureBatch,
+    target: CaptureTarget,
+    requests: &[CaptureRequest],
+    limits: ImageCaptureLimits,
+) -> Result<CaptureBatch, PlatformError> {
+    let index = request_index(requests)?;
+    if batch.frame.is_some() != !batch.captures.is_empty()
+        || batch
+            .frame
+            .as_ref()
+            .is_some_and(|frame| !frame.is_valid() || frame.target != target)
     {
-        return Some(right);
+        return Err(invalid("image batch has invalid frame correlation"));
     }
-    let x = left.x.max(right.x);
-    let y = left.y.max(right.y);
-    let width = (left.x + left.width).min(right.x + right.width) - x;
-    let height = (left.y + left.height).min(right.y + right.height) - y;
-    (width > 0.0 && height > 0.0).then_some(Bounds {
-        x,
-        y,
-        width,
-        height,
-    })
-}
-
-fn pixel_region(
-    window: Bounds,
-    captured: Bounds,
-    width: u32,
-    height: u32,
-) -> Option<(u32, u32, u32, u32)> {
-    let scale_x = f64::from(width) / window.width;
-    let scale_y = f64::from(height) / window.height;
-    let x = ((captured.x - window.x) * scale_x)
-        .floor()
-        .max(0.0)
-        .min(f64::from(width)) as u32;
-    let y = ((captured.y - window.y) * scale_y)
-        .floor()
-        .max(0.0)
-        .min(f64::from(height)) as u32;
-    let max_x = ((captured.x + captured.width - window.x) * scale_x)
-        .ceil()
-        .max(0.0)
-        .min(f64::from(width)) as u32;
-    let max_y = ((captured.y + captured.height - window.y) * scale_y)
-        .ceil()
-        .max(0.0)
-        .min(f64::from(height)) as u32;
-    (max_x > x && max_y > y).then_some((x, y, max_x.saturating_sub(x), max_y.saturating_sub(y)))
+    let mut resolved = BTreeSet::new();
+    let mut total = 0usize;
+    for image in &batch.captures {
+        let request = index
+            .get(image.attachment_id.as_str())
+            .ok_or_else(|| invalid("unknown image attachment"))?;
+        if !resolved.insert(image.attachment_id.as_str()) {
+            return Err(invalid("duplicate image terminal outcome"));
+        }
+        let frame = batch
+            .frame
+            .as_ref()
+            .ok_or_else(|| invalid("missing acquired frame"))?;
+        let width =
+            u32::try_from(image.pixel_width).map_err(|_| invalid("encoded width overflow"))?;
+        let height =
+            u32::try_from(image.pixel_height).map_err(|_| invalid("encoded height overflow"))?;
+        if image.frame_id != frame.id
+            || (width, height) != bounded_dimensions(image.crop.width, image.crop.height, limits)
+            || request_source(frame, request).ok() != Some(image.source_bounds)
+            || !frame.validates_image(
+                image.source_bounds,
+                image.captured_bounds,
+                image.crop,
+                PixelExtent { width, height },
+            )
+            || image.coverage
+                != if image.source_bounds == image.captured_bounds {
+                    CaptureCoverage::FullRegion
+                } else {
+                    CaptureCoverage::VisibleSubregion
+                }
+            || width.max(height) > limits.max_long_edge
+            || u64::from(width) * u64::from(height) > u64::from(limits.max_pixels)
+            || image.png.len() > limits.max_attachment_bytes as usize
+            || image.png.len() > (limits.max_total_bytes as usize).saturating_sub(total)
+        {
+            return Err(invalid(
+                "image violates request, crop, dimensions or finite budgets",
+            ));
+        }
+        total += image.png.len();
+    }
+    for omission in &batch.omissions {
+        if !index.contains_key(omission.attachment_id.as_str())
+            || !resolved.insert(omission.attachment_id.as_str())
+        {
+            return Err(invalid("invalid image omission identity"));
+        }
+    }
+    if resolved.len() != requests.len() {
+        return Err(invalid("image batch omitted a terminal outcome"));
+    }
+    Ok(batch)
 }
 
 fn bounded_dimensions(width: u32, height: u32, limits: ImageCaptureLimits) -> (u32, u32) {
@@ -363,8 +473,6 @@ fn bounded_dimensions(width: u32, height: u32, limits: ImageCaptureLimits) -> (u
         .min((f64::from(limits.max_pixels) / (f64::from(width) * f64::from(height))).sqrt());
     let mut width = (f64::from(width) * scale).floor().max(1.0) as u32;
     let mut height = (f64::from(height) * scale).floor().max(1.0) as u32;
-    // Clamping the short side to one pixel must not make an extreme aspect ratio
-    // exceed the independent pixel budget.
     if u64::from(width) * u64::from(height) > u64::from(limits.max_pixels) {
         if width >= height {
             width = (limits.max_pixels / height).max(1);
@@ -375,7 +483,7 @@ fn bounded_dimensions(width: u32, height: u32, limits: ImageCaptureLimits) -> (u
     (width, height)
 }
 
-fn unpremultiply_rgba(pixels: &mut [u8]) {
+pub(super) fn unpremultiply_rgba(pixels: &mut [u8]) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         let alpha = u32::from(pixel[3]);
         for channel in &mut pixel[..3] {
@@ -387,461 +495,150 @@ fn unpremultiply_rgba(pixels: &mut [u8]) {
     }
 }
 
-fn omit(
-    batch: &mut NativeImageCaptureBatch,
-    request: &CaptureRequest,
-    reason: CaptureOmissionReason,
-    detail: &str,
-) {
-    batch.omissions.push(NativeImageOmission {
-        attachment_id: request.id.clone(),
-        reason,
-        detail: detail.into(),
-    });
-}
-
-/// Poll an owned completion until its finite deadline, without assuming a Tokio
-/// runtime or leaking a permanently waiting worker thread after timeout.
-fn wait_for_capture<F: std::future::Future>(
-    future: F,
-    timeout: std::time::Duration,
-) -> Result<F::Output, PlatformError> {
-    use std::{
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
-        time::Instant,
-    };
-    struct ThreadWake(std::thread::Thread);
-    impl Wake for ThreadWake {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
-    let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
-            return Ok(result);
-        }
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Err(capture_error(
-                "ScreenCaptureKit image-region capture timed out after 15 seconds.",
-            ));
-        };
-        std::thread::park_timeout(remaining);
-    }
-}
-
-fn validate_native(
-    native: NativeImageCaptureBatch,
-    requests: &[CaptureRequest],
-    limits: ImageCaptureLimits,
-) -> Result<CaptureBatch, PlatformError> {
-    let requests_by_id = request_index(requests)?;
-    let mut result = CaptureBatch {
-        window_bounds: native.window_bounds,
-        diagnostics: native.diagnostics,
-        ..CaptureBatch::default()
-    };
-    let mut resolved = BTreeSet::new();
-    let mut total_bytes = 0_usize;
-    for capture in native.captures {
-        let _request = requests_by_id
-            .get(capture.attachment_id.as_str())
-            .ok_or_else(|| {
-                PlatformError::InvalidResponse(format!(
-                    "native image capture returned unknown attachment {}",
-                    capture.attachment_id
-                ))
-            })?;
-        if !resolved.insert(capture.attachment_id.clone()) {
-            return Err(PlatformError::InvalidResponse(format!(
-                "native image capture returned duplicate attachment {}",
-                capture.attachment_id
-            )));
-        }
-        let decoded = BASE64_STANDARD.decode(&capture.data).map_err(|error| {
-            PlatformError::InvalidResponse(format!(
-                "native image attachment {} is not valid base64: {error}",
-                capture.attachment_id
-            ))
-        })?;
-        if capture.mime_type != "image/png"
-            || decoded.len() != capture.encoded_bytes
-            || capture.pixel_width == 0
-            || capture.pixel_height == 0
-            || capture.pixel_width.max(capture.pixel_height) > limits.max_long_edge as usize
-            || capture.pixel_width.saturating_mul(capture.pixel_height) > limits.max_pixels as usize
-            || capture.encoded_bytes > limits.max_attachment_bytes as usize
-            || !valid_capture_bounds(
-                capture.source_bounds,
-                capture.captured_bounds,
-                capture.coverage,
-                capture.window_bounds,
-            )
-        {
-            return Err(PlatformError::InvalidResponse(format!(
-                "native image attachment {} violates its declared format or finite limits",
-                capture.attachment_id
-            )));
-        }
-        total_bytes = total_bytes.saturating_add(capture.encoded_bytes);
-        if total_bytes > limits.max_total_bytes as usize {
-            return Err(PlatformError::InvalidResponse(
-                "native image attachments exceed the total byte limit".into(),
-            ));
-        }
-        result.captures.push(CapturedImage {
-            attachment_id: capture.attachment_id,
-            source_bounds: capture.source_bounds,
-            captured_bounds: capture.captured_bounds,
-            coverage: capture.coverage,
-            pixel_width: capture.pixel_width,
-            pixel_height: capture.pixel_height,
-            png: decoded,
-        });
-    }
-    for omission in native.omissions {
-        let _request = requests_by_id
-            .get(omission.attachment_id.as_str())
-            .ok_or_else(|| {
-                PlatformError::InvalidResponse(format!(
-                    "native image capture omitted unknown attachment {}",
-                    omission.attachment_id
-                ))
-            })?;
-        if !resolved.insert(omission.attachment_id.clone()) {
-            return Err(PlatformError::InvalidResponse(format!(
-                "native image capture returned duplicate terminal outcome for attachment {}",
-                omission.attachment_id
-            )));
-        }
-        result.omissions.push(CaptureOmission {
-            attachment_id: omission.attachment_id,
-            reason: omission.reason,
-            detail: omission.detail,
-        });
-    }
-    Ok(result)
-}
-
-fn valid_capture_bounds(
-    source: Bounds,
-    captured: Bounds,
-    coverage: CaptureCoverage,
-    window: Bounds,
-) -> bool {
-    let valid = |bounds: Bounds| {
-        [bounds.x, bounds.y, bounds.width, bounds.height]
-            .into_iter()
-            .all(f64::is_finite)
-            && bounds.width > 0.0
-            && bounds.height > 0.0
-    };
-    let contains = |outer: Bounds, inner: Bounds| {
-        const EPSILON: f64 = 0.001;
-        inner.x + EPSILON >= outer.x
-            && inner.y + EPSILON >= outer.y
-            && inner.x + inner.width <= outer.x + outer.width + EPSILON
-            && inner.y + inner.height <= outer.y + outer.height + EPSILON
-    };
-    if !valid(source) || !valid(captured) || !valid(window) {
-        return false;
-    }
-    let same_region = contains(source, captured) && contains(captured, source);
-    contains(source, captured)
-        && contains(window, captured)
-        && match coverage {
-            CaptureCoverage::FullRegion => same_region,
-            CaptureCoverage::VisibleSubregion => !same_region,
-        }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn requests() -> Vec<CaptureRequest> {
-        vec![CaptureRequest {
-            id: "media-1".into(),
-            scope: port_platform::capture::CaptureScope::AxElementRegion,
-            bounds: Some(bounds(1.0, 2.0, 3.0, 4.0)),
-        }]
+    #[test]
+    fn source_cleanup_failure_keeps_its_fatal_category_before_native_start() {
+        assert!(matches!(
+            source_failure(PlatformError::CleanupUnconfirmed("Stop unknown".into())),
+            Failure::CleanupUnconfirmed(_)
+        ));
+        assert!(matches!(
+            source_failure(PlatformError::Operation("unavailable".into())),
+            Failure::Unavailable(_)
+        ));
     }
 
-    fn limits() -> ImageCaptureLimits {
-        ImageCaptureLimits {
-            max_long_edge: 10,
-            max_pixels: 100,
-            max_attachment_bytes: 8,
-            max_total_bytes: 8,
-        }
-    }
-
-    fn native_fixture() -> serde_json::Value {
-        // Transfer validation fixture, not a PNG decoder or native pixel probe.
-        serde_json::json!({
-            "window_bounds": {"x":0.0,"y":0.0,"width":100.0,"height":100.0},
-            "captures":[{
-                "attachment_id":"media-1",
-                "source_bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},
-                "captured_bounds":{"x":1.0,"y":2.0,"width":3.0,"height":4.0},
-                "window_bounds":{"x":0.0,"y":0.0,"width":100.0,"height":100.0},
-                "coverage":"full_region", "mime_type":"image/png",
-                "pixel_width":3, "pixel_height":4, "encoded_bytes":3, "data":"AQID"
-            }],
-            "diagnostics":["native diagnostic"]
-        })
-    }
-
-    fn validate_fixture(value: serde_json::Value) -> Result<CaptureBatch, PlatformError> {
-        validate_native(
-            serde_json::from_value(value).unwrap(),
-            &requests(),
+    #[test]
+    fn contradictory_optional_native_mapping_keeps_content_and_omits_desktop_region() {
+        use screencapturekit::cg::{CGPoint, CGRect, CGSize};
+        let rect = |width, height| CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize { width, height },
+        };
+        let info = FrameInfo {
+            screen_rect: Some(rect(100.0, 100.0)),
+            content_rect: Some(rect(50.0, 50.0)),
+            scale_factor: Some(1.0),
+            content_scale: Some(1.0),
+            ..Default::default()
+        };
+        let screens = [Screen {
+            bounds: bounds(0.0, 0.0, 3840.0, 2160.0),
+            scale: 1.0,
+        }];
+        let mapping = desktop_mapping(&info, &screens, &screens);
+        assert_eq!(
+            mapping,
+            DesktopMapping::Unavailable {
+                reason: GeometryUnavailableReason::InvalidMetadata
+            }
+        );
+        let frame = AcquiredFrame {
+            extent: PixelExtent {
+                width: 50,
+                height: 50,
+            },
+            content_bounds: crate::capture_stream::required_content(&info).unwrap(),
+            desktop_mapping: mapping,
+            ..frame()
+        };
+        let mut requests = requests();
+        requests.push(CaptureRequest {
+            id: "node".into(),
+            scope: CaptureScope::AxElementRegion,
+            region: CaptureRegion::DesktopRegion {
+                space: DesktopSpace::DesktopLogical,
+                bounds: bounds(10.0, 10.0, 5.0, 5.0),
+                observed_window_frame: bounds(0.0, 0.0, 100.0, 100.0),
+            },
+        });
+        let batch =
+            encode_frame(frame, &image::RgbaImage::new(50, 50), &requests, limits()).unwrap();
+        assert_eq!(batch.captures.len(), 1);
+        assert_eq!(batch.captures[0].attachment_id, "image");
+        assert_eq!(
+            batch.omissions[0].reason,
+            CaptureOmissionReason::GeometryUnavailable
+        );
+        validate_batch(
+            batch,
+            CaptureTarget::Legacy { window_id: 1 },
+            &requests,
             limits(),
         )
+        .unwrap();
     }
-
     #[test]
-    fn native_transfer_decodes_to_owned_bytes_and_current_facts() {
-        let result = validate_fixture(native_fixture()).unwrap();
-        assert_eq!(
-            result.captures,
-            vec![CapturedImage {
-                attachment_id: "media-1".into(),
-                source_bounds: bounds(1.0, 2.0, 3.0, 4.0),
-                captured_bounds: bounds(1.0, 2.0, 3.0, 4.0),
-                coverage: CaptureCoverage::FullRegion,
-                pixel_width: 3,
-                pixel_height: 4,
-                png: vec![1, 2, 3],
-            }]
-        );
-        assert_eq!(result.window_bounds, Some(bounds(0.0, 0.0, 100.0, 100.0)));
-        assert_eq!(result.diagnostics, ["native diagnostic"]);
-        assert!(result.omissions.is_empty());
-    }
-
-    #[test]
-    fn malformed_native_transfer_is_rejected() {
-        for (field, value) in [
-            ("data", serde_json::json!("not base64!")),
-            ("mime_type", serde_json::json!("image/jpeg")),
-            ("encoded_bytes", serde_json::json!(4)),
-            ("pixel_width", serde_json::json!(0)),
-            ("pixel_height", serde_json::json!(0)),
-            ("pixel_width", serde_json::json!(11)),
-            ("coverage", serde_json::json!("visible_subregion")),
-            (
-                "captured_bounds",
-                serde_json::json!({"x":99.0,"y":99.0,"width":3.0,"height":4.0}),
-            ),
+    fn desktop_mapping_is_optional_and_only_verified_configuration_is_known() {
+        use screencapturekit::cg::{CGPoint, CGRect, CGSize};
+        let rect = |x, y, width, height| CGRect {
+            origin: CGPoint { x, y },
+            size: CGSize { width, height },
+        };
+        let screen = Screen {
+            bounds: bounds(0.0, 0.0, 3840.0, 2160.0),
+            scale: 1.0,
+        };
+        let info = FrameInfo {
+            screen_rect: Some(rect(-12.0, 80.0, 1200.0, 800.0)),
+            content_rect: Some(rect(0.0, 0.0, 1200.0, 800.0)),
+            scale_factor: Some(1.0),
+            content_scale: Some(1.0),
+            ..Default::default()
+        };
+        let screens = vec![screen.clone()];
+        assert!(matches!(
+            desktop_mapping(&info, &screens, &screens),
+            DesktopMapping::Known { .. }
+        ));
+        for changed in [
+            vec![],
+            vec![Screen {
+                scale: 2.0,
+                ..screen.clone()
+            }],
+            vec![screen.clone(), screen.clone()],
+            vec![Screen {
+                bounds: bounds(-3840.0, 0.0, 3840.0, 2160.0),
+                ..screen.clone()
+            }],
         ] {
-            // Each case changes one declaration while retaining the same request authority.
-            let mut fixture = native_fixture();
-            fixture["captures"][0][field] = value;
-            assert!(
-                validate_fixture(fixture).is_err(),
-                "accepted invalid {field}"
+            assert_eq!(
+                desktop_mapping(&info, &changed, &changed),
+                DesktopMapping::Unavailable {
+                    reason: GeometryUnavailableReason::UnverifiedConfiguration
+                }
             );
-        }
-    }
-
-    #[test]
-    fn request_and_terminal_identity_collisions_are_rejected() {
-        let mut duplicate_requests = requests();
-        duplicate_requests.push(duplicate_requests[0].clone());
-        assert!(request_index(&duplicate_requests).is_err());
-        let mut unknown = native_fixture();
-        unknown["captures"][0]["attachment_id"] = serde_json::json!("unknown");
-        let mut duplicate = native_fixture();
-        let first = duplicate["captures"][0].clone();
-        duplicate["captures"].as_array_mut().unwrap().push(first);
-        let mut conflict = native_fixture();
-        conflict["omissions"] = serde_json::json!([{"attachment_id":"media-1","reason":"capture_failed","detail":"conflict"}]);
-        let mut unknown_omission = native_fixture();
-        unknown_omission["omissions"] = serde_json::json!([{"attachment_id":"unknown","reason":"capture_failed","detail":"unknown"}]);
-        for fixture in [unknown, duplicate, conflict, unknown_omission] {
             assert!(matches!(
-                validate_fixture(fixture),
-                Err(PlatformError::InvalidResponse(_))
+                desktop_mapping(&info, &screens, &changed),
+                DesktopMapping::Unavailable { .. }
             ));
         }
-    }
-
-    #[test]
-    fn public_capture_preserves_unavailable_batch_and_rejects_bad_request_authority() {
-        let target = CaptureTarget::Legacy { window_id: 1 };
-        let invalid_limits = ImageCaptureLimits {
-            max_long_edge: 0,
-            ..limits()
+        let missing = FrameInfo {
+            screen_rect: None,
+            ..info.clone()
         };
-        let batch = crate::MacOsPlatform
-            .capture(target, &requests(), invalid_limits)
-            .unwrap();
-        assert!(batch.captures.is_empty() && batch.omissions.is_empty());
-        assert_eq!(batch.diagnostics.len(), 1);
-        let mut duplicate = requests();
-        duplicate.push(duplicate[0].clone());
-        assert!(crate::MacOsPlatform
-            .capture(target, &duplicate, limits())
-            .is_err());
-    }
-
-    #[test]
-    fn pixel_attachment_and_batch_budgets_remain_independent() {
-        for limits in [
-            ImageCaptureLimits {
-                max_pixels: 11,
-                ..limits()
-            },
-            ImageCaptureLimits {
-                max_attachment_bytes: 2,
-                ..limits()
-            },
-            ImageCaptureLimits {
-                max_total_bytes: 2,
-                ..limits()
-            },
-        ] {
-            assert!(validate_native(
-                serde_json::from_value(native_fixture()).unwrap(),
-                &requests(),
-                limits
-            )
-            .is_err());
-        }
-    }
-
-    #[test]
-    fn explicit_native_omission_is_not_a_synthetic_capture() {
-        let fixture = serde_json::json!({"omissions":[{
-            "attachment_id":"media-1", "reason":"outside_window", "detail":"outside"
-        }]});
-        let result = validate_fixture(fixture).unwrap();
-        assert!(result.captures.is_empty());
         assert_eq!(
-            result.omissions,
-            [CaptureOmission {
-                attachment_id: "media-1".into(),
-                reason: CaptureOmissionReason::OutsideWindow,
-                detail: "outside".into(),
-            }]
+            desktop_mapping(&missing, &screens, &screens),
+            DesktopMapping::Unavailable {
+                reason: GeometryUnavailableReason::MissingMetadata
+            }
+        );
+        let invalid = FrameInfo {
+            content_scale: Some(f64::MAX),
+            ..info
+        };
+        assert_eq!(
+            desktop_mapping(&invalid, &screens, &screens),
+            DesktopMapping::Unavailable {
+                reason: GeometryUnavailableReason::InvalidMetadata
+            }
         );
     }
-
-    fn bounds(x: f64, y: f64, width: f64, height: f64) -> Bounds {
-        Bounds {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    #[test]
-    fn capture_coverage_must_match_declared_bounds() {
-        let window = bounds(0.0, 0.0, 100.0, 100.0);
-        let full = bounds(10.0, 20.0, 30.0, 40.0);
-        assert!(valid_capture_bounds(
-            full,
-            full,
-            CaptureCoverage::FullRegion,
-            window,
-        ));
-
-        let source = bounds(-10.0, 20.0, 40.0, 40.0);
-        let visible = bounds(0.0, 20.0, 30.0, 40.0);
-        assert!(valid_capture_bounds(
-            source,
-            visible,
-            CaptureCoverage::VisibleSubregion,
-            window,
-        ));
-        assert!(!valid_capture_bounds(
-            source,
-            visible,
-            CaptureCoverage::FullRegion,
-            window,
-        ));
-        assert!(!valid_capture_bounds(
-            full,
-            full,
-            CaptureCoverage::VisibleSubregion,
-            window,
-        ));
-    }
-
-    #[test]
-    fn crop_rounding_preserves_fractional_visible_region_on_negative_desktops() {
-        let window = bounds(-100.0, -50.0, 100.0, 80.0);
-        let requested = bounds(-110.0, -49.25, 30.25, 20.5);
-        let captured = intersection(window, requested).unwrap();
-        assert_eq!(captured, bounds(-100.0, -49.25, 20.25, 20.5));
-        assert_eq!(
-            pixel_region(window, captured, 200, 160),
-            Some((0, 1, 41, 42))
-        );
-        assert!(intersection(window, bounds(0.0, 0.0, 10.0, 10.0)).is_none());
-        assert!(intersection(window, bounds(f64::NAN, 0.0, 1.0, 1.0)).is_none());
-    }
-
-    #[test]
-    fn fully_contained_fractional_region_preserves_exact_full_coverage() {
-        let window = bounds(0.0, 0.0, 10.0, 10.0);
-        let source = bounds(0.1, 0.1, 0.2, 0.2);
-        let captured = intersection(window, source).unwrap();
-        assert_eq!(captured, source);
-        assert!(valid_capture_bounds(
-            source,
-            captured,
-            CaptureCoverage::FullRegion,
-            window
-        ));
-    }
-
-    #[test]
-    fn sub_epsilon_clipping_uses_the_same_coverage_contract_as_validation() {
-        let window = bounds(0.0, 0.0, 10.0, 10.0);
-        let source = bounds(-0.0001, 0.0, 1.0, 1.0);
-        let captured = intersection(window, source).unwrap();
-        let coverage =
-            if valid_capture_bounds(source, captured, CaptureCoverage::FullRegion, window) {
-                CaptureCoverage::FullRegion
-            } else {
-                CaptureCoverage::VisibleSubregion
-            };
-        assert!(valid_capture_bounds(source, captured, coverage, window));
-        assert_eq!(coverage, CaptureCoverage::FullRegion);
-    }
-
-    #[test]
-    fn extreme_aspect_ratio_obeys_independent_pixel_and_edge_budgets() {
-        let limits = ImageCaptureLimits {
-            max_long_edge: 4096,
-            max_pixels: 1,
-            max_attachment_bytes: 1024,
-            max_total_bytes: 1024,
-        };
-        assert_eq!(bounded_dimensions(4096, 1, limits), (1, 1));
-        assert_eq!(bounded_dimensions(1, 4096, limits), (1, 1));
-        let limits = ImageCaptureLimits {
-            max_pixels: 100,
-            max_long_edge: 16,
-            ..limits
-        };
-        for (width, height) in [(4096, 1), (1, 4096), (256, 256), (7, 9)] {
-            let (width, height) = bounded_dimensions(width, height, limits);
-            assert!(width.max(height) <= 16);
-            assert!(width * height <= 100);
-        }
-    }
-
     #[test]
     fn premultiplied_rgba_is_encoded_with_straight_png_alpha() {
-        use image::ImageEncoder;
         let mut pixels = vec![64, 32, 0, 128, 200, 100, 50, 255, 0, 0, 0, 0];
         unpremultiply_rgba(&mut pixels);
         assert_eq!(pixels, [128, 64, 0, 128, 200, 100, 50, 255, 0, 0, 0, 0]);
@@ -854,66 +651,228 @@ mod tests {
             &pixels
         );
     }
-
+    fn bounds(x: f64, y: f64, width: f64, height: f64) -> Bounds {
+        Bounds {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+    fn limits() -> ImageCaptureLimits {
+        ImageCaptureLimits {
+            max_long_edge: 10,
+            max_pixels: 100,
+            max_attachment_bytes: 4096,
+            max_total_bytes: 4096,
+        }
+    }
+    fn frame() -> AcquiredFrame {
+        AcquiredFrame {
+            id: FrameId::try_from(uuid::Uuid::new_v4()).unwrap(),
+            target: CaptureTarget::Legacy { window_id: 1 },
+            extent: PixelExtent {
+                width: 20,
+                height: 20,
+            },
+            content_bounds: bounds(0.25, 0.5, 20.0, 19.5),
+            desktop_mapping: DesktopMapping::Known {
+                space: DesktopSpace::DesktopLogical,
+                desktop_bounds: bounds(-10.0, 30.0, 10.0, 9.75),
+                scale_x: 2.0,
+                scale_y: 2.0,
+            },
+        }
+    }
+    fn requests() -> Vec<CaptureRequest> {
+        vec![CaptureRequest {
+            id: "image".into(),
+            scope: CaptureScope::WindowFallback,
+            region: CaptureRegion::FrameContent,
+        }]
+    }
+    fn batch() -> CaptureBatch {
+        encode_frame(
+            frame(),
+            &image::RgbaImage::new(20, 20),
+            &requests(),
+            limits(),
+        )
+        .unwrap()
+    }
     #[test]
-    fn owned_capture_wait_handles_ready_wakeup_and_deadline_without_a_runtime() {
-        use std::{
-            future::Future,
-            pin::Pin,
-            sync::{Arc, Mutex},
-            task::{Context, Poll, Waker},
-            time::Duration,
+    fn fractional_content_rounds_outward_and_downsizes_actual_pixels() {
+        let batch = batch();
+        let image = &batch.captures[0];
+        assert_eq!(
+            image.crop,
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 20
+            }
+        );
+        assert_eq!(image.coverage, CaptureCoverage::VisibleSubregion);
+        assert_eq!((image.pixel_width, image.pixel_height), (10, 10));
+        validate_batch(
+            batch,
+            CaptureTarget::Legacy { window_id: 1 },
+            &requests(),
+            limits(),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn unknown_mapping_keeps_frame_content_but_omits_desktop_and_changed_observation() {
+        let mut f = frame();
+        let desktop = CaptureRequest {
+            id: "node".into(),
+            scope: CaptureScope::AxElementRegion,
+            region: CaptureRegion::DesktopRegion {
+                space: DesktopSpace::DesktopLogical,
+                bounds: bounds(-9.0, 31.0, 1.0, 1.0),
+                observed_window_frame: bounds(-10.0, 30.0, 10.0, 9.75),
+            },
+        };
+        assert!(request_source(&f, &desktop).is_ok());
+        if let DesktopMapping::Known { desktop_bounds, .. } = &mut f.desktop_mapping {
+            desktop_bounds.x += 1.0;
+        }
+        assert_eq!(
+            request_source(&f, &desktop),
+            Err(CaptureOmissionReason::ObservationChanged)
+        );
+        f.desktop_mapping = DesktopMapping::Unavailable {
+            reason: GeometryUnavailableReason::UnverifiedConfiguration,
         };
         assert_eq!(
-            wait_for_capture(std::future::ready(7), Duration::ZERO).unwrap(),
-            7
+            request_source(&f, &desktop),
+            Err(CaptureOmissionReason::GeometryUnavailable)
         );
-        struct State {
-            ready: bool,
-            waker: Option<Waker>,
-        }
-        struct Completion(Arc<Mutex<State>>);
-        impl Future for Completion {
-            type Output = u8;
-            fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<u8> {
-                let mut state = self.0.lock().unwrap();
-                if state.ready {
-                    Poll::Ready(9)
-                } else {
-                    state.waker = Some(context.waker().clone());
-                    Poll::Pending
-                }
-            }
-        }
-        let state = Arc::new(Mutex::new(State {
-            ready: false,
-            waker: None,
-        }));
-        let producer = Arc::clone(&state);
-        let thread = std::thread::spawn(move || {
-            // Wait until the consumer has installed its waker, then signal once.
-            loop {
-                let waker = {
-                    let mut state = producer.lock().unwrap();
-                    if state.waker.is_some() {
-                        state.ready = true;
-                        state.waker.take()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(waker) = waker {
-                    waker.wake();
-                    break;
-                }
-                std::thread::yield_now();
-            }
-        });
+        assert!(request_source(&f, &requests()[0]).is_ok());
+    }
+
+    #[test]
+    fn negative_desktop_origin_and_partial_node_crop_use_actual_frame_pixels() {
+        let request = CaptureRequest {
+            id: "node".into(),
+            scope: CaptureScope::AxElementRegion,
+            region: CaptureRegion::DesktopRegion {
+                space: DesktopSpace::DesktopLogical,
+                bounds: bounds(-11.0, 31.0, 4.0, 4.0),
+                observed_window_frame: bounds(-10.0, 30.0, 10.0, 9.75),
+            },
+        };
+        let b = encode_frame(
+            frame(),
+            &image::RgbaImage::new(20, 20),
+            std::slice::from_ref(&request),
+            limits(),
+        )
+        .unwrap();
+        let image = &b.captures[0];
+        assert_eq!(image.source_bounds, bounds(-1.75, 2.5, 8.0, 8.0));
+        assert_eq!(image.captured_bounds, bounds(0.25, 2.5, 6.0, 8.0));
         assert_eq!(
-            wait_for_capture(Completion(state), Duration::from_secs(2)).unwrap(),
-            9
+            image.crop,
+            PixelRect {
+                x: 0,
+                y: 2,
+                width: 7,
+                height: 9
+            }
         );
-        thread.join().unwrap();
-        assert!(wait_for_capture(std::future::pending::<()>(), Duration::from_millis(1)).is_err());
+        assert_eq!(image.coverage, CaptureCoverage::VisibleSubregion);
+        assert_eq!(
+            image::load_from_memory(&image.png)
+                .unwrap()
+                .into_rgba8()
+                .dimensions(),
+            (7, 9)
+        );
+        validate_batch(
+            b,
+            CaptureTarget::Legacy { window_id: 1 },
+            &[request],
+            limits(),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn typed_batch_rejects_uncorrelated_geometry_dimensions_and_terminal_outcomes() {
+        for mutation in 0..10 {
+            let mut b = batch();
+            match mutation {
+                0 => b.frame.as_mut().unwrap().target = CaptureTarget::Legacy { window_id: 2 },
+                1 => b.captures[0].frame_id = FrameId::try_from(uuid::Uuid::new_v4()).unwrap(),
+                2 => b.captures[0].crop.x = 1,
+                3 => b.captures[0].source_bounds.width = f64::NAN,
+                4 => b.captures[0].pixel_width = 9,
+                5 => b.captures[0].coverage = CaptureCoverage::FullRegion,
+                6 => b.captures.push(b.captures[0].clone()),
+                7 => b.captures[0].attachment_id = "unknown".into(),
+                8 => b.frame = None,
+                _ => {
+                    b.captures.clear();
+                    b.frame = None;
+                }
+            }
+            assert!(
+                validate_batch(
+                    b,
+                    CaptureTarget::Legacy { window_id: 1 },
+                    &requests(),
+                    limits()
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+    }
+    #[test]
+    fn no_published_image_has_no_frame_and_required_invalid_geometry_still_errors() {
+        let mut tiny = limits();
+        tiny.max_attachment_bytes = 1;
+        let b = encode_frame(frame(), &image::RgbaImage::new(20, 20), &requests(), tiny).unwrap();
+        assert!(b.frame.is_none());
+        assert_eq!(b.omissions[0].reason, CaptureOmissionReason::ByteBudget);
+        let mut bad = frame();
+        bad.content_bounds.width = f64::INFINITY;
+        assert!(matches!(
+            encode_frame(bad, &image::RgbaImage::new(20, 20), &requests(), limits()),
+            Err(Failure::Invalid(_))
+        ));
+    }
+    #[test]
+    fn one_pixel_budget_and_extreme_aspect_ratio_remain_valid() {
+        let mut l = limits();
+        l.max_pixels = 1;
+        assert_eq!(bounded_dimensions(4096, 1, l), (1, 1));
+        let f = AcquiredFrame {
+            extent: PixelExtent {
+                width: 1,
+                height: 1,
+            },
+            content_bounds: bounds(0.0, 0.0, 1.0, 1.0),
+            desktop_mapping: DesktopMapping::Known {
+                space: DesktopSpace::DesktopLogical,
+                desktop_bounds: bounds(0.0, 0.0, 1.0, 1.0),
+                scale_x: 1.0,
+                scale_y: 1.0,
+            },
+            ..frame()
+        };
+        let b = encode_frame(f, &image::RgbaImage::new(1, 1), &requests(), l).unwrap();
+        validate_batch(b, CaptureTarget::Legacy { window_id: 1 }, &requests(), l).unwrap();
+    }
+    #[test]
+    fn scope_region_and_duplicate_ids_are_explicit_request_errors() {
+        let mut r = requests();
+        r[0].scope = CaptureScope::AxElementRegion;
+        assert!(request_index(&r).is_err());
+        let mut r = requests();
+        r.push(r[0].clone());
+        assert!(request_index(&r).is_err());
     }
 }

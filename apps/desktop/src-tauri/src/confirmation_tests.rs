@@ -146,7 +146,7 @@ impl Accessibility for Fixture {
             return Err(PlatformError::Operation("fixture AX unavailable".into()));
         }
         let mut extraction = json!({
-            "source_api":"macos_ax","quality":"full", "resolved_window":{
+            "source_api":"macos_ax","bounds_space":"desktop_logical","quality":"full", "resolved_window":{
                 "facts":{"title":"Observed document", "application_name":"Fixture",
                     "frame":{"x":10.0,"y":20.0,"width":400.0,"height":300.0}},
                 "resolution_score":1.0
@@ -205,17 +205,49 @@ impl Capture for Fixture {
             ));
         }
         assert_eq!(requests.len(), 1);
-        let bounds = requests[0].bounds.unwrap();
+        use port_platform::geometry::{AcquiredFrame, DesktopMapping, PixelExtent, PixelRect};
+        let port_platform::capture::CaptureRegion::DesktopRegion {
+            space,
+            bounds,
+            observed_window_frame,
+        } = requests[0].region
+        else {
+            panic!("confirmation image request needs its tree observation");
+        };
+        let frame = AcquiredFrame {
+            id: Uuid::from_u128(1).try_into().unwrap(),
+            target,
+            extent: PixelExtent {
+                width: 400,
+                height: 300,
+            },
+            content_bounds: port_platform::model::Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            desktop_mapping: DesktopMapping::Known {
+                space,
+                desktop_bounds: observed_window_frame,
+                scale_x: 1.0,
+                scale_y: 1.0,
+            },
+        };
+        let bounds = frame.desktop_to_frame(space, bounds).unwrap();
         Ok(CaptureBatch {
             captures: vec![CapturedImage {
                 attachment_id: requests[0].id.clone(),
+                frame_id: frame.id,
                 source_bounds: bounds,
                 captured_bounds: bounds,
+                crop: PixelRect::covering(bounds, frame.extent).unwrap(),
                 coverage: CaptureCoverage::FullRegion,
                 pixel_width: 32,
                 pixel_height: 32,
                 png: include_bytes!("../icons/32x32.png").to_vec(),
             }],
+            frame: Some(frame),
             ..CaptureBatch::default()
         })
     }
@@ -1942,11 +1974,54 @@ fn verify_stop_during_source_work(scenario: Scenario) {
         );
         observed.store(true, std::sync::atomic::Ordering::SeqCst);
     }));
-    invoke(&harness.window, "stop_lens");
-    assert!(revoked_before_release.load(std::sync::atomic::Ordering::SeqCst));
+    let stop_app = harness.app.handle().clone();
+    let (stop_sender, stop_receiver) = std::sync::mpsc::sync_channel(1);
+    let stopping = std::thread::spawn(move || {
+        stop_sender
+            .send(crate::commands::stop_lens(stop_app, OPERATION))
+            .unwrap();
+    });
+    // Wait for authority revocation, not for a timing-dependent sleep. The
+    // blocked native worker cannot finish until this test explicitly permits it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while harness
+        .app
+        .state::<AppState>()
+        .source_read_is_current(read)
+        .unwrap()
+    {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(stop_receiver.try_recv().is_err());
+    assert!(!revoked_before_release.load(std::sync::atomic::Ordering::SeqCst));
     let (lock, condition) = &harness.fixture.finish_extraction;
     *lock.lock().unwrap() = true;
     condition.notify_one();
+    assert_eq!(
+        stop_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap(),
+        LensState::default()
+    );
+    stopping.join().unwrap();
+    assert!(revoked_before_release.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(harness.app.state::<AppState>().source_workers.count(), 0);
+    assert_eq!(
+        harness
+            .app
+            .state::<AppState>()
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cleanup_state(),
+        usecase::read_admission::CleanupState::Finished(
+            usecase::read_admission::CleanupOutcome::ConfirmedClosed
+        )
+    );
     let result = receiver
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap();
@@ -2387,7 +2462,6 @@ fn repeated_confirmation_does_not_issue_a_second_source_read() {
 
 #[test]
 fn native_worker_outliving_release_keeps_host_cleanup_unconfirmed() {
-    use std::sync::atomic::Ordering;
     use usecase::read_admission::{CleanupOutcome, CleanupState, OperationTerminalReason};
     let state = crate::test_support::state();
     state.begin_source_operation(OPERATION).unwrap();
@@ -2397,7 +2471,7 @@ fn native_worker_outliving_release_keeps_host_cleanup_unconfirmed() {
     let read = state
         .issue_source_reads(OPERATION, 1, ["a".into()])
         .unwrap()["a"];
-    state.source_workers.fetch_add(1, Ordering::SeqCst);
+    state.source_workers.start();
     state
         .terminate_source_operation(OPERATION, OperationTerminalReason::Cancelled)
         .unwrap();
@@ -2414,7 +2488,7 @@ fn native_worker_outliving_release_keeps_host_cleanup_unconfirmed() {
             .cleanup_state(),
         CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
     );
-    state.source_workers.fetch_sub(1, Ordering::SeqCst);
+    state.source_workers.finish();
     state.finish_source_cleanup(OPERATION, true).unwrap();
     assert!(!state.source_read_is_current(read).unwrap());
     assert_eq!(
@@ -2430,6 +2504,141 @@ fn native_worker_outliving_release_keeps_host_cleanup_unconfirmed() {
     assert!(state
         .issue_source_reads(OPERATION, 2, ["a".into()])
         .is_err());
+}
+
+#[test]
+fn source_worker_registration_is_closed_with_read_admission() {
+    use usecase::read_admission::OperationTerminalReason;
+    let state = crate::test_support::state();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(OPERATION, "a".into(), fixture_target())
+        .unwrap();
+    let read = state
+        .issue_source_reads(OPERATION, 1, ["a".into()])
+        .unwrap()["a"];
+    assert!(state
+        .register_source_worker(Uuid::from_u128(99), Some(read))
+        .is_err());
+    let worker = state.register_source_worker(OPERATION, Some(read)).unwrap();
+    assert_eq!(worker.count(), 1);
+    state
+        .terminate_source_operation(OPERATION, OperationTerminalReason::Cancelled)
+        .unwrap();
+    assert!(state.register_source_worker(OPERATION, Some(read)).is_err());
+    assert!(state.register_source_worker(OPERATION, None).is_err());
+    assert!(!worker.wait_until_idle(std::time::Duration::ZERO));
+    worker.finish();
+    assert!(worker.wait_until_idle(std::time::Duration::ZERO));
+}
+
+#[test]
+fn stop_drain_timeout_does_not_upgrade_after_the_native_worker_finishes() {
+    use usecase::read_admission::{CleanupOutcome, CleanupState};
+    let harness = setup(Scenario::Success);
+    let state = harness.app.state::<AppState>();
+    let worker = state.register_source_worker(OPERATION, None).unwrap();
+    assert_eq!(
+        crate::commands::stop_lens_with_drain_timeout(
+            harness.app.handle().clone(),
+            OPERATION,
+            std::time::Duration::ZERO
+        )
+        .unwrap(),
+        LensState::default()
+    );
+    assert_eq!(worker.count(), 1);
+    let cleanup = || {
+        state
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cleanup_state()
+    };
+    assert_eq!(
+        cleanup(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
+    worker.finish();
+    state.finish_source_cleanup(OPERATION, true).unwrap();
+    assert_eq!(
+        cleanup(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
+    assert!(state.register_source_worker(OPERATION, None).is_err());
+}
+
+#[test]
+fn drained_workers_do_not_hide_a_native_release_failure() {
+    use usecase::read_admission::{CleanupOutcome, CleanupState};
+    let harness = setup(Scenario::ReleaseUnavailable);
+    let state = harness.app.state::<AppState>();
+    let worker = state.register_source_worker(OPERATION, None).unwrap();
+    let stop_app = harness.app.handle().clone();
+    let stopping = std::thread::spawn(move || crate::commands::stop_lens(stop_app, OPERATION));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state.source_operation_is_active(OPERATION).unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(!harness
+        .fixture
+        .effects
+        .lock()
+        .unwrap()
+        .contains(&Effect::Released));
+    worker.finish();
+    assert_eq!(stopping.join().unwrap().unwrap(), LensState::default());
+    assert!(harness
+        .fixture
+        .effects
+        .lock()
+        .unwrap()
+        .contains(&Effect::Released));
+    assert_eq!(
+        state
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cleanup_state(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
+}
+
+#[test]
+fn worker_finishing_between_cleanup_begin_and_finish_cannot_confirm_prior_release() {
+    use usecase::read_admission::{CleanupOutcome, CleanupState, OperationTerminalReason};
+    let state = crate::test_support::state();
+    state.begin_source_operation(OPERATION).unwrap();
+    state
+        .register_source_target(OPERATION, "a".into(), fixture_target())
+        .unwrap();
+    state.source_workers.start();
+    state
+        .terminate_source_operation(OPERATION, OperationTerminalReason::Cancelled)
+        .unwrap();
+    let quiescent_at_release = state.begin_source_cleanup(OPERATION).unwrap();
+    assert!(!quiescent_at_release);
+    state.source_workers.finish();
+    // Real Stop/cancel callers retain the admission-closed snapshot even if
+    // native release and observer cleanup both subsequently report success.
+    state
+        .finish_source_cleanup(OPERATION, quiescent_at_release)
+        .unwrap();
+    assert_eq!(
+        state
+            .read_admission
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cleanup_state(),
+        CleanupState::Finished(CleanupOutcome::UnconfirmedTermination)
+    );
 }
 
 #[test]
@@ -2514,7 +2723,6 @@ fn source_lifecycle_policy_reuses_confirmation_and_pause_resume_without_an_agent
 #[test]
 #[cfg(debug_assertions)]
 fn source_lifecycle_stop_initial_selection_records_real_host_cleanup_outcomes() {
-    use std::sync::atomic::Ordering;
     use usecase::read_admission::{
         CleanupOutcome, CleanupState, OperationAdmission, OperationTerminalReason,
     };
@@ -2534,9 +2742,17 @@ fn source_lifecycle_stop_initial_selection_records_real_host_cleanup_outcomes() 
         );
         assert!(state.source_operation_is_active(OPERATION).unwrap());
         if worker_pending {
-            state.source_workers.fetch_add(1, Ordering::SeqCst);
+            state.source_workers.start();
         }
-        assert_eq!(invoke(&harness.window, "stop_lens"), LensState::default());
+        assert_eq!(
+            crate::commands::stop_lens_with_drain_timeout(
+                harness.app.handle().clone(),
+                OPERATION,
+                std::time::Duration::ZERO
+            )
+            .unwrap(),
+            LensState::default()
+        );
         let admission = state.read_admission.lock().unwrap();
         let admission = admission.as_ref().unwrap();
         assert_eq!(
@@ -2552,7 +2768,7 @@ fn source_lifecycle_stop_initial_selection_records_real_host_cleanup_outcomes() 
             })
         );
         if worker_pending {
-            state.source_workers.fetch_sub(1, Ordering::SeqCst);
+            state.source_workers.finish();
         }
         assert!(!harness
             .fixture

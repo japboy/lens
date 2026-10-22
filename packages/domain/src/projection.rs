@@ -112,15 +112,29 @@ struct LensAgentProjectionMedia {
     scope: LensMediaScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_node_id: Option<String>,
-    source_bounds: Bounds,
-    captured_bounds: Bounds,
+    geometry: LensAgentMediaGeometry,
     coverage: LensMediaCoverage,
-    coordinate_space: &'static str,
     mime_type: String,
     pixel_width: usize,
     pixel_height: usize,
     encoded_bytes: usize,
     sha256: String,
+}
+
+/// Agent-visible geometry is sample-local. Live receipts, sample IDs and desktop
+/// origins are publication evidence, not semantic content or replay authority.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "provenance", rename_all = "snake_case")]
+enum LensAgentMediaGeometry {
+    Acquired {
+        coordinate_space: &'static str,
+        frame_extent: crate::geometry::PixelExtent,
+        content_bounds: Bounds,
+        source_bounds: Bounds,
+        captured_bounds: Bounds,
+        crop: crate::geometry::PixelRect,
+    },
+    HistoricalUnproven,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -279,9 +293,47 @@ impl LensAgentProjection {
             let source_id = source_ids
                 .get(&attachment.target_id)
                 .expect("attachment target was validated above");
-            let (_, target) = targets
-                .get(attachment.target_id.as_str())
-                .expect("attachment target was validated above");
+            let geometry = match &attachment.geometry {
+                crate::lens::LensMediaGeometry::Acquired {
+                    frame,
+                    source_bounds,
+                    captured_bounds,
+                    crop,
+                } => {
+                    let encoded = crate::geometry::PixelExtent {
+                        width: u32::try_from(attachment.pixel_width).map_err(|_| {
+                            LensAgentProjectionError::MediaMetadataMismatch {
+                                attachment_id: attachment.id.clone(),
+                            }
+                        })?,
+                        height: u32::try_from(attachment.pixel_height).map_err(|_| {
+                            LensAgentProjectionError::MediaMetadataMismatch {
+                                attachment_id: attachment.id.clone(),
+                            }
+                        })?,
+                    };
+                    if !frame.validates_image(*source_bounds, *captured_bounds, *crop, encoded)
+                        || decoded.len() != attachment.encoded_bytes
+                        || (attachment.coverage == LensMediaCoverage::FullRegion)
+                            != (source_bounds == captured_bounds)
+                    {
+                        return Err(LensAgentProjectionError::MediaMetadataMismatch {
+                            attachment_id: attachment.id.clone(),
+                        });
+                    }
+                    LensAgentMediaGeometry::Acquired {
+                        coordinate_space: "frame_pixels",
+                        frame_extent: frame.extent,
+                        content_bounds: frame.content_bounds,
+                        source_bounds: *source_bounds,
+                        captured_bounds: *captured_bounds,
+                        crop: *crop,
+                    }
+                }
+                crate::lens::LensMediaGeometry::HistoricalUnproven { .. } => {
+                    LensAgentMediaGeometry::HistoricalUnproven
+                }
+            };
             let projection_id = media_ids
                 .get(&attachment.id)
                 .expect("media identities were built from every attachment")
@@ -305,10 +357,8 @@ impl LensAgentProjection {
                 uri: projection_uri.clone(),
                 scope: attachment.scope,
                 source_node_id,
-                source_bounds: relative_bounds(attachment.source_bounds, target.facts.frame),
-                captured_bounds: relative_bounds(attachment.captured_bounds, target.facts.frame),
+                geometry,
                 coverage: attachment.coverage,
-                coordinate_space: "window_relative_points",
                 mime_type: attachment.mime_type.clone(),
                 pixel_width: attachment.pixel_width,
                 pixel_height: attachment.pixel_height,
@@ -375,7 +425,7 @@ impl LensAgentProjection {
             .collect::<Result<Vec<_>, LensAgentProjectionError>>()?;
 
         let payload = LensAgentProjectionPayload {
-            schema_version: 2,
+            schema_version: 3,
             delivery: None,
             sources,
             media: normalized_media,
@@ -670,15 +720,6 @@ fn normalize_projection_node(
     })
 }
 
-fn relative_bounds(bounds: Bounds, window: Bounds) -> Bounds {
-    Bounds {
-        x: bounds.x - window.x,
-        y: bounds.y - window.y,
-        width: bounds.width,
-        height: bounds.height,
-    }
-}
-
 fn normalize_detail(detail: &str, replacements: &[(String, String)]) -> String {
     replacements
         .iter()
@@ -849,8 +890,8 @@ mod tests {
     use super::*;
     use crate::{
         lens::{
-            target_id, LensCoordinateSpace, LensInputSource, LensMediaAttachment,
-            LensMediaCoverage, LensNodeKind, LensSource, LENS_INPUT_SCHEMA_VERSION,
+            target_id, LensInputSource, LensMediaAttachment, LensMediaCoverage, LensNodeKind,
+            LensSource, LENS_INPUT_SCHEMA_VERSION,
         },
         model::{SelectedWindow, WindowIdentity, WindowObservableFacts},
     };
@@ -941,20 +982,48 @@ mod tests {
                 uri: uri.clone(),
                 scope: LensMediaScope::AxElementRegion,
                 source_node_id: Some("node-000001".into()),
-                source_bounds: Bounds {
-                    x: window_origin.0 + 10.0,
-                    y: window_origin.1 + 20.0,
-                    width: 100.0,
-                    height: 80.0,
-                },
-                captured_bounds: Bounds {
-                    x: window_origin.0 + 10.0,
-                    y: window_origin.1 + 20.0,
-                    width: 100.0,
-                    height: 80.0,
+                geometry: crate::lens::LensMediaGeometry::Acquired {
+                    frame: crate::geometry::AcquiredFrame {
+                        id: Uuid::from_u128(u128::from(window_id) + 100)
+                            .try_into()
+                            .unwrap(),
+                        extent: crate::geometry::PixelExtent {
+                            width: 400,
+                            height: 300,
+                        },
+                        content_bounds: Bounds {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 400.0,
+                            height: 300.0,
+                        },
+                        desktop_mapping: crate::geometry::DesktopMapping::Known {
+                            space: crate::geometry::DesktopSpace::DesktopLogical,
+                            desktop_bounds: window.facts.frame,
+                            scale_x: 1.0,
+                            scale_y: 1.0,
+                        },
+                    },
+                    source_bounds: Bounds {
+                        x: 10.0,
+                        y: 20.0,
+                        width: 100.0,
+                        height: 80.0,
+                    },
+                    captured_bounds: Bounds {
+                        x: 10.0,
+                        y: 20.0,
+                        width: 100.0,
+                        height: 80.0,
+                    },
+                    crop: crate::geometry::PixelRect {
+                        x: 10,
+                        y: 20,
+                        width: 100,
+                        height: 80,
+                    },
                 },
                 coverage: LensMediaCoverage::FullRegion,
-                coordinate_space: LensCoordinateSpace::ScreenPoints,
                 mime_type: "image/png".into(),
                 pixel_width: 200,
                 pixel_height: 160,
@@ -1009,7 +1078,10 @@ mod tests {
         assert!(!first.json().contains(&first_context.to_string()));
         assert!(!first.json().contains("node-000001"));
         assert!(!first.json().contains("media-window-7"));
-        assert!(first.json().contains("window_relative_points"));
+        assert!(first.json().contains("frame_pixels"));
+        assert!(!first.json().contains("desktop_mapping"));
+        assert!(!first.json().contains("desktop_bounds"));
+        assert!(!first.json().contains(&Uuid::from_u128(107).to_string()));
         assert_eq!(first.prompt_media()[0].attachment_id, "source-0/media-0");
         assert_eq!(
             first.prompt_media()[0].uri,

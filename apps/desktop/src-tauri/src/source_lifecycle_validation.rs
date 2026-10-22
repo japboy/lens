@@ -150,11 +150,7 @@ mod stop {
             return Metadata::default();
         };
         let mut result = Metadata {
-            source_workers: Some(
-                state
-                    .source_workers
-                    .load(std::sync::atomic::Ordering::Acquire),
-            ),
+            source_workers: state.source_workers.try_count(),
             ..Metadata::default()
         };
         // Diagnostics never wait for application locks or influence the operation.
