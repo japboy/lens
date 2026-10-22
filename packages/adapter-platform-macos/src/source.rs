@@ -65,6 +65,11 @@ pub(crate) fn enable_source_validation_metadata() {
 }
 
 #[cfg(debug_assertions)]
+pub(crate) fn source_validation_metadata_enabled() -> bool {
+    SOURCE_VALIDATION_METADATA.load(Ordering::Acquire)
+}
+
+#[cfg(debug_assertions)]
 pub(crate) fn capture_validation_metadata(value: serde_json::Value) {
     if SOURCE_VALIDATION_METADATA.load(Ordering::Acquire) {
         use std::io::Write;
