@@ -8,10 +8,10 @@ packages:
   - "packages/adapter-mcp-apps-view"
   - "packages/adapter-math-renderer"
 
-# Mermaid's declared range accepts this trusted-publisher release; newer
-# Cytoscape releases are rejected by the workspace's no-downgrade policy.
+# Pin Mermaid's runtime dependency without rewriting extensions' peer ranges.
+# Newer Cytoscape releases must still pass the workspace's no-downgrade policy.
 overrides:
-  cytoscape: 3.34.3
+  "mermaid>cytoscape": 3.34.4
 
 minimumReleaseAge: 4320
 minimumReleaseAgeIgnoreMissingTime: false
