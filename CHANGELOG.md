@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0](https://github.com/japboy/lens/compare/v0.11.0...v0.12.0) (2026-10-22)
+
+
+### Features
+
+* **platform:** bind image geometry to frames ([#224](https://github.com/japboy/lens/issues/224)) ([d99f692](https://github.com/japboy/lens/commit/d99f69238deed5b0d621c1f82836dbdbfb4b858b))
+
+
+### Bug Fixes
+
+* **deps:** update application dependencies ([#226](https://github.com/japboy/lens/issues/226)) ([6e8b940](https://github.com/japboy/lens/commit/6e8b940cf5605f23f392a45e168e842c74ac2558))
+* **deps:** update tauri dependencies ([#228](https://github.com/japboy/lens/issues/228)) ([b62cd2a](https://github.com/japboy/lens/commit/b62cd2adf4507cc6900bcbad8492c7935196fd3d))
+
 ## [0.11.0](https://github.com/japboy/lens/compare/v0.10.1...v0.11.0) (2026-10-18)
 
 
