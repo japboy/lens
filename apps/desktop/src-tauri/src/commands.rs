@@ -45,19 +45,23 @@ struct SourceReadLease<R: tauri::Runtime> {
     reads: Vec<TargetReadKey>,
 }
 
-struct SourceWorkerLease(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+struct SourceWorkerLease(std::sync::Arc<crate::app_state::SourceWorkers>);
 
 impl SourceWorkerLease {
-    fn new<R: tauri::Runtime>(app: &AppHandle<R>) -> Self {
-        let count = app.state::<AppState>().source_workers.clone();
-        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Self(count)
+    fn new<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        operation_id: Uuid,
+        read: Option<TargetReadKey>,
+    ) -> Result<Self, String> {
+        app.state::<AppState>()
+            .register_source_worker(operation_id, read)
+            .map(Self)
     }
 }
 
 impl Drop for SourceWorkerLease {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.finish();
     }
 }
 
@@ -109,7 +113,14 @@ impl<R: tauri::Runtime> BlockingExecutor for DesktopBlockingExecutor<R> {
             app: self.app.clone(),
             authority: self.authority,
         };
-        let worker = SourceWorkerLease::new(&self.app);
+        let operation_id = match self.authority {
+            ContextReadAuthority::Initial { operation_id }
+            | ContextReadAuthority::Refresh { operation_id, .. } => operation_id,
+        };
+        let worker = match SourceWorkerLease::new(&self.app, operation_id, read) {
+            Ok(worker) => worker,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let task = tauri::async_runtime::spawn_blocking(move || {
             let _worker = worker;
             // A worker queued before Pause/Stop must recheck when it actually starts.
@@ -1133,7 +1144,7 @@ async fn build_target_selection_item<R: tauri::Runtime>(
     };
     let capture_target_id = id.clone();
     let worker_app = app.clone();
-    let worker = SourceWorkerLease::new(app);
+    let worker = SourceWorkerLease::new(app, operation_id, Some(read))?;
     let capture = tauri::async_runtime::spawn_blocking(move || {
         let _worker = worker;
         if !worker_app
@@ -1601,6 +1612,16 @@ pub fn stop_lens<R: tauri::Runtime>(
     app: AppHandle<R>,
     operation_id: Uuid,
 ) -> Result<LensState, String> {
+    // Native acquisition has bounded start/frame/stop/drain phases (20s total).
+    // This command runs on command_work's blocking pool, never AppKit's main queue.
+    stop_lens_with_drain_timeout(app, operation_id, std::time::Duration::from_secs(25))
+}
+
+pub(crate) fn stop_lens_with_drain_timeout<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    operation_id: Uuid,
+    drain_timeout: std::time::Duration,
+) -> Result<LensState, String> {
     #[cfg(debug_assertions)]
     let mut stop_probe = crate::source_lifecycle_validation::StopProbe::new(&app, operation_id);
     let state = app.state::<AppState>();
@@ -1614,7 +1635,7 @@ pub fn stop_lens<R: tauri::Runtime>(
         return Err("Lens operation was superseded".into());
     }
     state.terminate_source_operation(operation_id, OperationTerminalReason::Cancelled)?;
-    let quiescent = state.begin_source_cleanup(operation_id)?;
+    state.begin_source_cleanup(operation_id)?;
     #[cfg(debug_assertions)]
     stop_probe.record(
         &app,
@@ -1642,6 +1663,14 @@ pub fn stop_lens<R: tauri::Runtime>(
     );
     if let Err(error) = &observation_cleanup {
         eprintln!("Unable to confirm stopped observer cleanup: {error}");
+    }
+    // Retain the session gate against replacement, but hold no read-admission,
+    // runtime, or worker mutex while waiting. Native workers need none of the
+    // session gate to finish (including their real native Stop/drain cleanup).
+    // Drain BEFORE consuming the operation's native cleanup-failure latch.
+    let quiescent = state.source_workers.wait_until_idle(drain_timeout);
+    if !quiescent {
+        eprintln!("Stopped native Lens workers did not drain before the deadline");
     }
     let released = app
         .state::<AppState>()
