@@ -402,14 +402,15 @@ export class LensAgentSettings extends LitElement {
               ${
                 methods.length
                   ? methods.map(
-                      (method) => html` <button
-                        type="button"
-                        data-lens-button-role="normal"
-                        ?disabled=${this.disabled}
-                        @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
-                      >
-                        Authenticate with ${method.name}…
-                      </button>`,
+                      (method) =>
+                        html` <button
+                          type="button"
+                          data-lens-button-role="normal"
+                          ?disabled=${this.disabled}
+                          @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
+                        >
+                          Authenticate with ${method.name}…
+                        </button>`,
                     )
                   : html`<p>Authenticate with this Agent's existing CLI, then select it again.</p>`
               }

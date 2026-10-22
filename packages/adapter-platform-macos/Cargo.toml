@@ -8,7 +8,7 @@ publish.workspace = true
 links = "lens_native"
 
 [build-dependencies]
-cc = "=1.5.1"
+cc = "=1.8.0"
 
 [dependencies]
 port-platform.workspace = true
@@ -16,11 +16,11 @@ base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tokio = { version = "=1.53.2", features = ["sync"] }
+tokio = { version = "=1.53.3", features = ["sync"] }
 macos-accessibility-client = "=0.0.2"
 screencapturekit = { version = "=11.0.0", features = ["async", "macos_15_2"] }
 dispatch2 = "=0.3.1"
-objc2 = "=0.6.4"
+objc2 = "=0.6.5"
 objc2-foundation = "=0.3.2"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "std",

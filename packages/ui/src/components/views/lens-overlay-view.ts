@@ -2086,14 +2086,15 @@ export class LensOverlayView extends LitElement {
                   ${
                     authenticationMethods.length
                       ? authenticationMethods.map(
-                          (method) => html`<button
-                            type="button"
-                            data-lens-button-role="normal"
-                            ?disabled=${model?.pending}
-                            @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
-                          >
-                            Authenticate with ${method.name}…
-                          </button>`,
+                          (method) =>
+                            html`<button
+                              type="button"
+                              data-lens-button-role="normal"
+                              ?disabled=${model?.pending}
+                              @click=${() => this.emit({ type: "authenticate", methodId: method.id })}
+                            >
+                              Authenticate with ${method.name}…
+                            </button>`,
                         )
                       : html`<p>Authenticate with this agent's existing CLI, then try again.</p>`
                   }

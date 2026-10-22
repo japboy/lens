@@ -327,28 +327,29 @@ export class LensAgentOutput extends LitElement {
           ${repeat(
             narrativeResponses,
             (response) => response.id,
-            (response) => html`<section
-              class="lens-response"
-              data-response-id=${response.id}
-              data-response-sequence=${response.sequence}
-              aria-label=${`Response ${response.sequence}`}
-            >
-              ${response.blocks.some((block) => block.type === "markdown" || block.type === "unsupported") ? html`<h2 class="lens-response-heading">Response ${response.sequence}</h2>` : nothing}
-              ${repeat(
-                response.blocks.filter(
-                  (block) => block.type === "markdown" || block.type === "unsupported",
-                ),
-                (block) => block.block_index,
-                (block) =>
-                  html`<lens-response-block
-                    .operationId=${history.scopeId}
-                    .responseId=${response.id}
-                    .descriptor=${block}
-                    .loadBlock=${this.loadResponseBlock}
-                    .provisional=${history.provisionalBlocks?.get(responseBlockIdentity(history.scopeId, response.id, block.block_index))}
-                  ></lens-response-block>`,
-              )}
-            </section>`,
+            (response) =>
+              html`<section
+                class="lens-response"
+                data-response-id=${response.id}
+                data-response-sequence=${response.sequence}
+                aria-label=${`Response ${response.sequence}`}
+              >
+                ${response.blocks.some((block) => block.type === "markdown" || block.type === "unsupported") ? html`<h2 class="lens-response-heading">Response ${response.sequence}</h2>` : nothing}
+                ${repeat(
+                  response.blocks.filter(
+                    (block) => block.type === "markdown" || block.type === "unsupported",
+                  ),
+                  (block) => block.block_index,
+                  (block) =>
+                    html`<lens-response-block
+                      .operationId=${history.scopeId}
+                      .responseId=${response.id}
+                      .descriptor=${block}
+                      .loadBlock=${this.loadResponseBlock}
+                      .provisional=${history.provisionalBlocks?.get(responseBlockIdentity(history.scopeId, response.id, block.block_index))}
+                    ></lens-response-block>`,
+                )}
+              </section>`,
           )}
           ${history.capacityReached ? html`<p class="lens-history-capacity" role="status">This session has reached its response history limit. Your previous responses remain available. Start a new session to continue.</p>` : nothing}
         </div>

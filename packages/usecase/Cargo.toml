@@ -22,7 +22,7 @@ thiserror.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-tokio = { version = "=1.53.2", features = ["macros", "rt"] }
+tokio = { version = "=1.53.3", features = ["macros", "rt"] }
 
 [lints]
 workspace = true
