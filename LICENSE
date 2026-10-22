@@ -32870,9 +32870,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ===============================================================================
-Rust: libc 0.2.190
+Rust: libc 0.2.191
 Declared license: MIT OR Apache-2.0
-Source: https://static.crates.io/crates/libc/libc-0.2.190.crate
+Source: https://static.crates.io/crates/libc/libc-0.2.191.crate
 ===============================================================================
 
 --- LICENSE-APACHE ---
@@ -67855,9 +67855,9 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 
 ===============================================================================
-Rust: zip 9.0.4
+Rust: zip 9.0.5
 Declared license: MIT
-Source: https://static.crates.io/crates/zip/zip-9.0.4.crate
+Source: https://static.crates.io/crates/zip/zip-9.0.5.crate
 ===============================================================================
 
 --- LICENSE ---
@@ -71221,9 +71221,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ===============================================================================
-JavaScript: cytoscape 3.34.3
+JavaScript: cytoscape 3.34.4
 Declared license: MIT
-Source: https://registry.npmjs.org/cytoscape/-/cytoscape-3.34.3.tgz
+Source: https://registry.npmjs.org/cytoscape/-/cytoscape-3.34.4.tgz
 ===============================================================================
 
 --- LICENSE ---
