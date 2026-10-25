@@ -107,10 +107,10 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
-          version: "v2026.10.11" # Exact release tag required for Renovate's paired checksum lookup.
-          sha256: 62e86e51f834899610e9bd0ee37580cfe01fac5fff03002318e714fbdb86faeb # macos-arm64
+          version: "v2026.10.17" # Exact release tag required for Renovate's paired checksum lookup.
+          sha256: 9e27709db5eb1e900d83149418d3067309f2a5004d4994d94246ab658ba4a3ce # macos-arm64
           cache: false
           install: true
 
@@ -161,7 +161,7 @@ jobs:
       - name: Restore Rust dependency artifacts
         id: rust-cache
         if: steps.source.outputs.generation == 'current'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: lens-v3-rust
           shared-key: macos-aarch64-apple-darwin-${{ (inputs.seed_bundle_cache || inputs.verification_mode != 'code') && 'code-and-bundle-v1' || 'code-v1' }}-${{ steps.contract.outputs.cache_key }}
@@ -178,7 +178,7 @@ jobs:
       # packaged-build key; a read-only fallback reuses the other coverage on a miss.
       - name: Restore compatible dependencies from the other build coverage
         if: steps.source.outputs.generation == 'current' && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: lens-v3-rust
           shared-key: macos-aarch64-apple-darwin-${{ (inputs.seed_bundle_cache || inputs.verification_mode != 'code') && 'code-v1' || 'code-and-bundle-v1' }}-${{ steps.contract.outputs.cache_key }}
