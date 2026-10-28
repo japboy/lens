@@ -1553,7 +1553,12 @@ impl<R: tauri::Runtime> ConfirmationHost for DesktopConfirmation<R> {
     }
 
     fn start_observation(&self, operation: Uuid) -> Result<(), String> {
-        live_runtime::start(&self.app, operation)
+        // start() first requires this operation's Watching lifecycle and
+        // canonical context. Failed/foreign/preview starts never arm a hook.
+        live_runtime::start(&self.app, operation)?;
+        #[cfg(debug_assertions)]
+        crate::source_lifecycle_validation::arm_source_validation_capture(operation);
+        Ok(())
     }
 
     fn mark_observation_unavailable(&self, operation: Uuid, error: String) -> Result<(), String> {
@@ -1852,6 +1857,42 @@ pub async fn preview_agent_model<R: tauri::Runtime>(
 mod tests {
     use super::*;
     use crate::prompt_template::MAX_AGENT_PROMPT_TEMPLATE_SECTION_CHARS;
+
+    #[test]
+    fn validation_arm_boundary_rejects_foreign_non_watching_and_missing_context_starts() {
+        let operation = Uuid::from_u128(1);
+        let state = crate::test_support::state();
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(crate::product_context())
+            .unwrap();
+        let host = DesktopConfirmation {
+            app: app.handle().clone(),
+        };
+        assert!(host.start_observation(operation).is_err());
+        for lifecycle in [
+            LensMonitoringLifecycle::Paused,
+            LensMonitoringLifecycle::Stopped,
+            LensMonitoringLifecycle::Watching,
+        ] {
+            app.state::<AppState>().runtime.write().unwrap().lens = LensState {
+                operation_id: Some(operation),
+                live: Some(LensLiveState {
+                    lifecycle,
+                    health: LensSourceHealth::Healthy,
+                    freshness: LensFreshness::Unverified,
+                    agent_refresh_interval_seconds: LIVE_AGENT_REFRESH_INTERVAL_SECONDS,
+                    last_outcome: None,
+                    error: None,
+                }),
+                ..LensState::default()
+            };
+            // Even Watching has no canonical context, so start() must return
+            // before the subsequent native validation arm boundary.
+            assert!(host.start_observation(operation).is_err());
+            assert!(host.start_observation(Uuid::from_u128(99)).is_err());
+        }
+    }
 
     #[test]
     fn agent_prompt_template_is_complete_bounded_and_has_deterministic_line_endings() {
