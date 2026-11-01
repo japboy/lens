@@ -1,6 +1,6 @@
 {
   "name": "adapter-mcp-apps-view",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "description": "HTML MCP Apps View and shared static/interactive document preparation",
   "type": "module",
