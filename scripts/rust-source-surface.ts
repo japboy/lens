@@ -134,7 +134,7 @@ const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
     '#[cfg(target_os = "macos")] mod native;',
     '#[cfg(target_os = "macos")] pub use native::run;',
     '#[cfg(target_os = "macos")] native::configure_activation(app, validate_a11y || source_validation.enabled());',
-    '#[cfg(target_os = "macos")] native::enable_source_validation();',
+    '#[cfg(target_os = "macos")] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);',
     // Startup recovery owns a foreground window before the normal runtime exists.
     '#[cfg(target_os = "macos")] native::configure_activation(app, true);',
   ],
@@ -183,6 +183,8 @@ const PLATFORM_TYPES = new Set([
   "PresentationFuture",
   "ControlPalette",
   "ControlColors",
+  "SourceValidationCapture",
+  "SourceValidationHooks",
 ]);
 export function nativeCompositionViolations(source: string): string[] {
   const tokens = rustTokens(source);
