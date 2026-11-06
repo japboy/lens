@@ -41,7 +41,7 @@ flate2 = "=1.1.10"
 libc = "=0.2.191"
 nix = { version = "=0.31.3", features = ["feature", "fs", "poll", "process", "signal", "term"] }
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"
 serde.workspace = true
 serde_json.workspace = true
@@ -64,7 +64,7 @@ tauri-plugin-dialog = "=2.8.3"
 tauri-plugin-opener = "=2.7.2"
 thiserror.workspace = true
 tokio-util = "=0.7.20"
-tokio = { version = "=1.53.3", features = [
+tokio = { version = "=1.54.1", features = [
   "fs",
   "io-util",
   "macros",
@@ -75,11 +75,11 @@ tokio = { version = "=1.53.3", features = [
 ] }
 uuid.workspace = true
 uzers = { version = "=0.12.2", default-features = false }
-zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "=9.3.0", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tokio-util = { version = "=0.7.20", features = ["compat"] }
-tokio = { version = "=1.53.3", features = ["test-util"] }
+tokio = { version = "=1.54.1", features = ["test-util"] }
 toml = "=1.1.8"
 pretty_assertions = "=1.4.1"
 tauri = { version = "=2.12.4", default-features = false, features = ["test"] }
