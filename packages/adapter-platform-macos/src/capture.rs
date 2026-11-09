@@ -167,7 +167,7 @@ fn acquire(
         .with_should_be_opaque(true)
         .map_err(unavailable)?;
     let before = screen_configuration();
-    let sample = crate::capture_stream::acquire(&filter, &configuration, latch)?;
+    let sample = crate::capture_stream::acquire(&filter, &configuration, latch, target)?;
     let after = screen_configuration();
     let content_bounds = crate::capture_stream::required_content(&sample.info)?;
     let frame = AcquiredFrame {
@@ -220,11 +220,12 @@ fn screen_configuration() -> Vec<Screen> {
 
 fn desktop_mapping(info: &FrameInfo, before: &[Screen], after: &[Screen]) -> DesktopMapping {
     let unknown = |reason| DesktopMapping::Unavailable { reason };
-    // Evidence currently covers one zero-origin, 1x display only. Reading its
-    // metadata does not prove the same units on Retina or multiple displays.
+    // Native pixel/marker evidence covers stable, single zero-origin displays
+    // at backing 1x and 2x, with the same sample's scaleFactor matching backing.
+    // This is not a universal unit guarantee for other scales or topologies.
     if before != after
         || before.len() != 1
-        || before[0].scale != 1.0
+        || !matches!(before[0].scale, 1.0 | 2.0)
         || before[0].bounds.x != 0.0
         || before[0].bounds.y != 0.0
         || !valid_bounds(before[0].bounds)
@@ -251,7 +252,7 @@ fn desktop_mapping(info: &FrameInfo, before: &[Screen], after: &[Screen]) -> Des
     {
         return unknown(GeometryUnavailableReason::InvalidMetadata);
     }
-    if factor != 1.0 {
+    if factor != before[0].scale {
         return unknown(GeometryUnavailableReason::UnverifiedConfiguration);
     }
     let Ok(content) = crate::capture_stream::required_content(info) else {
@@ -596,7 +597,7 @@ mod tests {
         for changed in [
             vec![],
             vec![Screen {
-                scale: 2.0,
+                scale: 1.5,
                 ..screen.clone()
             }],
             vec![screen.clone(), screen.clone()],
@@ -636,6 +637,299 @@ mod tests {
                 reason: GeometryUnavailableReason::InvalidMetadata
             }
         );
+    }
+
+    fn native_rect(bounds: Bounds) -> screencapturekit::cg::CGRect {
+        screencapturekit::cg::CGRect {
+            origin: screencapturekit::cg::CGPoint {
+                x: bounds.x,
+                y: bounds.y,
+            },
+            size: screencapturekit::cg::CGSize {
+                width: bounds.width,
+                height: bounds.height,
+            },
+        }
+    }
+
+    #[test]
+    fn recorded_single_two_x_samples_keep_logical_desktop_and_fractional_frame_pixels() {
+        let screens = [Screen {
+            bounds: bounds(0.0, 0.0, 1920.0, 1080.0),
+            scale: 2.0,
+        }];
+        // Six same-sample records from the public native fixture: baseline,
+        // x/y movement, resize, output downsize, and negative WINDOW x.
+        for (desktop, content, scale, extent) in [
+            (
+                bounds(160.0, 488.0, 600.0, 432.0),
+                bounds(0.0, 0.0, 586.1111283302307, 422.0000123977661),
+                0.9768518805503845,
+                (1200, 844),
+            ),
+            (
+                bounds(224.0, 488.0, 600.0, 432.0),
+                bounds(0.0, 0.0, 586.1111283302307, 422.0000123977661),
+                0.9768518805503845,
+                (1200, 844),
+            ),
+            (
+                bounds(224.0, 440.0, 600.0, 432.0),
+                bounds(0.0, 0.0, 586.1111283302307, 422.0000123977661),
+                0.9768518805503845,
+                (1200, 844),
+            ),
+            (
+                bounds(224.0, 400.0, 680.0, 472.0),
+                bounds(0.0, 0.0, 600.0000047683716, 416.470591545105),
+                0.8823529481887817,
+                (1200, 844),
+            ),
+            (
+                bounds(224.0, 400.0, 680.0, 472.0),
+                bounds(0.0, 0.0, 259.32204008102417, 180.00000429153442),
+                0.3813559412956238,
+                (640, 360),
+            ),
+            (
+                bounds(-12.0, 400.0, 680.0, 472.0),
+                bounds(0.0, 0.0, 259.32204008102417, 180.00000429153442),
+                0.3813559412956238,
+                (640, 360),
+            ),
+        ] {
+            let info = FrameInfo {
+                screen_rect: Some(native_rect(desktop)),
+                content_rect: Some(native_rect(content)),
+                scale_factor: Some(2.0),
+                content_scale: Some(scale),
+                ..Default::default()
+            };
+            let content_bounds = crate::capture_stream::required_content(&info).unwrap();
+            let frame = AcquiredFrame {
+                extent: PixelExtent {
+                    width: extent.0,
+                    height: extent.1,
+                },
+                content_bounds,
+                desktop_mapping: desktop_mapping(&info, &screens, &screens),
+                ..frame()
+            };
+            assert_eq!(
+                frame.desktop_mapping,
+                DesktopMapping::Known {
+                    space: DesktopSpace::DesktopLogical,
+                    desktop_bounds: desktop,
+                    scale_x: 2.0 * scale,
+                    scale_y: 2.0 * scale
+                }
+            );
+            assert!(frame.is_valid());
+            assert_eq!(
+                frame.desktop_to_frame(DesktopSpace::DesktopLogical, desktop),
+                Some(content_bounds)
+            );
+            assert_ne!(content_bounds.width, f64::from(extent.0));
+        }
+    }
+
+    #[test]
+    fn two_x_gate_keeps_unverified_and_invalid_optional_mapping_unavailable() {
+        let screen = Screen {
+            bounds: bounds(0.0, 0.0, 1920.0, 1080.0),
+            scale: 2.0,
+        };
+        let info = FrameInfo {
+            screen_rect: Some(native_rect(bounds(224.0, 400.0, 680.0, 472.0))),
+            content_rect: Some(native_rect(bounds(
+                0.0,
+                0.0,
+                600.0000047683716,
+                416.470591545105,
+            ))),
+            scale_factor: Some(2.0),
+            content_scale: Some(0.8823529481887817),
+            ..Default::default()
+        };
+        let screens = [screen.clone()];
+        for (factor, reason) in [
+            (1.0, GeometryUnavailableReason::UnverifiedConfiguration),
+            (1.5, GeometryUnavailableReason::UnverifiedConfiguration),
+            (3.0, GeometryUnavailableReason::UnverifiedConfiguration),
+            (f64::NAN, GeometryUnavailableReason::InvalidMetadata),
+            (0.0, GeometryUnavailableReason::InvalidMetadata),
+        ] {
+            let changed = FrameInfo {
+                scale_factor: Some(factor),
+                ..info.clone()
+            };
+            assert_eq!(
+                desktop_mapping(&changed, &screens, &screens),
+                DesktopMapping::Unavailable { reason }
+            );
+        }
+        for changed in [
+            vec![],
+            vec![screen.clone(), screen.clone()],
+            vec![Screen {
+                scale: 3.0,
+                ..screen.clone()
+            }],
+            vec![Screen {
+                bounds: bounds(-1920.0, 0.0, 1920.0, 1080.0),
+                ..screen.clone()
+            }],
+            vec![Screen {
+                bounds: bounds(0.0, 0.0, 1920.0, f64::NAN),
+                ..screen.clone()
+            }],
+        ] {
+            assert!(matches!(
+                desktop_mapping(&info, &changed, &changed),
+                DesktopMapping::Unavailable { .. }
+            ));
+        }
+        let changed = [Screen {
+            bounds: bounds(0.0, 0.0, 2560.0, 1440.0),
+            ..screen
+        }];
+        assert_eq!(
+            desktop_mapping(&info, &screens, &changed),
+            DesktopMapping::Unavailable {
+                reason: GeometryUnavailableReason::UnverifiedConfiguration
+            }
+        );
+        for changed in [
+            FrameInfo {
+                screen_rect: None,
+                ..info.clone()
+            },
+            FrameInfo {
+                content_scale: None,
+                ..info.clone()
+            },
+            FrameInfo {
+                content_rect: Some(native_rect(bounds(0.0, 0.0, 50.0, 50.0))),
+                ..info
+            },
+        ] {
+            assert!(matches!(
+                desktop_mapping(&changed, &screens, &screens),
+                DesktopMapping::Unavailable { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn recorded_two_x_ax_region_crops_actual_pixels_and_rejects_stale_or_wrong_units() {
+        let desktop = bounds(224.0, 400.0, 680.0, 472.0);
+        let screens = [Screen {
+            bounds: bounds(0.0, 0.0, 1920.0, 1080.0),
+            scale: 2.0,
+        }];
+        let info = FrameInfo {
+            screen_rect: Some(native_rect(desktop)),
+            content_rect: Some(native_rect(bounds(
+                0.0,
+                0.0,
+                600.0000047683716,
+                416.470591545105,
+            ))),
+            scale_factor: Some(2.0),
+            content_scale: Some(0.8823529481887817),
+            ..Default::default()
+        };
+        // The real AXImage node/window observations from the public 2x fixture.
+        // This regression replays their values; it does not perform native AX.
+        let region = CaptureRegion::DesktopRegion {
+            space: DesktopSpace::DesktopLogical,
+            bounds: bounds(255.0, 463.0, 618.0, 378.0),
+            observed_window_frame: desktop,
+        };
+        let mut requests = requests();
+        requests.push(CaptureRequest {
+            id: "ax-image".into(),
+            scope: CaptureScope::AxElementRegion,
+            region,
+        });
+        requests.push(CaptureRequest {
+            id: "stale".into(),
+            scope: CaptureScope::AxElementRegion,
+            region: CaptureRegion::DesktopRegion {
+                space: DesktopSpace::DesktopLogical,
+                bounds: bounds(255.0, 463.0, 618.0, 378.0),
+                observed_window_frame: bounds(160.0, 488.0, 600.0, 432.0),
+            },
+        });
+        requests.push(CaptureRequest {
+            id: "wrong-units".into(),
+            scope: CaptureScope::AxElementRegion,
+            region: CaptureRegion::DesktopRegion {
+                space: DesktopSpace::DesktopPhysicalPixels,
+                bounds: bounds(255.0, 463.0, 618.0, 378.0),
+                observed_window_frame: desktop,
+            },
+        });
+        let frame = AcquiredFrame {
+            extent: PixelExtent {
+                width: 1200,
+                height: 864,
+            },
+            content_bounds: crate::capture_stream::required_content(&info).unwrap(),
+            desktop_mapping: desktop_mapping(&info, &screens, &screens),
+            ..frame()
+        };
+        let bitmap = image::RgbaImage::from_fn(1200, 864, |x, y| {
+            image::Rgba([(x % 251) as u8, (y % 251) as u8, ((x + y) % 251) as u8, 255])
+        });
+        let limits = ImageCaptureLimits {
+            max_long_edge: 2048,
+            max_pixels: 4_194_304,
+            max_attachment_bytes: 8_388_608,
+            max_total_bytes: 16_777_216,
+        };
+        let batch = encode_frame(frame.clone(), &bitmap, &requests, limits).unwrap();
+        assert_eq!(batch.captures.len(), 2);
+        let ax = &batch.captures[1];
+        assert_eq!(ax.attachment_id, "ax-image");
+        assert_eq!(
+            ax.crop,
+            PixelRect {
+                x: 54,
+                y: 111,
+                width: 1092,
+                height: 668
+            }
+        );
+        assert_eq!(ax.coverage, CaptureCoverage::FullRegion);
+        let decoded = image::load_from_memory(&ax.png).unwrap().into_rgba8();
+        assert_eq!(decoded.dimensions(), (1092, 668));
+        assert_eq!(decoded.get_pixel(0, 0), bitmap.get_pixel(54, 111));
+        assert_eq!(decoded.get_pixel(1091, 667), bitmap.get_pixel(1145, 778));
+        assert_eq!(
+            batch.omissions[0].reason,
+            CaptureOmissionReason::ObservationChanged
+        );
+        assert_eq!(
+            batch.omissions[1].reason,
+            CaptureOmissionReason::GeometryUnavailable
+        );
+        let crop = ax.crop;
+        validate_batch(batch, frame.target, &requests, limits).unwrap();
+        let smaller = ImageCaptureLimits {
+            max_long_edge: 400,
+            ..limits
+        };
+        let batch = encode_frame(frame.clone(), &bitmap, &requests, smaller).unwrap();
+        assert_eq!(batch.captures[1].crop, crop);
+        assert_eq!(
+            (
+                batch.captures[1].pixel_width,
+                batch.captures[1].pixel_height
+            ),
+            (400, 244)
+        );
+        validate_batch(batch, frame.target, &requests, smaller).unwrap();
     }
     #[test]
     fn premultiplied_rgba_is_encoded_with_straight_png_alpha() {

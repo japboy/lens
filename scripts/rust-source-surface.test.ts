@@ -76,6 +76,9 @@ describe("separately compiled native consumers", () => {
     "use super::platform::{Services as S};",
     "use crate::platform::ControlPaletteState;",
     "use crate::platform::ControlColorsState;",
+    "use crate::source_lifecycle_validation::Mode;",
+    "use crate::platform::SourceValidationState;",
+    "crate::platform::SourceValidationHooks::hidden_consumer();",
     "crate::platform::ControlColors::hidden_consumer();",
     "crate::platform::ControlPalette::hidden_consumer();",
     "crate::model::Value::new();",
@@ -94,6 +97,7 @@ describe("separately compiled native consumers", () => {
     "use super::platform::{Services, Presentation};",
     "use crate::platform::ControlPalette;",
     "use crate::platform::ControlColors;",
+    "use crate::platform::{SourceValidationCapture, SourceValidationHooks};",
     "fn colors() -> Option<crate::platform::ControlColors> { None }",
     "fn palette() -> Option<crate::platform::ControlPalette> { None }",
     "impl<R> crate::platform::WindowPresentation<R> for Native {}",
@@ -138,6 +142,37 @@ describe("separately compiled native consumers", () => {
         '#[cfg(target_os = "macos")] native::configure_activation(app, usecase::value());',
       ),
     ).not.toEqual([]);
+  });
+
+  it("keeps native validation effects at the exact composition entry, not common commands", () => {
+    const source =
+      '#[cfg(target_os = "macos")] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);';
+    expect(commonShellConditionalViolations("apps/desktop/src-tauri/src/lib.rs", source)).toEqual(
+      [],
+    );
+    expect(
+      commonShellConditionalViolations("apps/desktop/src-tauri/src/commands.rs", source),
+    ).not.toEqual([]);
+    expect(
+      commonShellConditionalViolations(
+        "apps/desktop/src-tauri/src/lib.rs",
+        source.replace("source_validation_hooks()", "arbitrary_native_effect()"),
+      ),
+    ).not.toEqual([]);
+    expect(
+      commonShellConditionalViolations(
+        "apps/desktop/src-tauri/src/commands.rs",
+        '#[cfg(all(debug_assertions, target_os = "macos"))] crate::native::arm_source_validation_capture(operation);',
+      ),
+    ).not.toEqual([]);
+  });
+
+  it("admits the formatted actual native composition root", () => {
+    const path = "apps/desktop/src-tauri/src/lib.rs";
+    expect(commonShellConditionalViolations(path, readFileSync(path, "utf8"))).toEqual([]);
+    expect(
+      nativeCompositionViolations(readFileSync("apps/desktop/src-tauri/src/native/mod.rs", "utf8")),
+    ).toEqual([]);
   });
 
   it("allows test conditions and type-checked cfg! expressions", () => {

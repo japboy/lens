@@ -1922,6 +1922,103 @@ fn stop_during_agent_prompt_revokes_publication_and_releases_observation() {
 }
 
 #[test]
+fn concurrent_and_sequential_duplicate_stop_release_the_operation_only_once() {
+    use usecase::read_admission::{
+        CleanupOutcome, CleanupState, OperationAdmission, OperationTerminalReason,
+    };
+    let harness = setup(Scenario::Success);
+    invoke(&harness.window, "confirm_lens_targets");
+    let read = *harness.fixture.reads.lock().unwrap().last().unwrap();
+    let fixture = harness.fixture.clone();
+    *harness.fixture.release_probe.lock().unwrap() = Some(Box::new(move || {
+        fixture.release_started.notify_one();
+        let (lock, condition) = &fixture.finish_release;
+        let (released, timeout) = condition
+            .wait_timeout_while(
+                lock.lock().unwrap(),
+                std::time::Duration::from_secs(5),
+                |released| !*released,
+            )
+            .unwrap();
+        assert!(
+            *released && !timeout.timed_out(),
+            "controlled release was not resumed"
+        );
+    }));
+    let first_app = harness.app.handle().clone();
+    let first = std::thread::spawn(move || {
+        tauri::async_runtime::block_on(crate::command_work::stop_lens(first_app, OPERATION))
+    });
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            harness.fixture.release_started.notified(),
+        )
+        .await
+        .unwrap();
+        let second = crate::command_work::stop_lens(harness.app.handle().clone(), OPERATION);
+        tokio::pin!(second);
+        // Poll the real command handler through admission and blocking-task
+        // scheduling while the first Stop still holds native release. No sleep
+        // or assumption about which blocking-pool thread runs next is needed.
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(second.as_mut(), context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert!(!harness
+            .fixture
+            .effects
+            .lock()
+            .unwrap()
+            .contains(&Effect::Released));
+        let (lock, condition) = &harness.fixture.finish_release;
+        *lock.lock().unwrap() = true;
+        condition.notify_one();
+        let duplicate = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .unwrap();
+        assert!(duplicate.unwrap_err().contains("superseded"));
+    });
+    first.join().unwrap().unwrap();
+    let repeated = tauri::async_runtime::block_on(crate::command_work::stop_lens(
+        harness.app.handle().clone(),
+        OPERATION,
+    ));
+    assert!(repeated.unwrap_err().contains("superseded"));
+    let state = harness.app.state::<AppState>();
+    assert_eq!(state.lens().unwrap(), LensState::default());
+    assert_eq!(state.source_workers.count(), 0);
+    assert!(!state.source_read_is_current(read).unwrap());
+    assert!(!state.source_operation_is_active(OPERATION).unwrap());
+    let admission = state.read_admission.lock().unwrap();
+    let admission = admission.as_ref().unwrap();
+    assert_eq!(
+        admission.operation_state(),
+        OperationAdmission::Terminal(OperationTerminalReason::Cancelled)
+    );
+    assert_eq!(
+        admission.cleanup_state(),
+        CleanupState::Finished(CleanupOutcome::ConfirmedClosed)
+    );
+    let effects = harness.fixture.effects.lock().unwrap();
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Released))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::ObserverClosed))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn stop_during_extraction_does_not_start_capture_or_publish_stale_context() {
     verify_stop_during_source_work(Scenario::StopDuringExtraction);
 }

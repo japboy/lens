@@ -22,6 +22,92 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Purpose-bound debug experiments; none change the real native Stop attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceValidationCapture {
+    HoldBeforeStop,
+    InvalidAfterStop,
+    CleanupUnconfirmedAfterStop,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Default)]
+enum ValidationState {
+    #[default]
+    Disabled,
+    Configured(SourceValidationCapture),
+    Armed {
+        action: SourceValidationCapture,
+        operation: uuid::Uuid,
+    },
+    Consumed,
+}
+
+#[cfg(debug_assertions)]
+impl ValidationState {
+    fn configure(&mut self, action: Option<SourceValidationCapture>, metadata_enabled: bool) {
+        if matches!(self, Self::Disabled) && metadata_enabled {
+            if let Some(action) = action {
+                *self = Self::Configured(action);
+            }
+        }
+    }
+
+    fn arm(&mut self, operation: uuid::Uuid) {
+        if let Self::Configured(action) = self {
+            *self = Self::Armed {
+                action: *action,
+                operation,
+            };
+        }
+    }
+
+    fn take(
+        &mut self,
+        target: port_platform::capture::CaptureTarget,
+    ) -> Option<SourceValidationCapture> {
+        let port_platform::capture::CaptureTarget::Registered(read) = target else {
+            return None;
+        };
+        match self {
+            Self::Armed { action, operation } if *operation == read.target.operation_id => {
+                let action = *action;
+                *self = Self::Consumed;
+                Some(action)
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+static VALIDATION: std::sync::Mutex<ValidationState> =
+    std::sync::Mutex::new(ValidationState::Disabled);
+
+#[cfg(debug_assertions)]
+pub(crate) fn configure_validation(action: Option<SourceValidationCapture>) {
+    if let Ok(mut state) = VALIDATION.lock() {
+        state.configure(action, crate::source::source_validation_metadata_enabled());
+    }
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn arm_validation(operation: uuid::Uuid) {
+    if let Ok(mut state) = VALIDATION.lock() {
+        state.arm(operation);
+    }
+}
+
+#[cfg(debug_assertions)]
+fn validation_read(
+    target: port_platform::capture::CaptureTarget,
+) -> Option<port_platform::authority::TargetReadKey> {
+    match target {
+        port_platform::capture::CaptureTarget::Registered(read) => Some(read),
+        port_platform::capture::CaptureTarget::Legacy { .. } => None,
+    }
+}
+
 pub(crate) struct SampleFrame {
     pub bitmap: image::RgbaImage,
     pub info: FrameInfo,
@@ -63,6 +149,7 @@ pub(crate) fn acquire(
     filter: &SCContentFilter,
     configuration: &SCStreamConfiguration,
     latch: Option<Arc<AtomicBool>>,
+    _target: port_platform::capture::CaptureTarget,
 ) -> Result<SampleFrame, CaptureFailure> {
     if latch
         .as_ref()
@@ -88,21 +175,78 @@ pub(crate) fn acquire(
         start_completion_known = start.as_ref().is_ok_and(start_is_confirmed);
         #[cfg(debug_assertions)]
         crate::source::capture_validation_metadata(
-            serde_json::json!({"stage":"start_result", "completion_known":start_completion_known,"accepted":matches!(&start,Ok(Ok(())))}),
+            serde_json::json!({"stage":"start_result", "read":validation_read(_target),"completion_known":start_completion_known,"accepted":matches!(&start,Ok(Ok(())))}),
         );
         let start = start.map_err(CaptureFailure::Unavailable)?;
         start.map_err(|error| CaptureFailure::Unavailable(error.to_string()))?;
-        collect(&stream)
+        collect(&stream, _target)
     })();
+    #[cfg(debug_assertions)]
+    let actual_sample_acquired = acquired.is_ok();
+    #[cfg(debug_assertions)]
+    let action = if acquired.is_ok() {
+        VALIDATION
+            .lock()
+            .ok()
+            .and_then(|mut state| state.take(_target))
+    } else {
+        None
+    };
+    #[cfg(debug_assertions)]
+    if action == Some(SourceValidationCapture::HoldBeforeStop) {
+        crate::source::capture_validation_metadata(
+            serde_json::json!({"stage":"validation_hold_begin","read":validation_read(_target),"duration_ms":12000,"queue_closed":stream.is_closed()}),
+        );
+        // Only the admitted blocking worker sleeps; no registry/admission/main
+        // queue lock is held. Queue-open witnesses are not atomic OS liveness.
+        std::thread::sleep(Duration::from_secs(12));
+        crate::source::capture_validation_metadata(
+            serde_json::json!({"stage":"validation_hold_end","read":validation_read(_target),"queue_closed":stream.is_closed()}),
+        );
+    }
     // Always attempt real native Stop, including start/frame failure. Do not
     // convert cleanup failure into unavailable media or publish an acquired image.
-    let cleanup = confirm_cleanup(start_completion_known, stop_and_drain(&stream));
+    let cleanup = confirm_cleanup(start_completion_known, stop_and_drain(&stream, _target));
+    #[cfg(debug_assertions)]
+    let actual_cleanup_confirmed = cleanup.is_ok();
+    #[cfg(debug_assertions)]
+    let (acquired, cleanup) = report_validation_fault(action, acquired, cleanup, _target);
     guard.confirmed = cleanup.is_ok();
     #[cfg(debug_assertions)]
     crate::source::capture_validation_metadata(
-        serde_json::json!({"stage":"acquire_return", "cleanup_confirmed":guard.confirmed,"sample_acquired":acquired.is_ok()}),
+        serde_json::json!({"stage":"acquire_return", "read":validation_read(_target),"cleanup_confirmed":guard.confirmed,"native_cleanup_confirmed":actual_cleanup_confirmed,"sample_acquired":actual_sample_acquired,"reported_acquisition_ok":acquired.is_ok()}),
     );
     finish(acquired, cleanup)
+}
+
+#[cfg(debug_assertions)]
+fn report_validation_fault<T>(
+    action: Option<SourceValidationCapture>,
+    acquired: Result<T, CaptureFailure>,
+    cleanup: Result<(), String>,
+    target: port_platform::capture::CaptureTarget,
+) -> (Result<T, CaptureFailure>, Result<(), String>) {
+    // Do not hide a real failure, skip native cleanup, or call this an OS error.
+    if acquired.is_ok() && cleanup.is_ok() {
+        let (fault, acquired, cleanup) = match action {
+            Some(SourceValidationCapture::InvalidAfterStop) => (
+                "invalid_after_stop",
+                Err(CaptureFailure::Invalid("debug validation injected an invalid acquisition report after real native cleanup".into())),
+                cleanup,
+            ),
+            Some(SourceValidationCapture::CleanupUnconfirmedAfterStop) => (
+                "cleanup_unconfirmed_after_stop",
+                acquired,
+                Err("debug validation injected an unconfirmed cleanup report after real native cleanup".into()),
+            ),
+            _ => return (acquired, cleanup),
+        };
+        crate::source::capture_validation_metadata(
+            serde_json::json!({"stage":"validation_injected_report","read":validation_read(target),"fault":fault,"actual_native_cleanup_confirmed":true}),
+        );
+        return (acquired, cleanup);
+    }
+    (acquired, cleanup)
 }
 
 fn start_is_confirmed(start: &Result<(), screencapturekit::error::SCError>) -> bool {
@@ -159,7 +303,10 @@ fn finish<T>(
     acquired
 }
 
-fn collect(stream: &AsyncSCStream) -> Result<SampleFrame, CaptureFailure> {
+fn collect(
+    stream: &AsyncSCStream,
+    _target: port_platform::capture::CaptureTarget,
+) -> Result<SampleFrame, CaptureFailure> {
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut missing_metadata = false;
     for _ in 0..24 {
@@ -205,7 +352,7 @@ fn collect(stream: &AsyncSCStream) -> Result<SampleFrame, CaptureFailure> {
             })?;
         #[cfg(debug_assertions)]
         crate::source::capture_validation_metadata(
-            serde_json::json!({"stage":"sample_acquired", "status":"complete", "display_time":info.display_time,"pixel_width":width,"pixel_height":height}),
+            serde_json::json!({"stage":"sample_acquired", "read":validation_read(_target),"status":"complete", "display_time":info.display_time,"pixel_width":width,"pixel_height":height}),
         );
         return Ok(SampleFrame { bitmap, info });
     }
@@ -223,7 +370,10 @@ fn end_failure(missing_metadata: bool, detail: String) -> CaptureFailure {
     }
 }
 
-fn stop_and_drain(stream: &AsyncSCStream) -> Result<(), String> {
+fn stop_and_drain(
+    stream: &AsyncSCStream,
+    _target: port_platform::capture::CaptureTarget,
+) -> Result<(), String> {
     let stopped = wait(
         stream.stop_capture(),
         Duration::from_secs(5),
@@ -232,7 +382,7 @@ fn stop_and_drain(stream: &AsyncSCStream) -> Result<(), String> {
     .and_then(|result| result.map_err(|error| error.to_string()));
     #[cfg(debug_assertions)]
     crate::source::capture_validation_metadata(
-        serde_json::json!({"stage":"stop_ack", "accepted":stopped.is_ok()}),
+        serde_json::json!({"stage":"stop_ack", "read":validation_read(_target),"accepted":stopped.is_ok()}),
     );
     stopped?;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -243,7 +393,7 @@ fn stop_and_drain(stream: &AsyncSCStream) -> Result<(), String> {
         #[cfg(debug_assertions)]
         if !matches!(&next, Ok(Some(_))) {
             crate::source::capture_validation_metadata(
-                serde_json::json!({"stage":"queue_end", "discarded_count":_discarded,"ended":matches!(&next,Ok(None))}),
+                serde_json::json!({"stage":"queue_end", "read":validation_read(_target),"discarded_count":_discarded,"ended":matches!(&next,Ok(None))}),
             );
         }
         if next?.is_none() {
@@ -252,7 +402,7 @@ fn stop_and_drain(stream: &AsyncSCStream) -> Result<(), String> {
     }
     #[cfg(debug_assertions)]
     crate::source::capture_validation_metadata(
-        serde_json::json!({"stage":"queue_end", "discarded_count":4,"ended":false}),
+        serde_json::json!({"stage":"queue_end", "read":validation_read(_target),"discarded_count":4,"ended":false}),
     );
     Err("native capture queue did not reach its end within the discard limit".into())
 }
@@ -289,6 +439,132 @@ fn wait_until<F: Future>(future: F, deadline: Instant, name: &str) -> Result<F::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    fn registered(operation: u128) -> port_platform::capture::CaptureTarget {
+        port_platform::capture::CaptureTarget::Registered(port_platform::authority::TargetReadKey {
+            target: port_platform::authority::TargetAuthority {
+                operation_id: uuid::Uuid::from_u128(operation),
+                receipt: port_platform::authority::TargetReceipt::try_from(uuid::Uuid::from_u128(
+                    2,
+                ))
+                .unwrap(),
+            },
+            sequence: port_platform::authority::ReadSequence::FIRST,
+        })
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn validation_is_disabled_until_armed_and_bound_to_one_registered_operation() {
+        let operation = uuid::Uuid::from_u128(1);
+        let mut state = ValidationState::Disabled;
+        state.configure(Some(SourceValidationCapture::HoldBeforeStop), false);
+        state.configure(None, true);
+        state.arm(operation);
+        assert_eq!(state.take(registered(1)), None);
+        state.configure(Some(SourceValidationCapture::HoldBeforeStop), true);
+        assert_eq!(state.take(registered(1)), None);
+        state.arm(operation);
+        state.arm(uuid::Uuid::from_u128(99));
+        state.configure(Some(SourceValidationCapture::InvalidAfterStop), true);
+        assert_eq!(state.take(registered(99)), None);
+        assert_eq!(
+            state.take(port_platform::capture::CaptureTarget::Legacy { window_id: 1 }),
+            None
+        );
+        assert_eq!(
+            state.take(registered(1)),
+            Some(SourceValidationCapture::HoldBeforeStop)
+        );
+        state.arm(uuid::Uuid::from_u128(99));
+        state.configure(Some(SourceValidationCapture::InvalidAfterStop), true);
+        assert_eq!(state.take(registered(99)), None);
+        assert_eq!(state.take(registered(1)), None);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn concurrent_registered_reads_consume_the_validation_action_only_once() {
+        let state = Arc::new(std::sync::Mutex::new(ValidationState::Configured(
+            SourceValidationCapture::HoldBeforeStop,
+        )));
+        state.lock().unwrap().arm(uuid::Uuid::from_u128(1));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads = (0..2)
+            .map(|_| {
+                let state = state.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let consumed = state.lock().unwrap().take(registered(1)).is_some();
+                    consumed
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        assert_eq!(
+            threads
+                .into_iter()
+                .map(|thread| usize::from(thread.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn injected_reports_require_completed_acquisition_and_cleanup_and_preserve_real_failures() {
+        for action in [
+            SourceValidationCapture::InvalidAfterStop,
+            SourceValidationCapture::CleanupUnconfirmedAfterStop,
+        ] {
+            let (acquired, cleanup) = report_validation_fault(
+                Some(action),
+                Ok(7),
+                Err("actual Stop failure".into()),
+                registered(1),
+            );
+            assert_eq!(acquired.unwrap(), 7);
+            assert_eq!(cleanup.unwrap_err(), "actual Stop failure");
+            let (acquired, cleanup) = report_validation_fault::<()>(
+                Some(action),
+                Err(CaptureFailure::Unavailable("actual frame failure".into())),
+                Ok(()),
+                registered(1),
+            );
+            assert!(matches!(acquired, Err(CaptureFailure::Unavailable(_))));
+            assert!(cleanup.is_ok());
+        }
+        let (acquired, cleanup) = report_validation_fault(
+            Some(SourceValidationCapture::InvalidAfterStop),
+            Ok(7),
+            Ok(()),
+            registered(1),
+        );
+        assert!(matches!(
+            finish(acquired, cleanup),
+            Err(CaptureFailure::Invalid(_))
+        ));
+        let (acquired, cleanup) = report_validation_fault(
+            Some(SourceValidationCapture::CleanupUnconfirmedAfterStop),
+            Ok(7),
+            Ok(()),
+            registered(1),
+        );
+        let latch = Arc::new(AtomicBool::new(false));
+        drop(StopGuard {
+            latch: Some(latch.clone()),
+            confirmed: cleanup.is_ok(),
+        });
+        assert!(latch.load(Ordering::Acquire));
+        assert!(matches!(
+            finish(acquired, cleanup),
+            Err(CaptureFailure::CleanupUnconfirmed(_))
+        ));
+        let (acquired, cleanup) = report_validation_fault(None, Ok(7), Ok(()), registered(1));
+        assert_eq!(finish(acquired, cleanup).unwrap(), 7);
+    }
 
     #[test]
     fn required_metadata_classification_is_consistent_on_all_bounded_terminations() {
