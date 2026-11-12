@@ -8,7 +8,7 @@ publish.workspace = true
 links = "lens_native"
 
 [build-dependencies]
-cc = "=1.9.0"
+cc = "=1.11.1"
 
 [dependencies]
 port-platform.workspace = true
