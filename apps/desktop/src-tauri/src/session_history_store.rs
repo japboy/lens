@@ -285,25 +285,14 @@ impl HistoryStore {
     }
 
     fn migrate_titles(tx: &Transaction<'_>) -> Result<(), String> {
-        // Version 1 already removed NULs, so SQLite length() counts the same code points.
-        let updates = {
-            let mut statement = tx
-                .prepare("SELECT rowid, title FROM history_entries WHERE length(title) > ?1")
-                .map_err(error)?;
-            let rows = statement
-                .query_map([MAX_TITLE_CHARS as i64], |row| {
-                    let title: String = row.get(1)?;
-                    Ok((row.get::<_, i64>(0)?, normalize_title(&title)))
-                })
-                .map_err(error)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(error)?
-        };
-        let mut statement = tx
-            .prepare("UPDATE history_entries SET title = ?1 WHERE rowid = ?2")
-            .map_err(error)?;
-        for (rowid, title) in updates {
-            statement.execute(params![title, rowid]).map_err(error)?;
-        }
+        // Version 1 already removed NULs, so both SQLite functions count Unicode
+        // code points and use the same boundary as normalize_title.
+        tx.execute(
+            "UPDATE history_entries SET title = substr(title, 1, ?1 - 1) || '…'
+             WHERE length(title) > ?1",
+            [MAX_TITLE_CHARS as i64],
+        )
+        .map_err(error)?;
         Ok(())
     }
 
@@ -1002,9 +991,11 @@ mod tests {
         let store = HistoryStore::open(&path).unwrap();
         let mut oversized = local("oversized");
         let short = local("short");
+        let mut at_limit = local("at-limit");
+        at_limit.title = Some("\u{732b}".repeat(MAX_TITLE_CHARS));
         let mut untitled = local("untitled");
         untitled.title = None;
-        for entry in [&oversized, &short, &untitled] {
+        for entry in [&at_limit, &oversized, &short, &untitled] {
             store.record_local(&source(), entry).unwrap();
         }
         let revision = store.current_revision().unwrap();
@@ -1026,7 +1017,12 @@ mod tests {
             assert_eq!(store.current_revision().unwrap(), revision);
             assert_eq!(
                 store.entries(&source(), "/work").unwrap(),
-                vec![oversized.clone(), short.clone(), untitled.clone()]
+                vec![
+                    at_limit.clone(),
+                    oversized.clone(),
+                    short.clone(),
+                    untitled.clone()
+                ]
             );
             assert_eq!(
                 store
