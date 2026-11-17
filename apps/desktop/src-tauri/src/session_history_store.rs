@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn title_projection_is_utf8_safe_bounded_and_removes_nul() {
-        let prefix = "猫".repeat(MAX_TITLE_CHARS - 1);
+        let prefix = "\u{732b}".repeat(MAX_TITLE_CHARS - 1);
         let exact = format!("{prefix}🦀");
         assert_eq!(normalize_title(&exact), exact);
         let title = format!("{prefix}\0🦀a");
@@ -942,7 +942,7 @@ mod tests {
         let bounded = store.entries(&source(), "/work").unwrap()[0].title.clone();
         assert_eq!(
             bounded.as_deref(),
-            Some(format!("{}…", "猫".repeat(MAX_TITLE_CHARS - 1)).as_str())
+            Some(format!("{}…", "\u{732b}".repeat(MAX_TITLE_CHARS - 1)).as_str())
         );
         assert!(!store
             .apply_info_patch(&source(), "one", "/work", InfoPatch::default())
@@ -1014,12 +1014,12 @@ mod tests {
         connection
             .execute(
                 "UPDATE history_entries SET title = ?1 WHERE session_id = 'oversized'",
-                ["猫".repeat(20_000)],
+                ["\u{732b}".repeat(20_000)],
             )
             .unwrap();
         drop(connection);
 
-        oversized.title = Some(format!("{}…", "猫".repeat(MAX_TITLE_CHARS - 1)));
+        oversized.title = Some(format!("{}…", "\u{732b}".repeat(MAX_TITLE_CHARS - 1)));
         for _ in 0..2 {
             let store = HistoryStore::open(&path).unwrap();
             assert_eq!(store.current_revision().unwrap(), revision);
