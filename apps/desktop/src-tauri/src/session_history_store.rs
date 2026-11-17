@@ -1,10 +1,11 @@
 //! Durable metadata only. Reading this store never connects to an Agent.
 use crate::model::AgentKind;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
 
 const MAX_ENTRIES: usize = 10_000;
 const MAX_FIELD_BYTES: usize = 65_536;
+const MAX_TITLE_CHARS: usize = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HistorySource {
@@ -108,15 +109,12 @@ fn field(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-/// ACP titles are display metadata, not bounded identifiers or transcript content.
-/// Keep the storage projection UTF-8 safe and bounded without changing the source.
 pub(crate) fn normalize_title(title: &str) -> String {
-    let mut normalized = String::with_capacity(title.len().min(MAX_FIELD_BYTES));
-    for character in title.chars().filter(|character| *character != '\0') {
-        if normalized.len() + character.len_utf8() > MAX_FIELD_BYTES {
-            break;
-        }
-        normalized.push(character);
+    let mut characters = title.chars().filter(|character| *character != '\0');
+    let mut normalized: String = characters.by_ref().take(MAX_TITLE_CHARS).collect();
+    if characters.next().is_some() {
+        normalized.pop();
+        normalized.push('…');
     }
     normalized
 }
@@ -244,7 +242,10 @@ impl HistoryStore {
         connection
             .busy_timeout(Duration::from_millis(250))
             .map_err(error)?;
-        let tx = connection.transaction().map_err(error)?;
+        // Serialize schema initialization before reading the version.
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(error)?;
         let version: i64 = tx
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(error)?;
@@ -262,13 +263,17 @@ impl HistoryStore {
                    state INTEGER NOT NULL CHECK(state IN (0,1,2)), can_load INTEGER CHECK(can_load IN (0,1)),
                    revision INTEGER NOT NULL,
                    PRIMARY KEY(agent, invocation, cwd, session_id));
-                 PRAGMA user_version = 1;"
+                 PRAGMA user_version = 2;"
             ).map_err(error)?,
-            1 => {
+            1 | 2 => {
                 // Validate the expected schema before exposing a supposedly usable cache.
                 tx.prepare("SELECT title, provider_updated_at, local_activity_at, state, can_load, revision FROM history_entries LIMIT 0").map_err(error)?;
                 tx.prepare("SELECT revision,checked_at,outcome,notice FROM history_scans LIMIT 0").map_err(error)?;
                 tx.query_row("SELECT revision FROM history_clock WHERE id = 1", [], |r| r.get::<_, i64>(0)).map_err(error)?;
+                if version == 1 {
+                    Self::migrate_titles(&tx)?;
+                    tx.pragma_update(None, "user_version", 2).map_err(error)?;
+                }
             }
             _ => return Err(error(format!("unsupported schema version {version}"))),
         }
@@ -276,6 +281,29 @@ impl HistoryStore {
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    fn migrate_titles(tx: &Transaction<'_>) -> Result<(), String> {
+        // Version 1 already removed NULs, so SQLite length() counts the same code points.
+        let updates = {
+            let mut statement = tx
+                .prepare("SELECT rowid, title FROM history_entries WHERE length(title) > ?1")
+                .map_err(error)?;
+            let rows = statement
+                .query_map([MAX_TITLE_CHARS as i64], |row| {
+                    let title: String = row.get(1)?;
+                    Ok((row.get::<_, i64>(0)?, normalize_title(&title)))
+                })
+                .map_err(error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(error)?
+        };
+        let mut statement = tx
+            .prepare("UPDATE history_entries SET title = ?1 WHERE rowid = ?2")
+            .map_err(error)?;
+        for (rowid, title) in updates {
+            statement.execute(params![title, rowid]).map_err(error)?;
+        }
+        Ok(())
     }
 
     pub fn current_revision(&self) -> Result<i64, String> {
@@ -855,13 +883,13 @@ mod tests {
 
     #[test]
     fn title_projection_is_utf8_safe_bounded_and_removes_nul() {
-        let title = format!("{}\0\u{732b}🦀", "a".repeat(MAX_FIELD_BYTES - 2));
+        let prefix = "猫".repeat(MAX_TITLE_CHARS - 1);
+        let exact = format!("{prefix}🦀");
+        assert_eq!(normalize_title(&exact), exact);
+        let title = format!("{prefix}\0🦀a");
         let normalized = normalize_title(&title);
-        assert_eq!(normalized, "a".repeat(MAX_FIELD_BYTES - 2));
-        assert_eq!(
-            normalize_title(&"\u{732b}".repeat(MAX_FIELD_BYTES)),
-            "\u{732b}".repeat(MAX_FIELD_BYTES / 3)
-        );
+        assert_eq!(normalized, format!("{prefix}…"));
+        assert_eq!(normalize_title(&normalized), normalized);
         assert_eq!(normalize_title("A\0B\0\u{732b}"), "AB\u{732b}");
         assert_eq!(normalize_title("\0"), "");
         assert_eq!(normalize_title("Exact title"), "Exact title");
@@ -900,7 +928,7 @@ mod tests {
                 .unwrap()
                 .title
                 .as_deref(),
-            Some(&title[..MAX_FIELD_BYTES])
+            Some(format!("{}…", "x".repeat(MAX_TITLE_CHARS - 1)).as_str())
         );
         assert_eq!(entries[1].title.as_ref().unwrap().len(), 324_561);
     }
@@ -912,7 +940,10 @@ mod tests {
         entry.title = Some(format!("\0{}", "\u{732b}".repeat(MAX_FIELD_BYTES)));
         store.record_local(&source(), &entry).unwrap();
         let bounded = store.entries(&source(), "/work").unwrap()[0].title.clone();
-        assert_eq!(bounded.as_ref().unwrap().len(), (MAX_FIELD_BYTES / 3) * 3);
+        assert_eq!(
+            bounded.as_deref(),
+            Some(format!("{}…", "猫".repeat(MAX_TITLE_CHARS - 1)).as_str())
+        );
         assert!(!store
             .apply_info_patch(&source(), "one", "/work", InfoPatch::default())
             .unwrap());
@@ -929,7 +960,11 @@ mod tests {
             )
             .unwrap();
         let rows = store.entries(&source(), "/work").unwrap();
-        assert_eq!(rows[0].title.as_ref().unwrap().len(), MAX_FIELD_BYTES);
+        assert_eq!(
+            rows[0].title.as_ref().unwrap().chars().count(),
+            MAX_TITLE_CHARS
+        );
+        assert!(rows[0].title.as_ref().unwrap().ends_with('…'));
         assert!(rows[0].title.as_ref().unwrap().starts_with("Updated"));
         store
             .apply_info_patch(
@@ -957,6 +992,51 @@ mod tests {
         assert!(store
             .record_local(&source(), &local(&"x".repeat(MAX_FIELD_BYTES + 1)))
             .is_err());
+    }
+
+    #[test]
+    fn migrates_existing_titles_without_changing_other_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite3");
+        let store = HistoryStore::open(&path).unwrap();
+        let mut oversized = local("oversized");
+        let short = local("short");
+        let mut untitled = local("untitled");
+        untitled.title = None;
+        for entry in [&oversized, &short, &untitled] {
+            store.record_local(&source(), entry).unwrap();
+        }
+        let revision = store.current_revision().unwrap();
+        drop(store);
+
+        let connection = Connection::open(&path).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        connection
+            .execute(
+                "UPDATE history_entries SET title = ?1 WHERE session_id = 'oversized'",
+                ["猫".repeat(20_000)],
+            )
+            .unwrap();
+        drop(connection);
+
+        oversized.title = Some(format!("{}…", "猫".repeat(MAX_TITLE_CHARS - 1)));
+        for _ in 0..2 {
+            let store = HistoryStore::open(&path).unwrap();
+            assert_eq!(store.current_revision().unwrap(), revision);
+            assert_eq!(
+                store.entries(&source(), "/work").unwrap(),
+                vec![oversized.clone(), short.clone(), untitled.clone()]
+            );
+            assert_eq!(
+                store
+                    .connection
+                    .lock()
+                    .unwrap()
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+        }
     }
 
     #[test]

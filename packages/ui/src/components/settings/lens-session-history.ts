@@ -66,6 +66,9 @@ export class LensSessionHistory extends LitElement {
         overflow-wrap: anywhere;
       }
       .title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         font-weight: 500;
       }
       .metadata,
