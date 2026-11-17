@@ -11,7 +11,7 @@ packages:
 # Pin Mermaid's runtime dependency without rewriting extensions' peer ranges.
 # Newer Cytoscape releases must still pass the workspace's no-downgrade policy.
 overrides:
-  "mermaid>cytoscape": 3.34.4
+  "mermaid>cytoscape": 3.35.0
 
 minimumReleaseAge: 4320
 minimumReleaseAgeIgnoreMissingTime: false

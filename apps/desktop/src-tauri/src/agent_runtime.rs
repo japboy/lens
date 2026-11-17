@@ -2987,7 +2987,22 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+
             let (mut stream, _) = listener.accept().await.unwrap();
+            // Wait for the GET before writing the deliberately incomplete response.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut request = [0; 8 * 1024];
+                let mut received = 0;
+                while !request[..received].ends_with(b"\r\n\r\n") {
+                    assert!(received < request.len(), "request headers exceed 8 KiB");
+                    let bytes_read = stream.read(&mut request[received..]).await.unwrap();
+                    assert!(bytes_read > 0, "connection closed before request headers");
+                    received += bytes_read;
+                }
+            })
+            .await
+            .expect("timed out waiting for request headers");
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048577\r\n\r\n")
                 .await
