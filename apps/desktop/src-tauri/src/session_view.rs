@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -630,8 +631,8 @@ pub(crate) fn agent_label(agent: AgentKind) -> &'static str {
 fn timestamp(value: &Option<String>) -> Option<i64> {
     value
         .as_ref()
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|date| date.timestamp_millis())
+        .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
+        .and_then(|date| i64::try_from(date.unix_timestamp_nanos().div_euclid(1_000_000)).ok())
 }
 
 #[cfg(test)]
