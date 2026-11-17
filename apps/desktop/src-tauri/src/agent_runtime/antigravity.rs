@@ -1,6 +1,5 @@
 //! Google-signed binary distribution. Shared selectors own activation and leases.
 use super::*;
-use chrono::DateTime;
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
@@ -124,9 +123,9 @@ fn now_seconds() -> Result<i64, String> {
 
 /// Google HTTPS file modification time is artifact age, not a publication date.
 fn archive_is_mature(last_modified: &str, observed: i64) -> Result<bool, String> {
-    let modified = DateTime::parse_from_rfc2822(last_modified)
-        .map_err(|_| "official Antigravity archive Last-Modified is invalid".to_owned())?
-        .timestamp();
+    let modified = httpdate::parse_http_date(last_modified)
+        .map_err(|_| "official Antigravity archive Last-Modified is invalid".to_owned())?;
+    let modified = time::OffsetDateTime::from(modified).unix_timestamp();
     if modified < 0 || observed < modified {
         return Err(
             "official Antigravity archive Last-Modified is in the future or out of range".into(),
@@ -772,12 +771,13 @@ mod tests {
     #[test]
     fn archive_age_rejects_missing_invalid_future_and_young_dates() {
         let modified = "Wed, 23 Sep 2026 18:07:27 GMT";
-        let time = DateTime::parse_from_rfc2822(modified).unwrap().timestamp();
+        let time = 1_790_186_847;
         assert!(!archive_is_mature(modified, time + 3599).unwrap());
         assert!(archive_is_mature(modified, time + 3600).unwrap());
         assert!(archive_is_mature(modified, time + 3601).unwrap());
         assert!(archive_is_mature(modified, time - 1).is_err());
         assert!(archive_is_mature("", time).is_err());
+        assert!(archive_is_mature("Thu, 23 Sep 2026 18:07:27 GMT", time).is_err());
         assert!(archive_is_mature("not a date", time).is_err());
     }
 
@@ -927,8 +927,7 @@ mod tests {
     #[test]
     fn binary_record_rejects_provenance_and_file_policy_mutation() {
         let modified = "Wed, 23 Sep 2026 18:07:27 GMT";
-        let observed =
-            DateTime::parse_from_rfc2822(modified).unwrap().timestamp() + MIN_ARCHIVE_AGE_SECONDS;
+        let observed = 1_790_186_847 + MIN_ARCHIVE_AGE_SECONDS;
         let mut record = BinaryRecord {
             schema_version: RECORD_VERSION,
             distribution: "google_signed_archive".into(),

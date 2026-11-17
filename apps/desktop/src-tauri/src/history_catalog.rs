@@ -7,6 +7,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Arc};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub(crate) fn install(state: &AppState, store: HistoryStore) -> Result<(), String> {
     let store = Arc::new(store);
@@ -99,7 +100,9 @@ pub(crate) fn apply_listing(
 }
 
 pub(crate) fn now() -> String {
-    chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()).to_rfc3339()
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("current UTC time is representable as RFC 3339")
 }
 
 pub(crate) fn directory(cwd: &Path) -> Result<&str, String> {

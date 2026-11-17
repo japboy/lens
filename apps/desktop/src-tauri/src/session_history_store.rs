@@ -2,6 +2,7 @@
 use crate::model::AgentKind;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const MAX_ENTRIES: usize = 10_000;
 const MAX_FIELD_BYTES: usize = 65_536;
@@ -215,13 +216,13 @@ fn read_records(connection: &Connection) -> Result<Vec<HistoryRecord>, String> {
     records
 }
 
-fn activity(entry: &StoredEntry) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+fn activity(entry: &StoredEntry) -> Option<OffsetDateTime> {
     [&entry.provider_updated_at, &entry.local_activity_at]
         .into_iter()
         .filter_map(|value| {
             value
                 .as_deref()
-                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
         })
         .max()
 }

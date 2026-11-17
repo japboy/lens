@@ -10,6 +10,7 @@ use crate::{
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager, Runtime};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 #[derive(Serialize)]
 pub(crate) struct HistoryPage {
@@ -133,14 +134,14 @@ pub(crate) async fn list_history<R: Runtime>(
             };
             let entry = record.entry;
             let valid = |value: Option<String>| {
-                value.filter(|v| chrono::DateTime::parse_from_rfc3339(v).is_ok())
+                value.filter(|v| OffsetDateTime::parse(v, &Rfc3339).is_ok())
             };
             let updated_at = match (
                 valid(entry.provider_updated_at),
                 valid(entry.local_activity_at),
             ) {
                 (Some(a), Some(b)) => {
-                    let date = |v: &str| chrono::DateTime::parse_from_rfc3339(v).ok();
+                    let date = |v: &str| OffsetDateTime::parse(v, &Rfc3339).ok();
                     Some(if date(&a) >= date(&b) { a } else { b })
                 }
                 (a, b) => a.or(b),

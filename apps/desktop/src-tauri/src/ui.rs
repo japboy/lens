@@ -15,6 +15,7 @@ use tauri::{
     WebviewWindowBuilder, WindowSizeConstraints,
 };
 use tauri_plugin_dialog::DialogExt;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 const SETTINGS_LABEL: &str = "settings";
@@ -1136,11 +1137,11 @@ pub(crate) fn sync_history_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> Result
                 let date = entry
                     .updated_at
                     .as_deref()
-                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
                     .map(|date| {
                         app.state::<crate::platform::Presentation<R>>()
                             .0
-                            .format_short_datetime(date.timestamp() as f64)
+                            .format_short_datetime(date.unix_timestamp() as f64)
                     })
                     .transpose()
                     .map_err(|error| error.to_string())?
