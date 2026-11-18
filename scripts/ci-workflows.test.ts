@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { VERIFICATION_REQUIREMENTS } from "./ci-plan.ts";
-import { MACOS_BUILD_CACHE_INPUTS } from "./macos-build-contract.ts";
 import { BUILD_VARIANTS, variantArguments } from "./workspace-policy.ts";
 
 const quality = readFileSync(".github/workflows/code-quality.yml", "utf8");
@@ -503,7 +502,16 @@ describe("actual workflow admission", () => {
       native.indexOf("uses: Swatinem/rust-cache@"),
     );
     const seedWorkflow = parse(seed);
-    for (const path of MACOS_BUILD_CACHE_INPUTS) expect(seedWorkflow.on.push.paths).toContain(path);
+    expect(seedWorkflow.on.push.paths).toEqual(
+      expect.arrayContaining([
+        "Cargo.toml",
+        "Cargo.lock",
+        "mise.toml",
+        "mise.lock",
+        "scripts/macos-build-contract.ts",
+        ".github/workflows/macos-verification.yml",
+      ]),
+    );
     for (const name of ["macos-dependency-cache-seed", "linux-dependency-cache-seed"]) {
       expect(seedWorkflow.jobs[name].needs).toBe("frontend-verification");
       expect(seedWorkflow.jobs[name].with.frontend_artifact).toBe(
@@ -539,10 +547,9 @@ describe("actual workflow admission", () => {
     expect(nativeSteps[index("Install the pinned native bundler")].if).toBe(
       "inputs.verification_mode != 'code'",
     );
-    for (const path of ["scripts/release/toml.ts", "pnpm-lock.yaml"]) {
-      expect(MACOS_BUILD_CACHE_INPUTS).toContain(path);
-      expect(parse(seed).on.push.paths).toContain(path);
-    }
+    expect(parse(seed).on.push.paths).toEqual(
+      expect.arrayContaining(["scripts/release/toml.ts", "pnpm-lock.yaml"]),
+    );
   });
 
   it("keeps packaged release linking distinct from the normal release check", () => {

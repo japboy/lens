@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { MACOS_BUILD_CACHE_INPUTS } from "../macos-build-contract.ts";
+import { MACOS_DEPENDENCY_CACHE_REVISION } from "../macos-build-contract.ts";
 import { VERSION_FILES } from "./version.ts";
 import { expect, it } from "vitest";
 
@@ -86,7 +86,7 @@ it("runs the macOS contract CLI with its pinned source parser installed", () => 
   const root = realpathSync(mkdtempSync(join(tmpdir(), "lens-macos-bootstrap-")));
   try {
     cpSync("scripts", join(root, "scripts"), { recursive: true });
-    for (const path of new Set([...MACOS_BUILD_CACHE_INPUTS, ...VERSION_FILES])) {
+    for (const path of [...VERSION_FILES, "apps/desktop/src-tauri/tauri.macos.conf.json"]) {
       mkdirSync(dirname(join(root, path)), { recursive: true });
       cpSync(path, join(root, path));
     }
@@ -96,9 +96,18 @@ it("runs the macOS contract CLI with its pinned source parser installed", () => 
       `
       import childProcess from "node:child_process";
       import { syncBuiltinESMExports } from "node:module";
+      const outputs = new Map([
+        ["/usr/bin/xcrun --sdk macosx --show-sdk-version", "27.0"],
+        ["/usr/bin/xcrun --sdk macosx --show-sdk-build-version", "26A123"],
+        ["/usr/bin/xcrun --sdk macosx clang --version", "Apple clang version 21.0.0"],
+        ["/usr/bin/xcrun --sdk macosx swiftc --version", "Apple Swift version 6.4"],
+        ["/usr/bin/xcodebuild -version", "Xcode 27.0"],
+        ["cargo -Vv", "cargo 1.100.0"],
+      ]);
       childProcess.execFileSync = (command, args) => {
-        if (command === "/usr/bin/xcrun" && args.join(" ") === "--sdk macosx --show-sdk-version") return "27.0";
-        throw new Error("Unexpected bootstrap subprocess");
+        const invocation = [command, ...args].join(" ");
+        if (!outputs.has(invocation)) throw new Error("Unexpected bootstrap subprocess " + invocation);
+        return outputs.get(invocation);
       };
       syncBuiltinESMExports();
     `,
@@ -126,7 +135,12 @@ it("runs the macOS contract CLI with its pinned source parser installed", () => 
     expect(installed.error).toBeUndefined();
     expect(installed.stderr).toBe("");
     expect(installed.status).toBe(0);
-    expect(JSON.parse(installed.stdout)).toMatchObject({ deploymentTarget: "15.2" });
+    expect(JSON.parse(installed.stdout)).toEqual({
+      deploymentTarget: "15.2",
+      cacheKey: expect.stringMatching(
+        new RegExp(`^${MACOS_DEPENDENCY_CACHE_REVISION}-[a-f0-9]{64}$`),
+      ),
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

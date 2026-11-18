@@ -158,6 +158,7 @@ jobs:
         id: contract
         run: node scripts/macos-build-contract.ts
 
+      # cache_key is supplied by the tested source. Historical releases keep their original key.
       - name: Restore Rust dependency artifacts
         id: rust-cache
         if: steps.source.outputs.generation == 'current'

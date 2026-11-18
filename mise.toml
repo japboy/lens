@@ -132,7 +132,7 @@ run = "node scripts/run-workspace-variant.ts macos-production-check"
 description = "Lint native workspace targets after normal compilation"
 dir = "{{config_root}}"
 depends = ["check:rust"]
-run = "cargo clippy --locked --workspace --all-targets -- -D warnings"
+run = "cargo clippy --locked --workspace --all-targets --target aarch64-apple-darwin -- -D warnings"
 
 [tasks."rust:test:webview-lifecycle"]
 description = "Verify real macOS WebView teardown and development SSE ownership (opt-in)"
