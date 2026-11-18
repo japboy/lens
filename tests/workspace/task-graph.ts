@@ -115,12 +115,14 @@ describe("repository task ownership", () => {
     }
   });
 
-  it("resolves the original native Rust entry points to the macOS tasks", () => {
+  it("does not expose unqualified native Rust task names", () => {
     for (const name of ["check:rust", "rust:clippy", "rust:test", "check:rust:release"]) {
-      const task: Task = JSON.parse(
-        execFileSync("mise", ["tasks", "info", "--json", name], { cwd: root, encoding: "utf8" }),
-      );
-      expect(task.name).toBe(`${name}:macos`);
+      const result = spawnSync("mise", ["tasks", "info", "--json", name], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`Task not found: ${name}`);
     }
   });
 
