@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.0](https://github.com/japboy/lens/compare/v0.11.0...v0.12.0) (2026-11-18)
+
+
+### Features
+
+* **platform:** bind image geometry to frames ([#224](https://github.com/japboy/lens/issues/224)) ([d99f692](https://github.com/japboy/lens/commit/d99f69238deed5b0d621c1f82836dbdbfb4b858b))
+
+
+### Bug Fixes
+
+* **deps:** update application and development dependencies ([#248](https://github.com/japboy/lens/issues/248)) ([1695301](https://github.com/japboy/lens/commit/16953013a6d29b5d5b1f7b90c56d088a894995e6))
+* **deps:** update application dependencies ([#226](https://github.com/japboy/lens/issues/226)) ([6e8b940](https://github.com/japboy/lens/commit/6e8b940cf5605f23f392a45e168e842c74ac2558))
+* **deps:** update dependency vite to v8.3.5 ([#234](https://github.com/japboy/lens/issues/234)) ([577fed9](https://github.com/japboy/lens/commit/577fed933bba5be6dda3be255c022d53e1df5a46))
+* **deps:** update dependency vite to v8.3.6 ([#239](https://github.com/japboy/lens/issues/239)) ([9335e4b](https://github.com/japboy/lens/commit/9335e4bbd53ad25bee1d09cc012b472dd1dbfe10))
+* **deps:** update dependency vite to v8.3.8 ([#246](https://github.com/japboy/lens/issues/246)) ([a92a52f](https://github.com/japboy/lens/commit/a92a52f30df3f74402ccd4c363a775d273b8771f))
+* **deps:** update tauri dependencies ([#228](https://github.com/japboy/lens/issues/228)) ([b62cd2a](https://github.com/japboy/lens/commit/b62cd2adf4507cc6900bcbad8492c7935196fd3d))
+* **deps:** update tauri dependencies ([#240](https://github.com/japboy/lens/issues/240)) ([3e3b14c](https://github.com/japboy/lens/commit/3e3b14c6b29b8f554fa4a72ffab8e05685f92aea))
+* **history:** bound session titles ([#247](https://github.com/japboy/lens/issues/247)) ([15b9feb](https://github.com/japboy/lens/commit/15b9febbf0dc97a2275f1625f71fbeb20e66fc95))
+
 ## [0.11.0](https://github.com/japboy/lens/compare/v0.10.1...v0.11.0) (2026-10-18)
 
 
