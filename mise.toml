@@ -122,27 +122,30 @@ description = "Verify repository and frontend owners"
 dir = "{{config_root}}"
 depends = ["verify:repository", "verify:frontend"]
 
-[tasks."check:rust"]
+[tasks."check:rust:macos"]
+alias = "check:rust"
 description = "Check normal native workspace compilation"
 dir = "{{config_root}}"
 wait_for = ["verify:portable", "verify:repository", "verify:frontend", "frontend:build"]
 run = "node scripts/run-workspace-variant.ts macos-production-check"
 
-[tasks."rust:clippy"]
+[tasks."rust:clippy:macos"]
+alias = "rust:clippy"
 description = "Lint native workspace targets after normal compilation"
 dir = "{{config_root}}"
-depends = ["check:rust"]
-run = "cargo clippy --locked --workspace --all-targets --target aarch64-apple-darwin -- -D warnings"
+depends = ["check:rust:macos"]
+run = "node scripts/run-workspace-variant.ts macos-clippy"
 
 [tasks."rust:test:webview-lifecycle"]
 description = "Verify real macOS WebView teardown and development SSE ownership (opt-in)"
 dir = "{{config_root}}"
 run = "cargo test --locked -p desktop --test native_webview_lifecycle --features native-webview-lifecycle-test"
 
-[tasks."rust:test"]
+[tasks."rust:test:macos"]
+alias = "rust:test"
 description = "Run native workspace tests after compilation and lint"
 dir = "{{config_root}}"
-depends = ["rust:clippy"]
+depends = ["rust:clippy:macos"]
 run = [
   "node scripts/test-native-fixtures.ts",
   "node scripts/run-workspace-variant.ts macos-test",
@@ -151,10 +154,11 @@ run = [
   "cargo test --locked --workspace --doc --target aarch64-apple-darwin",
 ]
 
-[tasks."check:rust:release"]
+[tasks."check:rust:release:macos"]
+alias = "check:rust:release"
 description = "Check the declared native release profile independently of tests"
 dir = "{{config_root}}"
-depends = ["rust:test"]
+depends = ["rust:test:macos"]
 run = "node scripts/run-workspace-variant.ts macos-production-release"
 
 [tasks."check:rust:linux"]
@@ -167,7 +171,7 @@ run = "node scripts/run-workspace-variant.ts linux-common-check"
 description = "Lint the actual Linux common libraries and tests"
 dir = "{{config_root}}"
 depends = ["check:rust:linux"]
-run = "cargo clippy --locked -p domain -p port-platform -p usecase -p desktop -p adapter-mcp-server --lib --tests --no-default-features --target x86_64-unknown-linux-gnu -- -D warnings"
+run = "node scripts/run-workspace-variant.ts linux-common-clippy"
 
 [tasks."rust:test:linux"]
 description = "Run the declared Linux contracts and common-shell tests"
@@ -209,7 +213,7 @@ run = "cargo deny --locked --manifest-path Cargo.toml check"
 [tasks."verify:macos"]
 description = "Run native compilation, lint, tests and dependency audit"
 dir = "{{config_root}}"
-depends = ["check:rust:release", "check:dependencies"]
+depends = ["check:rust:release:macos", "check:dependencies"]
 
 [tasks."build:macos-bundle"]
 description = "Build the packaged macOS release variant with verified frontend assets"
@@ -231,7 +235,7 @@ depends = ["verify:portable", "verify:macos"]
 [tasks."check"]
 description = "Check generated icons, frontend assets and native compilation"
 dir = "{{config_root}}"
-depends = ["check:icons", "frontend:build", "check:rust"]
+depends = ["check:icons", "frontend:build", "check:rust:macos"]
 
 [tasks."desktop:tauri"]
 description = "Forward arguments to the app-local Tauri CLI"

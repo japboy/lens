@@ -35,11 +35,17 @@ describe("target-specific transitive feature resolution", () => {
     );
   });
 
-  it("selects development dependencies only for explicit test variants", () => {
+  it("selects development dependencies for the explicit test and test-target lint variants", () => {
+    const devVariants = new Set([
+      "linux-common-test",
+      "macos-test",
+      "linux-common-clippy",
+      "macos-clippy",
+    ]);
     for (const variant of BUILD_VARIANTS) {
       const args = graphArguments(variant);
       expect(args[args.indexOf("--edges") + 1]).toBe(
-        variant.operation === "test" ? "normal,build,dev" : "normal,build",
+        devVariants.has(variant.id) ? "normal,build,dev" : "normal,build",
       );
       expect(args).toContain(variant.target);
       expect(args).not.toContain("--all-features");

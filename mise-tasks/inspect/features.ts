@@ -69,6 +69,14 @@ export function graphDigest(graph: FeatureGraph): string {
   return createHash("sha256").update(JSON.stringify(graph)).digest("hex");
 }
 
+function includesDevDependencies(variant: BuildVariant): boolean {
+  return (
+    variant.operation === "test" ||
+    variant.targets === "lib-and-tests" ||
+    variant.targets === "all-targets"
+  );
+}
+
 export function graphArguments(variant: BuildVariant): string[] {
   return [
     "tree",
@@ -77,7 +85,7 @@ export function graphArguments(variant: BuildVariant): string[] {
     variant.target,
     ...variant.packages.flatMap((name) => ["--package", name]),
     "--edges",
-    variant.operation === "test" ? "normal,build,dev" : "normal,build",
+    includesDevDependencies(variant) ? "normal,build,dev" : "normal,build",
     "--prefix",
     "depth",
     "--format",
@@ -112,7 +120,7 @@ export function inspectFeatureGraphs(
       const tauri = graph.nodes.filter((node) => node.name === "tauri");
       if (
         !tauri.length ||
-        tauri.some((node) => node.features.includes("test") !== (variant.operation === "test"))
+        tauri.some((node) => node.features.includes("test") !== includesDevDependencies(variant))
       )
         throw new Error(`${variant.id}: normal/test Tauri feature isolation failed`);
     } else if (

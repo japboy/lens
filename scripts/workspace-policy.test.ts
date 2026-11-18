@@ -26,14 +26,14 @@ describe("presentation and build workspace ownership", () => {
   });
 });
 
-describe("explicit production and test variants", () => {
+describe("explicit Cargo variants", () => {
   it("uses finite exact target/package/feature/profile commands without workspace-wide Linux selection", () => {
     expect(new Set(BUILD_VARIANTS.map((variant) => variant.id)).size).toBe(BUILD_VARIANTS.length);
     for (const variant of BUILD_VARIANTS) {
       const args = variantArguments(variant);
       expect(args).toContain("--locked");
       expect(args).not.toContain("--workspace");
-      expect(args).not.toContain("--all-targets");
+      expect(args.includes("--all-targets")).toBe(variant.id === "macos-clippy");
       expect(variant.profile === "test").toBe(variant.operation === "test");
     }
     for (const variant of BUILD_VARIANTS.filter(
@@ -43,5 +43,40 @@ describe("explicit production and test variants", () => {
       expect(variant.packages).not.toContain("adapter-platform-macos");
     }
     expect(BUILD_VARIANTS.some((variant) => variant.profile === "release")).toBe(true);
+  });
+
+  const commonPackages = ["domain", "port-platform", "usecase", "desktop", "adapter-mcp-server"];
+
+  it.each([
+    {
+      id: "macos-clippy",
+      target: "aarch64-apple-darwin",
+      packages: [...commonPackages, "adapter-platform-macos"],
+      targets: ["--all-targets"],
+      features: [],
+    },
+    {
+      id: "linux-common-clippy",
+      target: "x86_64-unknown-linux-gnu",
+      packages: commonPackages,
+      targets: ["--lib", "--tests"],
+      features: ["--no-default-features"],
+    },
+  ])("renders the precise lint command for $id", ({ id, target, packages, targets, features }) => {
+    const variant = BUILD_VARIANTS.find((entry) => entry.id === id)!;
+    expect(variantArguments(variant)).toEqual([
+      "clippy",
+      "--locked",
+      "--target",
+      target,
+      ...packages.flatMap((name) => ["--package", name]),
+      ...targets,
+      "--profile",
+      "dev",
+      ...features,
+      "--",
+      "-D",
+      "warnings",
+    ]);
   });
 });

@@ -115,8 +115,28 @@ describe("repository task ownership", () => {
     }
   });
 
+  it("resolves the original native Rust entry points to the macOS tasks", () => {
+    for (const name of ["check:rust", "rust:clippy", "rust:test", "check:rust:release"]) {
+      const task: Task = JSON.parse(
+        execFileSync("mise", ["tasks", "info", "--json", name], { cwd: root, encoding: "utf8" }),
+      );
+      expect(task.name).toBe(`${name}:macos`);
+    }
+  });
+
+  it("runs each platform Clippy task through its declared variant", () => {
+    for (const [taskName, variant] of [
+      ["rust:clippy:macos", "macos-clippy"],
+      ["rust:clippy:linux", "linux-common-clippy"],
+    ]) {
+      expect(tasks.find((task) => task.name === taskName)?.run).toEqual([
+        `node scripts/run-workspace-variant.ts ${variant}`,
+      ]);
+    }
+  });
+
   it("checks the managed Node build policy on both admitted test hosts", () => {
-    expect(tasks.find((task) => task.name === "rust:test")!.run).toContain(
+    expect(tasks.find((task) => task.name === "rust:test:macos")!.run).toContain(
       "cargo test --locked -p desktop --test node_policy --target aarch64-apple-darwin",
     );
     expect(tasks.find((task) => task.name === "rust:test:linux")!.run).toContain(
@@ -126,7 +146,7 @@ describe("repository task ownership", () => {
 
   it("runs the MCP Apps broker library tests in both native variants", () => {
     for (const [taskName, variant] of [
-      ["rust:test", "macos-test"],
+      ["rust:test:macos", "macos-test"],
       ["rust:test:linux", "linux-common-test"],
     ] as const) {
       const commands = tasks.find((task) => task.name === taskName)!.run;
@@ -154,21 +174,21 @@ describe("repository task ownership", () => {
     expect(result.completed.toSorted()).toEqual(
       [
         "check:dependencies",
-        "check:rust",
-        "rust:clippy",
-        "rust:test",
-        "check:rust:release",
+        "check:rust:macos",
+        "rust:clippy:macos",
+        "rust:test:macos",
+        "check:rust:release:macos",
       ].toSorted(),
     );
     expect(result.completed).not.toContain("rust:test:webview-lifecycle");
-    expect(result.completed.indexOf("check:rust")).toBeLessThan(
-      result.completed.indexOf("rust:clippy"),
+    expect(result.completed.indexOf("check:rust:macos")).toBeLessThan(
+      result.completed.indexOf("rust:clippy:macos"),
     );
-    expect(result.completed.indexOf("rust:clippy")).toBeLessThan(
-      result.completed.indexOf("rust:test"),
+    expect(result.completed.indexOf("rust:clippy:macos")).toBeLessThan(
+      result.completed.indexOf("rust:test:macos"),
     );
-    expect(result.completed.indexOf("rust:test")).toBeLessThan(
-      result.completed.indexOf("check:rust:release"),
+    expect(result.completed.indexOf("rust:test:macos")).toBeLessThan(
+      result.completed.indexOf("check:rust:release:macos"),
     );
   });
 
@@ -187,7 +207,7 @@ describe("repository task ownership", () => {
     }
     for (const [index, task] of chain.slice(1).entries())
       expect(result.completed.indexOf(chain[index]!)).toBeLessThan(result.completed.indexOf(task));
-    expect(result.completed).not.toContain("check:rust");
+    expect(result.completed).not.toContain("check:rust:macos");
     expect(result.completed.indexOf("frontend:build")).toBeLessThan(
       result.completed.indexOf(chain[0]!),
     );
@@ -204,7 +224,7 @@ describe("repository task ownership", () => {
   it("finishes portable leaves before the full-verification Cargo writer chain", () => {
     const result = replay("verify");
     expect(result).toMatchObject({ status: 0 });
-    const rust = result.completed.indexOf("check:rust");
+    const rust = result.completed.indexOf("check:rust:macos");
     for (const leaf of [
       "check:identity",
       "check:terminology",
@@ -290,17 +310,17 @@ describe("repository task ownership", () => {
     const result = replay("verify", "check:identity");
     expect(result.status).not.toBe(0);
     expect(result.completed).toContain("check:identity");
-    expect(result.completed).not.toContain("check:rust");
-    expect(result.completed).not.toContain("rust:clippy");
-    expect(result.completed).not.toContain("rust:test");
+    expect(result.completed).not.toContain("check:rust:macos");
+    expect(result.completed).not.toContain("rust:clippy:macos");
+    expect(result.completed).not.toContain("rust:test:macos");
   });
 
   it("does not continue to lint or test after normal Cargo checking fails", () => {
-    const result = replay("verify:macos", "check:rust");
+    const result = replay("verify:macos", "check:rust:macos");
     expect(result.status).not.toBe(0);
-    expect(result.completed).toContain("check:rust");
-    expect(result.completed).not.toContain("rust:clippy");
-    expect(result.completed).not.toContain("rust:test");
+    expect(result.completed).toContain("check:rust:macos");
+    expect(result.completed).not.toContain("rust:clippy:macos");
+    expect(result.completed).not.toContain("rust:test:macos");
   });
   it("selects only the repository Vitest owner from the repository task", () => {
     expect(tasks.find((task) => task.name === "test:repository")?.run).toEqual([

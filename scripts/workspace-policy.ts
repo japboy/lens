@@ -281,11 +281,11 @@ export type BuildVariant = {
   id: string;
   target: "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin";
   packages: readonly string[];
-  operation: "check" | "test" | "build";
+  operation: "check" | "test" | "build" | "clippy";
   profile: "dev" | "test" | "release";
   defaultFeatures: boolean;
   features: readonly string[];
-  targets: "lib" | "lib-and-bins";
+  targets: "lib" | "lib-and-bins" | "lib-and-tests" | "all-targets";
 };
 
 const common = ["domain", "port-platform", "usecase", "desktop", "adapter-mcp-server"];
@@ -302,6 +302,16 @@ export const BUILD_VARIANTS: readonly BuildVariant[] = [
     defaultFeatures: false,
     features: [],
     targets: "lib",
+  },
+  {
+    id: "linux-common-clippy",
+    target: "x86_64-unknown-linux-gnu",
+    packages: common,
+    operation: "clippy",
+    profile: "dev",
+    defaultFeatures: false,
+    features: [],
+    targets: "lib-and-tests",
   },
   {
     id: "linux-common-test",
@@ -332,6 +342,16 @@ export const BUILD_VARIANTS: readonly BuildVariant[] = [
     defaultFeatures: true,
     features: [],
     targets: "lib-and-bins",
+  },
+  {
+    id: "macos-clippy",
+    target: "aarch64-apple-darwin",
+    packages: native,
+    operation: "clippy",
+    profile: "dev",
+    defaultFeatures: true,
+    features: [],
+    targets: "all-targets",
   },
   {
     id: "macos-production-release",
@@ -365,6 +385,13 @@ export const BUILD_VARIANTS: readonly BuildVariant[] = [
   },
 ];
 
+const cargoTargets = {
+  lib: ["--lib"],
+  "lib-and-bins": ["--lib", "--bins"],
+  "lib-and-tests": ["--lib", "--tests"],
+  "all-targets": ["--all-targets"],
+} as const satisfies Record<BuildVariant["targets"], readonly string[]>;
+
 export function variantArguments(variant: BuildVariant): string[] {
   return [
     variant.operation,
@@ -372,11 +399,11 @@ export function variantArguments(variant: BuildVariant): string[] {
     "--target",
     variant.target,
     ...variant.packages.flatMap((name) => ["--package", name]),
-    "--lib",
-    ...(variant.targets === "lib-and-bins" ? ["--bins"] : []),
+    ...cargoTargets[variant.targets],
     "--profile",
     variant.profile,
     ...(!variant.defaultFeatures ? ["--no-default-features"] : []),
     ...(variant.features.length ? ["--features", variant.features.join(",")] : []),
+    ...(variant.operation === "clippy" ? ["--", "-D", "warnings"] : []),
   ];
 }
