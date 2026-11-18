@@ -48,6 +48,20 @@ describe("explicit compiler variants", () => {
     },
   );
 
+  it.each([
+    ["macos-clippy", "aarch64-apple-darwin", 1],
+    ["linux-common-clippy", "x86_64-unknown-linux-gnu", 0],
+  ] as const)("runs %s with its development graph and platform guard", (id, host, sdkChecks) => {
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    mockGraph(host, "2.7.2", "test");
+    runVariant(id, root);
+    expect(assertMacosSdk).toHaveBeenCalledTimes(sdkChecks);
+    expect(execute).toHaveBeenLastCalledWith("cargo", variantArguments(selectVariant(id)), {
+      cwd: root,
+      stdio: "inherit",
+    });
+  });
+
   it("rejects an older SDK before native compilation but leaves Linux verification unchanged", () => {
     mockGraph("aarch64-apple-darwin");
     vi.mocked(assertMacosSdk).mockImplementation(() => {
