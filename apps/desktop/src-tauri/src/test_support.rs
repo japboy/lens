@@ -7,7 +7,7 @@ use port_platform::{
     model::ExtractionResult,
     observation::{Observation, ObservationRequest, ObservationSession},
     selection::{TargetSelection, WindowPickerReply},
-    trust::AccessibilityTrust,
+    trust::CapabilityAccess,
     ExtractionLimits, ImageCaptureLimits, PlatformError, PlatformFuture,
 };
 use std::sync::Arc;
@@ -49,11 +49,19 @@ impl Observation for UnusedSources {
         panic!("unexpected native observation")
     }
 }
-impl AccessibilityTrust for UnusedSources {
-    fn inspect(&self) -> bool {
-        false
+impl CapabilityAccess for UnusedSources {
+    fn inspect(
+        &self,
+        capability: port_platform::trust::SourceCapability,
+    ) -> port_platform::trust::CapabilityInspection {
+        port_platform::trust::CapabilityInspection {
+            capability,
+            status: port_platform::trust::AccessStatus::Unsupported,
+            request_action: None,
+            diagnostics: vec![],
+        }
     }
-    fn request(&self) -> bool {
+    fn request(&self, _: port_platform::trust::SourceCapability) -> Result<(), PlatformError> {
         panic!("unexpected permission request")
     }
 }
@@ -66,7 +74,7 @@ pub(crate) fn state() -> AppState {
             accessibility: source.clone(),
             capture: source.clone(),
             observation: source.clone(),
-            trust: source,
+            access: source,
         },
         ConfigStore::at_path(
             std::env::temp_dir()

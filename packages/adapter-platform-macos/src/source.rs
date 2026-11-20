@@ -7,7 +7,7 @@ use port_platform::{
     model::{Bounds, ExtractionResult, SelectedWindow, WindowIdentity, WindowObservableFacts},
     observation::{Observation, ObservationRequest, ObservationSession},
     selection::{RegisteredWindow, TargetSelection, WindowPickerReply},
-    trust::AccessibilityTrust,
+    trust::CapabilityAccess,
     ExtractionLimits, PlatformError, PlatformFuture,
 };
 use screencapturekit::{content_sharing_picker::*, shareable_content::SCWindow};
@@ -575,18 +575,93 @@ impl Observation for MacOsPlatform {
         })
     }
 }
-impl AccessibilityTrust for MacOsPlatform {
-    fn inspect(&self) -> bool {
-        macos_accessibility_client::accessibility::application_is_trusted()
+impl CapabilityAccess for MacOsPlatform {
+    fn inspect(
+        &self,
+        capability: port_platform::trust::SourceCapability,
+    ) -> port_platform::trust::CapabilityInspection {
+        use port_platform::trust::SourceCapability;
+        let trusted = match capability {
+            SourceCapability::StructuredExtraction | SourceCapability::Observation => {
+                macos_accessibility_client::accessibility::application_is_trusted()
+            }
+            SourceCapability::TargetSelection | SourceCapability::ImageCapture => false,
+        };
+        inspect_access(capability, trusted)
     }
-    fn request(&self) -> bool {
-        macos_accessibility_client::accessibility::application_is_trusted_with_prompt()
+    fn request(
+        &self,
+        capability: port_platform::trust::SourceCapability,
+    ) -> Result<(), PlatformError> {
+        use port_platform::trust::SourceCapability;
+        match capability {
+            SourceCapability::StructuredExtraction => {
+                // The return value is current trust, not completion of the asynchronous prompt.
+                macos_accessibility_client::accessibility::application_is_trusted_with_prompt();
+                Ok(())
+            }
+            SourceCapability::TargetSelection | SourceCapability::ImageCapture | SourceCapability::Observation => Err(operation_error("Use the permission action advertised for Structured content; selected-window capture access is managed by the native picker")),
+        }
+    }
+}
+
+fn inspect_access(
+    capability: port_platform::trust::SourceCapability,
+    trusted: bool,
+) -> port_platform::trust::CapabilityInspection {
+    use port_platform::trust::{
+        AccessAction, AccessStatus, CapabilityInspection, SourceCapability,
+    };
+    let (status, request_action, detail) = match capability {
+        SourceCapability::TargetSelection | SourceCapability::ImageCapture => (AccessStatus::Available, None, "Choose a window with the macOS picker to authorize that source. This inspection reports picker support; source access and capture success are checked during acquisition."),
+        SourceCapability::StructuredExtraction | SourceCapability::Observation if trusted => (AccessStatus::Available, None, "Accessibility access is allowed for this application. Each selected source is validated during acquisition."),
+        SourceCapability::StructuredExtraction => (AccessStatus::PermissionRequired, Some(AccessAction::RequestPermission), "Allow Lens in macOS Accessibility settings to read structured content and observe source changes."),
+        SourceCapability::Observation => (AccessStatus::PermissionRequired, None, "Source observation uses the same Accessibility access as Structured content. Request access there."),
+    };
+    CapabilityInspection {
+        capability,
+        status,
+        request_action,
+        diagnostics: vec![detail.into()],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_states_follow_actual_ax_and_picker_routes_without_a_global_capture_gate() {
+        use port_platform::trust::{AccessAction, AccessStatus, SourceCapability};
+        for capability in SourceCapability::ALL {
+            for trusted in [false, true] {
+                let report = inspect_access(capability, trusted);
+                let ax = matches!(
+                    capability,
+                    SourceCapability::StructuredExtraction | SourceCapability::Observation
+                );
+                assert_eq!(
+                    report.status,
+                    if ax && !trusted {
+                        AccessStatus::PermissionRequired
+                    } else {
+                        AccessStatus::Available
+                    }
+                );
+                assert_eq!(
+                    report.request_action,
+                    (capability == SourceCapability::StructuredExtraction && !trusted)
+                        .then_some(AccessAction::RequestPermission)
+                );
+            }
+        }
+        assert!(MacOsPlatform
+            .request(SourceCapability::ImageCapture)
+            .is_err());
+        assert!(MacOsPlatform
+            .request(SourceCapability::TargetSelection)
+            .is_err());
+    }
 
     #[test]
     #[cfg(debug_assertions)]

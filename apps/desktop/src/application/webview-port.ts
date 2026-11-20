@@ -12,6 +12,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AppSnapshot } from "../types";
+import {
+  parseCapabilityInspection,
+  parseCapabilityInspections,
+  type CapabilityInspection,
+  type SourceCapability,
+} from "ui/contracts/resource-state";
 import type {
   AppConfig,
   LensOutputBlock,
@@ -106,8 +112,8 @@ export interface WebviewPort extends McpAppsPort {
   getMcpServerToolCatalogs(): Promise<import("ui/contracts/lens").McpServerToolCatalog[]>;
   getAppSnapshot(): Promise<AppSnapshot>;
   openScreenRecordingSettings(): Promise<void>;
-  getAccessibilityPermission(): Promise<boolean>;
-  requestAccessibilityPermission(): Promise<boolean>;
+  inspectSourceAccess(): Promise<CapabilityInspection[]>;
+  requestSourceAccess(capability: SourceCapability): Promise<CapabilityInspection>;
   setAgent(agent: AgentKind): Promise<void>;
   updateManagedAgent(agent: ManagedAgentKind): Promise<AgentRuntimeState>;
   saveExternalAgent(profile: ExternalAgentDraft): Promise<void>;
@@ -212,8 +218,15 @@ export const tauriWebviewPort: WebviewPort = {
   },
   getAppSnapshot: () => invoke<AppSnapshot>("get_window_snapshot"),
   openScreenRecordingSettings: () => invoke<void>("open_screen_recording_settings"),
-  getAccessibilityPermission: () => invoke<boolean>("accessibility_permission"),
-  requestAccessibilityPermission: () => invoke<boolean>("request_accessibility_permission"),
+  inspectSourceAccess: async () =>
+    parseCapabilityInspections(await invoke<unknown>("inspect_source_access")),
+  requestSourceAccess: async (capability) => {
+    const report = parseCapabilityInspection(
+      await invoke<unknown>("request_source_access", { capability }),
+    );
+    if (report.capability !== capability) throw new Error("Mismatched capability request result");
+    return report;
+  },
   async setAgent(agent) {
     await invoke("set_agent", { agent });
   },

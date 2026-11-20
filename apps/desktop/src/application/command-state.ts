@@ -45,7 +45,7 @@ export function commandLane(command: CommandIdentity): CommandLane {
       case "save-agent-prompt-template":
       case "reset-agent-prompt-template":
         return "settings:prompt";
-      case "request-accessibility-permission":
+      case "request-source-access":
       case "open-screen-recording-settings":
         return "settings:privacy";
       case "preview-agent-model":

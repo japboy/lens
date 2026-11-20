@@ -8,7 +8,7 @@ pub use port_platform::observation::{
 };
 use port_platform::{
     accessibility::Accessibility, capture::Capture, observation::Observation,
-    selection::TargetSelection, trust::AccessibilityTrust,
+    selection::TargetSelection, trust::CapabilityAccess,
 };
 pub use port_platform::{ImageCaptureLimits, PlatformError};
 use std::sync::Arc;
@@ -20,7 +20,7 @@ pub struct Services {
     pub accessibility: Arc<dyn Accessibility>,
     pub capture: Arc<dyn Capture>,
     pub observation: Arc<dyn Observation>,
-    pub trust: Arc<dyn AccessibilityTrust>,
+    pub access: Arc<dyn CapabilityAccess>,
 }
 
 /// Opaque reference surfaces and raw semantic fill/border RGBA, each composed once.
