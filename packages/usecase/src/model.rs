@@ -1301,9 +1301,10 @@ mod tests {
             projection_layout: Default::default(),
             id,
             name: "Custom".into(),
-            command: "/bin/agent".into(),
+            command: std::path::absolute("test-agent").unwrap(),
             args: vec!["".into(), "argument with spaces".into()],
         };
+        assert!(profile.command.is_absolute());
         let mut config = AppConfig::new("/fixture".into());
         config.external_agents = vec![profile.clone()];
         config.agent = AgentKind::External(id);
@@ -1377,7 +1378,8 @@ mod tests {
         let initial = AppConfig::new("/fixture".into());
         let mut customized = ExternalAgentProfile::copilot_preset();
         customized.name = "My connection".into();
-        customized.command = "/custom/agent".into();
+        customized.command = std::path::absolute("custom-test-agent").unwrap();
+        assert!(customized.command.is_absolute());
         customized.args = vec!["custom-acp".into()];
         for profiles in [
             vec![
