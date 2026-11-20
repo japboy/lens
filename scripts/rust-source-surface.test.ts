@@ -76,6 +76,9 @@ describe("separately compiled native consumers", () => {
     "use super::platform::{Services as S};",
     "use crate::platform::ControlPaletteState;",
     "use crate::platform::ControlColorsState;",
+    "use crate::source_lifecycle_validation::Mode;",
+    "use crate::platform::SourceValidationState;",
+    "crate::platform::SourceValidationHooks::hidden_consumer();",
     "crate::platform::ControlColors::hidden_consumer();",
     "crate::platform::ControlPalette::hidden_consumer();",
     "crate::model::Value::new();",
@@ -85,6 +88,8 @@ describe("separately compiled native consumers", () => {
     "use lens_lib::model;",
     '#[serde(from = "crate::model::Value")] struct Native;',
     "#[derive(Custom)] struct Native;",
+    "#[cfg(debug_assertions)] pub fn arbitrary_effect() {}",
+    "#[cfg(test)] pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {}",
     "hidden_consumer!();",
   ])("rejects native access outside the finite effect boundary: %s", (source) => {
     expect(nativeCompositionViolations(source).length).toBeGreaterThan(0);
@@ -94,11 +99,13 @@ describe("separately compiled native consumers", () => {
     "use super::platform::{Services, Presentation};",
     "use crate::platform::ControlPalette;",
     "use crate::platform::ControlColors;",
+    "use crate::platform::{SourceValidationCapture, SourceValidationHooks};",
     "fn colors() -> Option<crate::platform::ControlColors> { None }",
     "fn palette() -> Option<crate::platform::ControlPalette> { None }",
     "impl<R> crate::platform::WindowPresentation<R> for Native {}",
     "pub(crate) fn run() { super::run_with_runtime(builder, services, presentation); }",
     "#[cfg_attr(mobile, tauri::mobile_entry_point)] pub fn run() {}",
+    "#[cfg(debug_assertions)] pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {}",
   ])("admits explicit composition interfaces: %s", (source) => {
     expect(nativeCompositionViolations(source)).toEqual([]);
   });
@@ -138,6 +145,64 @@ describe("separately compiled native consumers", () => {
         '#[cfg(target_os = "macos")] native::configure_activation(app, usecase::value());',
       ),
     ).not.toEqual([]);
+  });
+
+  it("keeps native validation effects at the exact composition entry, not common commands", () => {
+    const source =
+      '#[cfg(all(debug_assertions, target_os = "macos"))] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);';
+    expect(commonShellConditionalViolations("apps/desktop/src-tauri/src/lib.rs", source)).toEqual(
+      [],
+    );
+    expect(
+      commonShellConditionalViolations("apps/desktop/src-tauri/src/commands.rs", source),
+    ).not.toEqual([]);
+    expect(
+      commonShellConditionalViolations(
+        "apps/desktop/src-tauri/src/lib.rs",
+        source.replace("source_validation_hooks()", "arbitrary_native_effect()"),
+      ),
+    ).not.toEqual([]);
+    expect(
+      commonShellConditionalViolations(
+        "apps/desktop/src-tauri/src/commands.rs",
+        '#[cfg(all(debug_assertions, target_os = "macos"))] crate::native::arm_source_validation_capture(operation);',
+      ),
+    ).not.toEqual([]);
+  });
+
+  it("limits native diagnostic gates to their exact paths, cfgs and signatures", () => {
+    for (const path of [
+      "apps/desktop/src-tauri/src/platform/mod.rs",
+      "apps/desktop/src-tauri/src/source_lifecycle_validation.rs",
+      "apps/desktop/src-tauri/src/commands.rs",
+    ]) {
+      const source = readFileSync(path, "utf8");
+      expect(commonShellConditionalViolations(path, source)).toEqual([]);
+      expect(
+        commonShellConditionalViolations("apps/desktop/src-tauri/src/other.rs", source),
+      ).not.toEqual([]);
+      expect(
+        commonShellConditionalViolations(
+          path,
+          source.replaceAll('target_os = "macos"', 'target_os = "linux"'),
+        ),
+      ).not.toEqual([]);
+    }
+    const path = "apps/desktop/src-tauri/src/source_lifecycle_validation.rs";
+    expect(
+      commonShellConditionalViolations(
+        path,
+        readFileSync(path, "utf8").replace("fn capture_action(", "fn arbitrary_action("),
+      ),
+    ).not.toEqual([]);
+  });
+
+  it("admits the formatted actual native composition root", () => {
+    const path = "apps/desktop/src-tauri/src/lib.rs";
+    expect(commonShellConditionalViolations(path, readFileSync(path, "utf8"))).toEqual([]);
+    expect(
+      nativeCompositionViolations(readFileSync("apps/desktop/src-tauri/src/native/mod.rs", "utf8")),
+    ).toEqual([]);
   });
 
   it("allows test conditions and type-checked cfg! expressions", () => {
