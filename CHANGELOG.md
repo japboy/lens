@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/japboy/lens/compare/v0.12.0...v0.12.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **desktop:** scope Unix dependencies by target ([#251](https://github.com/japboy/lens/issues/251)) ([1512720](https://github.com/japboy/lens/commit/1512720d11325e08d5d6aaf7893bec270578bae2)), refs [#210](https://github.com/japboy/lens/issues/210)
+
 ## [0.12.0](https://github.com/japboy/lens/compare/v0.11.0...v0.12.0) (2026-11-18)
 
 
