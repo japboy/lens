@@ -134,7 +134,7 @@ const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
     '#[cfg(target_os = "macos")] mod native;',
     '#[cfg(target_os = "macos")] pub use native::run;',
     '#[cfg(target_os = "macos")] native::configure_activation(app, validate_a11y || source_validation.enabled());',
-    '#[cfg(target_os = "macos")] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);',
+    '#[cfg(all(debug_assertions, target_os = "macos"))] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);',
     // Startup recovery owns a foreground window before the normal runtime exists.
     '#[cfg(target_os = "macos")] native::configure_activation(app, true);',
   ],
@@ -142,8 +142,37 @@ const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
     '#[cfg(target_os = "macos")] fn main() { if let Some(status) = lens_lib::internal_process_exit() { std::process::exit(status); } lens_lib::run(); }',
     '#[cfg(not(target_os = "macos"))] fn main() { eprintln!("Lens currently supports macOS only; this target is for common-library verification."); std::process::exit(1); }',
   ],
+  "apps/desktop/src-tauri/src/commands.rs": [
+    '#[cfg(all(debug_assertions, target_os = "macos"))] crate::source_lifecycle_validation::arm_source_validation_capture(operation);',
+  ],
+};
+// Only these diagnostic declarations may be absent from the common Linux shell.
+// Match their complete attributes and signatures; implementation bodies stay in Rust.
+const NATIVE_DIAGNOSTIC_SIGNATURES: Record<string, readonly string[]> = {
+  "apps/desktop/src-tauri/src/platform/mod.rs": [
+    `#[cfg(all(debug_assertions, any(target_os = "macos", test)))]
+     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+     pub enum SourceValidationCapture {`,
+    `#[cfg(all(debug_assertions, target_os = "macos"))]
+     #[derive(Clone, Copy)]
+     pub struct SourceValidationHooks {`,
+  ],
+  "apps/desktop/src-tauri/src/source_lifecycle_validation.rs": [
+    `#[cfg(all(debug_assertions, any(target_os = "macos", test)))]
+     fn capture_action(self) -> Option<crate::platform::SourceValidationCapture> {`,
+    `#[cfg(all(debug_assertions, target_os = "macos"))]
+     static NATIVE_CAPTURE_ARM: std::sync::OnceLock<fn(uuid::Uuid)> = std::sync::OnceLock::new();`,
+    `#[cfg(all(debug_assertions, target_os = "macos"))]
+     pub(crate) fn configure_native(mode: Mode, hooks: crate::platform::SourceValidationHooks) {`,
+    `#[cfg(all(debug_assertions, target_os = "macos"))]
+     pub(crate) fn arm_source_validation_capture(operation: uuid::Uuid) {`,
+  ],
 };
 const tokensOf = (source: string) => JSON.stringify(rustTokens(source).map((token) => token.text));
+function tokenPrefix(tokens: readonly Token[], start: number, source: string): boolean {
+  const expected = rustTokens(source).map((token) => token.text);
+  return expected.every((text, index) => tokens[start + index]?.text === text);
+}
 
 export function commonShellConditionalViolations(path: string, source: string): string[] {
   const tokens = rustTokens(source);
@@ -170,7 +199,12 @@ export function commonShellConditionalViolations(path: string, source: string): 
     }
     const end = statementEnd(tokens, close + 2);
     const actual = JSON.stringify(tokens.slice(index - 2, end + 1).map((entry) => entry.text));
-    if (!(NATIVE_ENTRY_STATEMENTS[path] ?? []).some((statement) => tokensOf(statement) === actual))
+    if (
+      !(NATIVE_ENTRY_STATEMENTS[path] ?? []).some((statement) => tokensOf(statement) === actual) &&
+      !(NATIVE_DIAGNOSTIC_SIGNATURES[path] ?? []).some((signature) =>
+        tokenPrefix(tokens, index - 2, signature),
+      )
+    )
       violations.push("Native-only consumer outside the finite composition entry points");
   }
   return violations;
@@ -203,7 +237,16 @@ export function nativeCompositionViolations(source: string): string[] {
         const compilerLint = ["allow", "expect", "warn", "deny", "forbid"].includes(
           tokens[index + 2]?.text ?? "",
         );
-        if (actual !== tokensOf("#[cfg_attr(mobile, tauri::mobile_entry_point)]") && !compilerLint)
+        const debugValidationHook = tokenPrefix(
+          tokens,
+          index,
+          "#[cfg(debug_assertions)] pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {",
+        );
+        if (
+          actual !== tokensOf("#[cfg_attr(mobile, tauri::mobile_entry_point)]") &&
+          !compilerLint &&
+          !debugValidationHook
+        )
           violations.push("Unreviewed native composition attribute");
       }
     }

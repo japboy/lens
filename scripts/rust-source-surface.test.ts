@@ -88,6 +88,8 @@ describe("separately compiled native consumers", () => {
     "use lens_lib::model;",
     '#[serde(from = "crate::model::Value")] struct Native;',
     "#[derive(Custom)] struct Native;",
+    "#[cfg(debug_assertions)] pub fn arbitrary_effect() {}",
+    "#[cfg(test)] pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {}",
     "hidden_consumer!();",
   ])("rejects native access outside the finite effect boundary: %s", (source) => {
     expect(nativeCompositionViolations(source).length).toBeGreaterThan(0);
@@ -103,6 +105,7 @@ describe("separately compiled native consumers", () => {
     "impl<R> crate::platform::WindowPresentation<R> for Native {}",
     "pub(crate) fn run() { super::run_with_runtime(builder, services, presentation); }",
     "#[cfg_attr(mobile, tauri::mobile_entry_point)] pub fn run() {}",
+    "#[cfg(debug_assertions)] pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {}",
   ])("admits explicit composition interfaces: %s", (source) => {
     expect(nativeCompositionViolations(source)).toEqual([]);
   });
@@ -146,7 +149,7 @@ describe("separately compiled native consumers", () => {
 
   it("keeps native validation effects at the exact composition entry, not common commands", () => {
     const source =
-      '#[cfg(target_os = "macos")] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);';
+      '#[cfg(all(debug_assertions, target_os = "macos"))] source_lifecycle_validation::configure_native(source_validation, native::source_validation_hooks(),);';
     expect(commonShellConditionalViolations("apps/desktop/src-tauri/src/lib.rs", source)).toEqual(
       [],
     );
@@ -163,6 +166,33 @@ describe("separately compiled native consumers", () => {
       commonShellConditionalViolations(
         "apps/desktop/src-tauri/src/commands.rs",
         '#[cfg(all(debug_assertions, target_os = "macos"))] crate::native::arm_source_validation_capture(operation);',
+      ),
+    ).not.toEqual([]);
+  });
+
+  it("limits native diagnostic gates to their exact paths, cfgs and signatures", () => {
+    for (const path of [
+      "apps/desktop/src-tauri/src/platform/mod.rs",
+      "apps/desktop/src-tauri/src/source_lifecycle_validation.rs",
+      "apps/desktop/src-tauri/src/commands.rs",
+    ]) {
+      const source = readFileSync(path, "utf8");
+      expect(commonShellConditionalViolations(path, source)).toEqual([]);
+      expect(
+        commonShellConditionalViolations("apps/desktop/src-tauri/src/other.rs", source),
+      ).not.toEqual([]);
+      expect(
+        commonShellConditionalViolations(
+          path,
+          source.replaceAll('target_os = "macos"', 'target_os = "linux"'),
+        ),
+      ).not.toEqual([]);
+    }
+    const path = "apps/desktop/src-tauri/src/source_lifecycle_validation.rs";
+    expect(
+      commonShellConditionalViolations(
+        path,
+        readFileSync(path, "utf8").replace("fn capture_action(", "fn arbitrary_action("),
       ),
     ).not.toEqual([]);
   });

@@ -32,10 +32,7 @@ pub fn configure_activation<R: tauri::Runtime>(app: &mut tauri::App<R>, foregrou
     });
 }
 
-#[allow(
-    dead_code,
-    reason = "Stable diagnostic composition entry; release adapter hooks are no-ops and only debug composition installs these effects"
-)]
+#[cfg(debug_assertions)]
 pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {
     use crate::platform::{SourceValidationCapture, SourceValidationHooks};
     use adapter_platform_macos::SourceValidationCapture as NativeCapture;

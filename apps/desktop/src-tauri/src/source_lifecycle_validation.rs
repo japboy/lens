@@ -44,7 +44,7 @@ impl Mode {
         self != Self::Standard
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, any(target_os = "macos", test)))]
     fn capture_action(self) -> Option<crate::platform::SourceValidationCapture> {
         use crate::platform::SourceValidationCapture;
         match self {
@@ -58,10 +58,10 @@ impl Mode {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_os = "macos"))]
 static NATIVE_CAPTURE_ARM: std::sync::OnceLock<fn(uuid::Uuid)> = std::sync::OnceLock::new();
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_os = "macos"))]
 pub(crate) fn configure_native(mode: Mode, hooks: crate::platform::SourceValidationHooks) {
     if mode.enabled() {
         (hooks.configure)(mode.capture_action());
@@ -69,7 +69,7 @@ pub(crate) fn configure_native(mode: Mode, hooks: crate::platform::SourceValidat
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, target_os = "macos"))]
 pub(crate) fn arm_source_validation_capture(operation: uuid::Uuid) {
     if let Some(arm) = NATIVE_CAPTURE_ARM.get() {
         arm(operation);

@@ -223,14 +223,11 @@ pub fn run_with_runtime<R: tauri::Runtime>(
         &std::env::vars_os().collect::<Vec<_>>(),
     )
     .unwrap_or_else(|error| panic!("invalid validation composition: {error}"));
-    #[cfg(debug_assertions)]
-    if source_validation.enabled() {
-        #[cfg(target_os = "macos")]
-        source_lifecycle_validation::configure_native(
-            source_validation,
-            native::source_validation_hooks(),
-        );
-    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    source_lifecycle_validation::configure_native(
+        source_validation,
+        native::source_validation_hooks(),
+    );
     let validate_interactions =
         cfg!(debug_assertions) && std::env::var_os("LENS_VALIDATE_INTERACTIONS").is_some();
     let validate_a11y = std::env::var_os("LENS_VALIDATE_A11Y").is_some();

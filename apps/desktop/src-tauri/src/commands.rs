@@ -1556,7 +1556,7 @@ impl<R: tauri::Runtime> ConfirmationHost for DesktopConfirmation<R> {
         // start() first requires this operation's Watching lifecycle and
         // canonical context. Failed/foreign/preview starts never arm a hook.
         live_runtime::start(&self.app, operation)?;
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, target_os = "macos"))]
         crate::source_lifecycle_validation::arm_source_validation_capture(operation);
         Ok(())
     }

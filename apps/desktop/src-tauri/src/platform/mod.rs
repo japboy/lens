@@ -25,6 +25,7 @@ pub struct Services {
 
 /// Purpose-bound diagnostic effects supplied only by the native composition root.
 /// Reported failures are injected only after real native cleanup completes.
+#[cfg(all(debug_assertions, any(target_os = "macos", test)))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceValidationCapture {
     HoldBeforeStop,
@@ -32,6 +33,7 @@ pub enum SourceValidationCapture {
     ReportCleanupUnconfirmed,
 }
 
+#[cfg(all(debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy)]
 pub struct SourceValidationHooks {
     pub configure: fn(Option<SourceValidationCapture>),
