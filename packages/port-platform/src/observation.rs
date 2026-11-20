@@ -92,7 +92,7 @@ mod tests {
         assert_send::<Box<dyn crate::accessibility::Accessibility>>();
         assert_send::<Box<dyn crate::capture::Capture>>();
         assert_send::<Box<dyn Observation>>();
-        assert_send::<Box<dyn crate::trust::AccessibilityTrust>>();
+        assert_send::<Box<dyn crate::trust::CapabilityAccess>>();
     }
     #[test]
     fn observation_event_requires_closed_notification_and_nonzero_epoch() {

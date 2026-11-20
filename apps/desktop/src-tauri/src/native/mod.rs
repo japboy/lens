@@ -20,7 +20,7 @@ fn macos_services() -> Services {
         accessibility: native.clone(),
         capture: native.clone(),
         observation: native.clone(),
-        trust: native,
+        access: native,
     }
 }
 

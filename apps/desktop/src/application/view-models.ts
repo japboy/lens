@@ -43,7 +43,7 @@ function settingsFeedbackTarget(command: SettingsCommandType): SettingsDestinati
     case "sign-out-agent-selection":
     case "choose-directory":
       return "connection";
-    case "request-accessibility-permission":
+    case "request-source-access":
     case "open-screen-recording-settings":
       return "privacy-security";
     case "update-prompt-presets":
@@ -103,8 +103,8 @@ function settingsPendingMessage(command: SettingsCommandType): string {
       return "Signing out…";
     case "choose-directory":
       return "Choosing working directory…";
-    case "request-accessibility-permission":
-      return "Requesting Accessibility permission…";
+    case "request-source-access":
+      return "Requesting source access…";
     case "open-screen-recording-settings":
       return "Opening Screen Recording settings…";
     case "update-prompt-presets":

@@ -239,10 +239,25 @@ fn production_snapshot_ipc_preserves_window_projection_and_permission_result() {
         invoke(&window, "get_window_snapshot", json!({})).unwrap(),
         expected
     );
-    assert_eq!(
-        invoke(&window, "accessibility_permission", json!({})).unwrap(),
-        json!(false)
-    );
+    let access = invoke(&window, "inspect_source_access", json!({})).unwrap();
+    assert_eq!(access.as_array().unwrap().len(), 4);
+    assert!(access
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|report| report["status"] == "unsupported" && report["request_action"].is_null()));
+    assert!(invoke(
+        &window,
+        "request_source_access",
+        json!({"capability":"image_capture"})
+    )
+    .is_err());
+    assert!(invoke(
+        &window,
+        "request_source_access",
+        json!({"capability":"future_capability"})
+    )
+    .is_err());
 }
 
 #[test]
