@@ -130,7 +130,6 @@ export const MEMBERS: readonly Member[] = [
         "flate2",
         "httpdate",
         "libc",
-        "nix",
         "reqwest",
         "rusqlite",
         "semver",
@@ -149,7 +148,6 @@ export const MEMBERS: readonly Member[] = [
         "tokio",
         "tokio-util",
         "uuid",
-        "uzers",
         "zip",
       ],
       dev: ["pretty_assertions", "tauri", "tokio", "tokio-util", "toml"],
@@ -268,6 +266,8 @@ export const MEMBERS: readonly Member[] = [
 ];
 
 export const TARGET_DEPENDENCIES = [
+  { member: "desktop", target: "cfg(unix)", kind: "normal", name: "nix" },
+  { member: "desktop", target: "cfg(unix)", kind: "normal", name: "uzers" },
   {
     member: "desktop",
     target: 'cfg(target_os = "macos")',
