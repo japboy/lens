@@ -39,7 +39,6 @@ httpdate = "=1.0.3"
 dirs = "=7.0.0"
 flate2 = "=1.1.11"
 libc = "=0.2.191"
-nix = { version = "=0.32.0", features = ["feature", "fs", "poll", "process", "signal", "term"] }
 reqwest = { workspace = true, default-features = true, features = ["stream"] }
 rusqlite = { version = "=0.42.0", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"
@@ -75,7 +74,6 @@ tokio = { version = "=1.54.1", features = [
   "time",
 ] }
 uuid.workspace = true
-uzers = { version = "=0.12.2", default-features = false }
 zip = { version = "=9.5.1", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
@@ -88,6 +86,10 @@ tauri = { version = "=2.12.5", default-features = false, features = ["test"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 adapter-platform-macos.workspace = true
 tauri = { version = "=2.12.5", features = ["macos-private-api"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.32.0", features = ["feature", "fs", "poll", "process", "signal", "term"] }
+uzers = { version = "=0.12.2", default-features = false }
 
 [lints]
 workspace = true

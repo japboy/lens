@@ -78,6 +78,21 @@ describe("workspace identities and all-kind dependency boundaries", () => {
     },
   );
 
+  it.each([
+    ["nix", null],
+    ["uzers", null],
+    ["nix", 'cfg(target_os = "windows")'],
+    ["uzers", 'cfg(target_os = "windows")'],
+  ] as const)("rejects broadening Desktop's Unix dependency %s to %s", (name, target) => {
+    const f = fixture();
+    const dependency = member(f.cargo, "desktop").dependencies.find(
+      (entry) => entry.name === name,
+    )!;
+    expect(dependency.target).toBe("cfg(unix)");
+    dependency.target = target;
+    expect(f.check).toThrow("forbidden dependency");
+  });
+
   it.each(['cfg(target_os = "macos")', 'cfg(target_os = "windows")'])(
     "checks inactive-target edges: %s",
     (target) => {
