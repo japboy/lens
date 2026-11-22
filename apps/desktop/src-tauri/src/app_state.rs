@@ -23,7 +23,7 @@ pub use usecase::state::{
     LensContextRefreshOutcome,
 };
 use usecase::state::{
-    agent_run_has_authority, coalesce_agent_turn, prepare_context_refresh, validate_context_state,
+    agent_run_has_authority, coalesce_agent_turn, prepare_context_refresh,
     validate_refresh_identity, validated_payload_map,
 };
 pub(crate) use usecase::state::{AgentSessionIdentity, AgentSessionTurnCompletion};
@@ -1255,32 +1255,14 @@ pub fn commit_initial_lens_context<R: tauri::Runtime>(
     payloads: Vec<LensMediaPayload>,
     reads: Vec<TargetReadKey>,
 ) -> Result<bool, String> {
-    if next.input.is_some() {
-        validate_context_state(operation_id, &next)?;
-    } else if next.operation_id != Some(operation_id)
-        || next.stage != LensStage::Failed
-        || next
-            .context
-            .as_ref()
-            .is_none_or(|context| context.revision == 0)
-        || next
-            .target_set
-            .as_ref()
-            .is_none_or(|targets| targets.selection_id != operation_id)
-        || next.projection.is_some()
-    {
-        return Err("failed source result has inconsistent context identity".into());
-    }
+    crate::initial_publication::validate_result(operation_id, &next)?;
     let state = app.state::<AppState>();
     let (snapshot, sync_tray) = {
         let mut snapshot = state
             .runtime
             .write()
             .map_err(|_| "application state lock is poisoned".to_string())?;
-        if snapshot.lens.operation_id != Some(operation_id)
-            || snapshot.lens.context.is_some()
-            || snapshot.lens.stage != LensStage::Extracting
-        {
+        if !crate::initial_publication::is_pending(&snapshot.lens, operation_id) {
             return Ok(false);
         }
         let mut read_admission = state
@@ -1293,17 +1275,8 @@ pub fn commit_initial_lens_context<R: tauri::Runtime>(
         }) else {
             return Ok(false);
         };
-        if next.live.is_some() {
-            if reads.len()
-                != next
-                    .target_set
-                    .as_ref()
-                    .map_or(0, |targets| targets.targets.len())
-                || !admission.allows_all(&reads)
-            {
-                return Ok(false);
-            }
-        } else if !reads.is_empty() {
+        if !crate::initial_publication::allows_reads(admission, &next, &reads, next.live.is_some())
+        {
             return Ok(false);
         }
         let context_revision = next
@@ -1311,7 +1284,7 @@ pub fn commit_initial_lens_context<R: tauri::Runtime>(
             .as_ref()
             .expect("validated context state has context")
             .revision;
-        let next_payloads = validated_payload_map(payloads)?;
+        let next_payloads = crate::initial_publication::payloads(payloads)?;
         let mut active = state
             .lens_media
             .active

@@ -223,17 +223,22 @@ export function validateInventory(
         dependency.rename === null,
         `${member.name}: dependency aliases require policy review`,
       );
-      assert(!dependency.optional, `${member.name}: optional dependency requires variant review`);
+      const targetEdge = TARGET_DEPENDENCIES.find(
+        (edge) =>
+          edge.member === member.name &&
+          edge.name === dependency.name &&
+          edge.kind === kind &&
+          edge.target === dependency.target,
+      );
+      assert(
+        dependency.optional ===
+          Boolean(targetEdge && "optional" in targetEdge && targetEdge.optional),
+        `${member.name}: optional dependency requires variant review`,
+      );
       const allowed =
         dependency.target === null
           ? owner.dependencies[kind]?.includes(dependency.name)
-          : TARGET_DEPENDENCIES.some(
-              (edge) =>
-                edge.member === member.name &&
-                edge.name === dependency.name &&
-                edge.kind === kind &&
-                edge.target === dependency.target,
-            );
+          : targetEdge !== undefined;
       assert(allowed, `${member.name}: forbidden dependency ${key}`);
       const local = localCargo.get(dependency.name);
       if (local) {

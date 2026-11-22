@@ -7,6 +7,13 @@ import { graphArguments, graphDigest, parseFeatureGraph } from "./features.ts";
 import { BUILD_VARIANTS } from "../../scripts/workspace-policy.ts";
 
 describe("target-specific transitive feature resolution", () => {
+  it("preserves the same dependency graph with Windows CRLF records", () => {
+    const lf =
+      "0consumer v0.1.0 (/fixture/consumer)|\n1shared v1.0.0|a,b\n1derive v1.0.0 (proc-macro)|\n";
+    expect(parseFeatureGraph(lf.replaceAll("\n", "\r\n"), "/fixture")).toEqual(
+      parseFeatureGraph(lf, "/fixture"),
+    );
+  });
   it("preserves duplicate package feature instances and dependency edges", () => {
     const graph = parseFeatureGraph(
       "0consumer v0.1.0 (/fixture/consumer)|\n1shared v1.0.0|normal\n1shared v1.0.0|build\n2derive v1.0.0 (proc-macro)|\n",

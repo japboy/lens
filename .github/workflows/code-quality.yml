@@ -115,6 +115,47 @@ jobs:
       verification_mode: ${{ needs.repository-verification.outputs.macos }}
       frontend_artifact: frontend-${{ github.sha }}
 
+  windows-fixture-verification:
+    name: Windows fixture verification
+    needs: [repository-verification]
+    if: needs.repository-verification.outputs.shared_rust == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+        with:
+          version: "v2026.11.8"
+          sha256: 8508adc6016766833c985f0770c136df7816c495b2e82318f8ad9c58af0c0511 # windows-x64 mise.exe
+          cache: false
+          install: true
+          install_args: node pnpm rust
+
+      - run: pnpm install --frozen-lockfile
+
+      # Compile only the owned helpers and embedded validation shell. No picker,
+      # acquisition, Agent, product frontend or packaging is run on the CI desktop.
+      - name: Compile the owned Windows fixture
+        run: |
+          & ./packages/adapter-platform-windows/fixtures/build.ps1 -OutputDirectory target/windows-fixture-binaries
+          node scripts/run-workspace-variant.ts windows-fixture-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test and lint the Windows fixture adapter
+        run: |
+          cargo test --locked --target x86_64-pc-windows-msvc -p adapter-platform-windows --all-targets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked --target x86_64-pc-windows-msvc -p adapter-platform-windows --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   code-quality:
     name: code-quality
     needs:
@@ -122,6 +163,7 @@ jobs:
       - frontend-verification
       - shared-rust-verification
       - macos-verification
+      - windows-fixture-verification
     if: always() && github.event.pull_request.state == 'open'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -132,9 +174,17 @@ jobs:
       FRONTEND_RESULT: ${{ needs.frontend-verification.result }}
       SHARED_RUST_RESULT: ${{ needs.shared-rust-verification.result }}
       MACOS_RESULT: ${{ needs.macos-verification.result }}
+      WINDOWS_FIXTURE_RESULT: ${{ needs.windows-fixture-verification.result }}
     steps:
       - name: Require the complete verification state
         run: |
+          case "$SHARED_RUST:$WINDOWS_FIXTURE_RESULT" in
+            true:success | false:skipped) ;;
+            *)
+              echo "::error::Incomplete Windows fixture verification: required=$SHARED_RUST result=$WINDOWS_FIXTURE_RESULT"
+              exit 1
+              ;;
+          esac
           case "$REPOSITORY_RESULT:$FRONTEND_RESULT:$SHARED_RUST_RESULT:$MACOS_RESULT:$SHARED_RUST:$MACOS" in
             success:success:skipped:skipped:false:none | success:success:success:skipped:true:none | success:success:success:success:true:code | success:success:success:success:true:app | success:success:success:success:true:dmg)
               echo "Code quality passed: shared Rust=$SHARED_RUST macOS=$MACOS"

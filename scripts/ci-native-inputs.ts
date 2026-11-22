@@ -22,13 +22,21 @@ export const NATIVE_CODE_INPUTS = new Set([
 // This is intentionally a bounded inventory, not a claim to interpret arbitrary Rust.
 export const NATIVE_BUILD_INPUTS = {
   "apps/desktop/src-tauri/build.rs": {
-    digest: "512e2266595a5b8fa4210f4cf1d2b8ff030e9b86979f14c8d826541911023959",
+    digest: "08e7c2a0066167730ffc31534407e9352e5a7a4ca91872be6aa641cd6a237e1a",
     inputs: [
       "LICENSE",
       "NOTICE",
       "apps/desktop/src-tauri/tauri.conf.json",
       "apps/desktop/src-tauri/tauri.macos.conf.json",
+      "apps/desktop/src-tauri/tauri.fixture.conf.json",
+      "apps/desktop/src-tauri/fixture-webview/index.html",
+      "apps/desktop/src-tauri/fixture-webview/fixture.js",
+      "apps/desktop/src-tauri/fixture-webview/fixture.css",
     ],
+  },
+  "apps/desktop/src-tauri/fixture_policy.rs": {
+    digest: "b2ad9539519c6ed2afe81156ae750cd70c1c9cb23c0c756ea7f94a48764784cf",
+    inputs: [],
   },
   "apps/desktop/src-tauri/node_policy.rs": {
     digest: "167a5e2557256749b2433d7832b7f1281cc5199fca9f556da22d68aed78b19f5",

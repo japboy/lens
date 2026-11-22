@@ -27,6 +27,19 @@ describe("presentation and build workspace ownership", () => {
 });
 
 describe("explicit Cargo variants", () => {
+  it("isolates fixture verification from every product and shared-consumer variant", () => {
+    const fixture = BUILD_VARIANTS.find((entry) => entry.id === "windows-fixture-check")!;
+    expect(fixture).toMatchObject({
+      target: "x86_64-pc-windows-msvc",
+      profile: "dev",
+      defaultFeatures: false,
+      features: ["desktop/windows-fixture-desktop"],
+    });
+    for (const variant of BUILD_VARIANTS.filter((entry) => entry !== fixture)) {
+      expect(variant.features).not.toContain("desktop/windows-fixture-desktop");
+      expect(variant.packages).not.toContain("adapter-platform-windows");
+    }
+  });
   it("uses finite exact target/package/feature/profile commands without workspace-wide Linux selection", () => {
     expect(new Set(BUILD_VARIANTS.map((variant) => variant.id)).size).toBe(BUILD_VARIANTS.length);
     for (const variant of BUILD_VARIANTS) {

@@ -24,7 +24,7 @@ export function parseFeatureGraph(output: string, root: string): FeatureGraph {
   const edges = new Set<string>();
   const roots = new Set<string>();
   const stack: string[] = [];
-  for (const line of output.trim().split("\n")) {
+  for (const line of output.trim().split(/\r?\n/u)) {
     if (!line) continue;
     const match = /^(\d+)([A-Za-z0-9_-]+) v([^ |]+)(?: \(([^)]+)\))?\|([^ ]*)(?: \(\*\))?$/u.exec(
       line,
@@ -102,8 +102,11 @@ export function inspectFeatureGraphs(
   selection: readonly BuildVariant[] = BUILD_VARIANTS,
 ) {
   const rustc = execFileSync("rustc", ["-vV"], { cwd: root, encoding: "utf8" });
-  const host = /^host: (.+)$/mu.exec(rustc)?.[1];
-  if (!host || !["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"].includes(host))
+  const host = /^host: ([^\r\n]+)\r?$/mu.exec(rustc)?.[1];
+  if (
+    !host ||
+    !["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"].includes(host)
+  )
     throw new Error("Unreviewed graph-analysis host");
   const variants = selection.map((variant) => {
     const args = graphArguments(variant);

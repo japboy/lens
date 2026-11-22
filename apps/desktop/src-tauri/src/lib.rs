@@ -1,3 +1,11 @@
+#![cfg(not(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    feature = "windows-fixture-desktop",
+    debug_assertions
+)))]
+
 mod about;
 mod agent;
 mod agent_environment;
@@ -11,6 +19,7 @@ mod command_work;
 mod commands;
 mod configuration_writer;
 mod external_agent;
+mod initial_publication;
 mod publication;
 mod settings_recovery;
 mod source_lifecycle_validation;

@@ -1,0 +1,20 @@
+{
+  "productName": "Lens Fixture Desktop",
+  "identifier": "com.github.japboy.lens.fixture",
+  "build": {
+    "frontendDist": "fixture-webview",
+    "devUrl": null,
+    "beforeDevCommand": null,
+    "beforeBuildCommand": null
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

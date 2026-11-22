@@ -67,6 +67,36 @@ describe("conservative Rust declaration comparison", () => {
 });
 
 describe("separately compiled native consumers", () => {
+  it("keeps the Windows fixture entry finite and the shared library visible elsewhere", () => {
+    const mainPath = "apps/desktop/src-tauri/src/main.rs";
+    const libPath = "apps/desktop/src-tauri/src/lib.rs";
+    const main = readFileSync(mainPath, "utf8");
+    const library = readFileSync(libPath, "utf8");
+    expect(commonShellConditionalViolations(mainPath, main)).toEqual([]);
+    expect(commonShellConditionalViolations(libPath, library)).toEqual([]);
+    for (const [from, to] of [
+      ['target_env = "msvc",', ""],
+      ['target_arch = "x86_64",', ""],
+      ['feature = "windows-fixture-desktop",', ""],
+      ["debug_assertions", "test"],
+    ]) {
+      expect(
+        commonShellConditionalViolations(mainPath, main.replaceAll(from, to)).length,
+      ).toBeGreaterThan(0);
+      expect(
+        commonShellConditionalViolations(libPath, library.replaceAll(from, to)).length,
+      ).toBeGreaterThan(0);
+    }
+    expect(
+      commonShellConditionalViolations("apps/desktop/src-tauri/src/app_state.rs", library).length,
+    ).toBeGreaterThan(0);
+    expect(
+      commonShellConditionalViolations(
+        libPath,
+        `${library}\n#[cfg(windows)] fn hidden_common_consumer() {}`,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
   it.each([
     "use usecase::model::Value;",
     "use domain as rules;",

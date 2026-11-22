@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [features]
 native-webview-lifecycle-test = []
+windows-fixture-desktop = ["tauri/wry", "dep:adapter-platform-windows"]
 
 [[test]]
 name = "native_webview_lifecycle"
@@ -90,6 +91,9 @@ tauri = { version = "=2.12.5", features = ["macos-private-api"] }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.32.0", features = ["feature", "fs", "poll", "process", "signal", "term"] }
 uzers = { version = "=0.12.2", default-features = false }
+
+[target.'cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))'.dependencies]
+adapter-platform-windows = { path = "../../../packages/adapter-platform-windows", optional = true }
 
 [lints]
 workspace = true

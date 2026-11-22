@@ -96,6 +96,27 @@ describe("explicit compiler variants", () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
+  it("runs the Windows fixture only on its declared MSVC host, including CRLF rustc output", () => {
+    for (const host of ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]) {
+      execute.mockReset();
+      mockGraph(host);
+      expect(() => runVariant("windows-fixture-check", root)).toThrow(
+        "require their declared host",
+      );
+      expect(execute).toHaveBeenCalledTimes(2);
+    }
+    execute.mockReset();
+    mockGraph("x86_64-pc-windows-msvc\r");
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    runVariant("windows-fixture-check", root);
+    expect(execute).toHaveBeenLastCalledWith(
+      "cargo",
+      variantArguments(selectVariant("windows-fixture-check")),
+      { cwd: root, stdio: "inherit" },
+    );
+    expect(assertMacosSdk).not.toHaveBeenCalled();
+  });
+
   it("permits the explicitly declared portable Apple cross-check", () => {
     vi.spyOn(process.stdout, "write").mockReturnValue(true);
     mockGraph("x86_64-unknown-linux-gnu");
