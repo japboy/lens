@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { build } from "vite";
+import { build, normalizePath } from "vite";
 
 import {
   HTML_MATH_RESOURCE_LIMIT,
@@ -58,7 +58,8 @@ export async function createHtmlMathAssets(buildRoot: string): Promise<{
 .lens-html-math .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding-block: .25em; }
 .lens-html-math .katex-display > .katex { text-align: start; }
 `;
-  const entry = join(buildRoot, ".lens-html-math.css");
+  const entry = normalizePath(join(buildRoot, ".lens-html-math.css"));
+  const fontUrl = `${normalizePath(katex)}/fonts/`;
   const result = await build({
     configFile: false,
     root: buildRoot,
@@ -71,7 +72,7 @@ export async function createHtmlMathAssets(buildRoot: string): Promise<{
           if (id === entry) return entry;
         },
         load(id) {
-          if (id === entry) return css.replaceAll('url("fonts/', `url("${katex}/fonts/`);
+          if (id === entry) return css.replaceAll('url("fonts/', `url("${fontUrl}`);
         },
       },
     ],
