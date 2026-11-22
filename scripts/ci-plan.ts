@@ -130,6 +130,7 @@ export function classifyChange(change: Change): ChangeRequirement {
     return require("frontend-build-package", "Shared generation changes require packaged native assets", app);
   if (
     path.startsWith("packages/adapter-platform-macos/") ||
+    path.startsWith("packages/adapter-platform-windows/") ||
     path.startsWith("packages/adapter-mcp-server/") ||
     path.startsWith("apps/desktop/src-tauri/src/native/") ||
     path === "apps/desktop/src-tauri/src/lib.rs" ||

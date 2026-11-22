@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lens Fixture Desktop</title>
+    <link rel="stylesheet" href="fixture.css" />
+    <script type="module" src="fixture.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Lens Fixture Desktop</h1>
+      <p>Cooperative Windows source validation</p>
+      <div class="actions">
+        <button data-action="select_a">Select fixture A</button>
+        <button data-action="reject_a">Close A before publication</button>
+        <button data-action="select_b">Reselect fixture B</button>
+      </div>
+      <div class="actions" aria-label="Acquisition fault validation">
+        <button data-action="stop_a">Stall read</button>
+        <button data-action="deadline_a">Deadline</button>
+        <button data-action="late_a">Late result</button>
+        <button id="stop" disabled>Stop acquisition</button>
+      </div>
+      <div class="actions" aria-label="Continuous acquisition validation">
+        <button data-action="continuous_a">Select A for continuous reads</button>
+        <button id="next" disabled>Next read</button>
+      </div>
+      <div class="actions" aria-label="Continuous acquisition fault validation">
+        <button data-action="worker_exit_a">Worker exit after read 1</button>
+        <button data-action="stall_refresh_a">Stall read 2</button>
+      </div>
+      <section aria-live="polite">
+        <h2 id="status">Ready to select a fixture</h2>
+        <p id="detail"></p>
+        <p id="marker" hidden></p>
+        <img id="capture" alt="Published fixture capture" hidden />
+      </section>
+    </main>
+  </body>
+</html>

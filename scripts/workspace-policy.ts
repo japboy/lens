@@ -15,7 +15,14 @@ export type Member = {
     | "adapter"
     | "configuration";
   capability: "repository" | "desktop" | "observation" | "platform";
-  implementation: "portable" | "common-shell" | "macos" | "tooling" | "webview" | "transport";
+  implementation:
+    | "portable"
+    | "common-shell"
+    | "macos"
+    | "windows-fixture"
+    | "tooling"
+    | "webview"
+    | "transport";
   dependencies: Partial<Record<DependencyKind, readonly string[]>>;
   packageFeatures?: Readonly<Record<string, readonly string[]>>;
 };
@@ -117,8 +124,11 @@ export const MEMBERS: readonly Member[] = [
     role: "application",
     capability: "desktop",
     implementation: "common-shell",
-    // Opt-in native regression only; no dependency activation or default feature.
-    packageFeatures: { "native-webview-lifecycle-test": [] },
+    // Reviewed opt-in native verification only; no default feature activation.
+    packageFeatures: {
+      "native-webview-lifecycle-test": [],
+      "windows-fixture-desktop": ["tauri/wry", "dep:adapter-platform-windows"],
+    },
     dependencies: {
       normal: [
         "usecase",
@@ -263,9 +273,38 @@ export const MEMBERS: readonly Member[] = [
       build: ["cc"],
     },
   },
+  {
+    ecosystem: "cargo",
+    name: "adapter-platform-windows",
+    directory: "packages/adapter-platform-windows",
+    role: "adapter",
+    capability: "platform",
+    implementation: "windows-fixture",
+    dependencies: {},
+  },
 ];
 
+const WINDOWS_FIXTURE_TARGET = 'cfg(all(windows, target_arch = "x86_64"))';
 export const TARGET_DEPENDENCIES = [
+  {
+    member: "desktop",
+    target: 'cfg(all(windows, target_arch = "x86_64", target_env = "msvc"))',
+    kind: "normal",
+    name: "adapter-platform-windows",
+    optional: true,
+  },
+  ...["image", "port-platform", "serde", "serde_json", "tempfile", "uuid"].map((name) => ({
+    member: "adapter-platform-windows",
+    target: WINDOWS_FIXTURE_TARGET,
+    kind: "normal" as const,
+    name,
+  })),
+  ...["base64", "domain", "usecase", "tokio"].map((name) => ({
+    member: "adapter-platform-windows",
+    target: WINDOWS_FIXTURE_TARGET,
+    kind: "dev" as const,
+    name,
+  })),
   { member: "desktop", target: "cfg(unix)", kind: "normal", name: "nix" },
   { member: "desktop", target: "cfg(unix)", kind: "normal", name: "uzers" },
   {
@@ -279,7 +318,7 @@ export const TARGET_DEPENDENCIES = [
 
 export type BuildVariant = {
   id: string;
-  target: "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin";
+  target: "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin" | "x86_64-pc-windows-msvc";
   packages: readonly string[];
   operation: "check" | "test" | "build" | "clippy";
   profile: "dev" | "test" | "release";
@@ -293,6 +332,16 @@ const portable = ["domain", "port-platform", "usecase", "adapter-mcp-server"];
 const native = [...common, "adapter-platform-macos"];
 
 export const BUILD_VARIANTS: readonly BuildVariant[] = [
+  {
+    id: "windows-fixture-check",
+    target: "x86_64-pc-windows-msvc",
+    packages: ["desktop", "adapter-platform-windows"],
+    operation: "check",
+    profile: "dev",
+    defaultFeatures: false,
+    features: ["desktop/windows-fixture-desktop"],
+    targets: "lib-and-bins",
+  },
   {
     id: "linux-common-check",
     target: "x86_64-unknown-linux-gnu",

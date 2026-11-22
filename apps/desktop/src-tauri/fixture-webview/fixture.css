@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light dark;
+  font:
+    16px system-ui,
+    sans-serif;
+}
+main {
+  margin: 2rem auto;
+  max-width: 40rem;
+  padding: 0 1rem;
+}
+h1 {
+  margin-bottom: 0.25rem;
+}
+.actions {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin: 1.5rem 0;
+}
+button {
+  font: inherit;
+  padding: 0.65rem 0.8rem;
+}
+img {
+  width: 128px;
+  height: 80px;
+  image-rendering: pixelated;
+}

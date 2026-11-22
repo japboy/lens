@@ -1,0 +1,24 @@
+[package]
+name = "adapter-platform-windows"
+version.workspace = true
+description = "Development adapter for privately owned cooperative Win32 fixtures"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+port-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "=3.27.0"
+uuid.workspace = true
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dev-dependencies]
+base64.workspace = true
+domain.workspace = true
+usecase.workspace = true
+tokio = { version = "=1.54.1", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

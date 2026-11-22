@@ -1,8 +1,43 @@
 mod bootstrap_history;
+mod fixture_policy;
 mod node_policy;
 mod pnpm_policy;
 
 fn main() {
+    if std::env::var_os("CARGO_FEATURE_WINDOWS_FIXTURE_DESKTOP").is_some() {
+        assert!(
+            fixture_policy::admits(
+                &std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default(),
+                &std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default(),
+                &std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default(),
+                &std::env::var("PROFILE").unwrap_or_default(),
+                std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some(),
+            ),
+            "windows-fixture-desktop requires a Windows x64 MSVC debug build with debug assertions"
+        );
+        println!("cargo:rerun-if-changed=tauri.fixture.conf.json");
+        println!("cargo:rerun-if-changed=fixture-webview");
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("tauri.fixture.conf.json")).expect("fixture config");
+        println!("cargo:rustc-env=TAURI_CONFIG={config}");
+        // The fixture uses the embedded local WebView and app-local commands only.
+        // Keep the product permissions and generated schemas out of this composition.
+        let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
+        for file in ["acl-manifests.json", "capabilities.json"] {
+            std::fs::write(out.join(file), "{}").expect("empty fixture capability manifest");
+        }
+        // Register Tauri's core API for the embedded page without generating product capabilities.
+        let global_api = std::env::var("DEP_TAURI_GLOBAL_API_SCRIPT_PATH")
+            .expect("Tauri must provide its global API bundle");
+        println!("cargo:rerun-if-changed={global_api}");
+        let scripts = serde_json::to_vec(&[global_api]).expect("global API script paths");
+        std::fs::write(out.join("__global-api-script.js"), scripts)
+            .expect("fixture global API registration");
+        // The Windows loader needs Common Controls v6 for TaskDialogIndirect.
+        println!("cargo:rustc-link-arg-bin=lens=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-bin=lens=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+        return;
+    }
     let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest.join("../../..");
     for input in node_policy::INPUTS {

@@ -129,6 +129,9 @@ const COMMON_CONDITIONS = new Set([
   "all(test,debug_assertions)",
   "any(test,debug_assertions)",
 ]);
+const WINDOWS_FIXTURE_CFG =
+  'all(windows, target_arch = "x86_64", target_env = "msvc", feature = "windows-fixture-desktop", debug_assertions)';
+const WINDOWS_FIXTURE_CRATE_ATTRIBUTE = `#![cfg(not(${WINDOWS_FIXTURE_CFG}))]`;
 const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
   "apps/desktop/src-tauri/src/lib.rs": [
     '#[cfg(target_os = "macos")] mod native;',
@@ -141,6 +144,10 @@ const NATIVE_ENTRY_STATEMENTS: Record<string, readonly string[]> = {
   "apps/desktop/src-tauri/src/main.rs": [
     '#[cfg(target_os = "macos")] fn main() { if let Some(status) = lens_lib::internal_process_exit() { std::process::exit(status); } lens_lib::run(); }',
     '#[cfg(not(target_os = "macos"))] fn main() { eprintln!("Lens currently supports macOS only; this target is for common-library verification."); std::process::exit(1); }',
+    `#[cfg(not(any(target_os = "macos", ${WINDOWS_FIXTURE_CFG})))] fn main() { eprintln!("Lens currently supports macOS only; this target is for common-library verification."); std::process::exit(1); }`,
+    `#[cfg(${WINDOWS_FIXTURE_CFG})] mod initial_publication;`,
+    `#[cfg(${WINDOWS_FIXTURE_CFG})] mod windows_fixture_desktop;`,
+    `#[cfg(${WINDOWS_FIXTURE_CFG})] fn main() { if let Err(error) = windows_fixture_desktop::run() { eprintln!("Windows fixture Desktop startup failed: {error}"); std::process::exit(1); } }`,
   ],
 };
 const tokensOf = (source: string) => JSON.stringify(rustTokens(source).map((token) => token.text));
@@ -164,6 +171,15 @@ export function commonShellConditionalViolations(path: string, source: string): 
       .map((entry) => entry.text)
       .join("");
     if (COMMON_CONDITIONS.has(condition)) continue;
+    // Only this crate-level exclusion isolates the opt-in fixture binary. Linux
+    // and macOS still type-check the complete common library consumer.
+    if (
+      path === "apps/desktop/src-tauri/src/lib.rs" &&
+      index === 3 &&
+      JSON.stringify(tokens.slice(0, close + 2).map((entry) => entry.text)) ===
+        tokensOf(WINDOWS_FIXTURE_CRATE_ATTRIBUTE)
+    )
+      continue;
     if (tokens[index - 1]?.text !== "[" || tokens[index - 2]?.text !== "#") {
       violations.push("Unreviewed common-shell conditional compilation");
       continue;

@@ -54,11 +54,46 @@ function member(cargo: CargoInventory, name: string) {
 describe("workspace identities and all-kind dependency boundaries", () => {
   it("checks actual Cargo and pnpm discovery without conflating desktop identities", () => {
     expect(() => fixture().check()).not.toThrow();
-    expect(baseline.cargo.packages).toHaveLength(6);
+    expect(baseline.cargo.packages).toHaveLength(7);
     expect(pnpm).toHaveLength(9);
     expect(
       MEMBERS.filter((entry) => entry.name === "desktop").map((entry) => entry.ecosystem),
     ).toEqual(["pnpm", "cargo"]);
+  });
+
+  it("admits only the reviewed optional Windows fixture edge and feature", () => {
+    const dependency = member(baseline.cargo, "desktop").dependencies.find(
+      (edge) => edge.name === "adapter-platform-windows",
+    )!;
+    expect(dependency.optional).toBe(true);
+    for (const change of [
+      { optional: false },
+      { target: null },
+      { target: "cfg(windows)" },
+      { target: 'cfg(all(windows, target_arch = "x86_64"))' },
+      { kind: "dev" as const },
+    ]) {
+      const f = fixture();
+      Object.assign(
+        member(f.cargo, "desktop").dependencies.find((edge) => edge.name === dependency.name)!,
+        change,
+      );
+      expect(f.check).toThrow("optional dependency requires variant review");
+    }
+    for (const change of [
+      { default: ["windows-fixture-desktop"] },
+      { alias: ["dep:adapter-platform-windows"] },
+      { "native-webview-lifecycle-test": ["dep:adapter-platform-windows"] },
+      { "windows-fixture-desktop": ["adapter-platform-windows"] },
+    ]) {
+      const f = fixture();
+      Object.assign(member(f.cargo, "desktop").features, change);
+      expect(f.check).toThrow("unreviewed package feature");
+    }
+    const f = fixture();
+    member(f.cargo, "desktop").dependencies.find((edge) => edge.name === "usecase")!.optional =
+      true;
+    expect(f.check).toThrow("optional dependency requires variant review");
   });
 
   it.each([null, "dev", "build"] as const)(
