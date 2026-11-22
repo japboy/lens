@@ -32,10 +32,23 @@ pub fn configure_activation<R: tauri::Runtime>(app: &mut tauri::App<R>, foregrou
     });
 }
 
-#[allow(
-    dead_code,
-    reason = "Stable native entry with a release no-op; only the debug composition invokes validation metadata"
-)]
-pub fn enable_source_validation() {
-    adapter_platform_macos::enable_source_validation_metadata();
+#[cfg(debug_assertions)]
+pub fn source_validation_hooks() -> crate::platform::SourceValidationHooks {
+    use crate::platform::{SourceValidationCapture, SourceValidationHooks};
+    use adapter_platform_macos::SourceValidationCapture as NativeCapture;
+    SourceValidationHooks {
+        configure: |action| {
+            adapter_platform_macos::enable_source_validation_metadata();
+            adapter_platform_macos::configure_source_validation_capture(action.map(|action| {
+                match action {
+                    SourceValidationCapture::HoldBeforeStop => NativeCapture::HoldBeforeStop,
+                    SourceValidationCapture::ReportInvalid => NativeCapture::InvalidAfterStop,
+                    SourceValidationCapture::ReportCleanupUnconfirmed => {
+                        NativeCapture::CleanupUnconfirmedAfterStop
+                    }
+                }
+            }));
+        },
+        arm_after_watching: adapter_platform_macos::arm_source_validation_capture,
+    }
 }
