@@ -114,8 +114,10 @@ describe("portable source escape restrictions", () => {
     for (const source of [
       'include!("own.rs");',
       'include_str!("../../usecase/src/model.rs");',
+      'include_str!("../../domain-sibling/resource.txt");',
       'include_bytes!(concat!("../", "resource"));',
       '#[path = "../../usecase/src/model.rs"] mod other;',
+      '#[path = "../../domain-sibling/src/lib.rs"] mod sibling;',
       '#[cfg_attr(test, path = "../../usecase/src/model.rs")] mod other;',
     ])
       expect(check(source).length).toBeGreaterThan(0);

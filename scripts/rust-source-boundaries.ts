@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 type Token = { text: string; literal: boolean; offset: number };
 
@@ -206,6 +206,11 @@ export function sourceInclusionViolations(
 ): string[] {
   const tokens = rustTokens(source);
   const violations: string[] = [];
+  const ownerDirectory = resolve(root, owner);
+  const withinOwner = (target: string) => {
+    const local = relative(ownerDirectory, target);
+    return local !== "" && local !== ".." && !local.startsWith(`..${sep}`) && !isAbsolute(local);
+  };
   for (const [index, token] of tokens.entries()) {
     if (token.literal) continue;
     if (token.text === "#") {
@@ -222,8 +227,7 @@ export function sourceInclusionViolations(
           continue;
         }
         const target = resolve(root, dirname(path), value.text.slice(1, -1));
-        if (!target.startsWith(`${resolve(root, owner)}/`))
-          violations.push(`Module path escapes owner ${owner}`);
+        if (!withinOwner(target)) violations.push(`Module path escapes owner ${owner}`);
       }
     }
     if (tokens[index + 1]?.text !== "!") continue;
@@ -267,11 +271,7 @@ export function sourceInclusionViolations(
         (token.text === "include_bytes" &&
           target ===
             resolve(root, "packages/adapter-mcp-apps-view/src/assets/rich-html-links.js")));
-    if (
-      !target.startsWith(`${resolve(root, owner)}/`) &&
-      !isApplicationLicense &&
-      !isApplicationAsset
-    )
+    if (!withinOwner(target) && !isApplicationLicense && !isApplicationAsset)
       violations.push(`Resource escapes owner ${owner}`);
   }
   return violations;

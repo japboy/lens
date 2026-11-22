@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   readHtmlMathManifest,
@@ -50,16 +50,16 @@ describe("closed math asset publication", () => {
     const css = sources.get(manifest.stylesheetPath)!.toString();
     const urls = [...css.matchAll(/url\(["']?([^"')]+)["']?\)/gu)].map((match) => match[1]!);
     expect(urls).toHaveLength(20);
-    for (const url of urls)
-      expect(sources.has(join(dirname(manifest.stylesheetPath), url))).toBe(true);
+    const resourcePaths = urls.map((url) =>
+      posix.join(posix.dirname(manifest.stylesheetPath), url),
+    );
+    for (const path of resourcePaths) expect(sources.has(path)).toBe(true);
     expect(css).not.toMatch(/data:|https?:|@import/u);
     const inline = inlineHtmlMathCss(manifest, sources);
     const inlineFonts = [...inline.matchAll(/url\("data:font\/woff2;base64,([^"]+)"\)/gu)].map(
       (match) => Buffer.from(match[1]!, "base64"),
     );
-    expect(inlineFonts).toEqual(
-      urls.map((url) => sources.get(join(dirname(manifest.stylesheetPath), url))),
-    );
+    expect(inlineFonts).toEqual(resourcePaths.map((path) => sources.get(path)));
     expect(inline).not.toMatch(/https?:|@import|url\((?!"data:font\/woff2;base64,)/u);
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/gu)];
     for (const rule of rules.filter((rule) => rule[1]!.trim() === "@font-face"))
