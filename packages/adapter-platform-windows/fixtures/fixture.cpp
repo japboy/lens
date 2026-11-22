@@ -9,6 +9,11 @@
 
 namespace {
 constexpr wchar_t kClass[] = L"LensControlledAuthorityFixtureV1";
+// Allow the 60 s selection, two 6 s reads and commits with 25 s pauses,
+// and the final held read (25 s), plus time for cleanup.
+constexpr ULONGLONG kReservationMs = 180'000;
+constexpr ULONGLONG kShortReservationMs = 350;
+constexpr ULONGLONG kOwnerLifetimeMs = kReservationMs + 30'000;
 enum class State { Empty, A, B, Stopped };
 State state = State::Empty;
 HWND owned = nullptr;
@@ -168,7 +173,8 @@ bool Command(const char* command) {
         const bool reserving = prefix == "reserve " || prefix == "reserve-short ";
         if (reserving && owned && lease.empty()) {
             lease = nonce;
-            leaseDeadline = GetTickCount64() + (prefix == "reserve-short " ? 350 : 90000);
+            leaseDeadline = GetTickCount64() +
+                (prefix == "reserve-short " ? kShortReservationMs : kReservationMs);
             granted = true;
         } else if (!reserving) {
             granted = owned && LeaseLive() && nonce == lease;
@@ -247,7 +253,7 @@ int main() {
     int result = 0;
     while (state != State::Stopped) {
         if (output_failed) { result = 2; break; }
-        if (GetTickCount64() - started >= 120000) { Observe("deadline"); result = 3; break; }
+        if (GetTickCount64() - started >= kOwnerLifetimeMs) { Observe("deadline"); result = 3; break; }
         MSG message{};
         for (unsigned count = 0; count < 64 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++count) {
             TranslateMessage(&message); DispatchMessageW(&message);
