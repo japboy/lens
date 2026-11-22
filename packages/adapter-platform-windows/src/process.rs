@@ -204,6 +204,11 @@ impl Endpoint {
             match self.events.recv_timeout(remaining) {
                 Ok(value) if value["event"] == event => return Ok(value),
                 Ok(value)
+                    if event == "selection-response" && value["event"] == "selector-error" =>
+                {
+                    return Err(protocol(format!("fixture confirmation failed: {value}")))
+                }
+                Ok(value)
                     if matches!(
                         value["event"].as_str(),
                         Some(

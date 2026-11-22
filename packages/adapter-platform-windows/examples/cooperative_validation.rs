@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod validation {
     use adapter_platform_windows::{
         marker_oracle::{self, Phase, Rect, Rgba},
+        selection_cleanup::SelectionPhase,
         Fixture, FixturePlatform, FixtureReadProbe,
     };
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -125,6 +126,14 @@ mod validation {
         println!("{}", json!({"event": event, "detail": detail}));
     }
 
+    fn selection_phase(reply: &WindowPickerReply) -> SelectionPhase {
+        match reply {
+            WindowPickerReply::Selected { .. } => SelectionPhase::Registered,
+            WindowPickerReply::Cancelled => SelectionPhase::Cancelled,
+            WindowPickerReply::Error { .. } => SelectionPhase::Pending,
+        }
+    }
+
     async fn select(
         platform: FixturePlatform,
         fixture: Fixture,
@@ -133,10 +142,10 @@ mod validation {
         check(!platform.inspect(), "unselected fixture reported ready")?;
         let operation = Uuid::new_v4();
         let mut admission = ReadAdmission::new(operation);
-        let mut registered = false;
+        let mut phase = SelectionPhase::Pending;
         let selected: Result<_, Box<dyn std::error::Error>> = async {
         let reply = platform.pick(operation).await?;
-        registered = matches!(&reply, WindowPickerReply::Selected { .. });
+        phase = selection_phase(&reply);
         let WindowPickerReply::Selected { windows } = &reply else {
             return Err("positive fixture selection must be explicitly confirmed".into());
         };
@@ -178,14 +187,14 @@ mod validation {
                 admission.terminate(OperationTerminalReason::AuthorityUncertain);
                 admission.begin_cleanup();
                 let released = platform.release_operation(operation);
-                admission.finish_cleanup(if registered && released.is_ok() {
+                admission.finish_cleanup(if phase.confirms_release(released.is_ok()) {
                     CleanupOutcome::ConfirmedClosed
                 } else {
                     CleanupOutcome::UnconfirmedTermination
                 });
                 log(
                     "cleanup",
-                    json!({"operation":operation,"phase":"selection","outcome":format!("{:?}",admission.cleanup_state()),"scenario_error":error.to_string(),"registered_release":registered,"unregistered_teardown_unobserved":!registered,"release_error":released.as_ref().err().map(ToString::to_string)}),
+                    json!({"operation":operation,"phase":"selection","outcome":format!("{:?}",admission.cleanup_state()),"scenario_error":error.to_string(),"selection_phase":format!("{phase:?}"),"registered_release":phase == SelectionPhase::Registered,"unregistered_teardown_unobserved":phase == SelectionPhase::Pending,"release_error":released.as_ref().err().map(ToString::to_string)}),
                 );
                 match released {
                     Ok(()) => Err(error),
@@ -574,10 +583,10 @@ mod validation {
         if mode == "cancel" {
             let platform = FixturePlatform::new(binaries, Fixture::A)?;
             let operation = Uuid::new_v4();
-            let mut registered = false;
+            let mut phase = SelectionPhase::Pending;
             let result: Result<(), Box<dyn std::error::Error>> = async {
                 let reply = platform.pick(operation).await?;
-                registered = matches!(&reply, WindowPickerReply::Selected { .. });
+                phase = selection_phase(&reply);
                 check(
                     matches!(reply, WindowPickerReply::Cancelled),
                     "select Cancel in the fixture dialog",
@@ -598,14 +607,14 @@ mod validation {
             });
             admission.begin_cleanup();
             let released = platform.release_operation(operation);
-            admission.finish_cleanup(if registered && released.is_ok() {
+            admission.finish_cleanup(if phase.confirms_release(released.is_ok()) {
                 CleanupOutcome::ConfirmedClosed
             } else {
                 CleanupOutcome::UnconfirmedTermination
             });
             log(
                 "cleanup",
-                json!({"operation":operation,"phase":"cancel","outcome":format!("{:?}",admission.cleanup_state()),"scenario_error":result.as_ref().err().map(ToString::to_string),"registered_release":registered,"unregistered_teardown_unobserved":!registered,"release_error":released.as_ref().err().map(ToString::to_string)}),
+                json!({"operation":operation,"phase":"cancel","outcome":format!("{:?}",admission.cleanup_state()),"scenario_error":result.as_ref().err().map(ToString::to_string),"selection_phase":format!("{phase:?}"),"registered_release":phase == SelectionPhase::Registered,"unregistered_teardown_unobserved":phase == SelectionPhase::Pending,"release_error":released.as_ref().err().map(ToString::to_string)}),
             );
             return match (result, released) {
                 (Ok(()), Ok(())) => Ok(()),

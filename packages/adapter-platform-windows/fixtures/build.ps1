@@ -5,7 +5,7 @@ $vswhere = Join-Path "${env:ProgramFiles(x86)}" 'Microsoft Visual Studio/Install
 $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (!$vs) { throw 'Existing MSVC required' }
 & "$vs/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
-$out = New-Item -ItemType Directory -Path $OutputDirectory
+$out = New-Item -ItemType Directory -Path $OutputDirectory -Force
 foreach ($name in 'fixture', 'worker', 'selector') {
     $libraries = @('user32.lib', 'gdi32.lib')
     if ($name -eq 'worker') {
