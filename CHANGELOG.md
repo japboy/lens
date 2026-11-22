@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0](https://github.com/japboy/lens/compare/v0.12.0...v0.13.0) (2026-11-22)
+
+
+### Features
+
+* **domain:** namespace selected window IDs ([#256](https://github.com/japboy/lens/issues/256)) ([a27ee32](https://github.com/japboy/lens/commit/a27ee3212af417c822da17605fb89e54d057ba3d)), refs [#209](https://github.com/japboy/lens/issues/209)
+* **windows:** add cooperative acquisition fixture ([#257](https://github.com/japboy/lens/issues/257)) ([e4913c8](https://github.com/japboy/lens/commit/e4913c89d02d3be3770b58edd464083c8e171b50))
+
+
+### Bug Fixes
+
+* **desktop:** scope Unix dependencies by target ([#251](https://github.com/japboy/lens/issues/251)) ([1512720](https://github.com/japboy/lens/commit/1512720d11325e08d5d6aaf7893bec270578bae2)), refs [#210](https://github.com/japboy/lens/issues/210)
+* **tooling:** unblock focused Windows verification ([#255](https://github.com/japboy/lens/issues/255)) ([87d53ca](https://github.com/japboy/lens/commit/87d53caeef1b1dd0d1817fefcf5db2c3a75f8a70))
+
 ## [0.12.0](https://github.com/japboy/lens/compare/v0.11.0...v0.12.0) (2026-11-18)
 
 
