@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MEMBERS } from "../workspace-policy.ts";
 import {
@@ -12,7 +12,9 @@ import {
 
 const cargo = MEMBERS.filter((member) => member.ecosystem === "cargo");
 const files = (version = "0.1.0", bootstrapped = false) => {
-  const value = Object.fromEntries(VERSION_FILES.map((path) => [path, readFileSync(path, "utf8")]));
+  const value = Object.fromEntries(
+    VERSION_FILES.map((path) => [path, readFileSync(path, "utf8").replaceAll("\r\n", "\n")]),
+  );
   const current = JSON.parse(value["apps/desktop/src-tauri/tauri.conf.json"]!).version as string;
   for (const path of VERSION_FILES.filter(
     (path) => path.endsWith(".json") || path === "Cargo.toml",
@@ -45,11 +47,12 @@ describe("workspace release authority", () => {
   });
   it.each(VERSION_FILES)("rejects an inconsistent mirror or inheritance: %s", (file) => {
     const changed = files();
-    changed[file] = file.endsWith("/Cargo.toml")
-      ? changed[file]!.replace("version.workspace = true", 'version = "0.1.0"')
-      : file.endsWith("manifest.json")
-        ? '{".":"0.2.0"}'
-        : changed[file]!.replace("0.1.0", "0.2.0");
+    changed[file] =
+      file !== "Cargo.toml" && basename(file) === "Cargo.toml"
+        ? changed[file]!.replace("version.workspace = true", 'version = "0.1.0"')
+        : file.endsWith("manifest.json")
+          ? '{".":"0.2.0"}'
+          : changed[file]!.replace("0.1.0", "0.2.0");
     expect(() => versionState(changed)).toThrow(/.+/u);
   });
   it.each(cargo.map((member) => member.name))("rejects a stale lock version for %s", (name) => {
