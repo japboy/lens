@@ -711,6 +711,84 @@ mod tests {
     }
 
     #[test]
+    fn selection_namespace_labels_targets_sources_and_media_without_changing_read_or_projection_identity(
+    ) {
+        use domain::lens::{TargetNamespace, LENS_TARGET_SET_SCHEMA_VERSION};
+        use domain::projection::LensAgentProjection;
+        let legacy = targets(1);
+        let window = legacy.targets[0].selected_window();
+        assert_eq!(
+            domain::lens::target_id(&window),
+            "macos:com.example.context:1"
+        );
+        for api in [
+            facts::SourceApi::MacosAx,
+            facts::SourceApi::WindowsUia,
+            facts::SourceApi::Unknown,
+        ] {
+            let mut canonical = None;
+            for (namespace, expected_id) in [
+                (TargetNamespace::Macos, "macos:com.example.context:1"),
+                (TargetNamespace::Windows, "windows:com.example.context:1"),
+            ] {
+                let selected = LensTargetSet::try_new_for_namespace(
+                    legacy.selection_id,
+                    vec![window.clone()],
+                    namespace,
+                )
+                .unwrap();
+                assert_eq!(selected.schema_version, LENS_TARGET_SET_SCHEMA_VERSION);
+                assert_eq!(selected.targets[0].id, expected_id);
+                if namespace == TargetNamespace::Macos {
+                    assert_eq!(selected, legacy);
+                }
+                let mut extracted = extraction(true);
+                extracted.source_api = api;
+                let sources = Arc::new(Sources {
+                    extractions: Mutex::new(VecDeque::from([Ok(extracted)])),
+                    ..Sources::default()
+                });
+                let access = registered(&selected);
+                let WindowAccessMode::Registered { reads } = &access else {
+                    unreachable!()
+                };
+                let expected_read = reads[expected_id];
+                let executor = Executor::default();
+                let built = ready(build_context(
+                    &executor,
+                    sources.clone(),
+                    sources,
+                    request(&selected, access, 3),
+                ))
+                .unwrap();
+                assert_eq!(built.reads, [expected_read]);
+                assert_eq!(
+                    *executor.keys.lock().unwrap(),
+                    [Some(expected_read), Some(expected_read)]
+                );
+                let source = &built.context.sources[0];
+                assert_eq!(source.target_id, expected_id);
+                assert_eq!(source.source_id, format!("{expected_id}:accessibility"));
+                assert_eq!(built.context.media.len(), 1);
+                assert_eq!(built.context.media[0].target_id, expected_id);
+                assert_eq!(built.context.media[0].id, "media-window-1-image");
+                let input = LensInput::from_context(&built.context).unwrap();
+                assert_eq!(input.sources[0].target_id, expected_id);
+                assert_eq!(input.sources[0].source_id, source.source_id);
+                assert_eq!(input.media[0].target_id, expected_id);
+                let projection =
+                    LensAgentProjection::from_input(&input, &built.target_set, &built.payloads)
+                        .unwrap();
+                if let Some(bytes) = canonical.as_ref() {
+                    assert_eq!(projection.bytes(), bytes);
+                } else {
+                    canonical = Some(projection.bytes().to_vec());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn context_build_runs_real_graph_media_and_facts_assembly_in_canonical_source_order() {
         let targets = targets(2);
         let sources = Arc::new(Sources {

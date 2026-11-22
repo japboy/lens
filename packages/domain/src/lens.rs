@@ -28,6 +28,14 @@ pub const MAX_LENS_MEDIA_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_LENS_MEDIA_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LENS_INPUT_FIELD_BYTES: usize = 16 * 1024;
 
+/// Supplied by the selection composition, independently of later extraction APIs.
+/// This construction policy adds no field to saved target sets or documents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetNamespace {
+    Macos,
+    Windows,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LensTarget {
     pub id: String,
@@ -37,9 +45,9 @@ pub struct LensTarget {
 }
 
 impl LensTarget {
-    fn from_window(window: SelectedWindow) -> Self {
+    fn from_window(window: SelectedWindow, namespace: TargetNamespace) -> Self {
         Self {
-            id: target_id(&window),
+            id: target_id_in_namespace(&window, namespace),
             identity: window.identity,
             facts_revision: 1,
             facts: window.facts,
@@ -76,9 +84,18 @@ pub enum LensTargetSetError {
 }
 
 impl LensTargetSet {
+    /// Compatibility entry point for the existing macOS selection composition.
     pub fn try_new(
         selection_id: Uuid,
         windows: Vec<SelectedWindow>,
+    ) -> Result<Self, LensTargetSetError> {
+        Self::try_new_for_namespace(selection_id, windows, TargetNamespace::Macos)
+    }
+
+    pub fn try_new_for_namespace(
+        selection_id: Uuid,
+        windows: Vec<SelectedWindow>,
+        namespace: TargetNamespace,
     ) -> Result<Self, LensTargetSetError> {
         if windows.is_empty() {
             return Err(LensTargetSetError::Empty);
@@ -98,7 +115,7 @@ impl LensTargetSet {
                     window.identity.window_id,
                 ));
             }
-            targets.push(LensTarget::from_window(window));
+            targets.push(LensTarget::from_window(window, namespace));
         }
         targets.sort_by(|left, right| {
             left.identity
@@ -1042,9 +1059,18 @@ impl LensContext {
     }
 }
 
+/// Existing macOS identifier spelling, retained for legacy callers and fixtures.
 pub fn target_id(target: &SelectedWindow) -> String {
+    target_id_in_namespace(target, TargetNamespace::Macos)
+}
+
+fn target_id_in_namespace(target: &SelectedWindow, namespace: TargetNamespace) -> String {
+    let prefix = match namespace {
+        TargetNamespace::Macos => "macos",
+        TargetNamespace::Windows => "windows",
+    };
     format!(
-        "macos:{}:{}",
+        "{prefix}:{}:{}",
         target.identity.bundle_id, target.identity.window_id
     )
 }
