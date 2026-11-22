@@ -125,7 +125,7 @@ describe("actual workflow admission", () => {
     );
     expect(tools.with).toMatchObject({
       version: "v2026.11.8",
-      sha256: "cf6ea1468017cbeac5a2c513d10e4ec09ccdc67911f62703d06449193577e8c7",
+      sha256: "8508adc6016766833c985f0770c136df7816c495b2e82318f8ad9c58af0c0511",
       cache: false,
       install_args: "node pnpm rust",
     });
