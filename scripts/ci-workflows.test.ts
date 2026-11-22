@@ -71,6 +71,7 @@ describe("actual workflow admission", () => {
         "-c",
         `
       while IFS='|' read -r INDEX REPOSITORY_RESULT FRONTEND_RESULT SHARED_RUST_RESULT MACOS_RESULT SHARED_RUST MACOS; do
+        if [ "$SHARED_RUST" = true ]; then WINDOWS_FIXTURE_RESULT=success; else WINDOWS_FIXTURE_RESULT=skipped; fi
         if ( ${shell} ) >/dev/null 2>&1; then printf '%s\\n' "$INDEX"; fi
       done
     `,
@@ -85,6 +86,67 @@ describe("actual workflow admission", () => {
     expect(result.status).toBe(0);
     expect(result.stdout.trim().split("\n")).toEqual(accepted);
   }, 35_000);
+
+  it("requires Windows fixture success exactly when shared Rust is required", () => {
+    for (const required of [true, false]) {
+      for (const result of ["success", "failure", "cancelled", "skipped", ""]) {
+        const run = spawnSync("bash", ["-e", "-c", shell], {
+          env: {
+            ...process.env,
+            SHARED_RUST: String(required),
+            MACOS: "none",
+            REPOSITORY_RESULT: "success",
+            FRONTEND_RESULT: "success",
+            SHARED_RUST_RESULT: required ? "success" : "skipped",
+            MACOS_RESULT: "skipped",
+            WINDOWS_FIXTURE_RESULT: result,
+          },
+          encoding: "utf8",
+        });
+        expect(run.status === 0).toBe(result === (required ? "success" : "skipped"));
+      }
+    }
+  });
+
+  it("runs only the gated Windows fixture variant on a Windows MSVC runner", () => {
+    const job = qualityJobs["windows-fixture-verification"];
+    expect(job.needs).toEqual(["repository-verification"]);
+    expect(job.if).toBe("needs.repository-verification.outputs.shared_rust == 'true'");
+    expect(job["runs-on"]).toBe("windows-2022");
+    expect(job.defaults.run.shell).toBe("pwsh");
+    expect(job.permissions).toBeUndefined();
+    expect(parse(quality).permissions).toEqual({ contents: "read" });
+    const checkout = job.steps.find((step: { uses?: string }) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    expect(checkout.with["persist-credentials"]).toBe(false);
+    const tools = job.steps.find((step: { uses?: string }) =>
+      step.uses?.startsWith("jdx/mise-action@"),
+    );
+    expect(tools.with).toMatchObject({
+      version: "v2026.11.8",
+      sha256: "cf6ea1468017cbeac5a2c513d10e4ec09ccdc67911f62703d06449193577e8c7",
+      cache: false,
+      install_args: "node pnpm rust",
+    });
+    const commands = job.steps.map((step: { run?: string }) => step.run ?? "").join("\n");
+    expect(commands).toContain("node scripts/run-workspace-variant.ts windows-fixture-check");
+    expect(commands).toContain(
+      "fixtures/build.ps1 -OutputDirectory target/windows-fixture-binaries",
+    );
+    expect(commands).toContain(
+      "cargo test --locked --target x86_64-pc-windows-msvc -p adapter-platform-windows --all-targets",
+    );
+    expect(commands).not.toMatch(
+      /verify:repository|verify:frontend|cargo run|cargo build|--release|--workspace/u,
+    );
+    for (const name of ["repository-verification", "frontend-verification"]) {
+      expect(JSON.stringify(qualityJobs[name])).not.toContain("windows-fixture-check");
+    }
+    expect(qualityJobs["code-quality"].env.WINDOWS_FIXTURE_RESULT).toBe(
+      "${{ needs.windows-fixture-verification.result }}",
+    );
+  });
 
   it("admits only open PRs while preserving independent owners and the complete result gate", () => {
     const repository = qualityJobs["repository-verification"];
@@ -127,6 +189,7 @@ describe("actual workflow admission", () => {
       "frontend-verification",
       "shared-rust-verification",
       "macos-verification",
+      "windows-fixture-verification",
     ]);
     // Open PRs must still evaluate failed/cancelled prerequisites; closed PRs
     // must skip the aggregate instead of failing it on the intentionally skipped DAG.
