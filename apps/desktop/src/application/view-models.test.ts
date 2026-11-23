@@ -53,7 +53,7 @@ const SNAPSHOT: AppSnapshot = {
   },
 };
 
-const PERMISSION: AccessibilityPermissionState = { stage: "allowed" };
+const PERMISSION: AccessibilityPermissionState = { stage: "ready", capabilities: [] };
 const READY_CONNECTION: SnapshotConnectionState = { stage: "ready" };
 
 function model(

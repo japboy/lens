@@ -18,7 +18,7 @@ use port_platform::{
         WindowObservationStart,
     },
     selection::{TargetSelection, WindowPickerReply},
-    trust::AccessibilityTrust,
+    trust::CapabilityAccess,
     ExtractionLimits, ImageCaptureLimits, PlatformError, PlatformFuture,
 };
 use serde_json::{json, Value};
@@ -289,11 +289,19 @@ impl TargetSelection for Fixture {
         Ok(())
     }
 }
-impl AccessibilityTrust for Fixture {
-    fn inspect(&self) -> bool {
-        true
+impl CapabilityAccess for Fixture {
+    fn inspect(
+        &self,
+        capability: port_platform::trust::SourceCapability,
+    ) -> port_platform::trust::CapabilityInspection {
+        port_platform::trust::CapabilityInspection {
+            capability,
+            status: port_platform::trust::AccessStatus::Available,
+            request_action: None,
+            diagnostics: vec![],
+        }
     }
-    fn request(&self) -> bool {
+    fn request(&self, _: port_platform::trust::SourceCapability) -> Result<(), PlatformError> {
         panic!("permission is already supplied")
     }
 }
@@ -831,7 +839,7 @@ fn setup_with_source_policy(scenario: Scenario, source_only: bool) -> Harness {
         accessibility: fixture.clone(),
         capture: fixture.clone(),
         observation: Arc::new(Observer(fixture.clone())),
-        trust: fixture.clone(),
+        access: fixture.clone(),
     };
     let state = AppState::with_config(
         services,

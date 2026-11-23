@@ -184,8 +184,8 @@ fn command_handler<R: tauri::Runtime>(
             command_work::update_prompt_presets,
             command_work::reset_agent_prompt_template,
             commands::open_screen_recording_settings,
-            commands::accessibility_permission,
-            commands::request_accessibility_permission,
+            commands::inspect_source_access,
+            commands::request_source_access,
             command_work::select_lens_target,
             command_work::add_lens_target,
             command_work::remove_lens_target,
@@ -353,10 +353,8 @@ pub fn run_with_runtime<R: tauri::Runtime>(
                     }
                 });
             }
-            let state = app.state::<app_state::AppState>();
-            if !validate_rich_output && std::env::var_os("LENS_VALIDATE_MCP_APPS").is_none() && !state.platform.trust.inspect() {
-                state.platform.trust.request();
-            }
+            // Starting Lens never requests native access. The Settings action is
+            // explicit, and its outcome is inspected again rather than assumed granted.
             Ok(())
         })
         .build(product_context())

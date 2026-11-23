@@ -5,6 +5,7 @@ import { previewDocumentLoader } from "./services";
 import { PREVIEW_SCENARIOS, PREVIEW_VIEWS } from "./scenarios";
 import { historyFixture } from "./history-fixture";
 import { DESKTOP_PLATFORMS } from "ui/contracts/context";
+import { SOURCE_CAPABILITIES } from "ui/contracts/resource-state";
 import type { LensState } from "ui/contracts/lens";
 function finiteValue<const T extends readonly string[]>(value: string, allowed: T): T[number] {
   if (allowed.includes(value)) return value;
@@ -206,7 +207,16 @@ export function show() {
             agentSelection: { stage: "unselected", supports_logout: false, auth_methods: [] },
             agentRuntime: { stage: "not_installed", downloaded_bytes: 0 },
             updatePending: false,
-            permission: { stage: "required" },
+            permission: {
+              stage: "ready",
+              capabilities: SOURCE_CAPABILITIES.map((capability) => ({
+                capability,
+                status: "permission_required",
+                request_action:
+                  capability === "structured_extraction" ? "request_permission" : null,
+                diagnostics: [],
+              })),
+            },
             pending: scenario === "pending",
             promptSynchronization: "preserve-local-draft",
             lensStageLabel: "Idle",

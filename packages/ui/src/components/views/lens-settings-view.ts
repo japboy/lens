@@ -178,6 +178,9 @@ export class LensSettingsView extends LitElement {
       .settings-detail-panel[hidden] {
         display: none;
       }
+      .settings-group[hidden] {
+        display: none;
+      }
 
       .settings-detail-header {
         display: flex;
@@ -983,20 +986,19 @@ export class LensSettingsView extends LitElement {
     const model = this.model;
     const feedback = model?.feedback ?? this.feedback;
     const permission = model?.permission ?? this.permission;
-    const permissionLabel = (() => {
-      switch (permission.stage) {
-        case "inactive":
-        case "checking":
-          return "Checking…";
-        case "allowed":
-          return "Allowed";
-        case "required":
-          return "Permission required";
-        case "failed":
-          return "Permission check failed";
-      }
-    })();
-    const permissionAllowed = permission.stage === "allowed";
+    const capabilityLabels = {
+      target_selection: "Window selection",
+      structured_extraction: "Structured content",
+      image_capture: "Image capture",
+      observation: "Source observation",
+    } satisfies Record<import("../../contracts/resource-state").SourceCapability, string>;
+    const accessLabels = {
+      available: "Available",
+      permission_required: "Permission required",
+      restricted: "Restricted",
+      unsupported: "Unsupported",
+      failed: "Access inspection failed",
+    } satisfies Record<import("../../contracts/resource-state").AccessStatus, string>;
     const destinationFeedback = (destination: SettingsDestination) =>
       feedbackForDestination(model?.feedbackByDestination?.[destination] ?? feedback, destination);
     const pending = (destination: SettingsDestination) =>
@@ -1162,7 +1164,11 @@ export class LensSettingsView extends LitElement {
             </header>
             ${renderSettingsFeedback(destinationFeedback("privacy-security"))}
             <div class="settings-detail-groups">
-              <section class="settings-group" aria-labelledby="screen-recording-heading">
+              <section
+                class="settings-group"
+                aria-labelledby="screen-recording-heading"
+                ?hidden=${this.active && (model?.platform ?? this.getAttribute("data-platform")) !== "macos"}
+              >
                 <h2 id="screen-recording-heading">Screen &amp; System Audio Recording</h2>
                 <p>
                   Lens captures images from the windows you select. It does not record audio. The
@@ -1174,31 +1180,47 @@ export class LensSettingsView extends LitElement {
                     data-lens-button-role="normal"
                     type="button"
                     @click=${() => this.emit({ type: "open-screen-recording-settings" })}
-                    ?disabled=${!this.active || pending("privacy-security")}
+                    ?disabled=${!this.active || (model?.platform ?? this.getAttribute("data-platform")) !== "macos" || pending("privacy-security")}
                   >
                     Open System Settings
                   </button>
                 </div>
               </section>
               <section class="settings-group" aria-labelledby="permission-heading">
-                <h2 id="permission-heading">Accessibility</h2>
-                <div class="permission-row">
-                  <output class=${permissionAllowed ? "status-ok" : "status-warning"}>
-                    ${permissionLabel}
-                  </output>
-                  ${
-                    permissionAllowed || permission.stage === "checking"
-                      ? nothing
-                      : html`<button
-                          data-lens-button-role="normal"
-                          type="button"
-                          @click=${() => this.emit({ type: "request-accessibility-permission" })}
-                          ?disabled=${!this.active || pending("privacy-security") || permission.stage === "inactive"}
-                        >
-                          Open System Settings
-                        </button>`
-                  }
-                </div>
+                <h2 id="permission-heading">Source access</h2>
+                ${
+                  permission.stage === "ready"
+                    ? permission.capabilities.map(
+                        (report) => html`
+                          <section aria-label=${capabilityLabels[report.capability]}>
+                            <h3>${capabilityLabels[report.capability]}</h3>
+                            <div class="permission-row">
+                              <output
+                                class=${report.status === "available" ? "status-ok" : "status-warning"}
+                                >${accessLabels[report.status]}</output
+                              >
+                              ${
+                                report.status === "permission_required" &&
+                                report.request_action === "request_permission"
+                                  ? html`<button
+                                      data-lens-button-role="normal"
+                                      type="button"
+                                      @click=${() => this.emit({ type: "request-source-access", capability: report.capability })}
+                                      ?disabled=${!this.active || pending("privacy-security")}
+                                    >
+                                      Request access
+                                    </button>`
+                                  : nothing
+                              }
+                            </div>
+                            ${report.diagnostics.map((detail) => html`<p>${detail}</p>`)}
+                          </section>
+                        `,
+                      )
+                    : html`<output role="status"
+                        >${permission.stage === "failed" ? permission.message : "Checking source access…"}</output
+                      >`
+                }
               </section>
             </div>
           </div>

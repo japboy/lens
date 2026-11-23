@@ -246,7 +246,15 @@ vi.mock("@tauri-apps/api/core", () => ({
       };
     if (command === "get_session_view") return { revision: 0, phase: "idle" };
     if (command === "list_history") return { revision: 1, total: 0, entries: [] };
-    if (command === "accessibility_permission") return true;
+    if (command === "inspect_source_access")
+      return ["target_selection", "structured_extraction", "image_capture", "observation"].map(
+        (capability) => ({
+          capability,
+          status: "available",
+          request_action: null,
+          diagnostics: [],
+        }),
+      );
     return undefined;
   }),
 }));
@@ -334,7 +342,7 @@ describe("progressive DSD resources", () => {
       expect(agentSettings.querySelector("#agent-presets-heading")).toBeNull();
       expect(root.querySelector(".settings-sidebar-status-value")?.textContent?.trim()).toBe("");
       await vi.waitFor(() =>
-        expect(root.querySelector(".permission-row output")?.textContent).toContain("Allowed"),
+        expect(root.querySelector(".permission-row output")?.textContent).toContain("Available"),
       );
       const navigation = Array.from(root.querySelectorAll<HTMLButtonElement>(".settings-nav-item"));
       expect(navigation.every((button) => !button.disabled)).toBe(true);

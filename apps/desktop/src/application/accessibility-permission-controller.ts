@@ -1,7 +1,7 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { WebviewPort } from "./webview-port";
 
-import type { AccessibilityPermissionState } from "ui/contracts/resource-state";
+import type { AccessibilityPermissionState, SourceCapability } from "ui/contracts/resource-state";
 
 export class AccessibilityPermissionController implements ReactiveController {
   state: AccessibilityPermissionState = { stage: "inactive" };
@@ -9,6 +9,9 @@ export class AccessibilityPermissionController implements ReactiveController {
   private connected = false;
   private active = false;
   private generation = 0;
+  private inspection = 0;
+  private inspectionPending = false;
+  private requestPending = false;
   private pollTimer: number | undefined;
   private followUpTimer: number | undefined;
 
@@ -41,24 +44,70 @@ export class AccessibilityPermissionController implements ReactiveController {
     }
   }
 
-  async request(): Promise<void> {
-    await this.port.requestAccessibilityPermission();
+  async request(capability: SourceCapability): Promise<void> {
+    if (!this.active || !this.connected || this.requestPending || this.state.stage !== "ready")
+      return;
+    const report = this.state.capabilities.find((report) => report.capability === capability);
+    if (report?.status !== "permission_required" || report.request_action !== "request_permission")
+      throw new Error("This capability has no supported permission request action.");
+    const generation = this.generation;
+    this.requestPending = true;
+    this.inspection += 1;
     this.setState({ stage: "checking" });
+    try {
+      await this.port.requestSourceAccess(capability);
+    } catch (error) {
+      if (generation === this.generation && this.active && this.connected) {
+        this.setState({ stage: "failed", message: String(error) });
+      }
+      throw error;
+    } finally {
+      // A pending native prompt survives view navigation; only its own completion
+      // releases this single-flight guard.
+      this.requestPending = false;
+    }
+    if (generation !== this.generation || !this.active || !this.connected) return;
+    await this.refresh();
+    if (generation !== this.generation || !this.active || !this.connected) return;
     if (this.followUpTimer !== undefined) window.clearTimeout(this.followUpTimer);
     this.followUpTimer = window.setTimeout(() => void this.refresh(), 1_200);
   }
 
   async refresh(): Promise<void> {
-    if (!this.active || !this.connected || document.visibilityState !== "visible") return;
-    if (this.state.stage === "allowed") return;
+    if (
+      !this.active ||
+      !this.connected ||
+      this.requestPending ||
+      this.inspectionPending ||
+      document.visibilityState !== "visible"
+    )
+      return;
     const generation = this.generation;
+    const inspection = this.inspection;
+    this.inspectionPending = true;
     try {
-      const allowed = await this.port.getAccessibilityPermission();
-      if (generation !== this.generation || !this.active || !this.connected) return;
-      this.setState(allowed ? { stage: "allowed" } : { stage: "required" });
+      const capabilities = await this.port.inspectSourceAccess();
+      if (
+        generation !== this.generation ||
+        inspection !== this.inspection ||
+        this.requestPending ||
+        !this.active ||
+        !this.connected
+      )
+        return;
+      this.setState({ stage: "ready", capabilities });
     } catch (error) {
-      if (generation !== this.generation || !this.active || !this.connected) return;
+      if (
+        generation !== this.generation ||
+        inspection !== this.inspection ||
+        this.requestPending ||
+        !this.active ||
+        !this.connected
+      )
+        return;
       this.setState({ stage: "failed", message: String(error) });
+    } finally {
+      this.inspectionPending = false;
     }
   }
 

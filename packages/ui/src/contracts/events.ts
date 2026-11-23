@@ -72,7 +72,7 @@ export type SettingsIntent =
   | { type: "save-agent-prompt-template"; agentPromptTemplate: AgentPromptTemplate }
   | { type: "reset-agent-prompt-template" }
   | { type: "choose-directory" }
-  | { type: "request-accessibility-permission" }
+  | { type: "request-source-access"; capability: import("./resource-state").SourceCapability }
   | { type: "open-screen-recording-settings" };
 
 export type TargetSelectionIntent =

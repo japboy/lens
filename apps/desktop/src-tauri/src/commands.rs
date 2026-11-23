@@ -584,13 +584,19 @@ pub fn open_screen_recording_settings<R: tauri::Runtime>(app: AppHandle<R>) -> R
 }
 
 #[tauri::command]
-pub fn accessibility_permission(state: State<'_, AppState>) -> bool {
-    state.platform.trust.inspect()
+pub fn inspect_source_access(
+    state: State<'_, AppState>,
+) -> Vec<usecase::access::CapabilityInspection> {
+    usecase::access::inspect(state.platform.access.as_ref())
 }
 
 #[tauri::command]
-pub fn request_accessibility_permission(state: State<'_, AppState>) -> bool {
-    state.platform.trust.request()
+pub fn request_source_access(
+    state: State<'_, AppState>,
+    capability: usecase::access::SourceCapability,
+) -> Result<usecase::access::CapabilityInspection, String> {
+    usecase::access::request(state.platform.access.as_ref(), capability)
+        .map_err(|error| error.to_string())
 }
 
 async fn select_single_window<R: tauri::Runtime>(

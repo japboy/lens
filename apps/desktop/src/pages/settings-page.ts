@@ -192,7 +192,7 @@ export class SettingsPage extends ReactiveElement {
     }
     if (
       !this.snapshots.snapshot &&
-      intent.type !== "request-accessibility-permission" &&
+      intent.type !== "request-source-access" &&
       intent.type !== "open-screen-recording-settings"
     )
       return;
@@ -395,11 +395,11 @@ export class SettingsPage extends ReactiveElement {
           "Manage Screen & System Audio Recording access in System Settings.",
         );
         return;
-      case "request-accessibility-permission":
+      case "request-source-access":
         await this.commands.run(
           identity,
-          () => this.accessibility.request(),
-          "Allow Lens in System Settings, then check again.",
+          () => this.accessibility.request(intent.capability),
+          "Access was requested. Lens will check the current capability state again.",
         );
         return;
     }
